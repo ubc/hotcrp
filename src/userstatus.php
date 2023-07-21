@@ -1417,12 +1417,14 @@ class UserStatus extends MessageSet {
         echo '</div>';
 
         $t = Ht::entry("affiliation", $qreq->affiliation ?? $user->affiliation, ["size" => 52, "autocomplete" => $us->autocomplete("organization"), "class" => "fullw", "id" => "affiliation", "data-default-value" => $user->affiliation]) . $us->global_profile_difference("affiliation");
-        $us->print_field("affiliation", "Affiliation", $t);
+        $us->print_field("affiliation", "Department", $t);
     }
 
     static function print_country(UserStatus $us) {
-        $t = Countries::selector("country", $us->qreq->country ?? $us->user->country(), ["id" => "country", "data-default-value" => $us->user->country(), "autocomplete" => $us->autocomplete("country")]) . $us->global_profile_difference("country");
-        $us->print_field("country", "Country/region", $t);
+        //$t = Countries::selector("country", $us->qreq->country ?? $us->user->country(), ["id" => "country", "data-default-value" => $us->user->country(), "autocomplete" => $us->autocomplete("country")]) . $us->global_profile_difference("country");
+//        $t = Countries::selector("country", $us->qreq->country ?? $us->user->country(), ["id" => "country", "data-default-value" => $us->user->country(), "autocomplete" => $us->autocomplete("country")]) . $us->global_profile_difference("country");
+        $t = Ht::entry("country", $us->qreq->country ?? $us->user->country(), ["size" => 52, "autocomplete" => $us->autocomplete("country"), "class" => "fullw", "id" => "affiliation", "data-default-value" => $us->user->country()]) . $us->global_profile_difference("country");
+        $us->print_field("country", "Faculty/Institution", $t);
     }
 
     /** @param int $reqwatch
@@ -1522,6 +1524,7 @@ class UserStatus extends MessageSet {
         }
         $cd = $us->conf->_i("conflictdef");
         $us->cs()->add_section_class("w-text")->print_start_section();
+        /*
         echo '<h3 class="', $us->control_class("collaborators", "form-h"), '">Collaborators and other affiliations</h3>', "\n",
             "<p>List potential conflicts of interest one per line, using parentheses for affiliations and institutions. We may use this information when assigning reviews.<br>Examples: “Ping Yen Zhang (INRIA)”, “All (University College London)”</p>";
         if ($cd !== "" && preg_match('/<(?:p|div)[ >]/', $cd)) {
@@ -1535,6 +1538,7 @@ class UserStatus extends MessageSet {
             "\" data-default-value=\"", htmlspecialchars($us->user->collaborators()), "\">",
             htmlspecialchars($us->qreq->collaborators ?? $us->user->collaborators()),
             "</textarea>\n";
+         */
     }
 
     static function print_topics(UserStatus $us) {
@@ -1585,15 +1589,16 @@ topics. We use this information to help match papers to reviewers.</p>',
             && (!$us->user->isPC || $itags === "")) {
             return;
         }
-        $us->cs()->add_section_class("w-text fx2")->print_start_section("Tags");
+//        $us->cs()->add_section_class("w-text fx2")->print_start_section("Tags");
         if ($us->viewer->privChair) {
-            echo '<div class="', $us->control_class("tags", "f-i"), '">',
+/*            echo '<div class="', $us->control_class("tags", "f-i"), '">',
                 $us->feedback_html_at("tags"),
                 Ht::entry("tags", $us->qreq->tags ?? $itags, ["data-default-value" => $itags, "class" => "fullw"]),
                 "</div>
   <p class=\"f-h\">Example: “heavy”. Separate tags by spaces; the “pc” tag is set automatically.<br /><strong>Tip:</strong>&nbsp;Use <a href=\"", $us->conf->hoturl("settings", "group=tags"), "\">tag colors</a> to highlight subgroups in review lists.</p>\n";
+ */
         } else {
-            echo $itags, "<p class=\"f-h\">Tags represent PC subgroups and are set by administrators.</p>\n";
+  //          echo $itags, "<p class=\"f-h\">Tags represent PC subgroups and are set by administrators.</p>\n";
         }
     }
 

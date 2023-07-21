@@ -282,8 +282,8 @@ body.paper #p-header {
 	border-bottom: 1px solid #f33360;
 	border-right: 1px solid #f33360;
 	border-bottom-right-radius: 4px;
-	background: #ffc9d6; /* #ed6182; */
-	color: #f33360;
+	background: #8ad8f8; /* #ffc9d6;*/ /* #ed6182; */
+	color: /*#f33360*/ #3380f3;
 }
 
 h1, h2 {

@@ -4569,6 +4569,10 @@ class Conf {
     /** @param Qrequest $qreq
      * @param string|list<string> $title */
     function print_body_entry($qreq, $title, $id, $extra = []) {
+//        echo "<table><tr><td bgcolor=blue>THING GOES HERE</tr></td></table>";
+      //   TOP BANNER
+        echo "<img src=\"https://brand.ubc.ca/files/2018/09/1FullLogo_ex_768.png\" >";
+        //echo "<img src=\"https://logos-download.com/wp-content/uploads/2016/10/UBC_logo.png\" width=50>";
         $user = $qreq->user();
         echo "<body";
         if ($id) {
@@ -4612,10 +4616,11 @@ class Conf {
             }
         }
 
+
         // site header
         if ($id === "home") {
             echo '<div id="h-site" class="header-site-home">',
-                '<h1><a class="q" href="', $this->hoturl("index", ["cap" => null]),
+                '<h1> <a class="q" href="', $this->hoturl("index", ["cap" => null]),
                 '">', htmlspecialchars($this->short_name), '</a></h1></div>';
         } else {
             echo '<div id="h-site" class="header-site-page">',
