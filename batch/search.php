@@ -68,7 +68,7 @@ class Search_Batch {
 
     static function help() {
         fwrite(STDOUT, "Usage: php batch/search.php [-n CONFID] [-t COLLECTION] [-f FIELD]+ [QUERY...]
-Output a CSV file containing the FIELDs for the papers matching QUERY.
+Output a CSV file containing the FIELDs for the applications matching QUERY.
 
 Options include:
   -t, --type COLLECTION  Search COLLECTION “s” (submitted) or “all” [s].

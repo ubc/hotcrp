@@ -144,7 +144,7 @@ class Mail_Page {
             && $this->recip->has_paper_ids()
             && empty($this->recip->paper_ids())
             && !isset($this->qreq->recheck)) {
-            $this->recip->error_at("q", "<0>No papers match that search");
+            $this->recip->error_at("q", "<0>No applications match that search");
             $this->recip->set_paper_ids(null);
             unset($this->qreq->check, $this->qreq->send);
         }
@@ -180,9 +180,9 @@ class Mail_Page {
 <dt><code>%URL%</code></dt>
     <dd>Site URL.</dd>
 <dt><code>%NUMSUBMITTED%</code></dt>
-    <dd>Number of papers submitted.</dd>
+    <dd>Number of applications submitted.</dd>
 <dt><code>%NUMACCEPTED%</code></dt>
-    <dd>Number of papers accepted.</dd>
+    <dd>Number of applications accepted.</dd>
 <dt><code>%NAME%</code></dt>
     <dd>Full name of recipient.</dd>
 <dt><code>%FIRST%</code>, <code>%LAST%</code></dt>
@@ -193,13 +193,13 @@ class Mail_Page {
     <dd>Reviewing deadline appropriate for recipient.</dd>
 </dl><dl class="ctelt">
 <dt><code>%NUMBER%</code></dt>
-    <dd>Paper number relevant for mail.</dd>
+    <dd>Application number relevant for mail.</dd>
 <dt><code>%TITLE%</code></dt>
-    <dd>Paper title.</dd>
+    <dd>Application title.</dd>
 <dt><code>%TITLEHINT%</code></dt>
-    <dd>First couple words of paper title (useful for mail subject).</dd>
+    <dd>First couple words of application title (useful for mail subject).</dd>
 <dt><code>%OPT(AUTHORS)%</code></dt>
-    <dd>Paper authors (if recipient is allowed to see the authors).</dd>
+    <dd>Application authors (if recipient is allowed to see the authors).</dd>
 ';
 
         $opts = array_filter($this->conf->options()->normal(), function ($o) {
@@ -215,20 +215,20 @@ class Mail_Page {
         });
         if (!empty($opts)) {
             echo '<dt><code>%', htmlspecialchars($opts[0]->search_keyword()), '%</code></dt>
-    <dd>Value of paper’s “', $opts[0]->title_html(), '” submission field.';
+    <dd>Value of application’s “', $opts[0]->title_html(), '” submission field.';
             if (count($opts) > 1) {
                 echo ' Also ', join(", ", array_map(function ($o) {
                     return '<code>%' . htmlspecialchars($o->search_keyword()) . '%</code>';
                 }, array_slice($opts, 1))), '.';
             }
             echo "</dd>\n<dt><code>%IF(", htmlspecialchars($opts[0]->search_keyword()), ')%...%ENDIF%</code></dt>
-    <dd>Include text if paper has a “', $opts[0]->title_html(), "” submission field.</dd>\n";
+    <dd>Include text if application has a “', $opts[0]->title_html(), "” submission field.</dd>\n";
         }
         echo '</dl><dl class="ctelt">
 <dt><code>%REVIEWS%</code></dt>
-    <dd>Pretty-printed paper reviews.</dd>
+    <dd>Pretty-printed application reviews.</dd>
 <dt><code>%COMMENTS%</code></dt>
-    <dd>Pretty-printed paper comments, if any.</dd>
+    <dd>Pretty-printed application comments, if any.</dd>
 <dt><code>%COMMENTS(<i>tag</i>)%</code></dt>
     <dd>Comments tagged #<code><i>tag</i></code>, if any.</dd>
 </dl><dl class="ctelt">
@@ -242,9 +242,9 @@ class Mail_Page {
     <dd>Shepherd email, if any.</dd>
 </dl><dl class="ctelt">
 <dt><code>%IF(#<i>tag</i>)%...%ENDIF%</code></dt>
-    <dd>Include text if paper has tag <code><i>tag</i></code>.</dd>
+    <dd>Include text if application has tag <code><i>tag</i></code>.</dd>
 <dt><code>%TAGVALUE(<i>tag</i>)%</code></dt>
-    <dd>Value of paper’s <code><i>tag</i></code>.</dd>
+    <dd>Value of application’s <code><i>tag</i></code>.</dd>
 </dl>
 </div></div>';
     }
@@ -287,7 +287,7 @@ class Mail_Page {
                 Ht::hidden("has_plimit", 1),
                 Ht::checkbox("plimit", 1, !!$this->qreq->plimit, ["id" => "plimit", "class" => "uich js-mail-recipients"]),
                 '</span>',
-                '<label for="plimit">Choose papers<span class="fx8">:</span></label>';
+                '<label for="plimit">Choose applications<span class="fx8">:</span></label>';
         } else {
             echo '<div class="fx9">',
                 Ht::hidden("has_plimit", 1),
@@ -301,12 +301,12 @@ class Mail_Page {
                 $this->recip->append_item_at("q", $mi);
             }
             if ($plist->is_empty()) {
-                $this->recip->warning_at("q", "<0>No papers match that search.");
+                $this->recip->warning_at("q", "<0>No applications match that search.");
             }
         }
         echo '<div class="', $this->recip->control_class("q", "fx8 mt-1 d-flex"), '">';
         if (!$this->viewer->privChair) {
-            echo '<label for="q" class="mr-2">Papers:</label>';
+            echo '<label for="q" class="mr-2">Applications:</label>';
         }
         echo Ht::entry("q", (string) $this->qreq->q, [
                 "placeholder" => "(All)", "spellcheck" => false,

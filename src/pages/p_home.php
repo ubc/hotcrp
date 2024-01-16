@@ -170,7 +170,7 @@ class Home_Page {
         assert($user->conf->time_all_author_view_decision());
         if ($user->conf->time_all_author_view_decision()) {
             list($n, $nyes) = $user->conf->count_submitted_accepted();
-            echo '<li>', $user->conf->_("%d papers accepted out of %d submitted.", $nyes, $n), '</li>';
+            echo '<li>', $user->conf->_("%d applications accepted out of %d submitted.", $nyes, $n), '</li>';
         }
     }
 
@@ -210,7 +210,7 @@ class Home_Page {
             Ht::form($this->conf->hoturl("search"), ["method" => "get", "class" => "form-basic-search"]),
             Ht::entry("q", (string) $qreq->q, [
                 "id" => "homeq", "size" => 32,
-                "title" => "Enter paper numbers or search terms",
+                "title" => "Enter application numbers or search terms",
                 "class" => "papersearch need-suggest flex-grow-1 mb-1",
                 "placeholder" => "(All)",
                 "aria-labelledby" => "homesearch-label",
@@ -376,9 +376,9 @@ class Home_Page {
             }
         }
         if ($user->isPC && $user->can_review_any()) {
-            echo '  <span class="hint">As a PC member, you may review <a href="', $conf->hoturl("search", "q=&amp;t=s"), "\">any submitted paper</a>.</span><br>\n";
+            echo '  <span class="hint">As a PC member, you may review <a href="', $conf->hoturl("search", "q=&amp;t=s"), "\">any submitted application</a>.</span><br>\n";
         } else if ($user->privChair) {
-            echo '  <span class="hint">As an administrator, you may review <a href="', $conf->hoturl("search", "q=&amp;t=s"), "\">any submitted paper</a>.</span><br>\n";
+            echo '  <span class="hint">As an administrator, you may review <a href="', $conf->hoturl("search", "q=&amp;t=s"), "\">any submitted application</a>.</span><br>\n";
         }
 
         if ($has_rinfo) {
@@ -625,7 +625,7 @@ class Home_Page {
             if ($conf->time_after_setting("final_soft") && $plist->has("need_final")) {
                 $deadlines[] = "<strong class=\"overdue\">Final versions are overdue.</strong> They were requested by {$d}.";
             } else if ($d) {
-                $deadlines[] = "Submit final versions of your accepted papers by {$d}.";
+                $deadlines[] = "Submit final versions of your accepted applications by {$d}.";
             }
         }
         if (!empty($deadlines)) {

@@ -84,7 +84,7 @@ class Paper_Page {
         $aset = new AssignmentSet($this->user);
         $aset->override_conflicts();
         $aset->enable_papers($this->prow);
-        $aset->parse("paper,action,withdraw reason\n{$this->prow->paperId},withdraw," . CsvGenerator::quote($reason));
+        $aset->parse("application,action,withdraw reason\n{$this->prow->paperId},withdraw," . CsvGenerator::quote($reason));
         if (!$aset->execute()) {
             error_log("{$this->conf->dbname}: withdraw #{$this->prow->paperId} failure: " . json_encode($aset->json_result()));
         }
@@ -100,7 +100,7 @@ class Paper_Page {
         $aset = new AssignmentSet($this->user);
         $aset->override_conflicts();
         $aset->enable_papers($this->prow);
-        $aset->parse("paper,action\n{$this->prow->paperId},revive");
+        $aset->parse("application,action\n{$this->prow->paperId},revive");
         if (!$aset->execute()) {
             error_log("{$this->conf->dbname}: revive #{$this->prow->paperId} failure: " . json_encode($aset->json_result()));
         }

@@ -460,7 +460,7 @@ class Profile_Page {
                    && !empty($tracks->soleAuthor)) {
             $this->conf->feedback_msg([
                 MessageItem::error("<5>This account can’t be deleted because it is sole contact for " . UserStatus::render_paper_link($this->conf, $tracks->soleAuthor)),
-                MessageItem::inform("<0>You will be able to delete the account after deleting those papers or adding additional paper contacts.")
+                MessageItem::inform("<0>You will be able to delete the account after deleting those applications or adding additional application contacts.")
             ]);
         } else {
             $this->conf->q("insert into DeletedContactInfo set contactId=?, firstName=?, lastName=?, unaccentedName=?, email=?, affiliation=?", $this->user->contactId, $this->user->firstName, $this->user->lastName, $this->user->unaccentedName, $this->user->email, $this->user->affiliation);
@@ -472,7 +472,7 @@ class Profile_Page {
             // delete twiddle tags
             $assigner = new AssignmentSet($this->viewer);
             $assigner->override_conflicts();
-            $assigner->parse("paper,tag\nall,{$this->user->contactId}~all#clear\n");
+            $assigner->parse("application,tag\nall,{$this->user->contactId}~all#clear\n");
             $assigner->execute();
             // clear caches
             if ($this->user->isPC || $this->user->privChair) {

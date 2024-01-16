@@ -13,9 +13,9 @@ search. Some hints for PC members and chairs:</p>
  <a href=\"#quicklinks\">quicksearch</a> box, this search will jump to #12 directly.</li>
 <li>", $hth->help_link("Search keywords", "keywords"), "
  let you search specific fields, review scores, and more.</li>
-<li>Use <a href=\"#quicklinks\">quicklinks</a> on paper pages to navigate
+<li>Use <a href=\"#quicklinks\">quicklinks</a> on application pages to navigate
  through search results. Typing <code>j</code> and <code>k</code> also goes
- from paper to paper.</li>
+ from application to application.</li>
 <li>On list pages, shift-click checkboxes to
  select ranges of submissions.</li>
 </ul>";
@@ -56,32 +56,32 @@ titles.”  Keywords are listed in the ", $hth->help_link("search keywords refer
 
     echo $hth->subhead("Search results");
     echo "
-<p>Click on a paper number or title to jump to that paper.
-Search matches are <span class=\"match\">highlighted</span> on paper screens.
-Once on a paper screen use <a href=\"#quicklinks\">quicklinks</a>
+<p>Click on a application number or title to jump to that application.
+Search matches are <span class=\"match\">highlighted</span> on application screens.
+Once on a application screen use <a href=\"#quicklinks\">quicklinks</a>
 to navigate through the rest of the search matches.</p>
 
-<p>Underneath the paper list is the action area:</p>
+<p>Underneath the application list is the action area:</p>
 
 " . Ht::img("exsearchaction.png", "[Search action area]") . "<br />
 
-<p>Use the checkboxes to select some papers, then choose an action.
+<p>Use the checkboxes to select some applications, then choose an action.
 You can:</p>
 
 <ul>
-<li>Download a <code>.zip</code> file with the selected papers.</li>
-<li>Download all reviews for the selected papers.</li>
+<li>Download a <code>.zip</code> file with the selected applications.</li>
+<li>Download all reviews for the selected applications.</li>
 <li>Download tab-separated text files with authors, PC
  conflicts, review scores, and so forth (some options chairs only).</li>
 <li>Add, remove, and define ", $hth->help_link("tags", "tags"), ".</li>
 <li>Assign reviewers and mark conflicts (chairs only).</li>
 <li>Set decisions (chairs only).</li>
-<li>Send mail to paper authors or reviewers (chairs only).</li>
+<li>Send mail to application authors or reviewers (chairs only).</li>
 </ul>
 
-<p>Select papers one by one, select in groups by shift-clicking
+<p>Select applications one by one, select in groups by shift-clicking
 the checkboxes, or use the “select all” link.
-The easiest way to tag a set of papers is
+The easiest way to tag a set of applications is
 to enter their numbers in the search box, search, “select all,” and add the
 tag.</p>";
 
@@ -90,13 +90,13 @@ tag.</p>";
 <p>Most screens have a quicksearch box in the upper right corner:<br />
 " . Ht::img("quicksearchex.png", "[Quicksearch box]") . "<br />
 This box supports the full search syntax.  Enter
-a paper number, or search terms that match exactly
-one paper, to go directly to that paper.</p>
+a application number, or search terms that match exactly
+one application, to go directly to that application.</p>
 
-<p>Paper screens have quicklinks that step through search results:<br />
+<p>Application screens have quicklinks that step through search results:<br />
 " . Ht::img("pageresultsex.png", "[Quicklinks]") . "<br />
-Click on the search description (here, “Submitted papers search”) to return
+Click on the search description (here, “Submitted applications search”) to return
 to the search results.  On many pages, you can press “<code>j</code>” or
-“<code>k</code>” to go to the previous or next paper in the list.</p>";
+“<code>k</code>” to go to the previous or next application in the list.</p>";
     }
 }

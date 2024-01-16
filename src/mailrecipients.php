@@ -144,8 +144,8 @@ class MailRecipients extends MessageSet {
         if ($user->is_manager()) {
             $this->recipt_default_message = "authors";
             $hide = !$this->conf->has_any_submitted();
-            $this->defsel("s", "Contact authors of submitted papers", $hide ? self::F_HIDE : 0);
-            $this->defsel("unsub", "Contact authors of unsubmitted papers");
+            $this->defsel("s", "Contact authors of submitted applications", $hide ? self::F_HIDE : 0);
+            $this->defsel("unsub", "Contact authors of unsubmitted applications");
             $this->defsel("au", "All contact authors");
 
             $this->dcounts();
@@ -156,10 +156,10 @@ class MailRecipients extends MessageSet {
                     $this->defsel("dec:{$dec->name}", "Contact authors of " . $dec->name_as(5) . " papers", $hide ? self::F_HIDE : 0);
                 }
             }
-            $this->defsel("dec:yes", "Contact authors of accept-class papers", $this->_has_dt[2] ? 0 : self::F_HIDE);
-            $this->defsel("dec:no", "Contact authors of reject-class papers", $this->_has_dt[0] ? 0 : self::F_HIDE);
-            $this->defsel("dec:none", "Contact authors of undecided papers", $this->_has_dt[1] && ($this->_has_dt[0] || $this->_has_dt[2]) ? 0 : self::F_HIDE);
-            $this->defsel("dec:any", "Contact authors of decided papers", self::F_HIDE);
+            $this->defsel("dec:yes", "Contact authors of accept-class applications", $this->_has_dt[2] ? 0 : self::F_HIDE);
+            $this->defsel("dec:no", "Contact authors of reject-class applications", $this->_has_dt[0] ? 0 : self::F_HIDE);
+            $this->defsel("dec:none", "Contact authors of undecided applications", $this->_has_dt[1] && ($this->_has_dt[0] || $this->_has_dt[2]) ? 0 : self::F_HIDE);
+            $this->defsel("dec:any", "Contact authors of decided applications", self::F_HIDE);
             $this->defsel("bydec_group_end", null, self::F_GROUP);
 
             $this->recipt_default_message = "reviewers";

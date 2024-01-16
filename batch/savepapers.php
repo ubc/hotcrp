@@ -293,11 +293,11 @@ class SavePapers_Batch {
             "ignore-errors Don’t exit after first error",
             "disable-users,disable Disable all newly created users",
             "ignore-pid Ignore `pid` JSON elements",
-            "match-title Match papers by title if no `pid`",
+            "match-title Match applications by title if no `pid`",
             "add-topics Add all referenced topics to conference",
             "no-log Don’t modify the action log"
         )->helpopt("help")
-         ->description("Change papers as specified by FILE, a JSON object or array of objects.
+         ->description("Change applications as specified by FILE, a JSON object or array of objects.
 Usage: php batch/savepapers.php [OPTIONS] [FILE]")
          ->maxarg(1)
          ->parse($argv);

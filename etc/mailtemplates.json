@@ -725,7 +725,7 @@
 			"* Title: %TITLE%\n",
 			"* Author(s): %OPT(AUTHORS)%\n",
 			"* Site: %URL(paper, p=%NUMBER%, %AUTHORVIEWCAPABILITY%)%\n\n",
-			"%NUMACCEPTED% papers were accepted out of %NUMSUBMITTED% submissions.\n\n",
+			"%NUMACCEPTED% applications were accepted out of %NUMSUBMITTED% submissions.\n\n",
 			"Visit the submission site for reviews, comments, and related information. Reviews and comments are also included below.\n\n",
 			"Contact %ADMIN% with any questions or concerns.\n\n",
 			"%SIGNATURE%\n\n",

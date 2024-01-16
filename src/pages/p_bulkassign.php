@@ -158,11 +158,11 @@ performed. Supported actions include:</p>";
 
         BulkAssign_HelpTopic::print_actions($this->user);
 
-        echo "<p class=\"w-text\">For example, this file clears existing R1 review assignments for papers
+        echo "<p class=\"w-text\">For example, this file clears existing R1 review assignments for applications
 tagged #redo, then assigns two primary reviews for submission #1 and one
 secondary review for submission #2:</p>
 
-<pre class=\"sample\">paper,action,email,round
+<pre class=\"sample\">application,action,email,round
 #redo,clearreview,all,R1
 1,primary,man@alice.org
 2,secondary,slugger@manny.com
@@ -231,7 +231,7 @@ secondary review for submission #2:</p>
 Assignment methods:
 <ul><li><a href="', $conf->hoturl("autoassign"), '">Automatic</a></li>
  <li><a href="', $conf->hoturl("manualassign"), '">Manual by PC member</a></li>
- <li><a href="', $conf->hoturl("assign"), '">Manual by paper</a></li>
+ <li><a href="', $conf->hoturl("assign"), '">Manual by application</a></li>
  <li><a href="', $conf->hoturl("conflictassign"), '">Potential conflicts</a></li>
  <li><a href="', $conf->hoturl("bulkassign"), '" class="q"><strong>Bulk update</strong></a></li>
 </ul>

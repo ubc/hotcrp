@@ -102,13 +102,13 @@ class ConfInvariants {
         // `no_papersub` === no submitted papers
         $any = $this->invariantq("select paperId from Paper where timeSubmitted>0 limit 1");
         if ($any !== !($this->conf->setting("no_papersub") ?? false)) {
-            $this->invariant_error("no_papersub", "paper #{0} is submitted but no_papersub is true", "no paper is submitted but no_papersub is false");
+            $this->invariant_error("no_papersub", "application #{0} is submitted but no_papersub is true", "no application is submitted but no_papersub is false");
         }
 
         // `paperacc` === any accepted submitted papers
         $any = $this->invariantq("select paperId from Paper where outcome>0 and timeSubmitted>0 limit 1");
         if ($any !== !!($this->conf->setting("paperacc") ?? false)) {
-            $this->invariant_error("paperacc", "paper #{0} is accepted but paperacc is false", "no paper is accepted but paperacc is true");
+            $this->invariant_error("paperacc", "application #{0} is accepted but paperacc is false", "no application is accepted but paperacc is true");
         }
 
         // `rev_tokens` === any papers with reviewToken
@@ -155,7 +155,7 @@ class ConfInvariants {
         // submitted xor withdrawn
         $any = $this->invariantq("select paperId from Paper where timeSubmitted>0 and timeWithdrawn>0 limit 1");
         if ($any) {
-            $this->invariant_error("submitted_withdrawn", "paper #{0} is both submitted and withdrawn");
+            $this->invariant_error("submitted_withdrawn", "application #{0} is both submitted and withdrawn");
         }
 
         // `dataOverflow` is JSON
@@ -190,7 +190,7 @@ class ConfInvariants {
         // no unknown decisions
         $any = $this->invariantq("select paperId, outcome from Paper where outcome?A", $this->conf->decision_set()->ids());
         if ($any) {
-            $this->invariant_error("unknown_decision", "paper #{0} with unknown outcome #{1}");
+            $this->invariant_error("unknown_decision", "application #{0} with unknown outcome #{1}");
         }
 
         return $this;
@@ -364,14 +364,14 @@ class ConfInvariants {
             assert(count($this->irow) === 10);
             for ($n = 2; $n !== 6 && $this->irow[$n] === $this->irow[$n + 4]; ++$n) {
             }
-            $this->invariant_error("paper_denormalization", "bad Paper denormalization, document #{0}.{1} ({{$n}}!={" . ($n+4) . "})");
+            $this->invariant_error("paper_denormalization", "bad Application denormalization, document #{0}.{1} ({{$n}}!={" . ($n+4) . "})");
         }
         $any = $this->invariantq("select p.paperId, ps.paperStorageId, p.sha1, p.size, p.mimetype, p.timestamp, ps.sha1, ps.size, ps.mimetype, ps.timestamp from Paper p join PaperStorage ps on (ps.paperStorageId=p.finalPaperStorageId) where p.finalPaperStorageId>1 and (p.sha1!=ps.sha1 or p.size!=ps.size or p.mimetype!=ps.mimetype or p.timestamp!=ps.timestamp) limit 1");
         if ($any) {
             assert(count($this->irow) === 10);
             for ($n = 2; $n !== 6 && $this->irow[$n] === $this->irow[$n + 4]; ++$n) {
             }
-            $this->invariant_error("paper_denormalization", "bad Paper final denormalization, document #{0}.{1} ({{$n}}!={" . ($n+4) . "})");
+            $this->invariant_error("paper_denormalization", "bad Application final denormalization, document #{0}.{1} ({{$n}}!={" . ($n+4) . "})");
         }
 
         // filterType is never zero
@@ -505,7 +505,7 @@ class ConfInvariants {
         sort($pids);
         $any = $this->invariantq("select s.paperId, s.paperStorageId from PaperStorage s where s.paperStorageId?a and s.inactive limit 1", $pids);
         if ($any) {
-            $this->invariant_error("inactive", "paper {0} document {1} is inappropriately inactive");
+            $this->invariant_error("inactive", "application {0} document {1} is inappropriately inactive");
         }
 
         $oids = $nonempty_oids = [];
@@ -520,19 +520,19 @@ class ConfInvariants {
         if (!empty($oids)) {
             $any = $this->invariantq("select o.paperId, o.optionId, s.paperStorageId from PaperOption o join PaperStorage s on (s.paperStorageId=o.value and s.inactive and s.paperStorageId>1) where o.optionId?a limit 1", $oids);
             if ($any) {
-                $this->invariant_error("inactive", "paper {0} option {1} document {2} is inappropriately inactive");
+                $this->invariant_error("inactive", "application {0} option {1} document {2} is inappropriately inactive");
             }
 
             $any = $this->invariantq("select o.paperId, o.optionId, s.paperStorageId, s.paperId from PaperOption o join PaperStorage s on (s.paperStorageId=o.value and s.paperStorageId>1 and s.paperId!=o.paperId) where o.optionId?a limit 1", $oids);
             if ($any) {
-                $this->invariant_error("paper {0} option {1} document {2} belongs to different paper {3}");
+                $this->invariant_error("application {0} option {1} document {2} belongs to different application {3}");
             }
         }
 
         if (!empty($nonempty_oids)) {
             $any = $this->invariantq("select o.paperId, o.optionId from PaperOption o where o.optionId?a and o.value<=1 limit 1", $nonempty_oids);
             if ($any) {
-                $this->invariant_error("paper {0} option {1} links to empty document");
+                $this->invariant_error("application {0} option {1} links to empty document");
             }
         }
 

@@ -1479,7 +1479,7 @@ class AssignmentSet {
             $val = 1;
         }
         if (empty($npids) && $report_error) {
-            $this->astate->warning("<0>No papers match ‘{$pfield}’");
+            $this->astate->warning("<0>No applications match ‘{$pfield}’");
         }
 
         // Implement paper restriction

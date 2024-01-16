@@ -2028,7 +2028,7 @@ class PaperList {
             $this->_view_kanban = false;
         }
         if ($this->count === 0) {
-            return PaperListTableRender::make_error("No matching papers");
+            return PaperListTableRender::make_error("No matching applications");
         }
 
         // analyze `has`, including authors

@@ -197,7 +197,7 @@ class Signin_Page {
             }
             echo '<p class="is-warning"><span class="warning-mark"></span> ', $user->conf->_("You are already signed in as %s. Use this form to add another account to this browser session.", commajoin($links)), '</p>';
         }
-        if (($t = $user->conf->_("Sign in to submit or review papers.")) !== "") {
+        if (($t = $user->conf->_("Sign in to submit or review applications.")) !== "") {
             echo '<p class="mb-5">', $t, '</p>';
         }
     }

@@ -487,7 +487,7 @@
     },
     {
         "name": "review_self_assign", "storage": "pcrev_any",
-        "title": "PC can review any paper",
+        "title": "PC can review any application",
         "type": "checkbox", "initial_value": 1
     },
     {
@@ -847,7 +847,7 @@
     },
     {
         "name_pattern": "format/$/papersize",
-        "title": "PDF format checker paper size",
+        "title": "PDF format checker application size",
         "type": "string", "size": 18, "placeholder": "any"
     },
     {
@@ -959,7 +959,7 @@
     },
     {
         "name": "tag_visibility_conflict", "storage": "tag_seeall",
-        "title": "PC can see tags for conflicted papers",
+        "title": "PC can see tags for conflicted applications",
         "type": "checkbox"
     },
     {

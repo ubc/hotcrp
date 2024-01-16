@@ -304,7 +304,7 @@ class ReviewCSV_Batch {
             "no-score Omit score fields",
             "no-header Omit CSV header",
             "format: =FMT Only output text fields with format FMT"
-        )->description("Output CSV containing all reviews for papers matching QUERY.
+        )->description("Output CSV containing all reviews for applications matching QUERY.
 Usage: php batch/reviewcsv.php [-acx] [QUERY...]")
          ->helpopt("help")
          ->parse($argv);

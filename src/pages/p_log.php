@@ -56,14 +56,14 @@ class Log_Page {
             $w = [];
             foreach ($pids as $p) {
                 $w[] = "paperId={$p}";
-                $w[] = "action like '%(papers% {$p},%'";
-                $w[] = "action like '%(papers% {$p})%'";
+                $w[] = "action like '%(applications% {$p},%'";
+                $w[] = "action like '%(applications% {$p})%'";
             }
             $this->lef_clauses[] = "(" . join(" or ", $w) . ")";
             $this->include_pids = array_flip($pids);
         } else {
             if (!$search->has_problem()) {
-                $this->ms->warning_at($field, "No papers match that search.");
+                $this->ms->warning_at($field, "No applications match that search.");
             }
             $this->lef_clauses[] = "false";
         }
@@ -200,7 +200,7 @@ class Log_Page {
         if ($narrow) {
             $headers[] = "roles";
         }
-        array_push($headers, "affected_email", "via", $narrow ? "paper" : "papers", "action");
+        array_push($headers, "affected_email", "via", $narrow ? "application" : "applications", "action");
         $csvg->select($headers);
         foreach ($leg->page_rows(1) as $row) {
             $date = date("Y-m-d H:i:s O", (int) $row->timestamp);
@@ -284,7 +284,7 @@ class Log_Page {
             $this->ms->feedback_html_at("q"),
             Ht::entry("q", $this->qreq->q, ["id" => "q", "size" => 40]),
             '</div></div><div class="', $this->ms->control_class("p", "entryi medium"),
-            '"><label for="p">Concerning paper(s)</label><div class="entry">',
+            '"><label for="p">Concerning application(s)</label><div class="entry">',
             $this->ms->feedback_html_at("p"),
             Ht::entry("p", $this->qreq->p, ["id" => "p", "class" => "need-suggest papersearch", "size" => 40, "spellcheck" => false]),
             '</div></div><div class="', $this->ms->control_class("u", "entryi medium"),
@@ -453,7 +453,7 @@ class Log_Page {
         if (!$this->viewer->privChair || !empty($this->exclude_pids)) {
             echo '<div class="msgs-wide">';
             if (!$this->viewer->privChair) {
-                $conf->feedback_msg(new MessageItem(null, "<0>Only showing your actions, plus entries for papers you administer", MessageSet::MARKED_NOTE));
+                $conf->feedback_msg(new MessageItem(null, "<0>Only showing your actions, plus entries for applications you administer", MessageSet::MARKED_NOTE));
             } else if (!empty($this->exclude_pids)
                        && (!$this->include_pids || array_intersect_key($this->include_pids, $this->exclude_pids))
                        && array_keys($this->exclude_pids) != array_keys($this->viewer->hidden_papers ? : [])) {
@@ -469,7 +469,7 @@ class Log_Page {
                 if ($this->qreq->forceShow) { // XXX never true
                     $conf->feedback_msg(new MessageItem(null, "<5>Showing all entries (" . Ht::link("unprivileged view", $conf->selfurl($this->qreq, $req + ["forceShow" => null])) . ")", MessageSet::MARKED_NOTE));
                 } else {
-                    $conf->feedback_msg(new MessageItem(null, "<5>Not showing entries for " . Ht::link("conflicted administered papers", $conf->hoturl("search", "q=" . join("+", array_keys($this->exclude_pids)))), MessageSet::MARKED_NOTE));
+                    $conf->feedback_msg(new MessageItem(null, "<5>Not showing entries for " . Ht::link("conflicted administered applications", $conf->hoturl("search", "q=" . join("+", array_keys($this->exclude_pids)))), MessageSet::MARKED_NOTE));
                 }
             }
             echo '</div>';
@@ -542,11 +542,11 @@ class Log_Page {
             $act = $m[4];
         } else if (substr($act, 0, 7) === "Comment"
                    && preg_match('/\AComment (\d+)(.*)\z/s', $act, $m)) {
-            $at = "<a href=\"" . $conf->hoturl("paper", "p={$row->paperId}#cid{$m[1]}") . "\">Comment " . $m[1] . "</a>";
+            $at = "<a href=\"" . $conf->hoturl("application", "p={$row->paperId}#cid{$m[1]}") . "\">Comment " . $m[1] . "</a>";
             $act = $m[2];
         } else if (substr($act, 0, 8) === "Response"
                    && preg_match('/\AResponse (\d+)(.*)\z/s', $act, $m)) {
-            $at = "<a href=\"" . $conf->hoturl("paper", "p={$row->paperId}#cid{$m[1]}") . "\">Response " . $m[1] . "</a>";
+            $at = "<a href=\"" . $conf->hoturl("application", "p={$row->paperId}#cid{$m[1]}") . "\">Response " . $m[1] . "</a>";
             $act = $m[2];
         } else if (strpos($act, " mail ") !== false
                    && preg_match('/\A(Sending|Sent|Account was sent) mail #(\d+)(.*)\z/s', $act, $m)) {
@@ -566,7 +566,7 @@ class Log_Page {
                     . '</a>' . substr($word, $hash);
             }
         } else if ($row->paperId > 0
-                   && str_starts_with($act, "Paper ")
+                   && str_starts_with($act, "Application ")
                    && ($colon = strpos($act, ":")) !== false
                    && $this->document_regexp !== "") {
             $at = substr($act, 0, $colon);
@@ -581,11 +581,11 @@ class Log_Page {
         $at .= htmlspecialchars($act);
         if (($pids = $leg->paper_ids($row))) {
             if (count($pids) === 1)
-                $at .= ' (<a class="track" href="' . $conf->hoturl("paper", "p=" . $pids[0]) . '">paper ' . $pids[0] . "</a>)";
+                $at .= ' (<a class="track" href="' . $conf->hoturl("application", "p=" . $pids[0]) . '">application ' . $pids[0] . "</a>)";
             else {
-                $at .= ' (<a href="' . $conf->hoturl("search", "t=all&amp;q=" . join("+", $pids)) . '">papers</a>';
+                $at .= ' (<a href="' . $conf->hoturl("search", "t=all&amp;q=" . join("+", $pids)) . '">applications</a>';
                 foreach ($pids as $i => $p) {
-                    $at .= ($i ? ', ' : ' ') . '<a class="track" href="' . $conf->hoturl("paper", "p=" . $p) . '">' . $p . '</a>';
+                    $at .= ($i ? ', ' : ' ') . '<a class="track" href="' . $conf->hoturl("application", "p=" . $p) . '">' . $p . '</a>';
                 }
                 $at .= ')';
             }

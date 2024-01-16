@@ -93,7 +93,7 @@ class PaperJson_Batch {
             "t:,type: =COLLECTION Search COLLECTION ‘s’ or ‘all’ [submitted]",
             "1,single Output first matching paper rather than an array",
             "help,h"
-        )->description("Output a JSON file with papers matching SEARCH.
+        )->description("Output a JSON file with applications matching SEARCH.
 Usage: php batch/paperjson.php [-t all] [-1] [SEARCH...]")
          ->helpopt("help")
          ->parse($argv);

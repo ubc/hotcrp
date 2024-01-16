@@ -96,7 +96,7 @@ class Autoassign_Batch {
         }
         $pids = $srch->paper_ids();
         if (empty($pids)) {
-            throw new CommandLineException("No papers match that search");
+            throw new CommandLineException("No applications match that search");
         }
 
         if (empty($this->pcc)) {
@@ -159,8 +159,8 @@ class Autoassign_Batch {
             "config: !",
             "dry-run,d Do not perform assignment; output CSV instead.",
             "a:,autoassigner: =AA Use autoassigner AA.",
-            "q:,search: =QUERY Use papers matching QUERY.",
-            "all Search all papers (default is to search submitted papers).",
+            "q:,search: =QUERY Use applications matching QUERY.",
+            "all Search all applications (default is to search submitted applications).",
             "u[],user[] =USER Include users matching USER (`-USER` excludes).",
             "c:,count: {n} =N Set `count` parameter to N.",
             "t:,type: =TYPE Set `type`/`rtype` parameter to TYPE.",

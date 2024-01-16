@@ -35,7 +35,7 @@ $Opt["dbName"] = "FIXME";
 //                   number. Examples: "SIGCOMM 2007", "HotNets V".
 //   longName        Longer name of the conference. Example: "ACM SIGCOMM
 //                   2007 Conference".
-//   downloadPrefix  Prefix for downloaded files, such as papers; should
+//   downloadPrefix  Prefix for downloaded files, such as applications; should
 //                   end in a dash. Example: "hotnets5-". Defaults to
 //                   $Opt["dbName"] plus a dash.
 //   paperSite       [OPTIONAL] URL for this HotCRP installation. Used in
@@ -111,7 +111,7 @@ $Opt["emailSender"] = null;
 
 // PAPER STORAGE
 //
-//   docstore        Set to true to serve papers and other downloads from a
+//   docstore        Set to true to serve applications and other downloads from a
 //                   cache on the local filesystem. By default this cache is
 //                   created in the "docs" directory. You can also set
 //                   $Opt["docstore"] to a directory name.
@@ -121,7 +121,7 @@ $Opt["emailSender"] = null;
 //   s3_bucket       Amazon S3 bucket name to store paper submissions.
 //   s3_key          Amazon AWS access key ID (used for S3).
 //   s3_secret       Amazon AWS secret access key (used for S3).
-//   dbNoPapers      Set to true to not store papers in the database.
+//   dbNoPapers      Set to true to not store applications in the database.
 //                   Requires filestore, S3 storage, or both.
 
 
@@ -176,7 +176,7 @@ $Opt["emailSender"] = null;
 //   strictJavascript If true, send Javascript with "use strict".
 //   hideManager     If set, PC members are not shown paper managers.
 //   disableCapabilities If set, emails to authors will not have a
-//                   token enabling them to view their papers without logging in.
+//                   token enabling them to view their applications without logging in.
 
 $Opt["smartScoreCompare"] = true;
 

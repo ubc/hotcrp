@@ -98,7 +98,7 @@ class ListAction {
         if (!$uf || !Conf::xt_resolve_require($uf) || !is_string($uf->function)) {
             return JsonResult::make_error(404, "<0>Action not found");
         } else if (($uf->paper ?? false) && $selection->is_empty()) {
-            return JsonResult::make_error(400, "<0>No papers selected");
+            return JsonResult::make_error(400, "<0>No applications selected");
         } else if ($uf->function[0] === "+") {
             $class = substr($uf->function, 1);
             /** @phan-suppress-next-line PhanTypeExpectedObjectOrClassName */
@@ -150,7 +150,7 @@ class ListAction {
                 $texts[] = [];
                 $texts[] = ["paper" => $prow->paperId,
                             "action" => "none",
-                            "title" => "You cannot override your conflict with this paper"];
+                            "title" => "You cannot override your conflict with this application"];
             } else {
                 $any_this_paper = false;
                 foreach ($prow->reviews_as_display() as $rrow) {

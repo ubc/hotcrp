@@ -46,7 +46,7 @@ class Banal_SettingParser extends SettingParser {
             Ht::hidden("format/{$ctr}/id", $id);
         $sv->print_checkbox("format/{$ctr}/active", "PDF format checker<span class=\"fx\">:</span>", ["class" => "uich js-foldup", "group_class" => "form-g has-fold " . ($open ? "foldo" : "foldc"), "group_open" => true]);
         echo '<div class="f-mcol mt-3 fx"><div class="flex-grow-0">';
-        $sv->print_entry_group("format/{$ctr}/papersize", "Paper size", [
+        $sv->print_entry_group("format/{$ctr}/papersize", "Application size", [
             "horizontal" => true,
             "readonly" => !$editable,
             "hint" => "Examples: “letter”, <span class=\"nw\">“21cm x 28cm”,</span> <span class=\"nw\">“letter OR A4”</span>"
@@ -123,7 +123,7 @@ class Banal_SettingParser extends SettingParser {
                 $errors .= "<tr><td>Stderr:&nbsp;</td><td><pre class=\"email\">" . htmlspecialchars($cf->banal_stderr) . "</pre></td></tr>";
             }
             $errors .= "<tr><td>Check:&nbsp;</td><td>" . $cf->full_feedback_html() . "</td></tr>";
-            $sv->warning_at(null, "<5>Running the automated paper checker on a sample PDF file produced unexpected results. You should disable it for now. <div id=\"foldbanal_warning\" class=\"foldc\">" . foldupbutton(0, "Checker output") . $errors . "</table></div></div>");
+            $sv->warning_at(null, "<5>Running the automated application checker on a sample PDF file produced unexpected results. You should disable it for now. <div id=\"foldbanal_warning\" class=\"foldc\">" . foldupbutton(0, "Checker output") . $errors . "</table></div></div>");
             if (($s1 == "warning" || $s1 == "error") && $e1_papersize) {
                 $sv->warning_at(null, "<5>(Try setting <code>\$Opt[\"banalZoom\"]</code> to 1.)");
             }
@@ -175,7 +175,7 @@ class Banal_SettingParser extends SettingParser {
                     if ($ss !== "" && ($d = FormatSpec::parse_dimen2($ss))) {
                         $cfs->papersize[] = $d;
                     } else if ($ss !== "") {
-                        $sv->error_at("format/{$ctr}/papersize", "<0>Invalid paper size");
+                        $sv->error_at("format/{$ctr}/papersize", "<0>Invalid application size");
                         $problem = true;
                         $sout = null;
                         break;
@@ -244,7 +244,7 @@ class Banal_SettingParser extends SettingParser {
                 if (preg_match('/^(.*\S)\s+mar(gins?)?/i', $s, $m)) {
                     $s = $m[1];
                     if (!$cfs->papersize || count($cfs->papersize) !== 1) {
-                        $sv->error_at("format/{$ctr}/papersize", "<0>You must specify a paper size as well as margins");
+                        $sv->error_at("format/{$ctr}/papersize", "<0>You must specify a application size as well as margins");
                         $sv->error_at("format/{$ctr}/textblock");
                         $problem = true;
                     } else {
