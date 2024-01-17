@@ -505,7 +505,7 @@ class Signin_Page {
                 self::bad_post_error($user, $qreq, "resetpassword");
             }
         } else if ($this->_reset_token) {
-            $this->ms()->error_at("resetcap", "This password reset code refers to a user who no longer exists. Either create a new account or contact the conference administrator.");
+            $this->ms()->error_at("resetcap", "This password reset code refers to a user who no longer exists. Either create a new account or contact the program administrator.");
         }
     }
     private function reset_valid_post_request(Contact $user, Qrequest $qreq) {

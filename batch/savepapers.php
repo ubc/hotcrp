@@ -294,7 +294,7 @@ class SavePapers_Batch {
             "disable-users,disable Disable all newly created users",
             "ignore-pid Ignore `pid` JSON elements",
             "match-title Match applications by title if no `pid`",
-            "add-topics Add all referenced topics to conference",
+            "add-topics Add all referenced topics to program",
             "no-log Don’t modify the action log"
         )->helpopt("help")
          ->description("Change applications as specified by FILE, a JSON object or array of objects.

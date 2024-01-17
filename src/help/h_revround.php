@@ -4,7 +4,7 @@
 
 class RevRound_HelpTopic {
     static function print(HelpRenderer $hth) {
-        echo "<p>Many conferences divide their review assignments into named <em>rounds</em>,
+        echo "<p>Many programs divide their review assignments into named <em>rounds</em>,
 such as “R1” or “lastround”.
 (We suggest very short names like “R1”.)
 Different review rounds can have different deadlines and can even have different fields on their review forms.

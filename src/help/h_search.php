@@ -33,7 +33,7 @@ try “-term”.  Or select ", $hth->hotlink("Advanced search", "search", "opt=1
 " and use “With <b>any</b> of the words” and “<b>Without</b> the words.”</p>
 
 <p>You can search several categories, depending on your role in the
-conference. Options include:</p>
+program. Options include:</p>
 <ul>
 <li><b>", PaperSearch::limit_description($hth->conf, "s"), "</b> &mdash; all submissions ready for review.</li>
 <li><b>", PaperSearch::limit_description($hth->conf, "a"), "</b> &mdash; submissions for which you’re a contact.</li>
@@ -43,7 +43,7 @@ conference. Options include:</p>
 </ul>
 
 <p>Search won’t show you information you aren’t supposed to see.  For example,
-authors can only search their own submissions, and if the conference used
+authors can only search their own submissions, and if the program used
 anonymous submission, then only the PC chairs can search by author.</p>
 
 <p>By default, search examines titles, abstracts, and authors. ",

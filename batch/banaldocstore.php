@@ -22,7 +22,7 @@ class BanalDocstore_Batch {
         $this->count = $arg["count"] ?? 10;
 
         if (!($dp = $this->conf->docstore())) {
-            throw new ErrorException("Conference has no document store");
+            throw new ErrorException("Program has no document store");
         }
         $matcher = new DocumentHashMatcher($arg["match"] ?? null);
         $matcher->set_extension(".pdf");

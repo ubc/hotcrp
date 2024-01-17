@@ -963,7 +963,7 @@ class ReviewValues extends MessageSet {
                 if (preg_match('/\A==\+==\s+(.*?)\s+(Paper Review(?: Form)?s?)\s*\z/', $line, $m)
                     && $m[1] != $this->conf->short_name) {
                     $this->check_garbage();
-                    $this->rmsg("confid", "<0>Ignoring review form, which appears to be for a different conference.", self::ERROR);
+                    $this->rmsg("confid", "<0>Ignoring review form, which appears to be for a different program.", self::ERROR);
                     $this->rmsg("confid", "<5>(If this message is in error, replace the line that reads “<code>" . htmlspecialchars(rtrim($line)) . "</code>” with “<code>==+== " . htmlspecialchars($this->conf->short_name) . " " . $m[2] . "</code>” and upload again.)", self::INFORM);
                     return false;
                 } else if (preg_match('/\A==\+== Begin Review/i', $line)) {

@@ -1547,7 +1547,7 @@ class UserStatus extends MessageSet {
             return;
         }
         $us->cs()->add_section_class("w-text fx1")->print_start_section("Topic interests");
-        echo '<p>Please indicate your interest in reviewing applications on these conference
+        echo '<p>Please indicate your interest in reviewing applications on these program
 topics. We use this information to help match applications to reviewers.</p>',
             Ht::hidden("has_ti", 1),
             $us->feedback_html_at("ti"),
@@ -1646,7 +1646,7 @@ topics. We use this information to help match applications to reviewers.</p>',
                 $p = "<p class=\"pt-1 mb-0\">Disabled accounts cannot sign in or view the site.";
             } else {
                 $klass = "flex-grow-1 disabled";
-                $p = "<p class=\"pt-1 mb-0 feedback is-warning\">Conference settings prevent this account from being enabled.";
+                $p = "<p class=\"pt-1 mb-0 feedback is-warning\">Program settings prevent this account from being enabled.";
             }
             echo Ht::button($disablement ? "Enable account" : "Disable account", [
                 "class" => $klass, "disabled" => $no_change

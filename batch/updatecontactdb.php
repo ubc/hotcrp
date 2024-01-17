@@ -49,7 +49,7 @@ class UpdateContactdb_Batch {
         $result = Dbl::ql($cdb, "select * from Conferences where `dbname`=?", $this->conf->dbname);
         $this->confrow = Dbl::fetch_first_object($result);
         if (!$this->confrow) {
-            throw new ErrorException("Conference is not recorded in contactdb");
+            throw new ErrorException("Program is not recorded in contactdb");
         }
         $this->cdb_confid = $this->confrow->confid = (int) $this->confrow->confid;
         $qf = $qv = [];
@@ -86,7 +86,7 @@ class UpdateContactdb_Batch {
     private function cdb() {
         $cdb = $this->try_cdb();
         if (!$cdb) {
-            throw new ErrorException("Conference has no contactdb");
+            throw new ErrorException("Program has no contactdb");
         }
         return $cdb;
     }
@@ -267,7 +267,7 @@ class UpdateContactdb_Batch {
             "collaborators",
             "authors",
             "V,verbose"
-        )->description("Update HotCRP contactdb for a conference.
+        )->description("Update HotCRP contactdb for a Program.
 Usage: php batch/updatecontactdb.php [-n CONFID | --config CONFIG] [--papers] [--users] [--collaborators] [--authors]")
          ->helpopt("help")
          ->maxarg(0)

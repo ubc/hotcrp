@@ -5,7 +5,7 @@
 class VoteTags_HelpTopic {
     static function print(HelpRenderer $hth) {
         $votetag = $hth->example_tag("allotment");
-        echo "<p>Some conferences have PC members vote for applications. In
+        echo "<p>Some programs have PC members vote for applications. In
 <em>allotment voting</em>, each PC member is assigned a vote allotment to
 distribute among unconflicted applications; a PC member might assign one vote to one
 submission and five to another. In <em>approval voting</em>, each PC member

@@ -243,7 +243,7 @@ class PermissionProblem extends Exception
             $ms[] = $this->conf->_("<0>“Override deadlines” can override this restriction.");
         }
         if ($this->_a["blindSubmission"] ?? false) {
-            $ms[] = $this->conf->_("<0>Submission to this conference is blind.");
+            $ms[] = $this->conf->_("<0>Submission to this program is blind.");
         }
         if ($this->_a["author"] ?? false) {
             $ms[] = $this->conf->_("<0>You aren’t a contact for #{}.", $paperId);

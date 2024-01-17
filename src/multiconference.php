@@ -169,9 +169,9 @@ class Multiconference {
     /** @return string */
     static private function nonexistence_error() {
         if (PHP_SAPI === "cli") {
-            return "Conference not specified. Use `-n CONFID` to specify a conference.";
+            return "Program not specified. Use `-n CONFID` to specify a program.";
         } else {
-            return "Conference not specified.";
+            return "Program not specified.";
         }
     }
 
@@ -208,7 +208,7 @@ class Multiconference {
                     }
                 }, $missing));
             } else if ($invalid) {
-                $errors[] = "Invalid conference specified with `-n`.";
+                $errors[] = "Invalid program specified with `-n`.";
             } else if ($multiconference && $confid === "__nonexistent__") {
                 $errors[] = self::nonexistence_error();
             } else {
@@ -218,7 +218,7 @@ class Multiconference {
             if (!($Opt["loaded"] ?? null)) {
                 $main_options = defined("HOTCRP_OPTIONS") ? HOTCRP_OPTIONS : SiteLoader::$root . "/conf/options.php";
                 if (!file_exists($main_options)) {
-                    $errors[] = "HotCRP has been installed, but not yet configured. You must run `lib/createdb.sh` to create a database for your conference. See `README.md` for further guidance.";
+                    $errors[] = "HotCRP has been installed, but not yet configured. You must run `lib/createdb.sh` to create a database for your program. See `README.md` for further guidance.";
                 } else {
                     $errors[] = "HotCRP was unable to load. A system administrator must fix this problem.";
                 }
@@ -226,7 +226,7 @@ class Multiconference {
                 $errors[] = self::nonexistence_error();
             } else {
                 if ($multiconference) {
-                    $errors[] = "The “{$confid}” conference does not exist. Check your URL to make sure you spelled it correctly.";
+                    $errors[] = "The “{$confid}” program does not exist. Check your URL to make sure you spelled it correctly.";
                 }
                 if (!empty($missing)) {
                     $errors[] = "Unable to load " . plural_word(count($missing), "configuration file") . " " . commajoin($missing) . ".";
@@ -252,7 +252,7 @@ class Multiconference {
         if ($multiconference && $confid === "__nonexistent__") {
             $errors[] = self::nonexistence_error();
         } else if ($multiconference) {
-            $errors[] = "The “{$confid}” conference does not exist. Check your URL to make sure you spelled it correctly.";
+            $errors[] = "The “{$confid}” program does not exist. Check your URL to make sure you spelled it correctly.";
         } else {
             $errors[] = "HotCRP was unable to connect to its database. A system administrator must fix this problem.";
             if (defined("HOTCRP_TESTHARNESS")) {

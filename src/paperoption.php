@@ -30,7 +30,7 @@ class PaperOptionList implements IteratorAggregate {
 
     function _add_json($oj, $k) {
         if (!isset($oj->id) && $k === 0) {
-            throw new ErrorException("This conference could not be upgraded from an old database schema. A system administrator must fix this problem.");
+            throw new ErrorException("This program could not be upgraded from an old database schema. A system administrator must fix this problem.");
         }
         if (is_string($oj->id) && is_numeric($oj->id)) { // XXX backwards compat
             $oj->id = intval($oj->id);

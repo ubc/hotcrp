@@ -155,7 +155,7 @@ if ! $quiet && ! $batch && ! [ -n "$options_file" -a -f "$options_file" ]; then
     echo "* You are responsible for supporting this installation." 1>&2
     echo "*" 1>&2
     echo "* Supported installations are available at https://hotcrp.com/" 1>&2
-    echo "* for a per-submission fee (ACM- and USENIX-sponsored conferences" 1>&2
+    echo "* for a per-submission fee (ACM- and USENIX-sponsored programs" 1>&2
     echo "* can take advantage of site-wide agreements)." 1>&2
     echo 1>&2
     while true; do
@@ -202,9 +202,9 @@ fi
 
 if ! $batch; then
     if $dbuser_existing; then
-        echo "Creating the database for your conference."
+        echo "Creating the database for your program."
     else
-        echo "Creating the database and database user for your conference."
+        echo "Creating the database and database user for your program."
     fi
     if test -z "$granthosts"; then
         echo "* Access for the database user is allowed only from the local host."

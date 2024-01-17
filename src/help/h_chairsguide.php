@@ -119,7 +119,7 @@ form also can include:</p>
   "</strong> Tracks give chairs fine-grained control over PC
   members’ access rights for individual applications. Example situations calling for
   tracks include external review committees, PC-paper review committees, and
-  multi-track conferences.</li>\n";
+  multi-track programs.</li>\n";
 
         } else if ($gj->itemid === 6) {
             echo "<li><p><strong>", $hth->hotlink("Collect review preferences from the PC.", "reviewprefs"), "</strong>
@@ -166,7 +166,7 @@ form also can include:</p>
     static function print_chair_conflicts(HelpRenderer $hth) {
         echo $hth->subhead("Chair conflicts");
         echo "<p>Chairs and system administrators can access any information stored in the
-conference system, including reviewer identities for conflicted applications.
+program system, including reviewer identities for conflicted applications.
 It is easiest to simply accept such conflicts as a fact of life. Chairs
 who can’t handle conflicts fairly shouldn’t be chairs. However, HotCRP
 does offer other mechanisms for conflicted reviews.</p>
@@ -177,7 +177,7 @@ $hth->hotlink("submission’s assignment page", "assign"), " to enter its admini
 “Override conflicts” to access the assignment page.)
 Application administrators have full privilege to assign and view reviews for their
 applications, and can, for example, use the autoassignment tool, but they cannot change
-conference settings. When a application
+program settings. When a application
 has an administrator, chair conflicts cannot be overridden.</p>
 
 <p>Application administrators make life easy for PC reviewers and greatly restrict
@@ -219,7 +219,7 @@ administrator’s identity.</p>\n\n";
             echo "<li><p>Set <strong>", $hth->setting_link("PC can see review contents", "review_visibility_pc"),
   "</strong> to “Yes” (optional). This opens up the reviews to the program committee,
   allowing everyone to see scores and read reviews for non-conflicted applications.
-  (During most conferences’ review periods, a PC member can see a application’s reviews
+  (During most programs’ review periods, a PC member can see a application’s reviews
   only after completing their own review for that application.)</p></li>\n";
 
         } else if ($gj->itemid === 3) {
@@ -291,7 +291,7 @@ administrator’s identity.</p>\n\n";
   " to expose decisions to PC members if desired.</p></li>\n";
 
         } else if ($gj->itemid === 4) {
-            echo "<li><p><strong>Shepherding (optional).</strong> If your conference uses
+            echo "<li><p><strong>Shepherding (optional).</strong> If your program uses
   shepherding for accepted applications, you can assign shepherds either ",
   $hth->hotlink("application by application", "paper"), " or ", $hth->hotlink("automatically", "autoassign", "t=accepted"), ".</p></li>\n";
         }

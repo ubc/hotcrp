@@ -167,7 +167,7 @@ class Offline_Page {
         if (!$user->email) {
             $user->escape();
         } else if (!$user->is_reviewer()) {
-            Multiconference::fail($qreq, 403, ["title" => "Offline reviewing"], "<0>You aren’t registered as a reviewer or PC member for this conference");
+            Multiconference::fail($qreq, 403, ["title" => "Offline reviewing"], "<0>You aren’t registered as a reviewer or PC member for this program");
         } else if (!$user->conf->time_review_open() && !$user->privChair) {
             Multiconference::fail($qreq, 403, ["title" => "Offline reviewing"], "<0>The site is not open for review");
         }
