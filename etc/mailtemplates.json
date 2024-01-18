@@ -58,10 +58,10 @@
 
 	{
 		"name": "newaccount.pc",
-		"subject": "[%CONFSHORTNAME%] Welcome to the program committee",
+		"subject": "[%CONFSHORTNAME%] Welcome to the adjudication committee",
 		"body": [
 			"Greetings,\n\n",
-			"You have been added to the program committee on the %CONFNAME% submission site.\n\n",
+			"You have been added to the adjudication committee on the %CONFNAME% submission site.\n\n",
 			"* Site: %URL%/\n",
 			"* Email: %EMAIL%\n\n",
 			"%IF(NEEDPASSWORD)%",
@@ -200,10 +200,8 @@
 		"name": "submitpaper",
 		"subject": "[%CONFSHORTNAME%] Submitted #%NUMBER% %TITLEHINT%",
 		"body": [
-			"Submission #%PAPER% is now ready for review on the %CONFNAME% site.%IF(CHANGE)% %CHANGE%%ENDIF%\n\n",
-			"* Title: %TITLE%\n",
-			"* Author(s): %OPT(AUTHORS)%\n",
-			"* Site: %URL(paper, p=%NUMBER%, %AUTHORVIEWCAPABILITY%)%\n\n",
+			"Thank you for your submission to %CONFNAME% site.%IF(CHANGE)% %CHANGE%%ENDIF%\n\n",
+			"To make updates to your submission, please  visit: %URL(paper, p=%NUMBER%, %AUTHORVIEWCAPABILITY%)%\n\n",
 			"%NOTES%%IF(REASON)%An administrator provided the following reason for this update: %REASON%\n\n",
 			"%ELSEIF(ADMINUPDATE)%An administrator performed this update.\n\n",
 			"%ENDIF%Contact %ADMIN% with any questions or concerns.\n\n",
@@ -215,7 +213,7 @@
 		"name": "submitfinalpaper",
 		"subject": "[%CONFSHORTNAME%] Updated accepted #%NUMBER% %TITLEHINT%",
 		"body": [
-			"Accepted submission #%PAPER% has been updated on the %CONFNAME% submission site.%IF(CHANGE)% %CHANGE%%ENDIF%\n\n",
+			"Submission #%PAPER% has been updated on the %CONFNAME% submission site.%IF(CHANGE)% %CHANGE%%ENDIF%\n\n",
 			"* Title: %TITLE%\n",
 			"* Author(s): %OPT(AUTHORS)%\n",
 			"* Site: %URL(paper, p=%NUMBER%, %AUTHORVIEWCAPABILITY%)%\n\n",
@@ -330,7 +328,7 @@
 		"allow_pc": true,
 		"body": [
 			"Dear %NAME%,\n\n",
-			"On behalf of the %CONFNAME% program committee, %REQUESTERCONTACT% has asked you to review %CONFNAME% submission #%NUMBER%.",
+			"On behalf of the %CONFNAME% adjudication committee, %REQUESTERCONTACT% has asked you to review %CONFNAME% submission #%NUMBER%.",
 			"%IF(REASON)% They supplied this note: %REASON%%ENDIF%\n\n",
 			"* Title: %TITLE%\n",
 			"* Author(s): %OPT(AUTHORS)%\n",
