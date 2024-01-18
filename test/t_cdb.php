@@ -237,11 +237,11 @@ class Cdb_Tester {
         $ps->save_paper_json((object) [
             "id" => 1,
             "authors" => ["puneet@catarina.usc.edu", $user_estrin->email,
-                          $user_floyd->email, $user_van->email, "akhmatova@poema.ruuu"]
+                          $user_floyd->email, $user_van->email, "akhmatova@poema.ru"]
         ]);
 
         $paper1 = $this->user_chair->checked_paper_by_id(1);
-        $user_anna = user("akhmatova@poema.ruuu");
+        $user_anna = user("akhmatova@poema.ru");
         xassert(!!$user_anna);
         xassert($user_anna->act_author_view($paper1));
         xassert($user_estrin->act_author_view($paper1));
