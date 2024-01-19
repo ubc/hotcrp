@@ -1,11 +1,11 @@
 ******** create-huitema@bellcore.com
 To: Christian Huitema <huitema@bellcore.com>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: huitema@bellcore.com
@@ -26,12 +26,12 @@ concerns.
 - Testconf I Submissions
 ******** create-christophe.diot@sophia.inria.fr
 To: Christophe Diot <christophe.diot@sophia.inria.fr>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: christophe.diot@sophia.inria.fr
@@ -52,12 +52,12 @@ concerns.
 - Testconf I Submissions
 ******** create-estrin@usc.edu
 To: Deborah Estrin <estrin@usc.edu>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: estrin@usc.edu
@@ -80,12 +80,12 @@ concerns.
 
 ******** create-varghese@ccrc.wustl.edu
 To: George Varghese <varghese@ccrc.wustl.edu>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: varghese@ccrc.wustl.edu
@@ -106,12 +106,12 @@ concerns.
 - Testconf I Submissions
 ******** create-jj@cse.ucsc.edu
 To: "J. J. Garcia-Luna-Aceves" <jj@cse.ucsc.edu>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: jj@cse.ucsc.edu
@@ -132,12 +132,12 @@ concerns.
 - Testconf I Submissions
 ******** create-jon@cs.ucl.ac.uk
 To: Jon Crowcroft <jon@cs.ucl.ac.uk>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: jon@cs.ucl.ac.uk
@@ -158,12 +158,12 @@ concerns.
 - Testconf I Submissions
 ******** create-lixia@cs.ucla.edu
 To: Lixia Zhang <lixia@cs.ucla.edu>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: lixia@cs.ucla.edu
@@ -184,12 +184,12 @@ concerns.
 - Testconf I Submissions
 ******** create-marina@poema.ru
 To: Marina Tsvetaeva <marina@poema.ru>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: marina@poema.ru
@@ -210,12 +210,12 @@ concerns.
 - Testconf I Submissions
 ******** create-mjh@isi.edu
 To: Mark Handley <mjh@isi.edu>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: mjh@isi.edu
@@ -236,12 +236,12 @@ concerns.
 - Testconf I Submissions
 ******** create-mgbaker@cs.stanford.edu
 To: Mary Baker <mgbaker@cs.stanford.edu>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: mgbaker@cs.stanford.edu
@@ -262,12 +262,12 @@ concerns.
 - Testconf I Submissions
 ******** create-pfrancis@ntt.jp
 To: Paul Francis <pfrancis@ntt.jp>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: pfrancis@ntt.jp
@@ -288,12 +288,12 @@ concerns.
 - Testconf I Submissions
 ******** create-peter.danzig@usc.edu
 To: Peter Danzig <peter.danzig@usc.edu>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: peter.danzig@usc.edu
@@ -314,12 +314,12 @@ concerns.
 - Testconf I Submissions
 ******** create-pdruschel@cs.rice.edu
 To: Peter Druschel <pdruschel@cs.rice.edu>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: pdruschel@cs.rice.edu
@@ -340,12 +340,12 @@ concerns.
 - Testconf I Submissions
 ******** create-rguerin@ibm.com
 To: Roch Guerin <rguerin@ibm.com>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: rguerin@ibm.com
@@ -366,12 +366,12 @@ concerns.
 - Testconf I Submissions
 ******** create-floyd@ee.lbl.gov
 To: Sally Floyd <floyd@ee.lbl.gov>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: floyd@ee.lbl.gov
@@ -392,12 +392,12 @@ concerns.
 - Testconf I Submissions
 ******** create-shenker@parc.xerox.com
 To: Scott Shenker <shenker@parc.xerox.com>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: shenker@parc.xerox.com
@@ -420,12 +420,12 @@ concerns.
 
 ******** create-ojuelegba@gmail.com
 To: Wilma Ojuelegba <ojuelegba@gmail.com>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: ojuelegba@gmail.com
@@ -446,12 +446,12 @@ concerns.
 - Testconf I Submissions
 ******** create-vera@bombay.com
 To: Véra Djükuba <vera@bombay.com>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
-(Testconf I) submission site.
+You have been added to the adjudication committee on the Test Conference
+I (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
 * Email: vera@bombay.com
@@ -1718,9 +1718,9 @@ X-Landmark: test/test06.php:747
 
 Dear Jo March,
 
-On behalf of the Test Conference I (Testconf I) program committee, Lixia
-Zhang <lixia@cs.ucla.edu> has asked you to review Test Conference I
-(Testconf I) submission #17.
+On behalf of the Test Conference I (Testconf I) adjudication committee,
+Lixia Zhang <lixia@cs.ucla.edu> has asked you to review Test Conference
+I (Testconf I) submission #17.
 
 * Title: Network Text Editor (NTE): A Scalable Shared Text Editor for
   the MBone
