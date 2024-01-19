@@ -1135,7 +1135,7 @@ Subject: [Testconf I] Withdrawn submission #1 "Scalable Timers for Soft State
 Greetings,
 
 Testconf I submission #1, which you reviewed or were assigned to review,
-has been withdrawn from consideration for the conference.
+has been withdrawn from consideration for the program.
 
 An administrator withdrew the submission.
 
@@ -1185,7 +1185,7 @@ X-Landmark: test/test01.php:8
 Greetings,
 
 Testconf I submission #16, which you reviewed or were assigned to
-review, has been withdrawn from consideration for the conference.
+review, has been withdrawn from consideration for the program.
 
 An administrator withdrew the submission. They provided this reason:
 Suckola
