@@ -12,12 +12,20 @@ class Option_PaperColumn extends PaperColumn {
         $this->override = PaperColumn::OVERRIDE_IFEMPTY;
         $this->opt = $conf->checked_option_by_id($cj->option_id);
     }
+    function add_decoration($decor) {
+        /* XXX ask PaperOption what decorations are supported */
+        return parent::add_decoration($decor)
+            || $this->__add_decoration($decor);
+    }
     function prepare(PaperList $pl, $visible) {
         if (!$pl->user->can_view_some_option($this->opt)) {
             return false;
         }
         $pl->qopts["options"] = true;
-        $this->fr = new FieldRender(0, $pl->user);
+        if ($visible === self::PREP_VISIBLE) {
+            $this->fr = new FieldRender($pl->render_context | ($this->as_row ? FieldRender::CFROW : FieldRender::CFCOLUMN), $pl->user);
+            $this->fr->make_column($this);
+        }
         if ($this->as_row) {
             $this->className = ltrim(preg_replace('/(?: +|\A)(?:plrd|plr|plc)(?= |\z)/', "", $this->className));
         }
@@ -43,7 +51,7 @@ class Option_PaperColumn extends PaperColumn {
         }
 
         $fr = $this->fr;
-        $fr->clear(FieldRender::CFLIST | FieldRender::CFHTML | ($this->as_row ? 0 : FieldRender::CFCOLUMN));
+        $fr->clear();
         $this->opt->render($fr, $ov);
         if ((string) $fr->value === "") {
             return "";
@@ -74,7 +82,7 @@ class Option_PaperColumn extends PaperColumn {
             return "";
         }
 
-        $this->fr->clear(FieldRender::CFCSV | FieldRender::CFVERBOSE);
+        $this->fr->clear();
         $this->opt->render($this->fr, $ov);
         return (string) $this->fr->value;
     }
@@ -98,8 +106,9 @@ class Option_PaperColumnFactory {
         list($ocolon, $oname) = [$m[1], $m[2]];
         if (!$ocolon && $oname === "options") {
             $x = [];
-            foreach ($xtp->user->user_option_list() as $opt) {
-                if ($opt->on_render_context(FieldRender::CFLIST))
+            foreach ($xtp->conf->options() as $opt) {
+                if ($xtp->user->can_view_some_option($opt)
+                    && $opt->on_render_context(FieldRender::CFLIST))
                     $x[] = self::option_json($xfj, $opt);
             }
             return $x;
@@ -119,8 +128,9 @@ class Option_PaperColumnFactory {
     }
     static function completions(Contact $user, $fxt) {
         $cs = [];
-        foreach ($user->user_option_list() as $opt) {
-            if ($opt->search_keyword() !== false
+        foreach ($user->conf->options() as $opt) {
+            if ($user->can_view_some_option($opt)
+                && $opt->search_keyword() !== false
                 && $opt->on_render_context(FieldRender::CFSUGGEST)) {
                 $cs[] = $opt->search_keyword();
             }

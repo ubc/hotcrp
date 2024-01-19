@@ -60,15 +60,14 @@ class Contacts_PaperOption extends PaperOption {
         return $j;
     }
     function value_check(PaperValue $ov, Contact $user) {
-        if ($ov->anno("modified")) {
-            if (!$user->allow_administer($ov->prow)
-                && $ov->prow->conflict_type($user) >= CONFLICT_CONTACTAUTHOR
+        if ($ov->anno("modified") && !$user->allow_administer($ov->prow)) {
+            if ($ov->prow->conflict_type($user) >= CONFLICT_CONTACTAUTHOR
                 && self::ca_index(self::users_anno($ov), $user->email) === false) {
                 $ov->error($this->conf->_("<0>You can’t remove yourself from the submission’s contacts"));
                 $ov->msg("<0>(Ask another contact to remove you.)", MessageSet::INFORM);
             } else if (empty($ov->value_list())
                        && $ov->prow->paperId > 0
-                       && empty($ov->prow->contact_list())) {
+                       && !empty($ov->prow->contact_list())) {
                 $ov->error($this->conf->_("<0>Each submission must have at least one contact"));
             }
         }
@@ -98,8 +97,7 @@ class Contacts_PaperOption extends PaperOption {
             if ($j !== false) {
                 if ($specau[$i]->conflictType !== 0) {
                     $curau[$j]->author_index = $specau[$i]->author_index;
-                    $modified = $modified
-                        || ($curau[$j]->disablement & Contact::DISABLEMENT_PLACEHOLDER) !== 0;
+                    $modified = $modified || $curau[$j]->is_placeholder();
                 } else {
                     // only remove contacts on exact email match
                     // (removing by a non-primary email has no effect)
@@ -151,6 +149,7 @@ class Contacts_PaperOption extends PaperOption {
             $name = simplify_whitespace((string) $qreq["contacts:{$n}:name"]);
             $affiliation = simplify_whitespace((string) $qreq["contacts:{$n}:affiliation"]);
             $au = Author::make_keyed(["email" => $email, "name" => $name, "affiliation" => $affiliation]);
+            // XXX has_contacts:{$n}:active
             $au->conflictType = $qreq["contacts:{$n}:active"] ? CONFLICT_CONTACTAUTHOR : 0;
             $au->author_index = $n;
             $reqau[] = $au;
@@ -236,6 +235,7 @@ class Contacts_PaperOption extends PaperOption {
         echo '<div class="',
             ($reqov ? $reqov->message_set()->control_class("contacts:{$reqidx}", $klass) : $klass),
             '"><span class="checkc">',
+            Ht::hidden("has_contacts:{$anum}:active", 1),
             Ht::checkbox("contacts:{$anum}:active", 1, true, ["data-default-checked" => false, "id" => false, "class" => "ignore-diff"]),
             '</span>',
             Ht::entry("contacts:{$anum}:email", $email, ["size" => 30, "placeholder" => "Email", "class" => $pt->control_class("contacts:{$reqidx}:email", "want-focus js-autosubmit uii js-email-populate mr-2"), "autocomplete" => "off", "data-default-value" => ""]),
@@ -255,7 +255,6 @@ class Contacts_PaperOption extends PaperOption {
             }
         }
         usort($curau, $this->conf->user_comparator());
-        $readonly = !$this->test_editable($ov->prow);
 
         $pt->print_editable_option_papt($this, null, ["id" => "contacts", "for" => false]);
         echo '<div class="papev"><div id="contacts:container">';
@@ -280,15 +279,16 @@ class Contacts_PaperOption extends PaperOption {
                 Ht::hidden("contacts:{$cidx}:email", $au->email);
             if (($au->contactId > 0
                  && ($au->conflictType & CONFLICT_AUTHOR) !== 0
-                 && ($au->disablement & Contact::DISABLEMENT_PLACEHOLDER) === 0)
+                 && !$au->is_placeholder())
                 || ($au->contactId === $pt->user->contactId
                     && $ov->prow->paperId <= 0)) {
                 echo Ht::hidden("contacts:{$cidx}:active", 1),
                     Ht::checkbox(null, 1, true, ["disabled" => true, "id" => "contacts:{$cidx}:placeholder"]);
             } else {
                 $dchecked = $au->contactId > 0 && $au->conflictType >= CONFLICT_AUTHOR;
-                echo Ht::checkbox("contacts:{$cidx}:active", 1, $rau ? $rau->conflictType !== 0 : $dchecked,
-                    ["data-default-checked" => $dchecked, "id" => false, "disabled" => $readonly]);
+                echo Ht::hidden("has_contacts:{$cidx}:active", 1),
+                    Ht::checkbox("contacts:{$cidx}:active", 1, $rau ? $rau->conflictType !== 0 : $dchecked,
+                        ["data-default-checked" => $dchecked, "id" => false]);
             }
             echo '</span>', Text::nameo_h($au, NAME_E);
             if (($au->conflictType & CONFLICT_AUTHOR) === 0
@@ -303,21 +303,15 @@ class Contacts_PaperOption extends PaperOption {
             ++$cidx;
         }
 
-        if (!$readonly) {
-            foreach ($reqau as $rau) {
-                self::echo_editable_newcontact_row($pt, $cidx, $reqov, $rau);
-                ++$cidx;
-            }
-            echo '</div><template id="contacts:row-template" class="hidden">';
-            self::echo_editable_newcontact_row($pt, '$', null, null);
-            echo '</template><div class="ug">',
-                Ht::button("Add contact", ["class" => "ui row-order-append", "data-rowset" => "contacts:container", "data-row-template" => "contacts:row-template"]),
-                '</div>';
-        } else {
-            echo "</div>";
+        foreach ($reqau as $rau) {
+            self::echo_editable_newcontact_row($pt, $cidx, $reqov, $rau);
+            ++$cidx;
         }
-
-        echo "</div></div>\n\n";
+        echo '</div><template id="contacts:row-template" class="hidden">';
+        self::echo_editable_newcontact_row($pt, '$', null, null);
+        echo '</template><div class="ug">',
+            Ht::button("Add contact", ["class" => "ui row-order-append", "data-rowset" => "contacts:container", "data-row-template" => "contacts:row-template"]),
+            "</div></div></div>\n\n";
     }
     // XXX no render because paper strip
 }

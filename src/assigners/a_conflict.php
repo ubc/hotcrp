@@ -122,7 +122,7 @@ class Conflict_AssignmentParser extends AssignmentParser {
                 $ct = $state->conf->conflict_set()->parse_assignment($text, $old_ct_na);
             }
             if ($ct === false || Conflict::is_author($ct)) {
-                return new AssignmentError("Bad conflict type “{$text}”.");
+                return new AssignmentError("<0>Conflict type ‘{$text}’ not found");
             }
             if (!$admin) {
                 $ct = Conflict::set_pinned($ct, false);
@@ -160,7 +160,7 @@ class Conflict_Assigner extends Assigner {
                     ++$ncontacts;
             }
             if ($ncontacts === 0) {
-                throw new AssignmentError("<0>Each submission must have at least one contact.");
+                throw new AssignmentError("<0>Each submission must have at least one contact");
             }
         }
         return new Conflict_Assigner($item, $state);
@@ -202,7 +202,7 @@ class Conflict_Assigner extends Assigner {
                 $state->msg_near($item->landmark, "<5>" . $potconf->render_ul_item(null, null, $msglist), MessageSet::INFORM);
             }
             if ($state->potential_conflict_warnings < 1) {
-                $state->msg_near($item->landmark, "<5>You may want to <a href=\"" . $state->conf->hoturl("conflictassign") . "\" target=\"_blank\" rel=\"noopener\">confirm potential conflicts</a> before proceeding further.", MessageSet::INFORM);
+                $state->msg_near($item->landmark, "<5>You may want to <a href=\"" . $state->conf->hoturl("conflictassign") . "\" target=\"_blank\" rel=\"noopener\" class=\"btn\">Confirm potential conflicts</a> before performing other assignments.", MessageSet::INFORM);
                 ++$state->potential_conflict_warnings;
             }
         }

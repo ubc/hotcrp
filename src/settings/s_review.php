@@ -65,7 +65,7 @@ class Review_SettingParser extends SettingParser {
         if ($si->name0 === "review/" && $si->name2 === "") {
             $sv->set_oldv($si, new Review_Setting);
         } else if ($si->name0 === "review/" && $si->name2 === "/title") {
-            $n = $sv->oldv("review/{$si->name1}/name");
+            $n = $sv->vstr("review/{$si->name1}/name");
             if ($n === "" && !$sv->conf->has_rounds()) {
                 $sv->set_oldv($si, "Review");
             } else {
@@ -74,7 +74,7 @@ class Review_SettingParser extends SettingParser {
         } else if ($si->name === "review_default_round_index") {
             $sv->set_oldv($si, 0);
             $t = $sv->conf->setting_data("rev_roundtag") ?? "";
-            if (($round = $sv->conf->round_number($t, false)) !== null
+            if (($round = $sv->conf->round_number($t)) !== null
                 && ($ctr = $sv->search_oblist("review", "id", $round + 1))) {
                 $sv->set_oldv($si, $ctr);
             }
@@ -85,7 +85,7 @@ class Review_SettingParser extends SettingParser {
             $sv->set_oldv($si, 0);
             $t = $sv->conf->setting_data("extrev_roundtag") ?? null;
             if ($t !== null
-                && ($round = $sv->conf->round_number($t, false)) !== null
+                && ($round = $sv->conf->round_number($t)) !== null
                 && ($ctr = $sv->search_oblist("review", "id", $round + 1))) {
                 $sv->set_oldv($si, $ctr);
             }
@@ -202,7 +202,7 @@ class Review_SettingParser extends SettingParser {
 
     static function print_pc(SettingValues $sv) {
         echo '<div class="form-g has-fold foldo">';
-        $sv->print_checkbox("review_self_assign", "PC members can review any submission", ["class" => "uich js-foldup"]);
+        $sv->print_checkbox("review_self_assign", "PC members can self-assign reviews", ["class" => "uich js-foldup"]);
         if ($sv->conf->setting("pcrev_any")
             && $sv->conf->check_track_sensitivity(Track::UNASSREV)) {
             echo '<p class="f-h fx">', $sv->setting_group_link("Current track settings", "tracks"), ' may restrict self-assigned reviews.</p>';
@@ -212,59 +212,61 @@ class Review_SettingParser extends SettingParser {
 
         $hint = "";
         if ($sv->conf->check_track_sensitivity(Track::VIEWREVID)) {
-            $hint = '<p class="settings-ag f-h">' . $sv->setting_group_link("Current track settings", "tracks") . ' restrict reviewer name visibility.</p>';
+            $hint = '<p class="settings-radiohint f-h">' . $sv->setting_group_link("Current track settings", "tracks") . ' restrict reviewer name visibility.</p>';
         }
-        $sv->print_radio_table("review_identity_visibility_pc", [0 => "Yes",
-                1 => "Only after completing a review for the same submission"],
-            'Can PC members see <strong class="has-comment-visibility-anonymous is-identity">reviewer names and comments</strong> except for conflicts?',
+        $sv->print_radio_table("review_identity_visibility_pc", [
+                Conf::VIEWREV_ALWAYS => "Yes",
+                Conf::VIEWREV_IFASSIGNED => "Only if assigned a review for the same submission",
+                Conf::VIEWREV_AFTERREVIEW => "Only after completing a review for the same submission"
+            ],
+            'Can non-conflicted PC members see <strong>reviewer names</strong>?',
             ["after" => $hint]);
 
 
         $hint = "";
-        if ($sv->conf->has_any_metareviews()) {
-            $hint .= ' Metareviewers can always see associated reviews and reviewer names.';
-        }
         if ($sv->conf->check_track_sensitivity(Track::VIEWREV)
             || $sv->conf->check_track_sensitivity(Track::VIEWALLREV)) {
-            $hint .= ' ' . $sv->setting_group_link("Current track settings", "tracks") . ' restrict review visibility.';
-        }
-        if ($hint !== "") {
-            $hint = '<p class="settings-ag f-h">' . ltrim($hint) . '</p>';
+            $hint = '<p class="settings-radiohint f-h">' . $sv->setting_group_link("Current track settings", "tracks") . ' restrict review visibility.</p>';
         }
         echo '<hr class="form-sep">';
         $sv->print_radio_table("review_visibility_pc", [
-                Conf::PCSEEREV_YES => "Yes",
-                Conf::PCSEEREV_UNLESSINCOMPLETE => "Yes, unless they haven’t completed an assigned review for the same submission",
-                Conf::PCSEEREV_UNLESSANYINCOMPLETE => "Yes, after completing all their assigned reviews",
-                Conf::PCSEEREV_IFCOMPLETE => "Only after completing a review for the same submission"
-            ], 'Can PC members see <strong class="has-comment-visibility-anonymous is-contents">review contents</strong> except for conflicts?',
+                Conf::VIEWREV_ALWAYS => "Yes",
+                Conf::VIEWREV_UNLESSINCOMPLETE => "Yes, unless they haven’t completed an assigned review for the same submission",
+                Conf::VIEWREV_UNLESSANYINCOMPLETE => "Yes, after completing all their assigned reviews",
+                Conf::VIEWREV_AFTERREVIEW => "Only after completing a review for the same submission"
+            ], 'Can non-conflicted PC members see <strong>review contents</strong>?',
             ["after" => $hint]);
 
-        echo '<hr class="form-nearby form-sep">';
-        $sv->print_checkbox("review_visibility_lead", "Discussion leads can always see submitted reviews and reviewer names");
-
-
         echo '<hr class="form-sep">';
-        $sv->print_checkbox("comment_visibility_anonymous", "Allow anonymous reviewer discussion", [
-            "class" => "uich js-settings-comment-visibility-anonymous",
-            "hint_class" => "has-comment-visibility-anonymous if-anonymous hidden",
-            "hint" => "Commenter names will be hidden when reviews are anonymous."
-        ]);
+        $sv->print_radio_table("comment_visibility_reviewer", [
+                1 => ["label" => "Yes", "hint" => '<p class="settings-ap f-hx fn">Commenters will be pseudonymized (e.g., as “Reviewer A”) when reviewer names are hidden. Note that comment <em>contents</em> cannot be pseudonymized reliably.</p>'],
+                0 => ["label" => "Only when they can see reviewer names", "hint" => '<p class="settings-ap f-hx fx">Responses and other author-visible comments are always visible to reviewers.</p>']
+            ], 'Can reviewers see <strong>comments</strong>?',
+            ["item_class" => "uich js-foldup",
+             "fold_values" => [0]]);
+
+        echo '<hr class="form-sep"><div class="settings-radio">',
+            '<div class="label">Who can <strong>always</strong> see reviewer names and review contents for their assigned papers?</div>',
+            '<div class="settings-radioitem checki"><span class="checkc">✓</span>Metareviewers</div>',
+            '<div class="settings-radioitem checki"><label><span class="checkc">',
+            $sv->print_checkbox_only("review_visibility_lead"),
+            '</span>Discussion leads</label></div>',
+            '</div>';
     }
 
 
     static function print_extrev_view(SettingValues $sv) {
         $sv->print_radio_table("review_identity_visibility_external", [
-                2 => "Yes",
-                1 => "Only after completing their review",
-                0 => "No"
-            ], 'Can external reviewers see <strong class="has-comment-visibility-anonymous is-identity">reviewer names and comments</strong> for their assigned submissions?');
+                Conf::VIEWREV_ALWAYS => "Yes",
+                Conf::VIEWREV_AFTERREVIEW => "Yes, after completing their review",
+                Conf::VIEWREV_NEVER => "No"
+            ], 'Can external reviewers see <strong>reviewer names</strong> for their assigned submissions?');
 
         echo '<hr class="form-sep">';
         $sv->print_radio_table("review_visibility_external", [
-                1 => "Yes",
-                0 => "No"
-            ], 'Can external reviewers see <strong class="has-comment-visibility-anonymous is-contents-external">review contents and eventual decisions</strong> for their assigned submissions, after completing their review?');
+                Conf::VIEWREV_AFTERREVIEW => "Yes, after completing their review",
+                Conf::VIEWREV_NEVER => "No"
+            ], 'Can external reviewers see <strong>review contents</strong> for their assigned submissions?');
     }
     static function print_extrev_editdelegate(SettingValues $sv) {
         echo '<div id="foldreview_proposal_editable" class="form-g has-fold',
@@ -337,22 +339,20 @@ class Review_SettingParser extends SettingParser {
             return $this->apply_review_req($si, $sv);
         } else if ($si->name === "review_default_round"
                    || $si->name === "review_default_external_round") {
-            if (($n = $sv->reqstr($si->name)) !== null
-                && $n !== $sv->oldv($si)) {
+            if (($n = $sv->reqstr($si->name)) !== null) {
                 $this->apply_review_default_round($si, $sv, trim($n));
             }
             return true;
         } else if ($si->name === "review_default_round_index"
                    || $si->name === "review_default_external_round_index") {
-            if (($n = $sv->reqstr($si->name)) !== null
-                && $n !== $sv->oldv($si)) {
+            if (($n = $sv->reqstr($si->name)) !== null) {
                 $this->apply_review_default_round_index($si, $sv, trim($n));
             }
             return true;
         } else if ($si->name === "review_visibility_external") {
             if (($n = $sv->reqstr($si->name)) === "blind") {
-                $sv->save($si, 1);
-                $sv->save("review_identity_visibility_external", 0);
+                $sv->save($si, Conf::VIEWREV_AFTERREVIEW);
+                $sv->save("review_identity_visibility_external", Conf::VIEWREV_NEVER);
             }
             return false;
         } else if ($si->name2 === "/name") {
@@ -373,25 +373,37 @@ class Review_SettingParser extends SettingParser {
     private function apply_review_req(Si $si, SettingValues $sv) {
         $rss = [];
         $old_rsid = [];
+        $name_map = [];
+        $first_nondeleted = null;
         $latest = null;
         foreach ($sv->oblist_nondeleted_keys("review") as $ctr) {
             $pfx = "review/{$ctr}";
-            $rs = $sv->newv($pfx);
-            if ($sv->oldv("{$pfx}/soft") !== $sv->newv("{$pfx}/soft")
-                || $sv->oldv("{$pfx}/done") !== $sv->newv("{$pfx}/done")) {
+            $ors = $sv->oldv($pfx);
+            $nrs = $sv->newv($pfx);
+            if ($nrs->id <= 0
+                || $nrs->soft !== $ors->soft
+                || $nrs->done !== $ors->done) {
                 $sv->check_date_before("review/{$ctr}/soft", "review/{$ctr}/done", false);
             }
-            if ($sv->oldv("{$pfx}/external_soft") !== $sv->newv("{$pfx}/external_soft")
-                || $sv->oldv("{$pfx}/external_done") !== $sv->newv("{$pfx}/external_done")) {
+            if ($nrs->id <= 0
+                || $nrs->external_soft !== $ors->external_soft
+                || $nrs->external_done !== $ors->external_done) {
                 $sv->check_date_before("review/{$ctr}/external_soft", "review/{$ctr}/external_done", false);
             }
-            $rss[] = $rs;
-            if ($rs->id > 0) {
-                $old_rsid[$rs->id] = $rs;
+            $rss[] = $nrs;
+            if ($nrs->id > 0) {
+                $old_rsid[$nrs->id] = $nrs;
+                $name_map[$ors->name] = $nrs->name;
+                if ($ors->name === "") {
+                    $name_map["unnamed"] = $nrs->name;
+                }
+            }
+            if (!$first_nondeleted) {
+                $first_nondeleted = $nrs;
             }
             if (!$latest
-                || ($latest->soft > 0 && $rs->soft > 0 && $latest->soft < $rs->soft)) {
-                $latest = $rs;
+                || ($latest->soft > 0 && $nrs->soft > 0 && $latest->soft < $nrs->soft)) {
+                $latest = $nrs;
             }
         }
 
@@ -457,6 +469,24 @@ class Review_SettingParser extends SettingParser {
             }
         }
         $sv->save("tag_rounds", join(" ", $tag_rounds));
+
+        // update default rounds based on new names
+        $first_nondeleted_name = $first_nondeleted ? $first_nondeleted->name : "unnamed";
+        if (!$sv->has_req("review_default_round")
+            && !$sv->has_req("review_default_round_index")) {
+            $oldr = $sv->oldv("review_default_round");
+            if ($oldr !== ($newr = $name_map[$oldr] ?? $first_nondeleted_name)) {
+                $sv->save("rev_roundtag", self::clean_name($newr, false));
+            }
+        }
+        if (!$sv->has_req("review_default_external_round")
+            && !$sv->has_req("review_default_external_round_index")) {
+            $oldr = $sv->oldv("review_default_external_round");
+            if ($oldr !== ""
+                && $oldr !== ($newr = $name_map[$oldr] ?? $first_nondeleted_name)) {
+                $sv->save("extrev_roundtag", self::clean_name($newr, true));
+            }
+        }
 
         // remove old deadlines, renumber reviews from deleted rounds
         $rnum_bound = max(0, 0, ...array_keys($defined_rounds)) + 1;
@@ -536,10 +566,12 @@ class Review_SettingParser extends SettingParser {
             $sv->warning_at(null, "<5>" . $sv->setting_link("Authors can see reviews and comments", "review_visibility_author") . " although it is before a " . $sv->setting_link("review deadline", $dn) . ". This is sometimes unintentional.");
         }
 
-        if (($sv->has_interest("review_blind") || $sv->has_interest("review_visibility_external"))
+        if (($sv->has_interest("review_blind")
+             || $sv->has_interest("review_identity_visibility_external"))
             && $sv->oldv("review_blind") == Conf::BLIND_NEVER
-            && $sv->oldv("review_visibility_external") == 1) {
-            $sv->warning_at("review_visibility_external", "<5>" . $sv->setting_link("Reviews aren’t anonymous", "review_blind") . ", so external reviewers can see reviewer names and comments despite " . $sv->setting_link("your settings", "review_visibility_external") . ".");
+            && $sv->oldv("review_visibility_external") != Conf::VIEWREV_NEVER
+            && $sv->oldv("review_identity_visibility_external") == Conf::VIEWREV_NEVER) {
+            $sv->warning_at("review_identity_visibility_external", "<5>" . $sv->setting_link("Reviews aren’t anonymous", "review_blind") . ", so external reviewers can see reviewer names and comments despite " . $sv->setting_link("your settings", "review_identity_visibility_external") . ".");
         }
 
         if ($sv->has_interest("mailbody_requestreview")

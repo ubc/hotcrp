@@ -6,14 +6,14 @@ class Keywords_HelpTopic {
     /** @param list<SearchExample> $exs */
     static function print_search_examples(HelpRenderer $hth, $exs) {
         while (($ex = array_shift($exs))) {
-            $desc = Ftext::unparse_as($hth->conf->_($ex->description, ...$ex->all_arguments()), 5);
+            $desc = Ftext::as(5, $hth->conf->_($ex->description, ...$ex->all_arguments()));
             $qs = [];
             foreach (SearchExample::remove_category($exs, $ex) as $oex) {
                 if (!$oex->primary_only)
                     $qs[] = preg_replace('/\{(\w+)\}/', '<i>$1</i>', htmlspecialchars($oex->q));
             }
             foreach ($ex->hints ?? [] as $h) {
-                $desc .= '<div class="hint">' . Ftext::unparse_as($hth->conf->_($h, ...$ex->all_arguments()), 5) . '</div>';
+                $desc .= '<div class="hint">' . Ftext::as(5, $hth->conf->_($h, ...$ex->all_arguments())) . '</div>';
             }
             if ($qs) {
                 $desc .= '<div class="hint">Also ' . join(", ", $qs) . '</div>';
@@ -71,8 +71,8 @@ class Keywords_HelpTopic {
             return $o->on_form() && $o->search_keyword() !== false;
         });
         usort($opts, function ($a, $b) {
-            if ($a->final !== $b->final) {
-                return $a->final ? 1 : -1;
+            if ($a->is_final() !== $b->is_final()) {
+                return $a->is_final() ? 1 : -1;
             } else {
                 return PaperOption::compare($a, $b);
             }
@@ -97,7 +97,7 @@ class Keywords_HelpTopic {
 
         $cx = null;
         $cm = [];
-        foreach ($hth->conf->tags() as $t) {
+        foreach ($hth->conf->tags()->sorted_settings_having(TagInfo::TF_STYLE) as $t) {
             foreach ($t->styles ?? [] as $c) {
                 $cx = $cx ?? $c;
                 if ($cx === $c)
@@ -244,7 +244,7 @@ class Keywords_HelpTopic {
         echo $hth->search_trow("sort:-status", "sort by reverse status");
         echo $hth->search_trow("edit:#discuss", "edit the values for tag “#discuss”");
         echo $hth->search_trow("search1 THEN search2", "like “search1 OR search2”, but submissions matching “search1” are grouped together and appear earlier in the sorting order");
-        echo $hth->search_trow("1-5 THEN 6-10 show:kanban", "display in kanban format");
+        echo $hth->search_trow("1-5 THEN 6-10 show:facets", "faceted display");
         echo $hth->search_trow("search1 HIGHLIGHT search2", "search for “search1”, but <span class=\"taghh highlightmark\">highlight</span> submissions in that list that match “search2” (also try HIGHLIGHT:pink, HIGHLIGHT:green, HIGHLIGHT:blue)");
 
         echo $hth->end_table();

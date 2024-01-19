@@ -11,7 +11,7 @@ class RequestReview_API {
         $round = null;
         if ((string) $qreq->round !== ""
             && ($rname = $user->conf->sanitize_round_name($qreq->round)) !== false) {
-            $round = (int) $user->conf->round_number($rname, false);
+            $round = (int) $user->conf->round_number($rname);
         }
 
         if (($whyNot = $user->perm_request_review($prow, $round, true))) {
@@ -163,7 +163,7 @@ class RequestReview_API {
         if (!$user->allow_administer($prow)) {
             return JsonResult::make_error(403, "<0>Only administrators can request anonymous reviews");
         }
-        $aset = (new AssignmentSet($user))->override_conflicts();
+        $aset = (new AssignmentSet($user))->set_override_conflicts(true);
         $aset->enable_papers($prow);
         $aset->parse("paper,action,user\n{$prow->paperId},review,newanonymous\n");
         if ($aset->execute()) {

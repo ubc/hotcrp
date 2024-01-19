@@ -27,13 +27,15 @@ CREATE TABLE `Capability` (
   `capabilityType` int(11) NOT NULL,
   `contactId` int(11) NOT NULL,
   `paperId` int(11) NOT NULL,
-  `otherId` int(11) NOT NULL DEFAULT 0,
+  `reviewId` int(11) NOT NULL DEFAULT 0,
   `timeCreated` bigint(11) NOT NULL,
   `timeUsed` bigint(11) NOT NULL,
   `timeInvalid` bigint(11) NOT NULL,
   `timeExpires` bigint(11) NOT NULL,
   `salt` varbinary(255) NOT NULL,
-  `data` varbinary(8192) DEFAULT NULL,
+  `inputData` varbinary(16384) DEFAULT NULL,
+  `data` varbinary(16384) DEFAULT NULL,
+  `outputData` longblob DEFAULT NULL,
   PRIMARY KEY (`salt`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -76,6 +78,7 @@ CREATE TABLE `ContactInfo` (
   `disabled` tinyint(1) NOT NULL DEFAULT 0,
   `primaryContactId` int(11) NOT NULL DEFAULT 0,
   `contactTags` varbinary(4096) DEFAULT NULL,
+  `cflags` int(11) NOT NULL DEFAULT 0,
   `orcid` varbinary(64) DEFAULT NULL,
   `phone` varbinary(64) DEFAULT NULL,
   `country` varbinary(256) DEFAULT NULL,
@@ -474,6 +477,9 @@ CREATE TABLE `PaperStorage` (
   `filterType` int(3) DEFAULT NULL,
   `originalStorageId` int(11) DEFAULT NULL,
   `inactive` tinyint(1) NOT NULL DEFAULT 0,
+  `npages` int(3) NOT NULL DEFAULT -1,
+  `width` int(8) NOT NULL DEFAULT -1,
+  `height` int(8) NOT NULL DEFAULT -1,
   PRIMARY KEY (`paperId`,`paperStorageId`),
   UNIQUE KEY `paperStorageId` (`paperStorageId`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -618,14 +624,13 @@ CREATE TABLE `TopicInterest` (
 -- Initial settings
 -- (each setting must be on its own line for createdb.sh)
 insert into Settings (name, value, data) values
-  ('allowPaperOption', 275, null),   -- schema version
+  ('allowPaperOption', 288, null),   -- schema version
   ('setupPhase', 1, null),           -- initial user is chair
   ('no_papersub', 1, null),          -- no submissions yet
   ('sub_pcconf', 1, null),           -- collect PC conflicts, not collaborators
   ('tag_chair', 1, 'accept pcpaper reject'),  -- default read-only tags
   ('pcrev_any', 1, null),            -- PC members can review any paper
-  ('extrev_seerev', 1, null),        -- external reviewers can see reviews
-  ('extrev_seerevid', 1, null),      -- external reviewers can see review identities
+  ('viewrevid', 1, null),            -- PC members can see anonymous reviewer IDs
   ('extrev_chairreq', 2, null),      -- administrators must approve potentially-conflicted reviewers
   ('pcrev_soft', 0, null);           -- soft review deadline is explicit 0
 

@@ -849,22 +849,22 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         $user_external = Contact::make_keyed($conf, ["email" => "external@_.com", "name" => "External Reviewer"])->store();
         assert(!!$user_external);
         $this->u_mgbaker->assign_review(17, $user_external->contactId, REVIEW_EXTERNAL,
-            ["round_number" => $conf->round_number("R2", false)]);
+            ["round_number" => $conf->round_number("R2")]);
         xassert(!$user_external->can_view_review($paper17, $rrow17m));
         xassert(!$user_external->can_view_review_identity($paper17, $rrow17m));
         xassert(!$this->u_mjh->can_view_review($paper17, $rrow17m));
-        $conf->save_setting("extrev_seerev", null);
-        $conf->save_setting("extrev_seerevid", null);
+        $conf->save_setting("viewrev_ext", -1);
+        $conf->save_setting("viewrevid_ext", -1);
         save_review(17, $user_external, [
             "ovemer" => 2, "revexp" => 1, "papsum" => "Hi", "comaut" => "Bye", "ready" => true
         ]);
         MailChecker::check_db("test06-17external");
         xassert(!$user_external->can_view_review($paper17, $rrow17m));
         xassert(!$user_external->can_view_review_identity($paper17, $rrow17m));
-        $conf->save_setting("extrev_seerev", 1);
+        $conf->save_setting("viewrev_ext", null);
         xassert($user_external->can_view_review($paper17, $rrow17m));
         xassert(!$user_external->can_view_review_identity($paper17, $rrow17m));
-        $conf->save_setting("extrev_seerevid", 1);
+        $conf->save_setting("viewrevid_ext", null);
         xassert($user_external->can_view_review($paper17, $rrow17m));
         xassert($user_external->can_view_review_identity($paper17, $rrow17m));
 
@@ -875,9 +875,9 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         MailChecker::check_db("test06-17lixia");
         $rrow17h = fresh_review($paper17, $this->u_lixia);
         $rrow17x = fresh_review($paper17, $user_external);
-        xassert_eqq($rrow17m->reviewRound, $conf->round_number("R2", false));
-        xassert_eqq($rrow17h->reviewRound, $conf->round_number("R1", false));
-        xassert_eqq($rrow17x->reviewRound, $conf->round_number("R2", false));
+        xassert_eqq($rrow17m->reviewRound, $conf->round_number("R2"));
+        xassert_eqq($rrow17h->reviewRound, $conf->round_number("R1"));
+        xassert_eqq($rrow17x->reviewRound, $conf->round_number("R2"));
         Contact::update_rights();
 
         xassert($this->u_mgbaker->can_view_review($paper17, $rrow17m));
@@ -899,14 +899,6 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         xassert($user_external->can_view_review_identity($paper17, $rrow17h));
         xassert($user_external->can_view_review_identity($paper17, $rrow17x));
 
-        // check round_number(..., true) works
-        xassert_eqq($conf->setting_data("tag_rounds"), "R1 R2 R3");
-        xassert_eqq($conf->round_number("R1", false), 1);
-        xassert_eqq($conf->round_number("R1", true), 1);
-        xassert_eqq($conf->round_number("R5", false), null);
-        xassert_eqq($conf->round_number("R5", true), 4);
-        xassert_eqq($conf->setting_data("tag_rounds"), "R1 R2 R3 R5");
-
         // check the settings page works for round tags
         xassert_eqq($conf->assignment_round(false), 0);
         xassert_eqq($conf->assignment_round(true), 0);
@@ -927,7 +919,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         xassert($sv->execute());
         xassert_eqq($conf->assignment_round(false), 3);
         xassert_eqq($conf->assignment_round(true), 0);
-        xassert_eqq($conf->setting_data("tag_rounds"), "R1 R2 R3 R5");
+        xassert_eqq($conf->setting_data("tag_rounds"), "R1 R2 R3");
         xassert_eqq($conf->setting_data("rev_roundtag"), "R3");
         xassert_eqq($conf->setting_data("extrev_roundtag"), "unnamed");
         $sv = SettingValues::make_request($this->u_chair, [
@@ -947,7 +939,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         xassert_eqq($conf->setting_data("rev_roundtag"), null);
         xassert_eqq($conf->setting_data("extrev_roundtag"), null);
 
-        $this->save_round_settings(["R1" => ["extrev_seerev" => 0, "extrev_seerevid" => 0]]);
+        $this->save_round_settings(["R1" => ["viewrev_ext" => -1, "viewrevid_ext" => -1]]);
         Contact::update_rights();
 
         xassert($this->u_mgbaker->can_view_review($paper17, $rrow17m));
@@ -972,7 +964,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         assert_search_papers($this->u_lixia, "re:mgbaker", "1 13 17");
 
         // Extrev cannot view R1; PC cannot view R2
-        $this->save_round_settings(["R1" => ["extrev_seerev" => 0, "extrev_seerevid" => 0], "R2" => ["pc_seeallrev" => -1]]);
+        $this->save_round_settings(["R1" => ["viewrev_ext" => -1, "viewrevid_ext" => -1], "R2" => ["viewrev" => -1]]);
         Contact::update_rights();
 
         xassert($this->u_mgbaker->can_view_review($paper17, $rrow17m));
@@ -997,7 +989,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         assert_search_papers($this->u_lixia, "re:mgbaker", "1 13 17");
 
         // Extrev cannot view R1; PC cannot view R2 identity
-        $this->save_round_settings(["R1" => ["extrev_seerev" => 0, "extrev_seerevid" => 0], "R2" => ["pc_seeblindrev" => -1]]);
+        $this->save_round_settings(["R1" => ["viewrev_ext" => -1, "viewrevid_ext" => -1], "R2" => ["viewrevid" => -1]]);
         Contact::update_rights();
 
         xassert($this->u_mgbaker->can_view_review($paper17, $rrow17m));
@@ -1187,8 +1179,8 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
 
     function test_new_external_reviewer() {
         // new external reviewer does not get combined email
-        $this->conf->save_refresh_setting("extrev_seerev", 1);
-        $this->conf->save_refresh_setting("extrev_seerevid", null);
+        $this->conf->save_refresh_setting("viewrev_ext", null);
+        $this->conf->save_refresh_setting("viewrevid_ext", -1);
         $this->conf->save_refresh_setting("pcrev_editdelegate", 2);
         Contact::update_rights();
         MailChecker::clear();
@@ -1221,7 +1213,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         // check clickthrough
         assert($emptyuser->can_clickthrough("review", $paper17));
         $this->conf->set_opt("clickthrough_review", 1);
-        $this->conf->fmt()->add_override("clickthrough_review", "fart");
+        $this->conf->fmt()->define_override("clickthrough_review", "fart");
         assert(!$emptyuser->can_clickthrough("review", $paper17));
         assert(!$user_external2->can_clickthrough("review", $paper17));
         xassert_eqq($user_external2->reviewer_capability_user(17), null);
@@ -1317,7 +1309,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
             "has_sf" => 1,
             "sf/1/name" => "Fudge",
             "sf/1/id" => 1,
-            "sf/1/order" => 1,
+            "sf/1/order" => 100,
             "sf/1/type" => "numeric"
         ]);
         xassert($sv->execute());
@@ -1330,7 +1322,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
             "has_sf" => 1,
             "sf/1/name" => "Fudge",
             "sf/1/id" => 1,
-            "sf/1/order" => 1,
+            "sf/1/order" => 100,
             "sf/1/type" => "checkbox"
         ]);
         xassert(!$sv->execute());
@@ -1341,12 +1333,12 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
             "has_sf" => 1,
             "sf/1/name" => "Fudge",
             "sf/1/id" => 1,
-            "sf/1/order" => 1,
+            "sf/1/order" => 100,
             "sf/1/delete" => 1,
             "sf/2/name" => "Fudge",
             "sf/2/id" => "new",
             "sf/2/type" => "checkbox",
-            "sf/2/order" => 2
+            "sf/2/order" => 101
         ]);
         xassert($sv->execute());
         xassert_eqq($sv->changed_keys(), ["options"]);
@@ -1357,7 +1349,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
             "has_sf" => 1,
             "sf/1/name" => "Brownies",
             "sf/1/id" => "new",
-            "sf/1/order" => 100,
+            "sf/1/order" => 102,
             "sf/1/type" => "numeric"
         ]);
         xassert($sv->execute());
@@ -1366,16 +1358,19 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
 
         // `order` is obeyed
         $opts = array_values(Options_SettingParser::configurable_options($this->conf));
-        xassert_eqq(count($opts), 2);
-        xassert_eqq($opts[0]->name, "Fudge");
-        xassert_eqq($opts[1]->name, "Brownies");
+        $names = array_map(function ($opt) { return $opt->name; }, $opts);
+        xassert_in_eqq("Fudge", $names);
+        xassert_in_eqq("Brownies", $names);
+        $fudgepos = array_search("Fudge", $names);
+        $browniespos = array_search("Brownies", $names);
+        xassert_lt($fudgepos, $browniespos);
 
         // nonunique name => fail
         $sv = SettingValues::make_request($this->u_chair, [
             "has_sf" => 1,
             "sf/1/name" => "Brownies",
             "sf/1/id" => "new",
-            "sf/1/order" => 100,
+            "sf/1/order" => 102,
             "sf/1/type" => "numeric"
         ]);
         xassert(!$sv->execute());
@@ -1386,7 +1381,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         $sv = SettingValues::make_request($this->u_chair, [
             "has_sf" => 1,
             "sf/1/id" => "new",
-            "sf/1/order" => 100,
+            "sf/1/order" => 103,
             "sf/1/type" => "numeric"
         ]);
         xassert(!$sv->execute());

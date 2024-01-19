@@ -23,9 +23,15 @@
         "type": "checkbox"
     },
     {
+        "name": "comment_visibility_reviewer", "storage": "cmt_revid",
+        "title": "Comment visibility to reviewers",
+        "type": "radio", "values": [0, 1], "default_value": 0,
+        "json_values": ["if_reviewers_visible", "yes"]
+    },
+    {
         "name": "comment_visibility_anonymous", "storage": "cmt_revid",
         "title": "Anonymous PC discussion",
-        "type": "checkbox", "initial_value": 1
+        "type": "checkbox", "initial_value": 1, "json": "in"
     },
 
     {
@@ -49,7 +55,7 @@
     },
     {
         "name_pattern": "decision/$/id", "type": "int",
-        "internal": true, "json_export": true
+        "internal": true, "json": true
     },
     {
         "name_pattern": "decision/$/name",
@@ -172,17 +178,22 @@
         "type": "emailheader", "size": 80, "placeholder": "(none)"
     },
     {
-        "name": "options", "storage": "dat.options",
-        "internal": true, "type": "string", "hashid": false
+        "name": "options", "storage": "dat.options", "internal": true,
+        "type": "string", "hashid": false
     },
     {
-        "name": "options_version", "internal": true, "storage": "val.options"
+        "name": "options_version", "storage": "val.options", "internal": true
+    },
+    {
+        "name": "ioptions", "storage": "ioptions", "internal": true,
+        "type": "string", "hashid": false
     },
 
     {
         "name": "sf",
         "type": "oblist", "parser_class": "Options_SettingParser",
-        "title": "Submission form"
+        "title": "Submission form",
+        "parse_order": 1
     },
     {
         "name_pattern": "sf/$",
@@ -192,7 +203,7 @@
     },
     {
         "name_pattern": "sf/$/id", "type": "int",
-        "internal": true, "json_export": true
+        "internal": true, "json": true
     },
     {
         "name_pattern": "sf/$/name", "title": "Submission field name",
@@ -221,7 +232,7 @@
     },
     {
         "name_pattern": "sf/$/values", "type": "oblist", "storage": "member.xvalues",
-        "parser_class": "Options_SettingParser", "parse_order": 2,
+        "parser_class": "Options_SettingParser", "parse_order": 3,
         "title": "/Value list",
         "hashid": "sf/$/values_text"
     },
@@ -233,7 +244,7 @@
     },
     {
         "name_pattern": "sf/$/values/$$/id", "type": "int",
-        "internal": true, "json_export": true
+        "internal": true, "json": true
     },
     {
         "name_pattern": "sf/$/values/$$/name",
@@ -251,19 +262,19 @@
         "name_pattern": "sf/$/values_text", "storage": "none",
         "title": "/Choices",
         "type": "longstring", "size": 3, "autogrow": true,
-        "parser_class": "Options_SettingParser", "parse_order": 1,
-        "json_export": false
+        "parser_class": "Options_SettingParser", "parse_order": 2,
+        "json": false
     },
     {
         "name_pattern": "sf/$/required",
-        "title": "/Requirement",
+        "title": "/Required",
         "type": "radio", "values": [0, 1, 2],
         "json_values": ["no", "register", "submit"]
     },
     {
         "name_pattern": "sf/$/display",
         "title": "/Display",
-        "type": "radio", "values": ["prominent", "topics", "submission", "none"]
+        "type": "radio", "values": ["right", "rest", "top", "left", "title", "none"]
     },
     {
         "name_pattern": "sf/$/visibility",
@@ -271,16 +282,18 @@
         "type": "radio", "values": ["all", "nonblind", "conflict", "review", "admin"]
     },
     {
-        "name_pattern": "sf/$/presence",
-        "title": "/Presence",
-        "type": "radio", "values": ["all", "final", "custom"]
-    },
-    {
         "name_pattern": "sf/$/condition", "storage": "member.exists_if",
         "title": "/Presence condition",
-        "type": "string", "subtype": "search", "size": 30, "placeholder": "Search",
-        "parser_class": "SubFieldCondition_SettingParser", "parse_order": 2
+        "type": "string", "subtype": "condition", "size": 30, "placeholder": "Search",
+        "parse_order": 3
     },
+    {
+        "name_pattern": "sf/$/edit_condition", "storage": "member.editable_if",
+        "title": "/Edit condition",
+        "type": "string", "subtype": "condition", "size": 30, "placeholder": "Search",
+        "parse_order": 3
+    },
+    {   "name_pattern": "sf/$/editcondition", "alias_pattern": "rf/$/edit_condition"   },
     {
         "name_pattern": "sf/$/min",
         "title": "/Minimum value count",
@@ -295,15 +308,17 @@
         "name": "sf_abstract", "storage": "ova.noAbstract",
         "title": "Submission abstract required",
         "type": "radio",
-        "values": [0, 1, 2], "default_value": 0,
-        "json_values": ["required", "optional", "none"]
+        "values": [0, 2, 1, -1], "default_value": 0,
+        "json_values": ["required", "optional", "none", "other"],
+        "json": "in"
     },
     {
         "name": "sf_pdf_submission", "storage": "ova.noPapers",
         "title": "Submission PDF required",
         "type": "radio",
-        "values": [0, 1, 2], "default_value": 0,
-        "json_values": ["required", "optional", "none"]
+        "values": [0, 2, 1, -1], "default_value": 0,
+        "json_values": ["required", "optional", "none", "other"],
+        "json": "in"
     },
     {
         "name": "author_visibility", "storage": "sub_blind",
@@ -320,12 +335,8 @@
     {
         "name": "sf_author_max", "storage": "ova.maxAuthors", "type": "nonnegint",
         "title": "Maximum authors per submission",
-        "default_value": 0
-    },
-    {
-        "name": "sf_author_min", "storage": "ova.minAuthors", "type": "nonnegint",
-        "title": "Minimum authors per submission",
-        "default_value": 0
+        "default_value": 0,
+        "json": "in"
     },
     {
         "name": "sf_pc_conflicts", "storage": "sub_pcconf",
@@ -424,7 +435,7 @@
     },
     {
         "name_pattern": "response/$/id", "type": "int",
-        "internal": true, "json_export": true
+        "internal": true, "json": true
     },
     {
         "name_pattern": "response/$/name",
@@ -461,9 +472,9 @@
         "type": "nonnegint", "size": 5, "placeholder": "none", "default_value": 0
     },
     {
-        "name_pattern": "response/$/truncate",
+        "name_pattern": "response/$/hard_wordlimit",
         "title": "/Hard word limit",
-        "type": "checkbox"
+        "type": "nonnegint", "size": 5, "placeholder": "none", "default_value": 0
     },
     {
         "name_pattern": "response/$/instructions",
@@ -505,16 +516,16 @@
     },
     {
         "name": "review_visibility_author_tags", "storage": "tag_au_seerev",
-        "title": "Review visibility tags",
+        "title": "Review visibility tags", "json": "in",
         "type": "taglist", "size": 24,
         "parser_class": "ReviewVisibility_SettingParser"
     },
     {
-        "name": "review_visibility_external", "storage": "extrev_seerev",
+        "name": "review_visibility_external", "storage": "viewrev_ext",
         "title": "External reviewers can view reviews",
         "type": "radio",
-        "values": [0, 1], "default_value": 0, "initial_value": 1,
-        "json_values": ["no", "yes"],
+        "values": [-1, 0], "default_value": 0,
+        "json_values": ["never", "after_review"],
         "parser_class": "Review_SettingParser"
     },
     {
@@ -523,31 +534,31 @@
         "type": "checkbox"
     },
     {
-        "name": "review_visibility_pc", "storage": "pc_seeallrev",
+        "name": "review_visibility_pc", "storage": "viewrev",
         "title": "PC can see all review contents",
         "type": "radio",
-        "values": [0, 1, 3, 4], "default_value": 0,
-        "json_values": ["assignment_complete", "all", "assignment_not_incomplete", "all_assignments_complete"]
+        "values": [-1, 0, 1, 3, 4], "default_value": 0,
+        "json_values": ["never", "after_review", "always", "assignment_not_incomplete", "all_assignments_complete"]
     },
     {
-        "name": "review_identity_visibility_external", "storage": "extrev_seerevid",
+        "name": "review_identity_visibility_external", "storage": "viewrevid_ext",
         "title": "External reviewers can view reviewer identities",
         "type": "radio",
-        "values": [0, 1, 2], "default_value": 0, "initial_value": 1,
+        "values": [-1, 0, 1], "default_value": 0,
         "json_values": ["never", "after_review", "always"]
     },
     {
-        "name": "review_identity_visibility_pc", "storage": "pc_seeblindrev",
+        "name": "review_identity_visibility_pc", "storage": "viewrevid",
         "title": "PC can see anonymous reviewers’ identities",
         "type": "radio",
-        "values": [0, 1], "default_value": 0,
-        "json_values": ["always", "after_review"]
+        "values": [-1, 0, 5, 1], "default_value": 0, "initial_value": 1,
+        "json_values": ["never", "after_review", "if_assigned", "always"]
     },
     {
         "name": "review_proposal", "storage": "extrev_chairreq",
         "title": "PC proposals for external reviewers",
         "type": "radio",
-        "values": [-1, 0, 1, 2], "default_value": 0, "initial_value": "approval_required_potential_conflict",
+        "values": [-1, 0, 1, 2], "default_value": 0, "initial_value": 2,
         "json_values": ["no", "yes", "approval_required", "approval_required_potential_conflict"]
     },
     {
@@ -570,7 +581,7 @@
     },
     {
         "name_pattern": "review/$/id", "type": "int",
-        "internal": true, "json_export": true
+        "internal": true, "json": true
     },
     {
         "name_pattern": "review/$/title", "internal": true, "parser_class": "Review_SettingParser"
@@ -603,13 +614,13 @@
         "type": "date", "subtype": "explicit_none", "placeholder": "same as PC"
     },
     {
-        "name": "review_default_round_index", "storage": "none", "json_export": false,
+        "name": "review_default_round_index", "storage": "none", "json": false,
         "title": "Default round for new reviews",
         "type": "nonnegint", "parser_class": "Review_SettingParser",
         "parse_order": 1
     },
     {
-        "name": "review_default_external_round_index", "storage": "none", "json_export": false,
+        "name": "review_default_external_round_index", "storage": "none", "json": false,
         "title": "Default round for new external reviews",
         "type": "nonnegint", "parser_class": "Review_SettingParser",
         "parse_order": 1
@@ -660,7 +671,7 @@
     },
     {
         "name_pattern": "rf/$/id", "type": "string",
-        "internal": true, "json_export": true
+        "internal": true, "json": true
     },
     {
         "name_pattern": "rf/$/name", "title": "Review field name",
@@ -688,7 +699,7 @@
     },
     {
         "name_pattern": "rf/$/required",
-        "title": "/Requirement",
+        "title": "/Required",
         "type": "radio", "values": [0, 1], "parse_order": 2
     },
     {
@@ -700,12 +711,12 @@
         "name_pattern": "rf/$/presence",
         "title": "/Presence",
         "type": "radio", "values": "auto",
-        "parser_class": "ReviewFieldCondition_SettingParser", "parse_order": 1, "json_export": false
+        "parser_class": "ReviewFieldCondition_SettingParser", "parse_order": 1, "json": false
     },
     {
         "name_pattern": "rf/$/condition", "storage": "member.exists_if",
         "title": "/Presence condition",
-        "type": "string", "subtype": "search", "size": 30, "placeholder": "Search",
+        "type": "string", "subtype": "condition", "size": 30, "placeholder": "Search",
         "parser_class": "ReviewFieldCondition_SettingParser", "parse_order": 2
     },
     {   "name_pattern": "rf/$/exists_if", "alias_pattern": "rf/$/condition"   },
@@ -728,7 +739,7 @@
     {   "name_pattern": "rf/$/values/$$/title", "internal": true, "parser_class": "ReviewForm_SettingParser"   },
     {
         "name_pattern": "rf/$/values/$$/id", "type": "int",
-        "internal": true, "json_export": true
+        "internal": true, "json": true
     },
     {
         "name_pattern": "rf/$/values/$$/symbol",
@@ -753,7 +764,7 @@
         "title": "/Choices",
         "type": "longstring", "size": 3, "autogrow": true,
         "parser_class": "ReviewForm_SettingParser", "parse_order": 1,
-        "json_export": false
+        "json": false
     },
     {
         "name_pattern": "rf/$/start", "internal": true
@@ -792,7 +803,7 @@
         "values": [0, 3, 1, 2], "default_value": 0,
         "json_values": ["admin", "unconflicted_pc", "pc", "au"],
         "parser_class": "DecisionVisibility_SettingParser",
-        "json_export": false
+        "json": "in"
     },
     {
         "name": "shepherd_visibility", "storage": "negval.shepherd_hide",
@@ -898,11 +909,18 @@
         "internal": true,
         "type": "date"
     },
+
     {
         "name": "tag_readonly", "storage": "tag_chair",
         "title": "Read-only tags",
         "type": "taglist", "subtype": "allow_wildcard", "size": 50, "autogrow": true,
         "parser_class": "Tags_SettingParser", "initial_value": "accept pcpaper reject"
+    },
+    {
+        "name": "tag_hidden",
+        "title": "Hidden tags",
+        "type": "taglist", "subtype": "allow_wildcard", "size": 50, "autogrow": true,
+        "parser_class": "Tags_SettingParser"
     },
 
     {   "name": "tag_color", "internal": true, "type": "string"   },
@@ -1000,12 +1018,14 @@
     {
         "name_pattern": "automatic_tag/$/search", "storage": "member.q",
         "title": "/Search",
-        "type": "string", "subtype": "search", "size": 50, "placeholder": "Search", "autogrow": true
+        "type": "string", "subtype": "search", "size": 50, "placeholder": "Search", "autogrow": true,
+        "parser_class": "AutomaticTag_SettingParser"
     },
     {
         "name_pattern": "automatic_tag/$/value", "storage": "member.v",
         "title": "/Value formula",
-        "type": "string", "subtype": "formula", "size": 10, "placeholder": "none", "autogrow": true
+        "type": "string", "subtype": "formula", "size": 10, "placeholder": "none", "autogrow": true,
+        "parser_class": "AutomaticTag_SettingParser"
     },
 
 
@@ -1022,7 +1042,7 @@
     },
     {
         "name_pattern": "topic/$/id", "type": "nonnegint",
-        "internal": true, "json_export": true
+        "internal": true, "json": true
     },
     {
         "name_pattern": "topic/$/name", "title": "Topic name",
@@ -1031,17 +1051,19 @@
     {
         "name": "new_topics", "title": "New topics",
         "type": "longstring", "parse_order": -1, "parser_class": "Topic_SettingParser",
-        "json_export": false
+        "json": false
     },
     {
         "name": "topic_max", "storage": "topic_max", "type": "nonnegint",
         "title": "Maximum topics per submission",
-        "default_value": 0
+        "default_value": 0,
+        "json": "in"
     },
     {
         "name": "topic_min", "storage": "topic_min", "type": "nonnegint",
         "title": "Minimum topics per submission",
-        "default_value": 0
+        "default_value": 0,
+        "json": "in"
     },
 
     {
@@ -1096,9 +1118,38 @@
     },
 
     {
-        "name": "json_settings", "storage": "none", "json_export": false,
+        "name": "json_settings", "storage": "none", "json": false,
         "parser_class": "JSON_SettingParser",
         "parse_order": -1000000
+    },
+
+    {   "name": "named_searches", "internal": true, "type": "string"   },
+    {
+        "name": "named_search", "type": "oblist",
+        "parser_class": "NamedSearch_SettingParser"
+    },
+    {
+        "name_pattern": "named_search/$",
+        "type": "object", "subtype": "NamedSearch_Setting",
+        "title_pattern": "${sv named_search/$/title}",
+        "parser_class": "NamedSearch_SettingParser"
+    },
+    {   "name_pattern": "named_search/$/id", "internal": true, "type": "string"   },
+    {
+        "name_pattern": "named_search/$/name",
+        "title": "Search name",
+        "type": "tag", "size": 20, "autogrow": true
+    },
+    {   "name_pattern": "named_search/$/title", "internal": true, "parser_class": "NamedSearch_SettingParser"   },
+    {
+        "name_pattern": "named_search/$/q",
+        "title": "/Search",
+        "type": "string", "subtype": "search"
+    },
+    {
+        "name_pattern": "named_search/$/display",
+        "title": "/Display",
+        "type": "radio", "values": ["default", "none", "highlight"], "default_value": "default"
     },
 
     {   "name": "extrev_hard_0", "merge": true, "storage": "extrev_hard"   },

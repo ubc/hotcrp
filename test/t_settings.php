@@ -175,13 +175,13 @@ class Settings_Tester {
         xassert_eqq(json_encode_db($this->conf->topic_set()->as_array()), '{"1":"Barf","2":"Fart","3":"Money"}');
 
         $sv = (new SettingValues($this->u_chair))->add_json_string('{
-            "reset": false,
             "topic": []
         }');
         xassert($sv->execute());
         xassert_eqq(json_encode_db($this->conf->topic_set()->as_array()), '{"1":"Barf","2":"Fart","3":"Money"}');
 
         $sv = (new SettingValues($this->u_chair))->add_json_string('{
+            "reset": true,
             "topic_reset": false,
             "topic": [{"id": 1, "name": "Berf"}]
         }');
@@ -196,13 +196,13 @@ class Settings_Tester {
         xassert_eqq(json_encode_db($this->conf->topic_set()->as_array()), '{"1":"Berf"}');
 
         $sv = (new SettingValues($this->u_chair))->add_json_string('{
-            "topic": [{"id": "new", "name": "Berf"}], "topic_reset": false
+            "topic": [{"id": "new", "name": "Berf"}]
         }');
         xassert(!$sv->execute());
         xassert_str_contains($sv->full_feedback_text(), "is not unique");
 
         $sv = (new SettingValues($this->u_chair))->add_json_string('{
-            "topic": [{"name": "Bingle"}, {"name": "Bongle"}], "reset": false
+            "topic": [{"name": "Bingle"}, {"name": "Bongle"}]
         }');
         xassert($sv->execute());
         xassert_eqq(json_encode_db($this->conf->topic_set()->as_array()), '{"1":"Berf","4":"Bingle","5":"Bongle"}');
@@ -602,6 +602,7 @@ class Settings_Tester {
             "rf/2/values_text" => "A. A\nB. B\nC. C"
         ]);
         xassert($sv->execute());
+        xassert_eqq($sv->changed_keys(), ["review_form"]);
 
         xassert_eqq($sv->conf->fetch_ivalue("select reviewId from PaperReview where paperId=30 limit 1"), null);
 
@@ -904,7 +905,7 @@ class Settings_Tester {
         xassert(!$sv->execute());
         xassert_str_contains(strtolower($sv->full_feedback_text()), "must come before");
 
-        xassert_eqq($sv->conf->round_number("Butt", false), 1);
+        xassert_eqq($sv->conf->round_number("Butt"), 1);
         $sv->conf->save_refresh_setting("pcrev_hard_1", $tn - 10);
         $sv = SettingValues::make_request($this->u_chair, [
             "has_review" => 1,
@@ -1038,7 +1039,7 @@ class Settings_Tester {
         assert_search_papers($this->u_chair, "has:Buttresponse", "");
 
         // response instructions & defaults
-        $definstrux = $this->conf->fmt()->default_itext("resp_instrux");
+        $definstrux = $this->conf->fmt()->default_translation("resp_instrux");
         xassert_eqq($rrds[0]->instructions, null);
         xassert_eqq($rrds[0]->instructions($this->conf), $definstrux);
         xassert_eqq($rrds[1]->instructions, null);
@@ -1102,6 +1103,7 @@ class Settings_Tester {
             "sf/1/type" => "radio"
         ]);
         xassert($sv->execute());
+
         $opt = $sv->conf->option_by_id(2);
         assert($opt instanceof Selector_PaperOption);
         xassert_eqq($opt->name, "Program");
@@ -1254,13 +1256,13 @@ class Settings_Tester {
         $sv = SettingValues::make_request($this->u_chair, [
             "has_sf" => 1,
             "sf/1/name" => "Joint concentration?",
-            "sf/1/presence" => "final"
+            "sf/1/condition" => "phase:final"
         ]);
         xassert($sv->execute());
         xassert_eqq(trim($sv->full_feedback_text()), "");
 
         $opt = $this->conf->checked_option_by_id($optid);
-        xassert_eqq($opt->final, true);
+        xassert_eqq($opt->is_final(), true);
     }
 
     function test_json_settings_api() {
@@ -1310,7 +1312,7 @@ class Settings_Tester {
 
     function test_terms_exist() {
         xassert_eqq($this->conf->opt("clickthrough_submit"), null);
-        xassert_eqq($this->conf->_i("clickthrough_submit"), "");
+        xassert_eqq($this->conf->_i("clickthrough_submit"), null);
 
         $sv = SettingValues::make_request($this->u_chair, [
             "submission_terms" => ""
@@ -1318,7 +1320,7 @@ class Settings_Tester {
         xassert($sv->execute());
         xassert_eqq($sv->changed_keys(), []);
         xassert_eqq($this->conf->opt("clickthrough_submit"), null);
-        xassert_eqq($this->conf->_i("clickthrough_submit"), "");
+        xassert_eqq($this->conf->_i("clickthrough_submit"), null);
 
         $sv = SettingValues::make_request($this->u_chair, [
             "submission_terms" => "xxx"
@@ -1342,7 +1344,7 @@ class Settings_Tester {
         xassert($sv->execute());
         xassert_eqq($sv->changed_keys(), ["opt.clickthrough_submit", "msg.clickthrough_submit"]);
         xassert_eqq($this->conf->opt("clickthrough_submit"), null);
-        xassert_eqq($this->conf->_i("clickthrough_submit"), "");
+        xassert_eqq($this->conf->_i("clickthrough_submit"), null);
     }
 
     static function unexpected_unified_diff($x, $y) {
@@ -1350,7 +1352,7 @@ class Settings_Tester {
         $diff = $dmp->line_diff($x, $y);
         $udiff = $dmp->line_diff_toUnified($diff, 10, 50);
         fwrite(STDERR, $udiff);
-        xassert_eqq($udiff, "");
+        xassert_eqq($udiff, "", caller_landmark());
     }
 
     function test_json_settings_roundtrip() {
@@ -1362,7 +1364,7 @@ class Settings_Tester {
         xassert(!isset($x->changes));
         xassert(is_object($x->settings));
         xassert_eqq($x->settings->review_blind, "blind");
-        xassert_eqq($x->settings->rf[5]["required"], false);
+        xassert_eqq($x->settings->rf[5]->required, false);
 
         $sa = json_encode_browser($x->settings, JSON_PRETTY_PRINT);
 
@@ -1370,6 +1372,7 @@ class Settings_Tester {
         xassert($x->ok);
         xassert_eqq($x->message_list, []);
         xassert_eqq($x->changes, []);
+        xassert_eqq($this->conf->setting_data("ioptions"), null);
         xassert_eqq($this->conf->fetch_ivalue("select value from Settings where name='rev_blind'"), null);
 
         $sb = json_encode_browser($x->settings, JSON_PRETTY_PRINT);
@@ -1411,16 +1414,334 @@ class Settings_Tester {
 
     function test_json_settings_silent_roundtrip() {
         $sv = new SettingValues($this->u_chair);
-        $j1 = json_encode($sv->all_json_choosev(false), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        $j1 = json_encode($sv->all_jsonv(["reset" => true]), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
 
         $sv = new SettingValues($this->u_chair);
         $sv->add_json_string($j1, "<roundtrip>");
         $sv->parse();
-        $j2 = json_encode($sv->all_json_choosev(false), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
-        $j3 = json_encode($sv->all_json_choosev(true), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        $j2 = json_encode($sv->all_jsonv(["reset" => true]), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
+        $j3 = json_encode($sv->all_jsonv(["new" => true, "reset" => true]), JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE);
         xassert_eqq($j2, $j1);
         if ($j3 !== $j1) {
             self::unexpected_unified_diff($j1, $j3);
         }
+    }
+
+    function test_new_fixed_id() {
+        $oids = array_keys($this->conf->options()->universal());
+        sort($oids);
+        xassert_eqq($oids, [1, 2, 3]);
+        xassert_neqq($this->conf->option_by_id(1), null);
+        xassert_neqq($this->conf->option_by_id(2), null);
+        xassert_neqq($this->conf->option_by_id(3), null);
+        xassert_eqq($this->conf->option_by_id(100), null);
+
+        // can create new options with unknown IDs
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":100,"name":"New fixed option","type":"text"}]}');
+        xassert($sv->execute());
+        xassert_eqq($sv->full_feedback_text(), "");
+
+        $opt = $this->conf->option_by_id(100);
+        xassert_neqq($opt, null);
+        xassert_eqq($opt->name ?? null, "New fixed option");
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":100,"name":"New fixed option","delete":true},{"id":102,"name":"Whatever","delete":true}]}');
+        xassert($sv->execute());
+        xassert_eqq($sv->full_feedback_text(), "");
+
+        // but cannot create new options with bad IDs
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":-100,"name":"Bad fixed option"}]}');
+        xassert(!$sv->execute());
+
+        // and cannot create options that overlap fixed options
+        $this->conf->set_opt("fixedOptions", '[{"id":102,"name":"Fixed version","type":"text","configurable":false}]');
+        $this->conf->load_settings();
+        $o102 = $this->conf->option_by_id(102);
+        xassert_eqq($o102->name, "Fixed version");
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":102,"name":"Bad fixed option","type":"text"}]}');
+        xassert(!$sv->execute());
+
+        // reset options
+        $this->conf->set_opt("fixedOptions", null);
+        $this->conf->load_settings();
+        $oids = array_keys($this->conf->options()->universal());
+        sort($oids);
+        xassert_eqq($oids, [1, 2, 3]);
+
+        // a new option with a fixed ID doesn't collide with new options
+        // without fixed IDs
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":"new","name":"First New","type":"text"},{"id":5,"name":"Second New","type":"text"},{"id":"new","name":"Third New","type":"text"}]}');
+        xassert($sv->execute());
+        xassert_eqq($this->conf->options()->find("First New")->id, 4);
+        xassert_eqq($this->conf->options()->find("Second New")->id, 5);
+        xassert_eqq($this->conf->options()->find("Third New")->id, 6);
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":4,"delete":true},{"id":5,"delete":true},{"id":6,"delete":true}]}');
+        xassert($sv->execute());
+    }
+
+    function test_title_properties() {
+        xassert_eqq($this->conf->setting_data("ioptions"), null);
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":"title","name":"Not Title"}]}');
+        xassert($sv->execute());
+        xassert_eqq($sv->full_feedback_text(), "");
+
+        $opt = $this->conf->option_by_id(PaperOption::TITLEID);
+        xassert_eqq($opt->name, "Not Title");
+        xassert_eqq($opt->required, PaperOption::REQ_REGISTER);
+
+        // only possible to configure allowed properties
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":"title","required":"no"}]}');
+        xassert(!$sv->execute());
+        xassert_str_contains($sv->full_feedback_text(), "cannot be configured");
+
+        $opt = $this->conf->option_by_id(PaperOption::TITLEID);
+        xassert_eqq($opt->name, "Not Title");
+        xassert_eqq($opt->required, PaperOption::REQ_REGISTER);
+
+        // saving same title
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":"title","name":"Not Title"}]}');
+        xassert($sv->execute());
+        xassert_eqq($sv->full_feedback_text(), "");
+
+        $opt = $this->conf->option_by_id(PaperOption::TITLEID);
+        xassert_eqq($opt->name, "Not Title");
+        xassert_eqq($opt->required, PaperOption::REQ_REGISTER);
+
+        // returning to default title
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":"title","name":"Title"}]}');
+        xassert($sv->execute());
+        xassert_eqq($sv->full_feedback_text(), "");
+
+        $opt = $this->conf->option_by_id(PaperOption::TITLEID);
+        xassert_eqq($opt->name, "Title");
+        xassert_eqq($opt->required, PaperOption::REQ_REGISTER);
+        xassert_eqq($this->conf->setting_data("ioptions"), null);
+    }
+
+    function test_cannot_delete_intrinsic() {
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf":[{"id":"title","delete":true}]}');
+        xassert(!$sv->execute());
+        xassert_str_contains($sv->full_feedback_text(), "cannot be deleted");
+    }
+
+    function test_intrinsic_title_shift() {
+        xassert_eqq($this->conf->setting("ioptions"), null);
+        xassert_eqq($this->conf->opt("noAbstract"), null);
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf_abstract":"optional","sf":[{"id":"abstract","name":"Abstract"}]}');
+        xassert($sv->execute());
+
+        $opt = $this->conf->option_by_id(PaperOption::ABSTRACTID);
+        xassert_eqq($opt->edit_title(), "Abstract (optional)");
+        xassert_eqq($this->conf->opt("noAbstract"), 2);
+        xassert_eqq($this->conf->setting("ioptions"), null);
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf_abstract":"required","sf":[{"id":"abstract","name":"Abstract (optional)"}]}');
+        xassert($sv->execute());
+
+        $opt = $this->conf->option_by_id(PaperOption::ABSTRACTID);
+        xassert_eqq($opt->edit_title(), "Abstract");
+        xassert_eqq($this->conf->opt("noAbstract"), null);
+        xassert_eqq($this->conf->setting("ioptions"), null);
+    }
+
+    function test_intrinsic_vs_wizard_settings() {
+        xassert_eqq($this->conf->setting("ioptions"), null);
+        xassert_eqq($this->conf->opt("noAbstract"), null);
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf_abstract":"optional","sf":[{"id":1,"name":"Calories?"}]}');
+        xassert($sv->execute());
+
+        $opt = $this->conf->option_by_id(PaperOption::ABSTRACTID);
+        xassert_eqq($opt->edit_title(), "Abstract (optional)");
+        xassert_eqq($this->conf->opt("noAbstract"), 2);
+        xassert_eqq($this->conf->setting("ioptions"), null);
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"sf_abstract":"required","sf":[{"id":"abstract","name":"Abstract (optional)"}]}');
+        xassert($sv->execute());
+
+        $opt = $this->conf->option_by_id(PaperOption::ABSTRACTID);
+        xassert_eqq($opt->edit_title(), "Abstract");
+        xassert_eqq($this->conf->opt("noAbstract"), null);
+        xassert_eqq($this->conf->setting("ioptions"), null);
+
+    }
+
+    function test_site_contact() {
+        $dsc = $this->conf->default_site_contact();
+        $sc = $this->conf->site_contact();
+        xassert_eqq($dsc->name(), "Jane Chair");
+        xassert_eqq($dsc->email, "chair@_.com");
+        xassert_eqq($sc->name(), "Eddie Kohler");
+        xassert_eqq($sc->email, "ekohler@hotcrp.lcdf.org");
+        xassert_eqq($this->conf->setting_data("opt.contactName"), null);
+        xassert_eqq($this->conf->setting_data("opt.contactEmail"), null);
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"site_contact_name":"Jane Chair","site_contact_email":"chair@_.com"}');
+        xassert($sv->execute());
+
+        $dsc = $this->conf->default_site_contact();
+        $sc = $this->conf->site_contact();
+        xassert_eqq($dsc->name(), "Jane Chair");
+        xassert_eqq($dsc->email, "chair@_.com");
+        xassert_eqq($sc->name(), "Jane Chair");
+        xassert_eqq($sc->email, "chair@_.com");
+        xassert_eqq($this->conf->opt("contactEmail"), "");
+        xassert_eqq($this->conf->setting_data("opt.contactEmail"), "");
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"site_contact_name":"Eddie Kohler","site_contact_email":"ekohler@hotcrp.lcdf.org"}');
+        xassert($sv->execute());
+
+        $dsc = $this->conf->default_site_contact();
+        $sc = $this->conf->site_contact();
+        xassert_eqq($dsc->name(), "Jane Chair");
+        xassert_eqq($dsc->email, "chair@_.com");
+        xassert_eqq($sc->name(), "Eddie Kohler");
+        xassert_eqq($sc->email, "ekohler@hotcrp.lcdf.org");
+        xassert_eqq($this->conf->setting_data("opt.contactName"), null);
+        xassert_eqq($this->conf->setting_data("opt.contactEmail"), null);
+        unset($this->conf->opt_override["contactName"]);
+        unset($this->conf->opt_override["contactEmail"]);
+    }
+
+    function test_site_contact_empty_defaults() {
+        $this->conf->set_opt("contactName", "Your Name");
+        $this->conf->set_opt("contactEmail", "you@example.com");
+        xassert(!array_key_exists("contactName", $this->conf->opt_override));
+        xassert(!array_key_exists("contactEmail", $this->conf->opt_override));
+        xassert_eqq($this->conf->setting("opt.contactName"), null);
+        xassert_eqq($this->conf->setting("opt.contactEmail"), null);
+
+        $this->conf->refresh_options();
+        $dsc = $this->conf->default_site_contact();
+        $sc = $this->conf->site_contact();
+        xassert_eqq($dsc->name(), "Jane Chair");
+        xassert_eqq($dsc->email, "chair@_.com");
+        xassert_eqq($sc->name(), "Jane Chair");
+        xassert_eqq($sc->email, "chair@_.com");
+        xassert_eqq($this->conf->setting_data("opt.contactName"), null);
+        xassert_eqq($this->conf->setting_data("opt.contactEmail"), null);
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"site_contact_name":"Jane Chair","site_contact_email":"chair@_.com"}');
+        xassert($sv->execute());
+
+        $dsc = $this->conf->default_site_contact();
+        $sc = $this->conf->site_contact();
+        xassert_eqq($dsc->name(), "Jane Chair");
+        xassert_eqq($dsc->email, "chair@_.com");
+        xassert_eqq($sc->name(), "Jane Chair");
+        xassert_eqq($sc->email, "chair@_.com");
+        xassert_eqq($this->conf->setting_data("opt.contactName"), null);
+        xassert_eqq($this->conf->setting_data("opt.contactEmail"), null);
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"site_contact_name":"Eddie Kohler","site_contact_email":"ekohler@hotcrp.lcdf.org"}');
+        xassert($sv->execute());
+
+        $dsc = $this->conf->default_site_contact();
+        $sc = $this->conf->site_contact();
+        xassert_eqq($dsc->name(), "Jane Chair");
+        xassert_eqq($dsc->email, "chair@_.com");
+        xassert_eqq($sc->name(), "Eddie Kohler");
+        xassert_eqq($sc->email, "ekohler@hotcrp.lcdf.org");
+        xassert_eqq($this->conf->setting_data("opt.contactName"), "Eddie Kohler");
+        xassert_eqq($this->conf->setting_data("opt.contactEmail"), "ekohler@hotcrp.lcdf.org");
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"site_contact_name":"","site_contact_email":""}');
+        xassert($sv->execute());
+
+        $dsc = $this->conf->default_site_contact();
+        $sc = $this->conf->site_contact();
+        xassert_eqq($dsc->name(), "Jane Chair");
+        xassert_eqq($dsc->email, "chair@_.com");
+        xassert_eqq($sc->name(), "Jane Chair");
+        xassert_eqq($sc->email, "chair@_.com");
+        xassert_eqq($this->conf->setting_data("opt.contactName"), null);
+        xassert_eqq($this->conf->setting_data("opt.contactEmail"), null);
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"site_contact_name":"Your Name","site_contact_email":"you@example.com"}');
+        xassert($sv->execute());
+
+        $dsc = $this->conf->default_site_contact();
+        $sc = $this->conf->site_contact();
+        xassert_eqq($dsc->name(), "Jane Chair");
+        xassert_eqq($dsc->email, "chair@_.com");
+        xassert_eqq($sc->name(), "Jane Chair");
+        xassert_eqq($sc->email, "chair@_.com");
+        xassert_eqq($this->conf->setting_data("opt.contactName"), null);
+        xassert_eqq($this->conf->setting_data("opt.contactEmail"), null);
+
+        $this->conf->set_opt("contactName", "Eddie Kohler");
+        $this->conf->set_opt("contactEmail", "ekohler@hotcrp.lcdf.org");
+        $this->conf->save_setting("opt.contactName", null);
+        $this->conf->save_refresh_setting("opt.contactEmail", null);
+        unset($this->conf->opt_override["contactName"]);
+        unset($this->conf->opt_override["contactEmail"]);
+    }
+
+    function test_default_review_round() {
+        xassert_eqq($this->conf->assignment_round_option(false), "Fart");
+        xassert_eqq($this->conf->assignment_round_option(true), "Fart");
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"review":[{"name":"Butt","delete":true},{"name":"Fart","delete":true},{"name":"R1"},{"name":"R2"}]}');
+        xassert($sv->execute());
+
+        xassert_eqq($this->conf->setting_data("tag_rounds"), "; ; R1 R2");
+        xassert_eqq($this->conf->assignment_round_option(false), "R1");
+        xassert_eqq($this->conf->assignment_round_option(true), "R1");
+
+        $sv = new SettingValues($this->u_chair);
+        $j = $sv->all_jsonv();
+        xassert_eqq($j->review[0]->name, "R1");
+        xassert_eqq($j->review[0]->id, 4);
+        xassert_eqq($this->conf->round_name(3), "R1");
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"review":[{"id":4,"name":"RR1"}]}');
+        xassert($sv->execute());
+
+        xassert_eqq($this->conf->setting_data("tag_rounds"), "; ; RR1 R2");
+        xassert_eqq($this->conf->assignment_round_option(false), "RR1");
+        xassert_eqq($this->conf->assignment_round_option(true), "RR1");
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"review":[{"id":4,"name":"R1"}],"review_default_round":"RR1"}');
+        xassert(!$sv->execute());
+
+        xassert_eqq($this->conf->round_name(3), "RR1");
+        xassert_eqq($this->conf->assignment_round_option(false), "RR1");
+        xassert_eqq($this->conf->assignment_round_option(true), "RR1");
+
+        $sv = new SettingValues($this->u_chair);
+        $sv->add_json_string('{"review":[{"id":4,"name":"R1"}],"review_default_round":"R1"}');
+        xassert($sv->execute());
+
+        xassert_eqq($this->conf->round_name(3), "R1");
+        xassert_eqq($this->conf->assignment_round_option(false), "R1");
+        xassert_eqq($this->conf->assignment_round_option(true), "R1");
     }
 }

@@ -32,6 +32,12 @@ body.paper {
 .paperinfo-c {
 	padding-right: 0;
 }
+.ple {
+	margin-left: 0;
+}
+.plet {
+	min-width: 7rem;
+}
 }
 
 @media screen and (max-width: 768px) {
@@ -205,6 +211,9 @@ table.pltable {
 td.pl.pl_title, td.pl.pl_text {
 	min-width: 20rem;
 }
+.plet {
+	min-width: 6rem;
+}
 .reinfotable {
 	font-size: smaller;
 	margin-top: -0.25em;
@@ -212,8 +221,7 @@ td.pl.pl_title, td.pl.pl_text {
 .rfd1, .rfd2 {
 	max-width: none;
 }
-.settings-sf-view, .settings-rf-view,
-.settings-sf-edit, .settings-rf-edit {
+.settings-xf-view, .settings-xf-edit {
 	padding: 6px 8px;
 }
 .settings-json-panels {
@@ -229,10 +237,14 @@ td.pl.pl_title, td.pl.pl_text {
 .w-text, .w-entry-text,
 .feedback, .feedback-list, .field-d,
 .revtext.format0, .cmttext.format0, .revtext .format0, .cmttext .format0,
-.overlong-expander,
-.main-column p, .main-column dl, .main-column pre.sample,
-.main-column ul, .main-column ol {
+.overlong-expander {
 	max-width: initial;
+}
+@layer theme {
+.main-column p, .main-column dl, .main-column pre.sample,
+.main-column ul, .main-column ol, .main-column ul.ctable {
+	max-width: initial;
+}
 }
 }
 
@@ -240,5 +252,8 @@ td.pl.pl_title, td.pl.pl_text {
 .revcard-render {
 	display: block;
 	margin-bottom: 0;
+}
+.plet {
+	min-width: 5rem;
 }
 }

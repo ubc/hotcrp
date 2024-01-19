@@ -7,7 +7,6 @@ CREATE TABLE `Capability` (
   `capabilityType` int(11) NOT NULL,
   `contactId` int(11) NOT NULL,
   `paperId` int(11) NOT NULL,
-  `otherId` int(11) NOT NULL DEFAULT 0,
   `timeCreated` bigint(11) NOT NULL,
   `timeUsed` bigint(11) NOT NULL DEFAULT 0,
   `timeInvalid` bigint(11) NOT NULL DEFAULT 0,
@@ -26,7 +25,7 @@ CREATE TABLE `Capability` (
 DROP TABLE IF EXISTS `Conferences`;
 CREATE TABLE `Conferences` (
   `confid` int(11) NOT NULL AUTO_INCREMENT,
-  `dbname` varbinary(64) DEFAULT NULL,
+  `confuid` varbinary(64) DEFAULT NULL,
   PRIMARY KEY (`confid`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -42,7 +41,9 @@ CREATE TABLE `ContactInfo` (
   `lastName` varbinary(240) NOT NULL DEFAULT '',
   `email` varchar(120) NOT NULL,
   `affiliation` varbinary(2048) NOT NULL DEFAULT '',
+  `orcid` varbinary(64) DEFAULT NULL,
   `disabled` tinyint(1) NOT NULL DEFAULT 0,
+  `cflags` int(11) NOT NULL DEFAULT 0,
   `data` varbinary(32767) DEFAULT NULL,
   `password` varbinary(2048) DEFAULT NULL,
   `passwordTime` int(11) NOT NULL DEFAULT 0,

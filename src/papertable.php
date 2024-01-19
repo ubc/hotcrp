@@ -48,17 +48,15 @@ class PaperTable {
     /** @var bool */
     private $allreviewslink;
 
-    /** @var bool
+    /** @var 0|1|2
      * @readonly */
-    public $editable = false;
+    private $edit_mode = 0;
     /** @var bool */
     private $useRequest;
     /** @var ?PaperStatus */
     private $edit_status;
-    /** @var list<PaperOption> */
-    private $edit_fields;
     /** @var bool */
-    public $edit_show_all_visibility = false;
+    public $settings_mode = false;
 
     /** @var ?list<MessageItem> */
     private $pre_status_feedback;
@@ -173,12 +171,12 @@ class PaperTable {
             if (($pid = $qreq->paperId) && ctype_digit($pid)) {
                 $title = "#{$pid}";
             } else {
-                $title = $conf->_c("paper_title", "Submission");
+                $title = $conf->_c5("paper_edit", "<0>Submission");
             }
             $t .= '">' . $title;
         } else if (!$prow->paperId) {
             $sr = $prow->submission_round();
-            $title = $conf->_c("paper_title", "New {$sr->title1}submission");
+            $title = $conf->_c5("paper_edit", "<0>New {sclass} {submission}", new FmtArg("sclass", $sr->tag, 0));
             $t .= '">' . $title;
         } else {
             $paperTable->initialize_list();
@@ -295,9 +293,10 @@ class PaperTable {
 
         // look up list description
         $list = null;
-        $listdesc = $this->qreq->ls;
-        if ($listdesc) {
+        if (($listdesc = $this->qreq->ls)) {
             if (($opt = PaperSearch::unparse_listid($listdesc))) {
+                /* XXX backward compat */
+                error_log("{$this->conf->dbname}: unexpected ls={$listdesc}");
                 $list = $this->try_list($opt, $prow);
             }
             if (!$list && preg_match('/\A(all|s):(.*)\z/s', $listdesc, $m)) {
@@ -333,14 +332,20 @@ class PaperTable {
         return $list;
     }
 
-    /** @param bool $editable
-     * @param bool $useRequest
+    /** @param bool $useRequest
      * @suppress PhanAccessReadOnlyProperty */
-    function set_edit_status(PaperStatus $status, $editable, $useRequest) {
+    function set_edit_status(PaperStatus $status, $useRequest) {
         assert($this->mode === "edit" && !$this->edit_status);
-        $this->editable = $editable;
-        $this->useRequest = $useRequest;
         $this->edit_status = $status;
+        if ($this->user->can_edit_paper($this->prow)) {
+            $this->edit_mode = 2;
+        } else if ($this->prow->has_author($this->user)
+                   && $this->prow->paperId > 0) {
+            $this->edit_mode = 1;
+        } else {
+            $this->edit_mode = 0;
+        }
+        $this->useRequest = $useRequest;
     }
 
     function set_review_values(ReviewValues $rvalues = null) {
@@ -367,7 +372,7 @@ class PaperTable {
         $require_folds = $this->mode === "re" || $this->mode === "assign";
         $this->allow_folds = $require_folds
             || ($this->mode === "p" && $this->can_view_reviews && !empty($this->all_rrows))
-            || ($this->mode === "edit" && !$this->editable);
+            || ($this->mode === "edit" && $this->edit_mode === 0);
 
         // 4="t": topics, 6="b": abstract, 7: [JavaScript abstract expansion],
         // 8="a": blind authors, 9="p": full authors
@@ -377,8 +382,8 @@ class PaperTable {
         // other expansions
         $next_foldnum = 10;
         foreach ($this->prow->page_fields() as $o) {
-            if ($o->page_order() >= 1000
-                && $o->page_order() < 5000
+            if ($o->display() >= PaperOption::DISP_TOP
+                && $o->display() <= PaperOption::DISP_REST
                 && ($o->id <= 0 || $this->user->allow_view_option($this->prow, $o))
                 && $o->page_group !== null) {
                 if (strlen($o->page_group) > 1
@@ -478,18 +483,21 @@ class PaperTable {
     /** @param ?string $heading
      * @return void */
     function print_editable_option_papt(PaperOption $opt, $heading = null, $rest = []) {
+        $input = $rest["input"] ?? true;
         if (!isset($rest["for"])) {
             $for = $opt->readable_formid();
         } else {
             $for = $rest["for"] ?? false;
         }
         echo '<div class="pf pfe';
-        if (!$opt->test_exists($this->prow) || ($rest["hidden"] ?? false)) {
+        if ((!$opt->test_exists($this->prow) && !$this->settings_mode)
+            || ($rest["hidden"] ?? false)) {
             echo ' hidden';
         }
-        if ($opt->exists_condition()) {
-            echo ' want-fieldchange has-edit-condition" data-edit-condition="', htmlspecialchars(json_encode_browser($opt->exists_script_expression($this->prow)));
-            Ht::stash_script('$(hotcrp.paper_edit_conditions)', 'edit_condition');
+        if ($opt->has_complex_exists_condition()
+            && !$this->settings_mode
+            && $input) {
+            echo ' has-edit-condition" data-edit-condition="', htmlspecialchars(json_encode_browser($opt->exists_script_expression($this->prow)));
         }
         echo '"><h3 class="', $this->control_class($opt->formid, "pfehead");
         if ($for === "checkbox") {
@@ -512,7 +520,7 @@ class PaperTable {
         $vis = $opt->visibility();
         if ($vis === PaperOption::VIS_ADMIN) {
             echo '<div class="field-visibility">(hidden from reviewers)</div>';
-        } else if ($this->edit_show_all_visibility) {
+        } else if ($this->settings_mode && $opt->id > 0) {
             if ($vis === PaperOption::VIS_AUTHOR) {
                 echo '<div class="field-visibility">(hidden on anonymous submissions)</div>';
             } else if ($vis === PaperOption::VIS_REVIEW) {
@@ -522,11 +530,19 @@ class PaperTable {
             }
         }
         echo '</h3>';
-        $this->print_field_hint($opt, $rest["context_args"] ?? null);
-        echo Ht::hidden("has_{$opt->formid}", 1);
+        $this->print_field_description($opt);
+        if ((!$input && $this->edit_mode === 2)
+            || ($this->admin && !$opt->test_editable($this->prow))) {
+            echo MessageSet::feedback_html([MessageItem::marked_note($input ? "<0>Only administrators can edit this field." : "<0>This field is not currently editable.")]);
+        }
+        if ($input) {
+            echo Ht::hidden("has_{$opt->formid}", 1);
+        }
     }
 
-    /** @param array<string,int|string> $extra
+    /** @param ?string $what
+     * @param string|array{string,string} $name
+     * @param array<string,int|string> $extra
      * @return string */
     private function papt($what, $name, $extra = []) {
         $fold = $extra["fold"] ?? false;
@@ -544,9 +560,9 @@ class PaperTable {
             list($divclass, $hdrclass) = ["pavt", "pavfn"];
         }
 
-        $c = "<div class=\"" . $this->control_class($what, $divclass);
-        if (($fold || $editfolder) && !($extra["float"] ?? false)) {
-            $c .= " ui js-foldup\"" . $foldtarget . ">";
+        $c = "<div class=\"" . ($what ? $this->control_class($what, $divclass) : $divclass);
+        if ($fold || $editfolder) {
+            $c .= " ui js-foldup\"{$foldtarget}>";
         } else {
             $c .= "\">";
         }
@@ -588,8 +604,8 @@ class PaperTable {
             $c .= '</button>';
         }
         $c .= "</h3>";
-        if (isset($extra["float"])) {
-            $c .= $extra["float"];
+        if (isset($extra["rest"])) {
+            $c .= $extra["rest"];
         }
         $c .= "</div>";
         return $c;
@@ -615,13 +631,11 @@ class PaperTable {
         return $this->edit_status ? $this->edit_status->feedback_html_at($field) : "";
     }
 
-    /** @param PaperOption $opt
-     * @param ?list<mixed> $context_args */
-    function print_field_hint($opt, $context_args = null) {
+    /** @param PaperOption $opt */
+    function print_field_description($opt) {
         echo $this->messages_at($opt->formid);
         $fr = new FieldRender(FieldRender::CFHTML);
-        $context_args = $context_args ?? [];
-        $opt->render_description($fr, ...$context_args);
+        $opt->render_description($fr);
         if (!$fr->is_empty()) {
             echo $fr->value_html("field-d");
         }
@@ -680,7 +694,7 @@ class PaperTable {
 
     /** @param PaperOption $o */
     function render_submission(FieldRender $fr, $o) {
-        assert(!$this->editable && $o->id == 0);
+        assert($this->edit_mode === 0 && $o->id === 0);
         $fr->title = false;
         $fr->value = "";
         $fr->value_format = 5;
@@ -695,20 +709,30 @@ class PaperTable {
         }
 
         // download
-        if ($this->user->can_view_pdf($this->prow)) {
-            $dprefix = "";
-            $dtype = $this->prow->finalPaperStorageId > 1 ? DTYPE_FINAL : DTYPE_SUBMISSION;
-            if (($doc = $this->prow->document($dtype))
-                && $doc->paperStorageId > 1) {
-                if (($stamps = self::pdf_stamps_html($doc))) {
-                    $stamps = '<span class="sep"></span>' . $stamps;
-                }
-                if ($dtype === DTYPE_FINAL) {
-                    $dhtml = $this->conf->option_by_id($dtype)->title_html();
-                } else {
-                    $dhtml = $o->title_html($this->prow->timeSubmitted == 0);
-                }
-                $fr->value .= '<p class="pgsm">' . $dprefix . $doc->link_html('<span class="pavfn">' . $dhtml . '</span>', DocumentInfo::L_REQUIREFORMAT) . $stamps . '</p>';
+        if (!$this->user->can_view_pdf($this->prow)) {
+            return;
+        }
+
+        $dtype = $this->prow->finalPaperStorageId > 1 ? DTYPE_FINAL : DTYPE_SUBMISSION;
+        if (($doc = $this->prow->document($dtype))
+            && $doc->paperStorageId > 1) {
+            if (($stamps = self::pdf_stamps_html($doc))) {
+                $stamps = '<span class="sep"></span>' . $stamps;
+            }
+            if ($dtype === DTYPE_FINAL) {
+                $dhtml = $this->conf->option_by_id($dtype)->title_html();
+            } else {
+                $dhtml = $o->title_html(new FmtArg("draft", $this->prow->timeSubmitted == 0));
+            }
+            $s = $doc->link_html("<span class=\"pavfn\">{$dhtml}</span>", DocumentInfo::L_REQUIREFORMAT);
+            $fr->value .= "<p class=\"pgsm\">{$s}{$stamps}</p>";
+            if ($dtype === DTYPE_FINAL
+                && $this->prow->paperStorageId > 1
+                && $this->prow->paperStorageId !== $doc->paperStorageId
+                && ($doc = $this->prow->document(DTYPE_SUBMISSION))) {
+                $dname = $this->conf->option_by_id(DTYPE_SUBMISSION)->title_html(new FmtArg("version", "submission"));
+                $s = $doc->link_html($dname, DocumentInfo::L_SMALL | DocumentInfo::L_NOSIZE);
+                $fr->value .= "<p class=\"pgsm small\">{$s}</p>";
             }
         }
     }
@@ -730,7 +754,8 @@ class PaperTable {
             if (!$this->allow_edit_final) {
                 foreach ($this->prow->form_fields() as $o) {
                     if ($o->required
-                        && $o->exists_condition() === null /* XXX */
+                        && $o->test_exists($this->prow)
+                        && !$o->has_complex_exists_condition() /* XXX */
                         && $o->editable_condition() === null
                         && ($x = $o->present_script_expression()))
                         $l[] = $x;
@@ -747,21 +772,9 @@ class PaperTable {
         return !empty($this->_autoready);
     }
 
-    /** @param string ...$m
-     * @return string */
-    static function mjoin(...$m) {
-        $t = "";
-        foreach ($m as $s) {
-            if ($s !== null && $s !== "")
-                $t .= $t === "" ? $s : " {$s}";
-        }
-        return $t;
-    }
-
     private function print_editable_complete() {
-        if ($this->prow->timeModified > 0) {
-            echo Ht::hidden("status:previous_version", $this->prow->timeModified);
-        }
+        echo Ht::hidden("status:phase", $this->allow_edit_final ? "final" : "review"),
+            Ht::hidden("status:if_unmodified_since", $this->prow->timeModified);
         if ($this->allow_edit_final) {
             echo Ht::hidden("status:submit", 1);
             return;
@@ -792,39 +805,39 @@ class PaperTable {
                 "data-urgent" => Conf::$now <= $sr->submit
             ]),
             '</span><strong>',
-            $this->conf->_("The submission is {$complete}"),
+            $this->conf->_5("<5>The {submission} is {$complete}"),
             '</strong></label>';
 
         // script.js depends on the HTML here
         $updatem = $submitm = $requiredm = $freezem = "";
         if (Conf::$now <= $sr->update) {
             $dlhtml = $this->conf->unparse_time_with_local_span($sr->update);
-            $updatem = "You can update this submission until {$dlhtml}.";
+            $updatem = $this->conf->_c("paper_edit", "<5>You can update this {submission} until {:expandedtime}.", $sr->update);
         }
         if (Conf::$now <= $sr->submit) {
-            $sdlhtml = $sr->update === $sr->submit ? "then" : $this->conf->unparse_time_with_local_span($sr->submit);
-            $submitm = "Submissions not marked {$complete} by {$sdlhtml} will not be evaluated.";
+            $submitm = $this->conf->_c("paper_edit", "<5>{Submissions} not marked {$complete} by {:expandedtime} will not be evaluated.", $sr->submit, $sr->update);
         }
         if ($sr->freeze) {
-            $freezem = "Completed submissions are frozen and cannot be changed further.";
+            $freezem = $this->conf->_c("paper_edit", "<5>Completed {submissions} are frozen and cannot be changed further.");
         }
         if ($autoready) {
-            $requiredm = "You must fill out all required fields before marking the submission {$complete}.";
+            $requiredm = $this->conf->_c("paper_edit", "<5>You must fill out all required fields before marking the {submission} {$complete}.");
             echo '<p class="feedback ',
                 $updatem || $submitm ? "is-urgent-note" : "is-note",
                 ' if-unready-required',
                 $ready_open ? " hidden" : "", '">',
-                self::mjoin($updatem, $submitm, $freezem, $requiredm), '</p>';
+                Ftext::as(5, Ftext::join_nonempty(" ", [$updatem, $submitm, $freezem, $requiredm])),
+                '</p>';
         }
         if ($submitm) {
             echo '<p class="feedback is-urgent-note if-unready',
                 $ready_open ? "" : " hidden", '">',
-                self::mjoin($updatem, $submitm, $freezem), '</p>';
+                Ftext::as(5, Ftext::join_nonempty(" ", [$updatem, $submitm, $freezem])), '</p>';
         }
         if ($updatem || $freezem) {
             echo '<p class="feedback is-note if-ready',
                 $checked ? "" : " hidden", '">',
-                self::mjoin($updatem, $submitm, $freezem), '</p>';
+                Ftext::as(5, Ftext::join_nonempty(" ", [$updatem, $submitm, $freezem])), '</p>';
         }
 
         echo Ht::hidden("has_status:submit", 1), "</div>\n";
@@ -836,8 +849,9 @@ class PaperTable {
 
         $html = $this->highlight($this->prow->abstract(), "ab", $match);
         if (trim($html) === "") {
-            if ($this->conf->opt("noAbstract"))
+            if (!$o->test_required($this->prow)) {
                 return;
+            }
             $html = "[No abstract]";
         }
         $extra = [];
@@ -849,7 +863,7 @@ class PaperTable {
             . $this->papt("abstract", $o->title_html(), $extra)
             . '<div class="pavb abstract';
         if (!$match && ($format = $this->prow->format_of($html))) {
-            $fr->value .= ' need-format" data-format="' . $format . '">' . $html;
+            $fr->value .= " need-format\" data-format=\"{$format}\">{$html}";
         } else {
             $fr->value .= ' format0">' . Ht::format0_html($html);
         }
@@ -897,7 +911,6 @@ class PaperTable {
             if ($n !== "" && $e !== "") {
                 $t .= " " . $e;
             }
-            $t = trim($t);
             if ($au->email !== ""
                 && $au->contactId
                 && $viewAs !== null
@@ -907,9 +920,9 @@ class PaperTable {
                     . $this->conf->selfurl($this->qreq, ["actas" => $au->email])
                     . "\">" . Ht::img("viewas.png", "[Act as]", ["title" => "Act as " . Text::nameo($au, NAME_P)]) . "</a>";
             }
-            $names[] = '<p class="odname">' . $t . '</p>';
+            $names[] = '<li class="odname">' . $t . '</li>';
         }
-        return join("\n", $names);
+        return "<ul class=\"x\">" . join("\n", $names) . "</ul>";
     }
 
     /** @param list<Author> $aulist
@@ -961,7 +974,7 @@ class PaperTable {
                 }
             } else {
                 $au = $contacts[] = new Author($u);
-                $au->nonauthor = true;
+                $au->status = Author::STATUS_NONAUTHOR;
             }
             $au->contactId = $u->contactId;
         }
@@ -977,7 +990,7 @@ class PaperTable {
         $vas = $this->user->view_authors_state($this->prow);
         if ($vas === 0) {
             $fr->value = '<div class="pg">'
-                . $this->papt("authors", $o->title_html(0))
+                . $this->papt("authors", $o->title_html())
                 . '<div class="pavb"><i>Hidden</i></div>'
                 . "</div>\n\n";
             return;
@@ -987,7 +1000,7 @@ class PaperTable {
         list($aulist, $contacts) = $this->_analyze_authors();
 
         // "author" or "authors"?
-        $auname = $o->title_html(count($aulist));
+        $auname = $o->title_html(new FmtArg("count", count($aulist)));
         if ($vas === 1) {
             $auname .= " <span class=\"n\">(deanonymized)</span>";
         } else if ($this->user->act_author_view($this->prow)) {
@@ -1015,7 +1028,7 @@ class PaperTable {
             $fr->value .= '<button type="button" class="q ui js-aufoldup" title="Toggle author display" aria-expanded="' . ($this->foldmap[8] ? "false" : "true") . '">';
         }
         if ($vas === 1) {
-            $fr->value .= '<span class="fn8">' . $o->title_html(0) . '</span><span class="fx8">';
+            $fr->value .= '<span class="fn8">' . $o->title_html() . '</span><span class="fx8">';
         }
         if ($this->allow_folds) {
             $fr->value .= expander(null, 9);
@@ -1069,12 +1082,12 @@ class PaperTable {
 
         // contacts
         if (!empty($contacts)
-            && ($this->editable
+            && ($this->edit_mode > 0
                 || $this->mode !== "edit"
                 || $this->prow->timeSubmitted <= 0)) {
             $contacts_option = $this->conf->option_by_id(PaperOption::CONTACTSID);
             $fr->value .= '<div class="pg fx9' . ($vas > 1 ? "" : " fx8") . '">'
-                . $this->papt("contacts", $contacts_option->title_html(count($contacts)))
+                . $this->papt("contacts", $contacts_option->title_html(new FmtArg("count", $contacts)))
                 . '<div class="pavb">'
                 . $this->authorData($contacts, "col", $this->user)
                 . "</div></div>\n\n";
@@ -1112,38 +1125,32 @@ class PaperTable {
         }
     }
 
-    /** @param list<PaperTableFieldRender> $renders
-     * @param int $first
-     * @param int $last
+    /** @param list<PaperTableFieldRender> $rgroup
      * @param int $vos
      * @return string */
-    private function _group_name_html($renders, $first, $last, $vos) {
+    private function _group_name_html($rgroup, $vos) {
+        $t1 = $t2 = $t3 = null;
         $group_names = [];
-        $group_flags = 0;
-        for ($i = $first; $i !== $last; ++$i) {
-            if ($renders[$i]->view_state >= $vos) {
-                $o = $renders[$i]->option;
-                $group_names[] = $o->title();
-                if ($o->id === -1005) {
-                    $group_flags |= 1;
-                } else if ($o->has_document()) {
-                    $group_flags |= 2;
+        foreach ($rgroup as $r) {
+            if ($r->view_state >= $vos) {
+                $title = $r->option->title();
+                $group_names[] = $title;
+                if ($r->option->id === -1005) {
+                    $t1 = $title;
+                } else if ($r->option->has_document()) {
+                    $t2 = "Attachments";
                 } else {
-                    $group_flags |= 4;
+                    $t3 = "Options";
                 }
             }
         }
         $group_types = [];
-        if ($group_flags & 1) {
-            $group_types[] = "Topics";
-        }
-        if ($group_flags & 2) {
-            $group_types[] = "Attachments";
-        }
-        if ($group_flags & 4) {
-            $group_types[] = "Options";
-        }
-        return htmlspecialchars($this->conf->_c("field_group", $renders[$first]->option->page_group, commajoin($group_names), commajoin($group_types)));
+        $t1 !== null && ($group_types[] = $t1);
+        $t2 !== null && ($group_types[] = $t2);
+        $t3 !== null && ($group_types[] = $t3);
+        return Ftext::as(5, $this->conf->_i("sfgroup",
+            new FmtArg("group", $rgroup[0]->option->page_group),
+            new FmtArg("sf", $group_names), new FmtArg("types", $group_types)));
     }
 
     private function _print_pre_status_feedback() {
@@ -1219,7 +1226,7 @@ class PaperTable {
             if ($refusals && $refusals[0]->refusedReviewId) {
                 $this->_print_decline_reason($capu, $refusals[0]);
             } else if ($capuid) {
-                echo '<div class="msg msg-warning demargin remargin-left remargin-right"><p>You have declined to complete a review. Thank you for informing us.</p></div>';
+                echo "<div class=\"msg msg-warning demargin remargin-left remargin-right\"><p>Your review for this {$this->conf->snouns[0]} is currently inaccessible.</p></div>";
             }
         }
 
@@ -1231,11 +1238,10 @@ class PaperTable {
             htmlspecialchars($name), "</span></p>";
 
         $renders = [];
-        $fr = new FieldRender(FieldRender::CPAGE, $this->user);
-        $fr->table = $this;
+        $fr = (new FieldRender(FieldRender::CFHTML | FieldRender::CFPAGE))->make_table($this);
         foreach ($this->prow->page_fields() as $o) {
-            if ($o->page_order() < 1000
-                || $o->page_order() >= 5000
+            if ($o->display() < PaperOption::DISP_TOP
+                || $o->display() > PaperOption::DISP_REST
                 || ($vos = $this->user->view_option_state($this->prow, $o)) === 0) {
                 continue;
             }
@@ -1250,30 +1256,44 @@ class PaperTable {
 
         $lasto1 = null;
         $in_paperinfo_i = false;
-        for ($first = 0; $first !== count($renders); $first = $last) {
-            // compute size of group
-            $o1 = $renders[$first]->option;
-            $last = $first + 1;
+        $i = 0;
+        $nr = count($renders);
+        while ($i !== $nr) {
+            $rgroup = [$renders[$i]];
+            ++$i;
+            if (!$rgroup[0]) {
+                continue;
+            }
+            $o1 = $rgroup[0]->option;
+
+            // collect group
             if ($o1->page_group !== null && $this->allow_folds) {
-                while ($last !== count($renders)
-                       && $renders[$last]->option->page_group === $o1->page_group) {
-                    ++$last;
+                for ($j = $i; $j !== $nr; ++$j) {
+                    if ($renders[$j]
+                        && $renders[$j]->option->page_group === $o1->page_group) {
+                        $rgroup[] = $renders[$j];
+                        if ($i === $j) {
+                            ++$i;
+                        } else {
+                            $renders[$j] = null;
+                        }
+                    }
                 }
             }
 
+            // compute view state
             $nvos1 = 0;
-            for ($i = $first; $i !== $last; ++$i) {
-                if ($renders[$i]->view_state === 1) {
+            foreach ($rgroup as $r) {
+                if ($r->view_state === 1)
                     ++$nvos1;
-                }
             }
 
             // change column
-            if ($o1->page_order() >= 2000) {
-                if (!$lasto1 || $lasto1->page_order() < 2000) {
+            if ($o1->display() >= PaperOption::DISP_LEFT) {
+                if (!$lasto1 || $lasto1->display() < PaperOption::DISP_LEFT) {
                     echo '<div class="paperinfo"><div class="paperinfo-c">';
-                } else if ($o1->page_order() >= 3000
-                           && $lasto1->page_order() < 3000) {
+                } else if ($o1->display() >= PaperOption::DISP_RIGHT
+                           && $lasto1->display() < PaperOption::DISP_RIGHT) {
                     if ($in_paperinfo_i) {
                         echo '</div>'; // paperinfo-i
                         $in_paperinfo_i = false;
@@ -1294,27 +1314,27 @@ class PaperTable {
 
             // echo start of group
             if ($o1->page_group !== null && $this->allow_folds) {
-                if ($nvos1 === 0 || $nvos1 === $last - $first) {
-                    $group_html = $this->_group_name_html($renders, $first, $last, $nvos1 === 0 ? 2 : 1);
+                if ($nvos1 === 0 || $nvos1 === count($rgroup)) {
+                    $group_html = $this->_group_name_html($rgroup, $nvos1 === 0 ? 2 : 1);
                 } else {
-                    $group_html = $this->_group_name_html($renders, $first, $last, 2);
-                    $gn1 = $this->_group_name_html($renders, $first, $last, 1);
+                    $group_html = $this->_group_name_html($rgroup, 2);
+                    $gn1 = $this->_group_name_html($rgroup, 1);
                     if ($group_html !== $gn1) {
                         $group_html = "<span class=\"fn8\">{$group_html}</span><span class=\"fx8\">{$gn1}</span>";
                     }
                 }
 
                 $class = "pg";
-                if ($nvos1 === $last - $first) {
+                if ($nvos1 === count($rgroup)) {
                     $class .= " fx8";
                 }
                 $foldnum = $this->foldnumber[$o1->page_group] ?? 0;
-                if ($foldnum && $renders[$first]->title !== "") {
-                    $group_html = "<span class=\"fn{$foldnum}\">{$group_html}</span><span class=\"fx{$foldnum}\">" . $renders[$first]->title . '</span>';
-                    $renders[$first]->title = false;
-                    $renders[$first]->value = '<div class="'
-                        . ($renders[$first]->value_long ? "pg" : "pgsm")
-                        . ' pavb">' . $renders[$first]->value . '</div>';
+                if ($foldnum && $rgroup[0]->title !== "") {
+                    $group_html = "<span class=\"fn{$foldnum}\">{$group_html}</span><span class=\"fx{$foldnum}\">" . $rgroup[0]->title . '</span>';
+                    $rgroup[0]->title = false;
+                    $rgroup[0]->value = '<div class="'
+                        . ($rgroup[0]->value_long ? "pg" : "pgsm")
+                        . ' pavb">' . $rgroup[0]->value . '</div>';
                 }
                 echo '<div class="', $class, '">';
                 if ($foldnum) {
@@ -1333,29 +1353,28 @@ class PaperTable {
             }
 
             // echo contents
-            for ($i = $first; $i !== $last; ++$i) {
-                $x = $renders[$i];
-                if ($x->value_long === false
-                    || (!$x->value_long && $x->title === "")) {
+            foreach ($rgroup as $r) {
+                if ($r->value_long === false
+                    || (!$r->value_long && $r->title === "")) {
                     $class = "pgsm";
                 } else {
                     $class = "pg";
                 }
-                if ($x->value === ""
-                    || ($x->title === "" && preg_match('{\A(?:[^<]|<a|<span)}', $x->value))) {
+                if ($r->value === ""
+                    || ($r->title === "" && preg_match('/\A(?:[^<]|<a|<span)/i', $r->value))) {
                     $class .= " outdent";
                 }
-                if ($x->view_state === 1) {
+                if ($r->view_state === 1) {
                     $class .= " fx8";
                 }
-                if ($x->title === false) {
-                    echo $x->value;
-                } else if ($x->title === "") {
-                    echo '<div class="', $class, '">', $x->value, '</div>';
-                } else if ($x->value === "") {
-                    echo '<div class="', $class, '"><h3 class="pavfn">', $x->title, '</h3></div>';
+                if ($r->title === false) {
+                    echo $r->value;
+                } else if ($r->title === "") {
+                    echo '<div class="', $class, '">', $r->value, '</div>';
+                } else if ($r->value === "") {
+                    echo '<div class="', $class, '"><h3 class="pavfn">', $r->title, '</h3></div>';
                 } else {
-                    echo '<div class="', $class, '"><div class="pavt"><h3 class="pavfn">', $x->title, '</h3></div><div class="pavb">', $x->value, '</div></div>';
+                    echo '<div class="', $class, '"><div class="pavt"><h3 class="pavfn">', $r->title, '</h3></div><div class="pavb">', $r->value, '</div></div>';
                 }
             }
 
@@ -1363,7 +1382,7 @@ class PaperTable {
             if ($o1->page_group !== null && $this->allow_folds) {
                 echo '</div></div>';
             }
-            if ($o1->page_order() >= 2000
+            if ($o1->display() >= PaperOption::DISP_LEFT
                 && $o1->page_expand) {
                 echo '</div>';
             }
@@ -1374,7 +1393,7 @@ class PaperTable {
         if ($in_paperinfo_i) {
             echo '</div>';
         }
-        if ($lasto1 && $lasto1->page_order() >= 2000) {
+        if ($lasto1 && $lasto1->display() >= PaperOption::DISP_LEFT) {
             echo '</div></div>';
         }
         echo '</div>'; // #foldpaper
@@ -1442,7 +1461,7 @@ class PaperTable {
     }
 
     private function _print_ps_pc_conflicts() {
-        assert(!$this->editable && $this->prow->paperId);
+        assert($this->edit_mode === 0 && $this->prow->paperId);
         $pcconf = [];
         $this->conf->pc_members(); // to ensure pc_index is set
         foreach ($this->prow->conflict_list() as $cu) {
@@ -1451,10 +1470,10 @@ class PaperTable {
                 continue;
             }
             $h = $this->user->reviewer_html_for($cu->user);
-            $pcconf[$cu->user->pc_index] = "<span class=\"taghl\" title=\"{$cu->user->email}\">{$h}</span>";
+            $pcconf[$cu->user->pc_index] = "<li class=\"odname\"><span class=\"taghl\" title=\"{$cu->user->email}\">{$h}</span></li>";
         }
         if (empty($pcconf)) {
-            $pcconf[] = 'None';
+            $pcconf[] = '<li class="od">None</li>';
         }
         ksort($pcconf);
         $option = $this->conf->option_by_id(PaperOption::PCCONFID);
@@ -1462,11 +1481,9 @@ class PaperTable {
         echo Ht::unstash_script("hotcrp.fold_storage.call(\$\$(\"foldpspcconf\"))"),
             $this->papt("pc_conflicts", $option->title_html(),
                         ["type" => "ps", "fold" => "pspcconf"]),
-            '<ul class="fx x namelist-columns">';
-        foreach ($pcconf as $n) {
-            echo '<li class="od">', $n, '</li>';
-        }
-        echo '</ul></div>', "\n";
+            '<ul class="fx x namelist-columns">',
+            join("", $pcconf),
+            "</ul></div>\n";
     }
 
     private function _papstripLeadShepherd($type, $name) {
@@ -1573,7 +1590,7 @@ class PaperTable {
                     join("</li><li>", MessageSet::feedback_html_items($treport->message_list)), "</li></ul>";
             }
             if ($is_sitewide) {
-                echo '<p class="feedback is-warning">You have a conflict with this submission, so you can only edit its ', Ht::link("site-wide tags", $this->conf->hoturl("settings", "group=tags#tag_sitewide")), '.';
+                echo "<p class=\"feedback is-warning\">You have a conflict with this {$this->conf->snouns[0]}, so you can only edit its ", Ht::link("site-wide tags", $this->conf->hoturl("settings", "group=tags#tag_sitewide")), '.';
                 if ($this->user->allow_administer($this->prow)) {
                     echo ' ', Ht::link("Override your conflict", $this->conf->selfurl($this->qreq, ["forceShow" => 1])), ' to view and edit all tags.';
                 }
@@ -1629,114 +1646,167 @@ class PaperTable {
         $this->_papstripBegin("revpref");
         echo $this->papt("revpref", "Review preference", ["type" => "ps"]),
             "<form class=\"ui\">";
-        $rp = unparse_preference($this->prow->preference($this->user));
+        $rp = $this->prow->preference($this->user)->unparse();
         $rp = ($rp == "0" ? "" : $rp);
         echo "<input id=\"revprefform_d\" type=\"text\" name=\"revpref", $this->prow->paperId,
-            "\" size=\"4\" value=\"$rp\" class=\"revpref want-focus want-select\">",
+            "\" size=\"4\" value=\"{$rp}\" class=\"revpref want-focus want-select\">",
             "</form></div>\n";
         Ht::stash_script("hotcrp.add_preference_ajax(\"#revprefform_d\",true);hotcrp.shortcut(\"revprefform_d\").add()");
     }
 
-    private function papstrip_tag_entry($id) {
-        $this->_papstripBegin($id, !!$id, ["class" => "pste ui-fold js-fold-focus"]);
+    private function papstrip_onetag_begin() {
+        $this->_papstripBegin(null, false, ["class" => "pste ui-fold js-fold-focus has-fold foldc"]);
     }
 
-    private function papstrip_tag_float($tag, $kind, $type) {
+    /** @param string $tag
+     * @param 'rank'|'allotment'|'approval' $type
+     * @return string */
+    private function papstrip_onetag_result($tag, $type) {
+        // is-tag-index [is-tag-votish] [is-tag-report]
+        $mytag = "{$this->user->contactId}~{$tag}";
+        $myval = $this->prow->tag_value($mytag);
         if (!$this->user->can_view_tag($this->prow, $tag)) {
-            return "";
+            if ($type === "approval") {
+                return "";
+            } else if ($myval === null) {
+                return "<span class=\"is-tag-index hidden\" data-tag=\"{$mytag}\" data-prefix=\": \"></span>";
+            } else {
+                return "<span class=\"is-tag-index\" data-tag=\"{$mytag}\" data-prefix=\": \">: {$myval}</span>";
+            }
         }
-        $totval = $this->prow->tag_value($tag) ?? "";
-        $class = "is-nonempty-tags float-right" . ($totval === "" ? " hidden" : "");
-        $reverse = $type !== "rank";
-        $extradiv = "";
-        if (($type === "allotment" || $type === "approval")
-            && $this->user->can_view_peruser_tag($this->prow, $tag)) {
-            $class .= " need-tooltip";
-            $extradiv = ' data-tooltip-anchor="h" data-tooltip-info="votereport" data-tag="' . htmlspecialchars($tag) . '"';
+
+        $totval = $this->prow->tag_value($tag);
+        $report = $type !== "rank" && $this->user->can_view_peruser_tag($this->prow, $tag);
+        $repclass = $report ? " is-tag-report" : "";
+        if ($totval === null) {
+            $myclass = $myval === null || $type === "approval" ? " hidden" : "";
+            $mytext = $myval === null || $type === "approval" ? "" : ": {$myval}";
+            return "<span class=\"is-tag-index is-tag-votish fn{$repclass}{$myclass}\" data-tag=\"{$mytag}\" data-vote-type=\"{$type}\">{$mytext}</span>";
         }
-        return '<div class="' . $class . '"' . $extradiv
-            . '><a class="q" href="' . $this->conf->hoturl("search", ["q" => "show:#{$tag} sort:" . ($reverse ? "-" : "") . "#{$tag}"]) . '">'
-            . '<span class="is-tag-index" data-tag-base="' . $tag . '">' . $totval . '</span> ' . $kind . '</a></div>';
+
+        $sort = $type === "rank" ? "#{$tag}" : "-#{$tag}";
+        $totword = $type === "rank" ? "overall" : "total";
+        $url = $this->conf->hoturl("search", ["q" => "show:#{$tag} sort:{$sort}"]);
+        if ($report) {
+            $totlink = "<a class=\"q need-tooltip\" href=\"{$url}\" data-tooltip-anchor=\"h\" data-tooltip-info=\"votereport\" data-tag=\"{$tag}\">{$totval} {$totword}</a>";
+        } else {
+            $totlink = "<a class=\"q\" href=\"{$url}\">{$totval} {$totword}</a>";
+        }
+        $mytext = $myval === null || $type === "approval" ? "" : "{$myval}, ";
+        return "<span class=\"is-tag-index is-tag-votish fn{$repclass}\" data-tag=\"{$tag}\" data-vote-type=\"{$type}\">: {$mytext}{$totlink}</span>";
     }
 
-    private function papstrip_tag_entry_title($s, $tag, $value, $label) {
-        $ts = "#$tag";
+    /** @param string $tag
+     * @return string */
+    private function onetag($tag) {
         if (($color = $this->conf->tags()->color_classes($tag))) {
-            $ts = '<span class="' . $color . ' taghh">' . $ts . '</span>';
+            return "<span class=\"{$color} taghh\">#{$tag}</span>";
+        } else {
+            return "#{$tag}";
         }
-        $s = str_replace("{{}}", $ts, $s);
-        if ($value !== false) {
-            $s .= '<span class="fn is-nonempty-tags'
-                . ($value === "" ? " hidden" : "")
-                . '">: <span class="is-tag-index" data-tag-base="~'
-                . $tag . '">' . $value . '</span></span>';
-        }
-        return $label ? Ht::label($s, "tag:~{$tag} {$this->prow->paperId}") : $s;
     }
 
-    private function papstrip_rank($tag) {
-        $id = "rank_" . html_id_encode($tag);
-        $myval = $this->prow->tag_value($this->user->contactId . "~$tag") ?? "";
-        $totmark = $this->papstrip_tag_float($tag, "overall", "rank");
-
-        $this->papstrip_tag_entry($id);
-        echo Ht::form("", ["class" => "need-tag-index-form", "data-pid" => $this->prow->paperId]);
-        if (isset($this->qreq->forceShow)) {
-            echo Ht::hidden("forceShow", $this->qreq->forceShow);
+    /** @param string $tag
+     * @param 'rank'|'allotment'|'approval' $type
+     * @return string */
+    private function papstrip_onetag_heading($tag, $type) {
+        $s = $this->onetag($tag);
+        if ($type === "rank") {
+            return "{$s} rank";
+        } else if ($type === "approval") {
+            return "{$s} vote";
+        } else {
+            return "{$s} votes";
         }
-        echo $this->papt($id, $this->papstrip_tag_entry_title("{{}} rank", $tag, $myval, true),
-                         ["type" => "ps", "fold" => $id, "float" => $totmark, "fnclass" => "mf"]),
-            '<div class="fx">',
-            Ht::entry("tagindex", $myval,
-                ["size" => 4, "class" => "is-tag-index want-focus mf-label-success",
-                 "data-tag-base" => "~{$tag}", "inputmode" => "decimal",
+    }
+
+    /** @param string $tag
+     * @param 'rank'|'allotment'|'approval' $type */
+    private function papstrip_onetag_nonpc($tag, $type) {
+        if (!$this->user->can_view_tag($this->prow, $tag)
+            || $this->prow->tag_value($tag) === null) {
+            return;
+        }
+        $this->papstrip_onetag_begin();
+        echo $this->papt(null,
+                $this->papstrip_onetag_heading($tag, $type),
+                ["type" => "ps", "fnclass" => "mf",
+                 "rest" => $this->papstrip_onetag_result($tag, $type)]),
+            "</div>\n";
+    }
+
+    /** @param string $tag */
+    private function papstrip_rank($tag) {
+        if (!$this->user->is_pc_member()) {
+            $this->papstrip_onetag_nonpc($tag, "rank");
+            return;
+        }
+
+        $this->papstrip_onetag_begin();
+        $mytag = "{$this->user->contactId}~{$tag}";
+        $myval = $this->prow->tag_value($mytag);
+        echo $this->papt(null,
+                Ht::label($this->papstrip_onetag_heading($tag, "rank"), "tag:~{$tag} {$this->prow->paperId}"),
+                ["type" => "ps", "fold" => true, "fnclass" => "mf",
+                 "rest" => $this->papstrip_onetag_result($tag, "rank")]),
+            '<form class="ui-submit uin fx">',
+            Ht::entry("tagindex", $myval ?? "",
+                ["size" => 4, "class" => "uich is-tag-index want-focus mf-label-success",
+                 "data-tag" => $mytag, "inputmode" => "decimal",
                  "id" => "tag:~{$tag} {$this->prow->paperId}"]),
             ' <span class="barsep">·</span> ',
             '<a href="', $this->conf->hoturl("search", ["q" => "editsort:#~{$tag}"]), '">Edit all</a>',
             ' <div class="hint" style="margin-top:4px"><strong>Tip:</strong> <a href="', $this->conf->hoturl("search", ["q" => "editsort:#~{$tag}"]), '">Search “editsort:#~', $tag, '”</a> to drag and drop your ranking, or <a href="', $this->conf->hoturl("offline"), '">use offline reviewing</a> to rank many papers at once.</div>',
-            "</div></form></div>\n";
+            "</form></div>\n";
     }
 
+    /** @param string $tag
+     * @param float $allotment */
     private function papstrip_allotment($tag, $allotment) {
-        $id = "vote_" . html_id_encode($tag);
-        $myval = $this->prow->tag_value($this->user->contactId . "~$tag") ?? "";
-        $totmark = $this->papstrip_tag_float($tag, "total", "allotment");
-
-        $this->papstrip_tag_entry($id);
-        echo Ht::form("", ["class" => "need-tag-index-form", "data-pid" => $this->prow->paperId]);
-        if (isset($this->qreq->forceShow)) {
-            echo Ht::hidden("forceShow", $this->qreq->forceShow);
+        if (!$this->user->is_pc_member()) {
+            $this->papstrip_onetag_nonpc($tag, "allotment");
+            return;
         }
-        echo $this->papt($id, $this->papstrip_tag_entry_title("{{}} votes", $tag, $myval, true),
-                         ["type" => "ps", "fold" => $id, "float" => $totmark]),
-            '<div class="fx">',
-            Ht::entry("tagindex", $myval,
-                ["size" => 4, "class" => "is-tag-index want-focus mf-label-success",
-                 "data-tag-base" => "~{$tag}", "inputmode" => "decimal",
+
+        $this->papstrip_onetag_begin();
+        $mytag = "{$this->user->contactId}~{$tag}";
+        $myval = $this->prow->tag_value($mytag);
+        echo $this->papt(null,
+                Ht::label($this->papstrip_onetag_heading($tag, "allotment"), "tag:~{$tag} {$this->prow->paperId}"),
+                ["type" => "ps", "fold" => true,
+                 "rest" => $this->papstrip_onetag_result($tag, "allotment")]),
+            '<form class="ui-submit uin fx">',
+            Ht::entry("tagindex", $myval ?? "",
+                ["size" => 4, "class" => "uich is-tag-index want-focus mf-label-success mr-1",
+                 "data-tag" => $mytag, "inputmode" => "decimal",
                  "id" => "tag:~{$tag} {$this->prow->paperId}"]),
-            " &nbsp;of $allotment",
+            " of {$allotment}",
             ' <span class="barsep">·</span> ',
             '<a href="', $this->conf->hoturl("search", ["q" => "editsort:-#~{$tag}"]), '">Edit all</a>',
-            "</div></form></div>\n";
+            "</form></div>\n";
     }
 
+    /** @param string $tag */
     private function papstrip_approval($tag) {
-        $id = "approval_" . html_id_encode($tag);
-        $myval = $this->prow->tag_value($this->user->contactId . "~$tag") ?? "";
-        $totmark = $this->papstrip_tag_float($tag, "total", "approval");
-
-        $this->papstrip_tag_entry(null);
-        echo Ht::form("", ["class" => "need-tag-index-form", "data-pid" => $this->prow->paperId]);
-        if (isset($this->qreq->forceShow)) {
-            echo Ht::hidden("forceShow", $this->qreq->forceShow);
+        if (!$this->user->is_pc_member()) {
+            $this->papstrip_onetag_nonpc($tag, "approval");
+            return;
         }
-        echo $this->papt($id,
-            $this->papstrip_tag_entry_title('<label><span class="checkc">'
-                . Ht::checkbox("tagindex", "0", $myval !== "",
-                    ["class" => "is-tag-index want-focus", "data-tag-base" => "~$tag"])
-                . '</span>{{}} vote</label>', $tag, false, false),
-                ["type" => "ps", "fnclass" => "checki", "float" => $totmark]),
-            "</form></div>\n";
+
+        $this->papstrip_onetag_begin();
+        $mytag = "{$this->user->contactId}~{$tag}";
+        $myval = $this->prow->tag_value($mytag);
+        $xt = $this->onetag($tag) . " vote";
+        echo $this->papt(null,
+                '<label><span class="checkc">'
+                    . Ht::checkbox("tagindex", "0", $myval !== null,
+                        ["class" => "ui is-tag-index want-focus",
+                         "data-tag" => $mytag,
+                         "id" => "tag:~{$tag} {$this->prow->paperId}"])
+                    . "</span>{$xt}</label>",
+                ["type" => "ps", "fnclass" => "checki",
+                 "rest" => $this->papstrip_onetag_result($tag, "approval")]),
+            "</div>\n";
     }
 
     private function papstripWatch() {
@@ -1749,15 +1819,12 @@ class PaperTable {
         }
 
         $this->_papstripBegin();
-
-        echo '<form class="ui-submit uin">',
-            $this->papt("watch",
+        echo $this->papt("watch",
                 '<label><span class="checkc">'
                 . Ht::checkbox("follow", 1, $this->user->following_reviews($this->prow, -1), ["class" => "uich js-follow-change"])
                 . '</span>Email notification</label>',
                 ["type" => "ps", "fnclass" => "checki"]),
-            '<div class="pshint">Select to receive email on updates to reviews and comments.</div>',
-            "</form></div>\n";
+            "<div class=\"pshint\">Select to receive email on updates to reviews and comments.</div></div>\n";
     }
 
 
@@ -1803,9 +1870,9 @@ class PaperTable {
 
     private function _edit_message_new_paper_deadline(SubmissionRound $sr) {
         if ($sr->open <= 0 || $sr->open > Conf::$now) {
-            $msg = "<5>The site is not open for submissions." . $this->_deadline_override_message();
+            $msg = "<5>The site is not open for {$this->conf->snouns[1]}." . $this->_deadline_override_message();
         } else {
-            $msg = '<5>The <a href="' . $this->conf->hoturl("deadlines") . '">deadline</a> for registering submissions has passed.' . $this->deadline_is($sr->register) . $this->_deadline_override_message();
+            $msg = '<5>The <a href="' . $this->conf->hoturl("deadlines") . "\">deadline</a> for registering {$this->conf->snouns[1]} has passed." . $this->deadline_is($sr->register) . $this->_deadline_override_message();
         }
         $this->_main_message($msg, $this->admin ? 1 : 2);
     }
@@ -1813,19 +1880,23 @@ class PaperTable {
     private function _edit_message_new_paper() {
         $sr = $this->prow->submission_round();
         if ($this->admin || $sr->time_register(true)) {
-            $t = [$this->conf->_("Enter information about your submission.")];
-            if ($sr->register > 0 && $sr->update > 0 && $sr->register < $sr->update) {
-                $t[] = $this->conf->_("Submissions must be registered by %s and completed by %s.", $this->conf->unparse_time_long($sr->register), $this->conf->unparse_time_long($sr->update));
-                if (!$this->conf->opt("noPapers")) {
-                    $t[] = $this->conf->_("PDF upload is not required to register.");
+            $mt = [
+                $this->conf->_("<5>Enter information about your {submission}."),
+                $this->conf->_("<5>{Submissions} must be registered by {register:time} and completed by {submit:time}.", new FmtArg("register", $sr->register), new FmtArg("submit", $sr->update))
+            ];
+            if ($sr->register > 0 && ($sr->update <= 0 || $sr->register < $sr->update)) {
+                $popt = $this->conf->option_by_id(DTYPE_SUBMISSION);
+                if ($popt->test_exists($this->prow)
+                    && $popt->required !== PaperOption::REQ_REGISTER) {
+                    $mt[] = $this->conf->_("<5>{sf_submission} is not required to register.", new FmtArg("sf_submission", $popt->missing_title(), 0));
                 }
-            } else if ($sr->update > 0) {
-                $t[] = $this->conf->_("Submissions must be completed by %s.", $this->conf->unparse_time_long($sr->update));
             }
-            $this->_main_message("<5>" . join(" ", $t), 0);
+            if (($mtx = Ftext::join_nonempty(" ", $mt)) !== "") {
+                $this->_main_message($mtx, 0);
+            }
             if (($v = $this->conf->_i("submit"))) {
                 if (!Ftext::is_ftext($v)) {
-                    $v = "<5>$v";
+                    $v = "<5>{$v}";
                 }
                 $this->_main_message($v, 0);
             }
@@ -1840,40 +1911,34 @@ class PaperTable {
         $sr = $this->prow->submission_round();
         $viewable_decision = $this->prow->viewable_decision($this->user);
         if ($viewable_decision->sign < 0) {
-            $this->_main_message("<5>This submission was not accepted." . $this->_forceShow_message(), 1);
+            $this->_main_message("<5>This {$this->conf->snouns[0]} was not accepted." . $this->_forceShow_message(), 1);
         } else if ($this->prow->timeWithdrawn > 0) {
             if ($this->user->can_revive_paper($this->prow)) {
-                $this->_main_message("<5>This submission has been withdrawn, but you can still revive it." . $this->deadline_is($sr->update), 1);
+                $this->_main_message("<5>This {$this->conf->snouns[0]} has been withdrawn, but you can still revive it." . $this->deadline_is($sr->update), 1);
             } else {
-                $this->_main_message("<5>This submission has been withdrawn." . $this->_forceShow_message(), 1);
+                $this->_main_message("<5>This {$this->conf->snouns[0]} has been withdrawn." . $this->_forceShow_message(), 1);
             }
         } else if ($this->prow->timeSubmitted <= 0) {
             $whyNot = $this->user->perm_edit_paper($this->prow);
             if (!$whyNot) {
                 if (($missing = PaperTable::missing_required_fields($this->prow))) {
-                    $first = $this->conf->_("<5>This submission is not ready for review. Required fields %#s are missing.", PaperTable::field_title_links($missing, "missing_title"));
-                    $first = Ftext::unparse_as($first, 5);
+                    $first = $this->conf->_("<5>This {submission} is not ready for review. Required fields {:list} are missing.", PaperTable::field_title_links($missing, "missing_title"));
                 } else {
-                    $first = $this->conf->_("<5>This submission is marked as not ready for review.");
-                    $first = "<strong>" . Ftext::unparse_as($first, 5) . "</strong>";
+                    $first = "<5><strong>" . $this->conf->_5("<5>This {submission} is marked as not ready for review.") . "</strong>";
                 }
-                if ($sr->update > 0) {
-                    $rest = $this->conf->_("Submissions incomplete as of %s will not be considered.", $this->conf->unparse_time_long($sr->update));
-                } else {
-                    $rest = $this->conf->_("Incomplete submissions will not be considered.");
-                }
-                $this->_main_message("<5>{$first} {$rest}", MessageSet::URGENT_NOTE);
+                $rest = $this->conf->_c("paper_edit", "<0>Incomplete {submissions} will not be considered.", new FmtArg("deadline", $sr->update));
+                $this->_main_message(Ftext::join_nonempty(" ", [$first, $rest]), MessageSet::URGENT_NOTE);
             } else if (isset($whyNot["frozen"])
                        && $this->user->can_finalize_paper($this->prow)) {
-                $this->_main_message('<5>This submission is not ready for review. Although you cannot make further changes, the current version can be still be submitted for review.' . $this->deadline_is($sr->submit) . $this->_deadline_override_message(), 1);
+                $this->_main_message("<5>This {$this->conf->snouns[0]} is not ready for review. Although you cannot make further changes, the current version can be still be submitted for review." . $this->deadline_is($sr->submit) . $this->_deadline_override_message(), 1);
             } else if (isset($whyNot["deadline"])) {
                 if ($this->conf->time_between(null, $sr->submit, $sr->grace) > 0) {
                     $this->_main_message('<5>The site is not open for updates at the moment.' . $this->_deadline_override_message(), 1);
                 } else {
-                    $this->_main_message('<5>The <a href="' . $this->conf->hoturl("deadlines") . '">submission deadline</a> has passed and this submission will not be reviewed.' . $this->deadline_is($sr->submit) . $this->_deadline_override_message(), 1);
+                    $this->_main_message("<5>The <a href=\"" . $this->conf->hoturl("deadlines") . "\">submission deadline</a> has passed and this {$this->conf->snouns[0]} will not be reviewed." . $this->deadline_is($sr->submit) . $this->_deadline_override_message(), 1);
                 }
             } else {
-                $this->_main_message('<5>This submission is not ready for review and can’t be changed further. It will not be reviewed.' . $this->_deadline_override_message(), MessageSet::URGENT_NOTE);
+                $this->_main_message("<5>This {$this->conf->snouns[0]} is not ready for review and can’t be changed further. It will not be reviewed." . $this->_deadline_override_message(), MessageSet::URGENT_NOTE);
             }
         } else if ($this->conf->allow_final_versions()
                    && $viewable_decision->sign > 0) {
@@ -1887,13 +1952,13 @@ class PaperTable {
         } else if ($this->user->can_edit_paper($this->prow)) {
             if ($this->mode === "edit"
                 && (!$this->edit_status || !$this->edit_status->has_error())) {
-                $this->_main_message('<5>This submission is ready for review. You do not need to take further action, but you can still make changes if you wish.' . $this->deadline_is($sr->update, "submission deadline"), MessageSet::SUCCESS);
+                $this->_main_message("<5>This {$this->conf->snouns[0]} is ready for review. You do not need to take further action, but you can still make changes if you wish." . $this->deadline_is($sr->update, "submission deadline"), MessageSet::SUCCESS);
             }
         } else if ($this->mode === "edit") {
             if ($this->user->can_withdraw_paper($this->prow, true)) {
-                $t = "<5>This submission is under review and can’t be changed, but you can change its contacts or withdraw it from consideration.";
+                $t = "<5>This {$this->conf->snouns[0]} is under review and can’t be changed, but you can <a href=\"#contacts\">change its contacts</a> or withdraw it from consideration.";
             } else {
-                $t = "<5>This submission is under review and can’t be changed or withdrawn, but you can change its contacts.";
+                $t = "<5>This {$this->conf->snouns[0]} is under review and can’t be changed or withdrawn, but you can <a href=\"#contacts\">change its contacts</a>.";
             }
             $this->_main_message($t . $this->_deadline_override_message(), MessageSet::MARKED_NOTE);
         }
@@ -1914,7 +1979,9 @@ class PaperTable {
     static function missing_required_fields(PaperInfo $prow) {
         $missing = [];
         foreach ($prow->form_fields() as $o) {
-            if ($o->test_required($prow) && !$o->value_present($prow->force_option($o)))
+            if ($o->test_exists($prow)
+                && $o->test_required($prow)
+                && !$o->value_present($prow->force_option($o)))
                 $missing[] = $o;
         }
         return $missing;
@@ -1927,24 +1994,30 @@ class PaperTable {
         } else if ($this->conf->allow_final_versions()
                    && $this->prow->outcome_sign > 0
                    && !$this->prow->can_author_view_decision()) {
-            $this->_main_message("<5>The submission has been accepted, but its authors can’t see that yet. Once decisions are visible, the system will allow accepted authors to upload final versions.", 1);
+            $this->_main_message("<5>The {$this->conf->snouns[0]} has been accepted, but its authors can’t see that yet. Once decisions are visible, the system will allow accepted authors to upload final versions.", 1);
         } else {
-            $this->_main_message("<5>You aren’t a contact for this submission, but as an administrator you can still make changes.", MessageSet::MARKED_NOTE);
+            $this->_main_message("<5>You aren’t a contact for this {$this->conf->snouns[0]}, but as an administrator you can still make changes.", MessageSet::MARKED_NOTE);
         }
         if ($this->user->can_edit_paper($this->prow)
             && ($v = $this->conf->_i("submit"))) {
             if (!Ftext::is_ftext($v)) {
-                $v = "<5>$v";
+                $v = "<5>{$v}";
             }
             $this->_main_message($v, 0);
         }
         if ($this->edit_status->has_problem()
-            && ($this->edit_status->has_problem_at("contacts") || $this->editable)) {
-            $fields = array_filter($this->edit_fields ?? [], function ($o) {
-                return $this->edit_status->has_problem_at($o->formid);
-            });
+            && $this->edit_mode > 1) {
+            $fields = [];
+            $maxps = 0;
+            foreach ($this->prow->form_fields() as $o) {
+                if ($this->user->can_edit_option($this->prow, $o)
+                    && ($ps = $this->edit_status->problem_status_at($o->formid)) > 0) {
+                    $fields[] = $o;
+                    $maxps = max($maxps, $ps);
+                }
+            }
             if (!empty($fields)) {
-                $this->_main_message($this->conf->_c("paper_edit", "<5>Please check %s before completing the submission.", commajoin(self::field_title_links($fields, "edit_title"))), $this->edit_status->problem_status());
+                $this->_main_message($this->conf->_c("paper_edit", "<5>Please check {:list} before completing the {submission}.", self::field_title_links($fields, "edit_title")), $maxps);
             }
         }
     }
@@ -1956,8 +2029,8 @@ class PaperTable {
             $this->_edit_message_existing_paper();
         }
         if ($include_required && !$this->quit) {
-            foreach ($this->edit_fields as $e) {
-                if ($e->required) {
+            foreach ($this->prow->form_fields() as $o) {
+                if ($o->required) {
                     $this->_main_message('<5><span class="field-required-explanation">* Required</span>', 0);
                     break;
                 }
@@ -1983,9 +2056,9 @@ class PaperTable {
         if ($this->prow->timeWithdrawn > 0) {
             $revivable = $this->prow->submission_round()->time_submit(true);
             if ($revivable) {
-                return [Ht::submit("revive", "Revive submission", ["class" => "btn-primary"])];
+                return [Ht::submit("revive", "Revive {$this->conf->snouns[0]}", ["class" => "btn-primary"])];
             } else if ($this->admin) {
-                return [[Ht::button("Revive submission", ["class" => "ui js-override-deadlines", "data-override-text" => 'The <a href="' . $this->conf->hoturl("deadlines") . '">deadline</a> for reviving withdrawn submissions has passed. Are you sure you want to override it?', "data-override-submit" => "revive"]), "(admin only)"]];
+                return [[Ht::button("Revive {$this->conf->snouns[0]}", ["class" => "ui js-override-deadlines", "data-override-text" => 'The <a href="' . $this->conf->hoturl("deadlines") . "\">deadline</a> for reviving withdrawn {$this->conf->snouns[1]} has passed. Are you sure you want to override it?", "data-override-submit" => "revive"]), "(admin only)"]];
             } else {
                 return [];
             }
@@ -2007,9 +2080,8 @@ class PaperTable {
             if (!$whyNot) {
                 $buttons[] = [Ht::submit("update", $save_name, ["class" => "btn-primary btn-savepaper uic js-mark-submit"]), ""];
             } else if ($this->admin) {
-                $revWhyNot = $whyNot->filter(["deadline", "frozen"]);
-                $x = $revWhyNot->unparse_html() . " Are you sure you want to override the deadline?";
-                $buttons[] = [Ht::button($save_name, ["class" => "btn-primary btn-savepaper ui js-override-deadlines", "data-override-text" => $x, "data-override-submit" => "update"]), "(admin only)"];
+                $revWhyNot = $whyNot->filter(["deadline", "frozen"])->set("confirmOverride", true);
+                $buttons[] = [Ht::button($save_name, ["class" => "btn-primary btn-savepaper ui js-override-deadlines", "data-override-text" => $revWhyNot->unparse_html(), "data-override-submit" => "update"]), "(admin only)"];
             } else if (isset($whyNot["frozen"])
                        && $auuser->can_finalize_paper($this->prow)) {
                 $buttons[] = Ht::submit("update", $save_name, ["class" => "btn-savepaper uic js-mark-submit"]);
@@ -2059,9 +2131,6 @@ class PaperTable {
                 Ht::entry("status:notify_reason", $v, ["size" => 30, "placeholder" => "Optional explanation", "class" => "ignore-diff js-autosubmit", "aria-label" => "Explanation for update"]),
                 "</div>";
         }
-        if ($this->mode === "edit" && $this->allow_edit_final) {
-            echo Ht::hidden("submitfinal", 1);
-        }
 
         $buttons = $this->_collect_actions();
         if ($this->admin && $this->prow->paperId) {
@@ -2080,22 +2149,22 @@ class PaperTable {
             $this->papstripManager();
         }
         $this->papstripTags();
-        foreach ($this->conf->tags() as $ltag => $t) {
-            if ($this->user->can_edit_tag($this->prow, "~$ltag", null, 0)) {
-                if ($t->approval) {
+        foreach ($this->conf->tags()->sorted_entries_having(TagInfo::TF_APPROVAL | TagInfo::TF_ALLOTMENT | TagInfo::TF_RANK) as $t) {
+            if ($this->user->can_edit_tag($this->prow, "~{$t->tag}", null, 0)) {
+                if ($t->is(TagInfo::TF_APPROVAL)) {
                     $this->papstrip_approval($t->tag);
-                } else if ($t->allotment) {
+                } else if ($t->is(TagInfo::TF_ALLOTMENT)) {
                     $this->papstrip_allotment($t->tag, $t->allotment);
-                } else if ($t->rank) {
+                } else if ($t->is(TagInfo::TF_RANK)) {
                     $this->papstrip_rank($t->tag);
                 }
             }
         }
         $this->papstripWatch();
-        if ($this->user->can_view_conflicts($this->prow) && !$this->editable) {
+        if ($this->user->can_view_conflicts($this->prow) && $this->edit_mode === 0) {
             $this->_print_ps_pc_conflicts();
         }
-        if ($this->user->allow_view_authors($this->prow) && !$this->editable) {
+        if ($this->user->allow_view_authors($this->prow) && $this->edit_mode === 0) {
             $this->_print_ps_collaborators();
         }
         if ($this->user->can_set_decision($this->prow)) {
@@ -2214,8 +2283,9 @@ class PaperTable {
         }
         $form_js = [
             "id" => "f-paper",
-            "class" => "need-unload-protection ui-submit js-submit-paper",
-            "data-alert-toggle" => "paper-alert"
+            "name" => base64_encode(random_bytes(8)), // prevent FF from incorrectly autofilling on reload
+            "class" => "need-unload-protection need-diff-check ui-submit js-submit-paper",
+            "data-differs-toggle" => "paper-alert"
         ];
         if ($this->need_autoready()) {
             $form_js["class"] .= " uich js-paper-autoready";
@@ -2224,50 +2294,67 @@ class PaperTable {
         if ($this->prow->timeSubmitted > 0) {
             $form_js["data-submitted"] = $this->prow->timeSubmitted;
         }
-        if ($this->prow->paperId && !$this->editable) {
+        if ($this->prow->paperId && $this->edit_mode === 1) {
             $form_js["data-contacts-only"] = 1;
         }
         if ($this->useRequest) {
-            $form_js["class"] .= " alert";
+            $form_js["class"] .= " differs";
+            if ($this->problem_status_at("status:if_unmodified_since")) {
+                $form_js["class"] .= " need-highlight-differences";
+            }
         }
         echo Ht::form($this->conf->hoturl("=paper", $form_url), $form_js);
         Ht::stash_script('$(hotcrp.load_editable_paper)');
     }
 
+    private function _print_editable_fields() {
+        $fr = (new FieldRender(FieldRender::CFHTML | FieldRender::CFFORM | FieldRender::CFVERBOSE))->make_table($this);
+        foreach ($this->prow->form_fields() as $o) {
+            if (!$this->user->allow_view_option($this->prow, $o)) {
+                continue;
+            }
+            $ov = $this->prow->force_option($o);
+            if (!$this->user->can_edit_option($this->prow, $o)
+                || ($o->id !== PaperOption::CONTACTSID && $this->edit_mode === 1)) {
+                $fr->clear();
+                $o->render($fr, $ov);
+                if ($fr->is_empty()) {
+                    continue;
+                }
+                if ($o->type === "checkbox") {
+                    $heading = ($fr->value === "✓" ? "☑ " : "☐ ") . $this->edit_title_html($o);
+                    $fr->value = "";
+                } else {
+                    $heading = null;
+                }
+                $this->print_editable_option_papt($o, $heading, ["for" => false, "input" => false]);
+                $klass = $fr->value_long ? "papev w-text" : "papev"; // XXX too one-weird-trick
+                echo $fr->value_html($klass), "</div>";
+                continue;
+            }
+            $reqov = $ov;
+            if ($this->useRequest
+                && $this->qreq["has_{$o->formid}"]
+                && ($x = $o->parse_qreq($this->prow, $this->qreq))) {
+                $reqov = $x;
+            }
+            $o->print_web_edit($this, $ov, $reqov);
+        }
+    }
+
     private function _print_editable_body() {
         $this->_print_editable_form();
         $overrides = $this->user->add_overrides(Contact::OVERRIDE_EDIT_CONDITIONS);
-        echo '<div class="pedcard-head"><h2><span class="pedcard-header-name">';
-        if ($this->prow->paperId) {
-            echo "Edit Submission";
-        } else {
-            $sr = $this->prow->submission_round();
-            echo "New ", $sr->title1, "Submission";
-        }
-        echo '</span></h2></div>';
-
-        $this->edit_fields = array_values(array_filter(
-            $this->prow->form_fields(),
-            function ($o) {
-                return $this->user->can_edit_option($this->prow, $o);
-            }
-        ));
+        $sr = $this->prow->submission_round();
+        echo '<div class="pedcard-head"><h2><span class="pedcard-header-name">',
+            $this->conf->_c5("paper_edit", $this->prow->paperId ? "<0>Edit {sclass} {submission}" : "<0>New {sclass} {submission}", new FmtArg("sclass", $sr->tag)),
+            '</span></h2></div>';
 
         $this->_print_pre_status_feedback();
         $this->_print_edit_messages(true);
 
         if (!$this->quit) {
-            foreach ($this->edit_fields as $o) {
-                $ov = $reqov = $this->prow->force_option($o);
-                if ($this->useRequest
-                    && $this->qreq["has_{$o->formid}"]
-                    && ($x = $o->parse_qreq($this->prow, $this->qreq))) {
-                    $reqov = $x;
-                }
-                $o->print_web_edit($this, $ov, $reqov);
-            }
-
-            // Submit button
+            $this->_print_editable_fields();
             $this->print_editable_complete();
             $this->print_actions();
         }
@@ -2300,7 +2387,7 @@ class PaperTable {
             htmlspecialchars($this->conf->short_name), '</span> ';
         if ($this->prow->paperId <= 0) {
             $sr = $this->prow->submission_round();
-            echo "new {$sr->title1}submission";
+            echo $this->conf->_c5("paper_edit", "<0>new {sclass} {submission}", new FmtArg("sclass", $sr->tag, 0));
         } else if ($this->mode !== "re") {
             echo "#", $this->prow->paperId;
         } else if ($this->editrrow && $this->editrrow->reviewOrdinal) {
@@ -2321,15 +2408,15 @@ class PaperTable {
                     ? $this->conf->hoturl("paper", ["p" => $this->prow->paperId, "forceShow" => null])
                     : $this->conf->selfurl($this->qreq, ["forceShow" => null]);
                 echo '<div class="pcard notecard override-conflict on"><p class="sd">',
-                    '🔓 You are using administrator privilege to override your conflict with this submission. ',
+                    "🔓 You are using administrator privilege to override your conflict with this {$this->conf->snouns[0]}. ",
                     '<a class="noul ibw" href="', $unprivurl, '"><u>Unprivileged view</u></a>',
                     '</p></div>';
             }
         }
 
         echo '<div class="pcard papcard">';
-        $this->conf->report_saved_messages();
-        if ($this->editable && !$this->user->can_clickthrough("submit")) {
+        $saved_status = $this->conf->report_saved_messages();
+        if ($this->edit_mode === 2 && !$this->user->can_clickthrough("submit")) {
             echo '<div id="foldpaper js-clickthrough-container">',
                 '<div class="js-clickthrough-terms">',
                 '<h2>Submission terms</h2>',
@@ -2338,7 +2425,7 @@ class PaperTable {
             echo '</div><div class="need-clickthrough-show hidden">';
             $this->_print_editable_body();
             echo '</div></div>';
-        } else if ($this->editable) {
+        } else if ($this->edit_mode > 0 || $this->prow->paperId <= 0) {
             echo '<div id="foldpaper">';
             $this->_print_editable_body();
             echo '</div>';
@@ -2347,30 +2434,12 @@ class PaperTable {
         }
         echo '</div>';
 
-        if (!$this->editable && $this->mode === "edit") {
-            echo '<div class="pcard papcard">',
-                '<div class="pedcard-head"><h2><span class="pedcard-header-name">Edit Contacts</span></h2></div>';
-            $this->_print_edit_messages(false);
-            $this->_print_editable_form();
-            $o = $this->conf->option_by_id(PaperOption::CONTACTSID);
-            assert($o instanceof Contacts_PaperOption);
-            $ov = $reqov = $this->prow->force_option($o);
-            if ($this->useRequest
-                && $this->qreq["has_{$o->formid}"]
-                && ($x = $o->parse_qreq($this->prow, $this->qreq))) {
-                $reqov = $x;
-            }
-            $o->print_web_edit($this, $ov, $reqov);
-            $this->print_actions();
-            echo '</form></div>';
-        }
-
-        if (!$this->editable
+        if ($this->edit_mode === 0
             && $this->mode !== "edit"
             && $this->user->act_author_view($this->prow)
             && !$this->user->contactId) {
             echo '<div class="pcard notecard"><p class="sd">',
-                "To edit this submission, <a href=\"", $this->conf->hoturl("signin"), "\">sign in using your email and password</a>.",
+                "To edit this {$this->conf->snouns[0]}, <a href=\"", $this->conf->hoturl("signin"), "\">sign in using your email and password</a>.",
                 '</p></div>';
         }
 
@@ -2403,7 +2472,7 @@ class PaperTable {
         $cflttype = $user->view_conflict_type($prow);
         $allow_actas = $user->privChair && $user->allow_administer($prow);
         $hideUnviewable = ($cflttype > 0 && !$this->admin)
-            || (!$user->act_pc($prow) && ($conf->setting("extrev_seerev") ?? 0) <= 0);
+            || (!$user->act_pc($prow) && ($conf->setting("viewrev_ext") ?? 0) < 0);
         $show_ratings = $user->can_view_review_ratings($prow);
         $want_scores = !in_array($this->mode, ["assign", "edit", "re"]);
         $want_requested_by = false;
@@ -2657,8 +2726,9 @@ class PaperTable {
         if ($this->mode !== "edit"
             && $prow->has_author($this->user)
             && !$this->user->can_administer($prow)) {
+            $es = $this->conf->_c5("paper_edit", "<0>Edit {submission}");
             $t[] = '<a href="' . $prow->hoturl(["m" => "edit"]) . '" class="noul revlink">'
-                . Ht::img("edit48.png", "[Edit]", $dlimgjs) . "&nbsp;<u><strong>Edit submission</strong></u></a>";
+                . Ht::img("edit48.png", "[Edit]", $dlimgjs) . "&nbsp;<u><strong>{$es}</strong></u></a>";
         }
 
         // edit review
@@ -2722,18 +2792,18 @@ class PaperTable {
 
         // override conflict
         if ($this->user->privChair && !$this->allow_admin) {
-            $t[] = '<span class="revlink">You can’t override your conflict because this submission has an administrator.</span>';
+            $t[] = "<span class=\"revlink\">You can’t override your conflict because this {$this->conf->snouns[0]} has an administrator.</span>";
         }
 
         $aut = "";
         if ($prow->has_author($this->user)) {
             if ($prow->author_by_email($this->user->email)) {
-                $aut = $this->conf->_('You are an <span class="author">author</span> of this submission.');
+                $aut = $this->conf->_5("<5>You are an <span class=\"author\">author</span> of this {submission}.");
             } else {
-                $aut = $this->conf->_('You are a <span class="author">contact</span> for this submission.');
+                $aut = $this->conf->_5("<5>You are a <span class=\"author\">contact</span> for this {submission}.");
             }
         } else if ($prow->has_conflict($this->user)) {
-            $aut = $this->conf->_('You have a <span class="conflict">conflict</span> with this submission.');
+            $aut = $this->conf->_5("<5>You have a <span class=\"conflict\">conflict</span> with this {submission}.");
         }
         return $pret
             . ($aut ? "<p class=\"sd\">{$aut}</p>" : "")
@@ -2769,7 +2839,7 @@ class PaperTable {
     function paptabEndWithReviewsAndComments() {
         if ($this->prow->managerContactId === $this->user->contactXid
             && !$this->user->privChair) {
-            $this->_paptabSepContaining("You are this submission’s administrator.");
+            $this->_paptabSepContaining("You are this {$this->conf->snouns[0]}’s administrator.");
         }
 
         // text format link
@@ -2802,7 +2872,7 @@ class PaperTable {
      * @return ?CommentInfo */
     private function response_by_id($respround) {
         foreach ($this->mycrows as $cr) {
-            if (($cr->commentType & CommentInfo::CT_RESPONSE)
+            if (($cr->commentType & CommentInfo::CT_RESPONSE) !== 0
                 && $cr->commentRound == $respround)
                 return $cr;
         }
@@ -2883,12 +2953,12 @@ class PaperTable {
     }
 
     function paptabEndWithReviewMessage() {
-        assert(!$this->editable);
+        assert($this->edit_mode === 0);
 
         $m = [];
         if ($this->all_rrows
             && ($whyNot = $this->user->perm_view_review($this->prow, null))) {
-            $m[] = "<p class=\"sd\">You can’t see the reviews for this submission. " . $whyNot->unparse_html() . "</p>";
+            $m[] = "<p class=\"sd\">You can’t see the reviews for this {$this->conf->snouns[0]}. " . $whyNot->unparse_html() . "</p>";
         }
         if (!$this->conf->time_review_open()
             && $this->prow->review_type($this->user)) {
@@ -2949,13 +3019,13 @@ class PaperTable {
             }
 
             if ($ndelegated == 0) {
-                $t = "As a secondary reviewer, you can <a href=\"" . $this->conf->hoturl("assign", "p=$rrow->paperId") . "\">delegate this review to an external reviewer</a>, but if your external reviewer declines to review the paper, you should complete this review yourself.";
+                $t = "<5>As a secondary reviewer, you can <a href=\"" . $this->conf->hoturl("assign", "p={$rrow->paperId}") . "\">delegate this review to an external reviewer</a>, but if your external reviewer declines to review the paper, you should complete this review yourself.";
             } else if ($rrow->reviewNeedsSubmit == 0) {
-                $t = "A delegated external reviewer has submitted their review, but you can still complete your own if you’d like.";
+                $t = "<0>A delegated external reviewer has submitted their review, but you can still complete your own if you’d like.";
             } else if ($napproval) {
-                $t = "A delegated external reviewer has submitted their review for approval. If you approve that review, you won’t need to submit your own.";
+                $t = "<0>A delegated external reviewer has submitted their review for approval. If you approve that review, you won’t need to submit your own.";
             } else {
-                $t = "Your delegated external reviewer has not yet submitted a review.  If they do not, you should complete this review yourself.";
+                $t = "<0>Your delegated external reviewer has not yet submitted a review.  If they do not, you should complete this review yourself.";
             }
             $rrow->message_list[] = new MessageItem(null, $t, MessageSet::MARKED_NOTE);
         }
@@ -2988,6 +3058,13 @@ class PaperTable {
             "</p></div>\n";
     }
 
+
+    function resolve_comments() {
+        // should be called before resolve_review to minimize DB transactions for users
+        $this->crows = $this->prow->all_comments();
+        $this->mycrows = $this->prow->viewable_comments($this->user, true);
+        $this->prow->_row_set->prefetch_conflict_users();
+    }
 
     /** @param bool $want_review
      * @suppress PhanAccessReadOnlyProperty */
@@ -3082,11 +3159,6 @@ class PaperTable {
                 || $this->prow->submission_round()->time_submit(true))) {
             $this->mode = "edit";
         }
-    }
-
-    function resolve_comments() {
-        $this->crows = $this->prow->all_comments();
-        $this->mycrows = $this->prow->viewable_comments($this->user, true);
     }
 
     /** @return list<ReviewInfo> */

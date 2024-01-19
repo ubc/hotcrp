@@ -45,11 +45,11 @@ HotCRP will leave the existing assignment alone.</p>";
 can be a paper number, like “1”, or a search, like
 “re:jhala #good”. Instead of a <code>user</code> parameter, you can
 supply <code>email</code>, <code>name</code>,
-<code>first name</code>, and/or <code>last name</code>. <code>tag</code>
+<code>first_name</code>, and/or <code>last_name</code>. <code>tag</code>
 fields can contain a tag value, using “tag#value” syntax, or the value
 can be supplied separately.</p>';
 
-        $hth->print_group("bulkassignactions");
+        $hth->print_members("bulkassignactions");
     }
 
     static function print_action_review(HelpRenderer $hth) {
@@ -115,8 +115,8 @@ less than 10:</p>
 #p#&lt;10,cleartag,p</pre>
 
 <p>To add to a tag order, use action <code>nexttag</code>; to add to a gapless
-tag order, use <code>seqnexttag</code>. For example, this file creates a
-tag order in tag #p:</p>
+tag order, use <code>seqnexttag</code>. For example, this file creates a tag
+order #p that lists papers 4, 3, 2, 9, 10, and 6, in that order:</p>
 
 <pre class=\"sample\">paper,action,tag
 all,cleartag,p
@@ -157,8 +157,8 @@ a conflict type, such as “advisor” or “institutional”.</p>";
             $t .= $n . '</td><td class="pad"><code>paper</code>';
             foreach ($uf->parameters ?? [] as $param) {
                 $t .= ', ';
-                if ($param[0] === "[") {
-                    $t .= '[<code>' . substr($param, 1, -1) . '</code>]';
+                if ($param[0] === "?") {
+                    $t .= '[<code>' . substr($param, 1) . '</code>]';
                 } else {
                     $t .= '<code>' . $param . '</code>';
                 }
@@ -183,8 +183,8 @@ a conflict type, such as “advisor” or “institutional”.</p>";
             }
         }
         if (!empty($apx)) {
-            echo '<table class="p table-striped"><thead>',
-                '<tr><th class="pll"><code>action</code> value</th><th class="pll">Parameter fields</th><th class="pll">Description</th></tr></thead>',
+            echo '<table class="table-striped mb-p"><thead>',
+                '<tr><th class="pll"><code>action</code></th><th class="pll">Parameter columns</th><th class="pll">Description</th></tr></thead>',
                 '<tbody>', join('', $apx), '</tbody></table>';
         }
         return !empty($apx);

@@ -13,10 +13,12 @@ class Tag_PaperColumn extends PaperColumn {
     private $ctag;
     /** @var bool */
     private $editable = false;
-    /** @var ?string */
-    private $emoji;
+    /** @var 0|1|2 */
+    private $display = 0;
     /** @var bool */
     private $editsort = false;
+    /** @var TagInfo */
+    private $ti;
     /** @var array<int,float> */
     private $sortmap;
     /** @var ScoreInfo */
@@ -36,9 +38,8 @@ class Tag_PaperColumn extends PaperColumn {
     function add_decoration($decor) {
         if ($decor === "edit") {
             $this->editable = true;
-            $this->is_value = $this->is_value ?? true;
             return $this->__add_decoration($decor);
-        } else if (preg_match('/\A%\d*(?:\.\d*)[bdeEfFgGoxX]\z/', $decor)) {
+        } else if (preg_match('/\A%?\d*(?:\.\d*)[bdeEfFgGoxX]\z/', $decor)) {
             $this->__add_decoration($decor, [$this->real_format]);
             $this->real_format = $decor;
             return true;
@@ -61,29 +62,46 @@ class Tag_PaperColumn extends PaperColumn {
         if ($visible) {
             $pl->qopts["tags"] = 1;
         }
-        if ($this->etag[0] == ":"
-            && !$this->is_value
-            && ($dt = $pl->user->conf->tags()->check($this->dtag))
-            && isset($dt->emoji)
-            && count($dt->emoji) === 1) {
-            /** @phan-suppress-next-line PhanTypeArraySuspiciousNullable */
-            $this->emoji = $dt->emoji[0];
+        $this->ti = $pl->conf->tags()->ensure($this->dtag);
+        if ($this->as_row
+            && $this->ti->has_order_anno()) {
+            $this->display = 1;
+        } else if (!$this->is_value
+                   && count($this->ti->emoji ?? []) === 1) {
+            $this->display = 2;
         }
-        if ($this->editable
-            && !$pl->user->can_edit_tag_somewhere($this->etag)) {
-            $pl->column_error("<0>Tag ‘#{$this->dtag}’ is read-only");
+        if ($this->editable) {
+            $this->prepare_editable($pl, $visible);
+        }
+        $this->className = ($this->editable ? "pl_edit" : "pl_")
+            . ($this->is_value ? "tagval" : "tag");
+        return true;
+    }
+    private function prepare_editable(PaperList $pl, $visible) {
+        if (!$pl->user->can_edit_tag_somewhere($this->etag)) {
+            $this->editable = false;
+            $pl->column_error("<0>Tag ‘#{$this->dtag}’ cannot be edited");
             if ($pl->conf->tags()->is_automatic($this->etag)) {
-                if ($pl->conf->tags()->is_votish($this->etag)) {
-                    $pl->column_error(new MessageItem(null, "<0>That tag is set automatically based on per-user votes. Did you mean to edit ‘#~{$this->dtag}’?", MessageSet::INFORM));
+                if ($pl->conf->tags()->is_votish($this->etag)
+                    && $pl->user->is_pc_member()) {
+                    $pl->column_error(new MessageItem(null, "<0>This tag is set automatically based on per-user votes. Did you mean ‘edit:#~{$this->dtag}’?", MessageSet::INFORM));
                 } else {
-                    $pl->column_error(new MessageItem(null, "<0>That tag is set automatically.", MessageSet::INFORM));
+                    $pl->column_error(new MessageItem(null, "<0>This tag is set automatically.", MessageSet::INFORM));
                 }
             }
+            return;
         }
-        if ($this->editable
-            && ($visible & PaperColumn::PREP_VISIBLE)
+        if ($this->is_value === null) {
+            // XXX min/max values
+            $dt = $pl->conf->tags()->find($this->etag);
+            if (!$dt && ($tw = strpos($this->etag, "~"))) {
+                $dt = $pl->conf->tags()->find(substr($this->etag, $tw + 1));
+            }
+            $this->is_value = !$dt || !$dt->is(TagInfo::TF_APPROVAL);
+        }
+        if (($visible & PaperColumn::PREP_VISIBLE) !== 0
             && $pl->table_id()
-            && !$pl->viewing("kanban")) {
+            && !$pl->viewing("facets")) {
             $pl->has_editable_tags = true;
             if (strcasecmp($this->etag, $pl->sort_etag()) === 0
                 && $this->is_value) {
@@ -91,9 +109,6 @@ class Tag_PaperColumn extends PaperColumn {
                 $this->editsort = true;
             }
         }
-        $this->className = ($this->editable ? "pl_edit" : "pl_")
-            . ($this->is_value ? "tagval" : "tag");
-        return true;
     }
     function completion_name() {
         return "#{$this->dtag}";
@@ -161,8 +176,19 @@ class Tag_PaperColumn extends PaperColumn {
             return $t;
         } else if ($v === null) {
             return "";
-        } else if ($v >= 0.0 && $this->emoji) {
-            return Tagger::unparse_emoji_html($this->emoji, $v);
+        } else if ($this->display === 1
+                   && ($ta = $this->ti->order_anno_search($v))
+                   && $ta->heading !== "") {
+            $h = htmlspecialchars($ta->heading);
+            $k = "pltagheading";
+            if (($format = $pl->conf->check_format(null, $ta->heading))) {
+                $k .= " need-format\" data-format\"{$format}";
+                $pl->need_render = true;
+            }
+            return (string) $v . " <span class=\"{$k}\">({$h})</span>";
+        } else if ($v >= 0.0 && $this->display === 2) {
+            /** @phan-suppress-next-line PhanTypeArraySuspiciousNullable */
+            return Tagger::unparse_emoji_html($this->ti->emoji[0], $v);
         } else if ($sv === true) {
             return "✓";
         } else {
@@ -176,15 +202,13 @@ class Tag_PaperColumn extends PaperColumn {
         }
         if (!$this->is_value) {
             $checked = $v === null ? "" : " checked";
-            return "<input type=\"checkbox\" class=\"uic js-range-click edittag\" data-range-type=\"tag:{$this->dtag}\" name=\"tag:{$this->dtag} {$row->paperId}\" value=\"x\" tabindex=\"2\"{$checked}>";
+            return "<input type=\"checkbox\" class=\"uic uikd js-range-click edittag\" data-range-type=\"tag:{$this->dtag}\" name=\"tag:{$this->dtag} {$row->paperId}\" value=\"x\"{$checked}>";
         }
-        $klass = "";
         if ($this->editsort) {
-            $klass = " need-draghandle";
             $pl->need_render = true;
         }
         $vt = $v === null ? "" : ($v === true ? "0" : (string) $v);
-        return "<input type=\"text\" class=\"edittagval{$klass}\" size=\"4\" name=\"tag:{$this->dtag} {$row->paperId}\" value=\"{$vt}\" tabindex=\"2\">";
+        return "<input type=\"text\" class=\"uich uikd edittag\" size=\"4\" name=\"tag:{$this->dtag} {$row->paperId}\" value=\"{$vt}\">";
     }
     function text(PaperList $pl, PaperInfo $row) {
         if (($v = $row->tag_value($this->etag)) === null) {
@@ -207,8 +231,9 @@ class Tag_PaperColumn extends PaperColumn {
         if ($x === null) {
             return "";
         } else if (($stat === ScoreInfo::MEAN || $stat === ScoreInfo::MEDIAN)
-                   && $this->emoji) {
-            return Tagger::unparse_emoji_html($this->emoji, $x);
+                   && $this->display === 2) {
+            /** @phan-suppress-next-line PhanTypeArraySuspiciousNullable */
+            return Tagger::unparse_emoji_html($this->ti->emoji[0], $x);
         } else if ($stat === ScoreInfo::COUNT) {
             return (string) $x;
         } else if ($this->real_format) {

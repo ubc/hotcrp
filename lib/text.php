@@ -9,8 +9,6 @@ class TextPregexes {
     public $preg_utf8;
     /** @var ?string */
     public $value;
-    /** @var ?bool */
-    public $simple;
 
     /** @param ?string $raw
      * @param string $utf8 */
@@ -76,7 +74,7 @@ class Text {
         if ($firstName !== "" && $lastName !== "") {
             if (($flags & (NAME_L | NAME_PARSABLE)) === NAME_PARSABLE
                 && substr_count($lastName, " ") !== 0
-                && !preg_match('/\A(?:v[oa]n |d[eu] )?\S+(?: jr\.?| sr\.?| i+v?i*)?\z/i', $lastName)) {
+                && !preg_match('/\A(?:v[oa]n |d[eu] |al )?\S+(?: jr\.?| sr\.?| i+v?i*)?\z/i', $lastName)) {
                 $flags |= NAME_L;
             }
             if (($flags & NAME_I) !== 0
@@ -192,9 +190,9 @@ class Text {
             } else if (strpos($name, "@") === false) {
                 /* skip */;
             } else if ($name[0] === "\""
-                       && preg_match('{\A\s*\"(.*)\"\s+(\S+@\S+)\z}', $name, $m)) {
+                       && preg_match('/\A\s*\"(.*)\"\s+(\S+@\S+)\z/', $name, $m)) {
                 list($name, $email) = [$m[1], $m[2]];
-            } else if (!preg_match('{\A(.*?)\s+(\S+)\z}', $name, $m)) {
+            } else if (!preg_match('/\A(.*?)\s+(\S+)\z/', $name, $m)) {
                 return ["", "", trim($name)];
             } else if (strpos($m[2], "@") !== false) {
                 $name = $m[1];
@@ -226,7 +224,7 @@ class Text {
             $ret[1] = substr($m[1], $space + 1) . $m[2] . $paren;
             // see also split_von
             if (strpos($ret[0], " ") !== false
-                && preg_match('/\A(\S.*?)((?: (?:v[ao]n|d[aeiu]|de[nr]|l[ae]))+)\z/i', $ret[0], $m)) {
+                && preg_match('/\A(\S.*?)((?: (?:v[ao]n|d[aeiu]|de[nr]|l[ae]|al))+)\z/i', $ret[0], $m)) {
                 list($ret[0], $ret[1]) = [$m[1], ltrim($m[2]) . " " . $ret[1]];
             }
         } else if ($m[1] !== ""
@@ -524,5 +522,57 @@ class Text {
             $x = preg_replace('/\n\n\n+/s', "\n\n", $x);
         }
         return html_entity_decode(trim($x), ENT_QUOTES, "UTF-8");
+    }
+
+    /** @param string $a
+     * @param string $b
+     * @return string */
+    static function merge_whitespace($a, $b) {
+        $al = strlen($a);
+        $bl = strlen($b);
+        $ap = $apx = $al;
+        $bp = $bpx = 0;
+        $bnewline = false;
+
+        while (true) {
+            // skip whitespace
+            while ($bp !== $bl && ($b[$bp] === " " || $b[$bp] === "\t")) {
+                ++$bp;
+            }
+            while ($ap !== 0 && ($a[$ap - 1] === " " || $a[$ap - 1] === "\t")) {
+                --$ap;
+            }
+
+            if ($bp !== $bl && ($b[$bp] === "\r" || $b[$bp] === "\n")) {
+                // consume trailing whitespace
+                if (!$bnewline) {
+                    $bpx = $bp;
+                    $bnewline = true;
+                }
+                // collapse blank lines
+                if ($ap !== 0 && ($a[$ap - 1] === "\r" || $a[$ap - 1] === "\n")) {
+                    if ($ap !== 1 && $a[$ap - 1] === "\n" && $a[$ap - 2] === "\r") {
+                        $ap -= 2;
+                    } else {
+                        $ap -= 1;
+                    }
+                    $apx = $ap;
+                    if ($bp + 1 !== $bl && $b[$bp] === "\r" && $b[$bp + 1] === "\n") {
+                        $bp += 2;
+                    } else {
+                        $bp += 1;
+                    }
+                    continue;
+                }
+            }
+
+            // consume trailing whitespace or collapse horizontal whitespace
+            if ($bnewline) {
+                $apx = $ap;
+            } else if ($ap < $apx && $bp > $bpx) {
+                $apx -= min($apx - $ap, $bp - $bpx);
+            }
+            return substr($a, 0, $apx) . substr($b, $bpx);
+        }
     }
 }

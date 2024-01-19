@@ -93,6 +93,8 @@ if (PHP_VERSION_ID < 80000
 }
 
 
+/** @param callable(mixed):bool $callback
+ * @param ?callable(string,string):mixed $parser */
 function expand_json_includes_callback($includelist, $callback, $parser = null) {
     $includes = [];
     foreach (is_array($includelist) ? $includelist : [$includelist] as $k => $v) {
@@ -101,11 +103,14 @@ function expand_json_includes_callback($includelist, $callback, $parser = null) 
         }
         $expandable = null;
         if (is_string($v)) {
-            if (str_starts_with($v, "@")) {
+            $vl = strlen($v);
+            $vc = $v[0];
+            if ($vc === "@") {
                 $expandable = substr($v, 1);
-            } else if (!str_starts_with($v, "{")
-                       && (!str_starts_with($v, "[") || !str_ends_with(rtrim($v), "]"))
-                       && !ctype_space($v[0])) {
+            } else if ($vc !== "{"
+                       && ($vc !== "[" || ($v[$vl-1] !== "]" && !ctype_space($v[$vl-1])))
+                       && !ctype_space($vc)
+                       && strpos($v, "::") === false) {
                 $expandable = $v;
             }
         }
@@ -115,7 +120,7 @@ function expand_json_includes_callback($includelist, $callback, $parser = null) 
                     $includes[] = [$x, $f];
             }
         } else {
-            $includes[] = [$v, "entry $k"];
+            $includes[] = [$v, "entry {$k}"];
         }
     }
     foreach ($includes as $xentry) {
@@ -138,8 +143,10 @@ function expand_json_includes_callback($includelist, $callback, $parser = null) 
             if (is_object($v)) {
                 $v->__source_order = ++Conf::$next_xt_source_order;
             }
+            /** @phan-suppress-next-line PhanParamTooManyCallable */
             if (!call_user_func($callback, $v, $k, $landmark)) {
-                error_log((Conf::$main ? Conf::$main->dbname . ": " : "") . "$landmark: Invalid expansion " . json_encode($v) . "\n" . debug_string_backtrace());
+                $pfx = Conf::$main ? Conf::$main->dbname . ": " : "";
+                error_log("{$pfx}{$landmark}: Invalid expansion " . json_encode($v) . "\n" . debug_string_backtrace());
             }
         }
     }
@@ -153,29 +160,16 @@ function initialize_conf($config_file = null, $confid = null) {
     global $Opt;
     $Opt = $Opt ?? [];
     if (!($Opt["loaded"] ?? null)) {
-        SiteLoader::read_main_options($config_file);
-        if ($Opt["multiconference"] ?? null) {
-            Multiconference::init($confid);
-        } else if ($confid !== null) {
-            if (!isset($Opt["confid"])) {
-                $Opt["confid"] = $confid;
-            } else if ($Opt["confid"] !== $confid) {
-                $Opt["missing"][] = "__invalid__";
-            }
-        }
-        if (empty($Opt["missing"]) && !empty($Opt["include"])) {
-            SiteLoader::read_included_options();
-        }
+        SiteLoader::read_main_options($config_file, $confid);
     }
     if (!empty($Opt["missing"])) {
         Multiconference::fail_bad_options();
     }
 
+    // set global options
     if (!empty($Opt["dbLogQueries"])) {
         Dbl::log_queries($Opt["dbLogQueries"], $Opt["dbLogQueryFile"] ?? null);
     }
-
-    // allow lots of memory
     if (!($Opt["memoryLimit"] ?? null) && ini_get_bytes("memory_limit") < (128 << 20)) {
         $Opt["memoryLimit"] = "128M";
     }
@@ -216,7 +210,7 @@ function initialize_user_redirect($qreq, $uindex, $nusers, $cookie) {
             $page = "{$page}u/{$uindex}/";
         }
         if ($nav->page !== "index" || $nav->path !== "") {
-            $page = "{$page}{$nav->page}{$nav->php_suffix}{$nav->path}";
+            $page = "{$page}{$nav->raw_page}{$nav->path}";
         }
         $page .= $nav->query;
         if ($cookie) {
@@ -310,17 +304,12 @@ function initialize_request($kwarg = null) {
         $ucounter = ContactCounter::find_by_uid($conf, $token->is_cdb, $token->contactId);
         $ucounter->api_refresh();
         $ucounter->api_account(true);
-        $token->mark_use(86400); // mark use once a day
+        $token->update_use(86400)->update(); // mark use once a day
         $user = $user->activate($qreq, true);
         return [$user, $qreq];
     }
 
     // set up session
-    if (($sh = $conf->opt["sessionHandler"] ?? null)) {
-        /** @phan-suppress-next-line PhanTypeExpectedObjectOrClassName, PhanNonClassMethodCall */
-        $conf->_session_handler = new $sh($conf);
-        session_set_save_handler($conf->_session_handler, true);
-    }
     set_session_name($conf);
     $sn = session_name();
 
@@ -341,27 +330,30 @@ function initialize_request($kwarg = null) {
     }
     $qreq->qsession()->maybe_open();
 
-    // determine user
-    $trueemail = $qreq->gsession("u");
-    $userset = $qreq->gsession("us") ?? ($trueemail ? [$trueemail] : []);
-    '@phan-var list<string> $userset';
-    $usercount = count($userset);
-    $reqemail = $_GET["i"] ?? null;
-
+    // determine desired account
+    $us = Contact::session_users($qreq);
+    $nus = count($us);
     $uindex = 0;
-    if ($nav->shifted_path === "") {
-        if ($reqemail !== null) {
-            while ($uindex !== $usercount
-                   && strcasecmp($userset[$uindex], $reqemail) !== 0) {
+    $reqemail = $_GET["i"] ?? "";
+
+    if (str_starts_with($nav->shifted_path, "u/")) {
+        // use explicit account index
+        $uindex = (int) substr($nav->shifted_path, 2);
+    } else if ($nus > 1) {
+        // no explicit account index, but a choice among accounts
+        if ($reqemail !== "") {
+            while ($uindex !== $nus
+                   && strcasecmp($us[$uindex], $reqemail) !== 0) {
                 ++$uindex;
             }
         } else if (($sinfo = $qreq->qsession()->get2("uchoice", $conf->session_key))
-                   && $sinfo[1] + 5184000 /* 60 days */ > Conf::$now) {
+                   && $sinfo[1] + 5184000 /* 60 days */ > Conf::$now
+                   && $sinfo[0] < $nus
+                   && $us[$sinfo[0]] !== "") {
             $uindex = $sinfo[0];
             initialize_user_preferred_uindex($qreq, $uindex);
         }
-        if ($uindex < $usercount
-            && ($usercount > 1 || $reqemail !== null)
+        if ($uindex < $nus
             && $nav->page !== "api"
             && ($qreq->method() === "GET" || $qreq->method() === "HEAD")) {
             // redirect to `/u` version
@@ -369,26 +361,32 @@ function initialize_request($kwarg = null) {
             if (str_starts_with($nav->query, "&")) {
                 $nav->query = "?" . substr($nav->query, 1);
             }
-            initialize_user_redirect($qreq, $uindex, count($userset), !isset($_GET["i"]));
+            initialize_user_redirect($qreq, $uindex, count($us), !isset($_GET["i"]));
         }
-    } else if (str_starts_with($nav->shifted_path, "u/")) {
-        $uindex = $usercount === 0 ? -1 : (int) substr($nav->shifted_path, 2);
-    }
-    if ($uindex >= 0 && $uindex < $usercount) {
-        $trueemail = $userset[$uindex];
-    } else if ($uindex !== 0) {
-        initialize_user_redirect($qreq, 0, $usercount, false);
     }
 
-    if ($reqemail !== null
-        && $trueemail
-        && strcasecmp($reqemail, $trueemail) !== 0) {
-        $conf->error_msg("<5>You are signed in as " . htmlspecialchars($trueemail) . ", not " . htmlspecialchars($reqemail) . ". <a href=\"" . $conf->hoturl("signin", ["email" => $reqemail]) . "\">Sign in</a>");
+    $uemail = $us[$uindex] ?? "";
+
+    // maybe redirect if bogus account index
+    if ($uemail === "" && ($uindex !== 0 || $nus !== 0)) {
+        $auindex = 0;
+        while ($auindex !== $nus && $us[$auindex] === "") {
+            ++$auindex;
+        }
+        initialize_user_redirect($qreq, $auindex, $nus, false);
     }
 
-    // potentially mark preferred user index for this conference
+    // warn if requested different account
+    if ($reqemail !== ""
+        && $uemail !== ""
+        && strcasecmp($reqemail, $uemail) !== 0) {
+        $conf->error_msg("<5>You are signed in as " . htmlspecialchars($uemail) . ", not " . htmlspecialchars($reqemail) . ". <a href=\"" . $conf->hoturl("signin", ["email" => $reqemail]) . "\">Add account</a>");
+    }
+
+    // potentially mark preferred account index for this conference
     // (garbage collect after 60 days)
-    if ($usercount > 1
+    if ($nus > 1
+        && $uemail !== ""
         && ($referrer = $_SERVER["HTTP_REFERER"] ?? null) !== null
         && str_starts_with($referrer, $nav->server . $nav->base_path)
         && str_ends_with($referrer, $nav->raw_page . $nav->path . $nav->query)) {
@@ -396,16 +394,13 @@ function initialize_request($kwarg = null) {
     }
 
     // look up and activate user
-    $muser = $trueemail ? $conf->fresh_user_by_email($trueemail) : null;
-    if (!$muser) {
-        $muser = Contact::make_email($conf, $trueemail);
-    }
-    $muser = $muser->activate($qreq, true, $uindex);
+    $muser = ($conf->fresh_user_by_email($uemail)
+              ?? Contact::make_email($conf, $uemail))->activate($qreq, true, $uindex);
     Contact::set_main_user($muser);
     $qreq->set_user($muser);
 
     // author view capability documents should not be indexed
-    if (!$muser->email
+    if ($muser->email === ""
         && $muser->has_author_view_capability()
         && !$conf->opt("allowIndexPapers")) {
         header("X-Robots-Tag: noindex, noarchive");

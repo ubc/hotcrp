@@ -8,18 +8,20 @@ class SearchSplitter {
     /** @var bool */
     private $utf8q;
     /** @var int */
-    public $pos = 0;
+    public $pos;
     /** @var int */
     private $len;
     /** @var int */
     public $last_pos = 0;
 
-    /** @param string $str */
-    function __construct($str) {
+    /** @param string $str
+     * @param int $pos1
+     * @param ?int $pos2 */
+    function __construct($str, $pos1 = 0, $pos2 = null) {
         $this->str = $str;
-        $this->len = strlen($str);
-        $this->utf8q = strpos($str, chr(0xE2)) !== false
-            && is_valid_utf8($str);
+        $this->pos = $pos1;
+        $this->len = $pos2 ?? strlen($str);
+        $this->utf8q = strpos($str, chr(0xE2)) !== false && is_valid_utf8($str);
         $this->set_span_and_pos(0);
     }
 
@@ -30,36 +32,44 @@ class SearchSplitter {
 
     /** @return string */
     function rest() {
-        return substr($this->str, $this->pos);
+        return substr($this->str, $this->pos, $this->len - $this->pos);
+    }
+
+    /** @param int $pos
+     * @return $this */
+    function set_pos($pos) {
+        assert($pos >= 0 && $pos <= $this->len);
+        $this->pos = $this->last_pos = $pos;
+        return $this;
+    }
+
+    /** @param int $len */
+    private function set_span_and_pos($len) {
+        $this->last_pos = $this->pos = min($this->pos + $len, $this->len);
+        if ($this->utf8q) {
+            if (preg_match('/\G\s+/u', $this->str, $m, 0, $this->pos)) {
+                $this->pos = min($this->pos + strlen($m[0]), $this->len);
+            }
+        } else {
+            while ($this->pos < $this->len && ctype_space($this->str[$this->pos])) {
+                ++$this->pos;
+            }
+        }
     }
 
     /** @return string */
     function shift_keyword() {
-        if ($this->utf8q
-            ? preg_match('/\G(?:[-_.a-zA-Z0-9]+|["“”][^"“”]+["“”]):/su', $this->str, $m, 0, $this->pos)
-            : preg_match('/\G(?:[-_.a-zA-Z0-9]+|"[^"]+"):/s', $this->str, $m, 0, $this->pos)) {
-            $this->set_span_and_pos(strlen($m[0]));
-            return $this->utf8q ? preg_replace('/[“”]/u', '"', $m[0]) : $m[0];
-        } else {
-            return "";
+        // XXX warning about quoted keywords should be removed soon
+        if ($this->pos < $this->len
+            && ($this->str[$this->pos] === "\"" || $this->str[$this->pos] === "\xE2")
+            && preg_match('/\G["“”][^"“”]+["“”]:/su', $this->str, $m, 0, $this->pos)) {
+            error_log("Unexpected quoted search keyword in “{$this->str}”");
         }
-    }
-
-    /** @param string $exceptions
-     * @return string */
-    function shift($exceptions = null) {
-        if ($exceptions === null) {
-            $exceptions = '\(\)\[\]';
-        } else if ($exceptions !== "()" && $exceptions !== "") {
-            $exceptions = preg_quote($exceptions);
-        }
-        if ($this->utf8q
-            ? preg_match("/\\G(?:[\"“”][^\"“”]*(?:[\"“”]|\\z)|[^\"“”\\s{$exceptions}]*)*/su", $this->str, $m, 0, $this->pos)
-            : preg_match("/\\G(?:\"[^\"]*(?:\"|\\z)|[^\"\\s{$exceptions}]*)*/s", $this->str, $m, 0, $this->pos)) {
-            $this->set_span_and_pos(strlen($m[0]));
-            return $this->utf8q ? preg_replace('/[“”]/u', '"', $m[0]) : $m[0];
+        if (preg_match('/\G[_a-zA-Z0-9][-_.a-zA-Z0-9]*(?=:)/s', $this->str, $m, 0, $this->pos)
+            && $this->pos + strlen($m[0]) < $this->len) {
+            $this->set_span_and_pos(strlen($m[0]) + 1);
+            return $m[0];
         } else {
-            $this->last_pos = $this->pos = $this->len;
             return "";
         }
     }
@@ -103,21 +113,25 @@ class SearchSplitter {
 
     /** @param string $substr */
     function starts_with($substr) {
-        return substr_compare($this->str, $substr, $this->pos, strlen($substr)) === 0;
+        return substr_compare($this->str, $substr, $this->pos, strlen($substr)) === 0
+            && $this->pos + strlen($substr) <= $this->len;
     }
 
-    /** @param int $len */
-    private function set_span_and_pos($len) {
-        $this->last_pos = $this->pos = $this->pos + $len;
-        if ($this->utf8q) {
-            if (preg_match('/\G\s+/u', $this->str, $m, 0, $this->pos)) {
-                $this->pos += strlen($m[0]);
-            }
-        } else {
-            while ($this->pos < $this->len && ctype_space($this->str[$this->pos])) {
-                ++$this->pos;
-            }
+    /** @return ?SearchOperator */
+    function shift_operator() {
+        if (!$this->match('/\G(?:[-+!()]|\&\&|\|\||\^\^|(?:AND|and|OR|or|NOT|not|XOR|xor|THEN|then|HIGHLIGHT(?::\w+)?)(?=[\s\(\)]|\z))/s', $m)
+            || $this->pos + strlen($m[0]) > $this->len) {
+            return null;
         }
+        $op = SearchOperator::get(strtoupper($m[0]));
+        if (!$op) {
+            $colon = strpos($m[0], ":");
+            $op = clone SearchOperator::get(strtoupper(substr($m[0], 0, $colon)));
+            /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
+            $op->subtype = substr($m[0], $colon + 1);
+        }
+        $this->set_span_and_pos(strlen($m[0]));
+        return $op;
     }
 
     /** @param string $str
@@ -130,13 +144,15 @@ class SearchSplitter {
         $plast = "";
         $quote = 0;
         $startpos = $allow_empty ? -1 : $pos;
+        $endchars = $endchars ?? " \n\r\t\x0B\x0C";
         $len = strlen($str);
         while ($pos < $len) {
             $ch = $str[$pos];
             // stop when done
             if ($plast === ""
                 && !$quote
-                && ($endchars === null ? ctype_space($ch) : strpos($endchars, $ch) !== false)) {
+                && $endchars !== ""
+                && strpos($endchars, $ch) !== false) {
                 break;
             }
             // translate “” -> "
@@ -194,5 +210,72 @@ class SearchSplitter {
             }
         }
         return $w;
+    }
+
+    /** @param 'SPACE'|'SPACEOR' $spaceop
+     * @param int $max_ops
+     * @return ?SearchAtom */
+    function parse_expression($spaceop = "SPACE", $max_ops = 2048) {
+        $cura = null;
+        '@phan-var-force ?SearchAtom $cura';
+        $parens = 0;
+        $nops = 0;
+        while (!$this->is_empty()) {
+            $pos1 = $this->pos;
+            $op = $this->shift_operator();
+            $pos2 = $this->last_pos;
+            if (!$op && (!$cura || !$cura->is_complete())) {
+                $kwpos1 = $this->pos;
+                $kw = $this->shift_keyword();
+                $pos1 = $this->pos;
+                $text = $this->shift_balanced_parens(null, true);
+                $pos2 = $this->last_pos;
+                $cura = SearchAtom::make_keyword($kw, $text, $kwpos1, $pos1, $pos2, $cura);
+                continue;
+            }
+
+            if ($op && $op->type === ")") {
+                if ($parens === 0) {
+                    continue;
+                }
+                while (!$cura->is_paren()) {
+                    $cura = $cura->complete($pos1);
+                }
+                $cura->complete_paren($pos2);
+                --$parens;
+                continue;
+            }
+
+            if (!$op || ($op && $op->unary && $cura && $cura->is_complete())) {
+                $op = SearchOperator::get($parens > 0 ? "SPACE" : $spaceop);
+                $this->set_pos($pos1);
+                $pos2 = $pos1;
+            }
+
+            if (!$op->unary) {
+                if (!$cura || $cura->is_incomplete_paren()) {
+                    $cura = SearchAtom::make_simple("", $pos1, $cura);
+                }
+                while ($cura->parent && $cura->parent->op->precedence >= $op->precedence) {
+                    $cura = $cura->complete($pos1);
+                }
+            }
+
+            if ($nops >= $max_ops) {
+                return null;
+            }
+
+            $cura = SearchAtom::make_op($op, $pos1, $pos2, $cura);
+            if ($op->type === "(") {
+                ++$parens;
+            }
+            ++$nops;
+        }
+        if ($cura) {
+            while (($nexta = $cura->complete($this->last_pos)) !== $cura) {
+                $cura = $nexta;
+            }
+        }
+        return $cura;
     }
 }

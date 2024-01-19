@@ -17,8 +17,8 @@ class NavigationState {
     /** @var string */
     public $base_path_relative; // "/BASEPATH/", "../"+, or ""
     /** @var string */
-    public $site_path;          // "/SITEPATH/"; always ends in /; suffix of $base_path;
-                                // may end in `/u/NNN/`
+    public $site_path;          // "/SITEPATH/"; always ends in /; has
+                                // $base_path as prefix; may end in `/u/NNN/`
     /** @var string */
     public $site_path_relative; // "/SITEPATH/", "../"+, or ""
     /** @var string */
@@ -44,13 +44,13 @@ class NavigationState {
     //   required: SERVER_PORT, SCRIPT_FILENAME, SCRIPT_NAME, REQUEST_URI
     //   optional: HTTP_HOST, SERVER_NAME, HTTPS, REQUEST_SCHEME
 
-    function __construct($server) {
-        if (!$server) {
-            return;
-        }
+    /** @param associative-array $server
+     * @return NavigationState */
+    static function make_server($server) {
+        $nav = new NavigationState;
 
         // host, protocol, server
-        $this->host = $server["HTTP_HOST"] ?? $server["SERVER_NAME"] ?? null;
+        $nav->host = $server["HTTP_HOST"] ?? $server["SERVER_NAME"] ?? null;
         if ((isset($server["HTTPS"])
              && $server["HTTPS"] !== ""
              && $server["HTTPS"] !== "off")
@@ -62,40 +62,40 @@ class NavigationState {
             $x = "http://";
             $xport = 80;
         }
-        $this->protocol = $x;
-        $x .= $this->host ? : "localhost";
+        $nav->protocol = $x;
+        $x .= $nav->host ? : "localhost";
         if (($port = $server["SERVER_PORT"])
             && $port != $xport
             && strpos($x, ":", 6) === false) {
             $x .= ":" . $port;
         }
-        $this->server = $x;
-        $this->request_uri = $server["REQUEST_URI"];
-        $pct = strpos($this->request_uri, "%") !== false;
+        $nav->server = $x;
+        $nav->request_uri = $server["REQUEST_URI"];
+        $pct = strpos($nav->request_uri, "%") !== false;
 
-        // $this->query: easy-urldecoded portion including and after [?#];
+        // $nav->query: easy-urldecoded portion including and after [?#];
         // $uri: encoded portion preceding $query
-        $qpos = strpos($this->request_uri, "?");
-        if (($hpos = strpos($this->request_uri, "#")) !== false) {
+        $qpos = strpos($nav->request_uri, "?");
+        if (($hpos = strpos($nav->request_uri, "#")) !== false) {
             $qpos = $qpos === false ? $hpos : min($qpos, $hpos);
         }
         if ($qpos !== false) {
-            $this->query = substr($this->request_uri, $qpos);
+            $nav->query = substr($nav->request_uri, $qpos);
             if ($pct) {
-                $this->query = self::easy_urldecode($this->query);
+                $nav->query = self::easy_urldecode($nav->query);
             }
-            $uri = substr($this->request_uri, 0, $qpos);
+            $uri = substr($nav->request_uri, 0, $qpos);
         } else {
-            $this->query = "";
-            $uri = $this->request_uri;
+            $nav->query = "";
+            $uri = $nav->request_uri;
         }
 
-        // $this->base_path: encoded path to root of site; nonempty, ends in /
-        $bp = $this->find_base($uri, $server);
+        // base_path: encoded path to root of site; nonempty, ends in /
+        $bp = $nav->find_base($uri, $server);
         if ($bp === "/"
             || strlen($bp) > strlen($uri)
             || substr($uri, 0, strlen($bp)) === $bp) {
-            $this->base_path = $bp;
+            $nav->base_path = $bp;
         } else {
             $nsl = substr_count($bp, "/");
             $pos = -1;
@@ -104,26 +104,25 @@ class NavigationState {
                 --$nsl;
             }
             if ($pos !== false) {
-                $this->base_path = substr($uri, 0, $pos + 1);
-            } else {
-                error_log("FAJNDFNASJDNASJ");
-                $this->base_path = $uri;
+                $nav->base_path = substr($uri, 0, $pos + 1);
+            } else { // this should never happen
+                $nav->base_path = $uri;
                 if ($uri === "" || $uri[strlen($uri) - 1] !== "/") {
-                    $this->base_path .= "/";
+                    $nav->base_path .= "/";
                 }
             }
         }
-        $this->above_base = strlen($this->base_path) > strlen($uri);
+        $nav->above_base = strlen($nav->base_path) > strlen($uri);
 
-        // $this->php_suffix: ".php" or ""
+        // php_suffix: ".php" or ""
         if (isset($server["HOTCRP_PHP_SUFFIX"])) {
-            $this->php_suffix = $server["HOTCRP_PHP_SUFFIX"];
-        } else if ($this->unproxied && function_exists("apache_get_modules")) {
-            $this->php_suffix = ".php";
+            $nav->php_suffix = $server["HOTCRP_PHP_SUFFIX"];
+        } else if ($nav->unproxied && function_exists("apache_get_modules")) {
+            $nav->php_suffix = ".php";
         }
 
-        // separate $this->page and $this->path
-        $nbp = strlen($this->base_path);
+        // separate page and path
+        $nbp = strlen($nav->base_path);
         $uri_suffix = (string) substr($uri, min($nbp, strlen($uri)));
         if ($pct) {
             $uri_suffix = self::easy_urldecode($uri_suffix);
@@ -132,44 +131,88 @@ class NavigationState {
             $n = strlen($uri_suffix);
         }
         if ($n === 0) {
-            $this->raw_page = "";
-            $this->page = "index";
-            $this->path = "";
+            $nav->raw_page = "";
+            $nav->page = "index";
+            $nav->path = "";
         } else {
-            $this->raw_page = substr($uri_suffix, 0, $n);
-            $this->page = $this->raw_page;
-            $this->path = substr($uri_suffix, $n);
-            $this->apply_php_suffix();
+            $nav->raw_page = substr($uri_suffix, 0, $n);
+            $nav->page = $nav->raw_page;
+            $nav->path = substr($uri_suffix, $n);
+            $nav->apply_php_suffix();
         }
 
-        // compute $this->base_path_relative
-        $path_slash = substr_count($this->path, "/");
+        // compute base_path_relative
+        $path_slash = substr_count($nav->path, "/");
         if ($path_slash > 0) {
-            $this->base_path_relative = str_repeat("../", $path_slash);
-        } else if ($this->raw_page === "") {
-            $this->base_path_relative = $this->base_path;
+            $nav->base_path_relative = str_repeat("../", $path_slash);
+        } else if ($nav->raw_page === "") {
+            $nav->base_path_relative = $nav->base_path;
         } else {
-            $this->base_path_relative = "";
+            $nav->base_path_relative = "";
         }
 
-        // $this->site_path: initially $this->base_path
-        $this->site_path = $this->base_path;
-        $this->site_path_relative = $this->base_path_relative;
+        // site_path is initially base_path
+        $nav->site_path = $nav->base_path;
+        $nav->site_path_relative = $nav->base_path_relative;
 
-/*
-        $serverm = ["REQUEST_URI" => $server["REQUEST_URI"],
-            "SCRIPT_FILENAME" => $server["SCRIPT_FILENAME"],
-            "SCRIPT_NAME" => $server["SCRIPT_NAME"]];
-        foreach (["ORIG_SCRIPT_FILENAME", "ORIG_SCRIPT_NAME", "PATH_INFO"] as $k) {
-            if (array_key_exists($k, $server))
-                $serverm[$k] = $server[$k];
+        return $nav;
+    }
+
+    /** @param string $base_uri
+     * @param string $path
+     * @return NavigationState */
+    static function make_base($base_uri, $path = "") {
+        // no query or fragment allowed
+        $is_https = substr_compare($base_uri, "https://", 0, 8, true) === 0;
+        if (strpos($base_uri, "?") !== false
+            || strpos($base_uri, "#") !== false
+            || (!$is_https
+                && substr_compare($base_uri, "http://", 0, 7, true) !== 0)) {
+            throw new Exception("invalid \$base_uri");
         }
-        $serverm["~BASE_PATH"] = $this->base_path;
-        $serverm["~PAGE"] = $this->page;
-        $serverm["~PATH"] = $this->path;
-        $serverfx = $this->server . $this->request_uri . " " . substr(json_encode($serverm, JSON_PRETTY_PRINT), 0, -1) . "\n";
-        file_put_contents("/tmp/check.txt", $serverfx);
-        if (defined("STDERR")) { fwrite(STDERR, $serverfx); } */
+        if (!str_ends_with($base_uri, "/")) {
+            $base_uri .= "/";
+            if (str_starts_with($path, "/")) {
+                $path = substr($path, 1);
+            }
+        }
+        // protocol, host
+        $nav = new NavigationState;
+        $nav->protocol = $is_https ? "https://" : "http://";
+        $plen = strlen($nav->protocol);
+        $slash = strpos($base_uri, "/", $plen);
+        if ($slash === false) {
+            $slash = strlen($base_uri);
+        }
+        $nav->server = substr($base_uri, 0, $slash);
+        if (($colon = strpos($nav->server, ":", $plen)) === false) {
+            $nav->host = substr($nav->server, $plen);
+        } else {
+            $nav->host = substr($nav->server, $plen, $colon - $plen);
+        }
+        // base path
+        if ($slash === strlen($base_uri)) {
+            $nav->base_path = "/";
+        } else {
+            $nav->base_path = substr($base_uri, $slash);
+        }
+        $nav->base_path_relative = $nav->site_path = $nav->site_path_relative = $nav->base_path;
+        // rest
+        if (($n = strpos($path, "/")) === false) {
+            $n = strlen($path);
+        }
+        if ($n === 0) {
+            $nav->raw_page = "";
+            $nav->page = "index";
+            $nav->path = "";
+        } else {
+            $nav->raw_page = substr($path, 0, $n);
+            $nav->page = $nav->raw_page;
+            $nav->path = substr($path, $n);
+        }
+        $nav->query = "";
+        $nav->request_uri = $nav->base_path . $nav->path;
+        return $nav;
     }
 
     /** @param string $uri
@@ -398,27 +441,206 @@ class NavigationState {
     }
 
     /** @param string $url
-     * @param ?string $siteref
+     * @param ?string $ref
+     * @return string
+     * @deprecated */
+    function make_absolute($url, $ref = null) {
+        return $this->resolve($url, $ref);
+    }
+
+    /** @param string $url
+     * @param ?string $ref
      * @return string */
-    function make_absolute($url, $siteref = null) {
-        preg_match('/\A((?:https?:\/\/[^\/]+)?)(\/*)((?:\.\.\/)*)(.*)\z/i', $url, $m);
-        if ($m[1] !== "") {
+    function resolve($url, $ref = null) {
+        $up = parse_url($url);
+        if (isset($up["scheme"])) {
             return $url;
-        } else if (strlen($m[2]) > 1) {
+        } else if (isset($up["host"])) {
             return $this->protocol . substr($url, 2);
-        } else if ($m[2] === "/") {
+        } else if (str_starts_with($url, "/")) {
             return $this->server . $url;
-        } else {
-            if ($siteref === null) {
-                $siteref = preg_replace('/\/[^\/]+\z/', "/",
-                    substr($this->request_uri, 0, strlen($this->request_uri) - strlen($this->query)));
-            }
-            while ($m[3]) {
-                $siteref = preg_replace('/\/[^\/]+\/\z/', "/", $siteref);
-                $m[3] = substr($m[3], 3);
-            }
-            return "{$this->server}{$siteref}{$m[3]}{$m[4]}";
         }
+        // find reference
+        if ($ref === null) {
+            $ref = $this->request_uri;
+            $slash = max(strlen($ref) - strlen($this->query) - 1, 0);
+        } else {
+            $slash = strlen($ref) - 1;
+        }
+        // merge: drop last component in $ref
+        if ($url !== "" && $url[0] !== "?" && $url[0] !== "#"
+            && $slash > 0 && $ref[$slash] !== "/") {
+            $slash = strrpos($ref, "/", $slash - strlen($ref) - 1) ? : 0;
+        }
+        // partial remove_dot_segments at beginning of $url
+        while ($url !== "" && $url[0] === ".") {
+            if (str_starts_with($url, "../")) {
+                if ($slash > 0) {
+                    $slash = strrpos($ref, "/", $slash - strlen($ref) - 1) ? : 0;
+                }
+                $url = substr($url, 3);
+            } else if (str_starts_with($url, "./")) {
+                $url = substr($url, 2);
+            } else {
+                break;
+            }
+        }
+        $prefix = $slash > 0 ? substr($ref, 0, $slash + 1) : "/";
+        return "{$this->server}{$prefix}{$url}";
+    }
+
+    /** @param array $purl
+     * @param string $server
+     * @return string */
+    static function resolve_relative_server($purl, $server) {
+        if (!isset($purl["host"])) {
+            return $server;
+        }
+        $host = $purl["host"];
+        if (isset($purl["user"])) {
+            $user = $purl["user"];
+            if (isset($purl["pass"])) {
+                $user .= ":" . $purl["pass"];
+            }
+            $host = "{$user}@{$host}";
+        }
+        if (isset($purl["scheme"])) {
+            $scheme = strtolower($purl["scheme"]);
+        } else {
+            $scheme = substr($server, 0, strpos($server, ":"));
+        }
+        if (($port = $purl["port"] ?? null) !== null
+            && ($scheme !== "http" || $port !== 80)
+            && ($scheme !== "https" || $port !== 443)) {
+            return "{$scheme}://{$host}:{$port}";
+        } else {
+            return "{$scheme}://{$host}";
+        }
+    }
+
+    /** @param string $path
+     * @param string $ref
+     * @return string */
+    static function resolve_relative_path($path, $ref) {
+        if (!str_starts_with($path, "/")) {
+            if (($slash = strrpos($ref, "/") ? : 0) > 0) {
+                $path = substr($ref, 0, $slash + 1) . $path;
+            } else {
+                $path = "/{$path}";
+            }
+        }
+        $pos = 0;
+        while (($slashdot = strpos($path, "/.", $pos)) !== false) {
+            $dot = $slashdot + 1;
+            $sfxlen = strlen($path) - $dot;
+            if ($sfxlen === 1) {
+                $path = substr($path, 0, $dot);
+                break;
+            }
+            $ch = $path[$dot + 1];
+            if ($ch === "/") {
+                $path = substr_replace($path, "", $dot, 2);
+            } else if ($ch !== "." || ($sfxlen > 2 && $path[$dot + 2] !== "/")) {
+                $pos = $dot + 1;
+            } else if ($slashdot === 0) {
+                $path = substr($path, $dot + 2);
+                if ($path === "") {
+                    $path = "/";
+                }
+            } else {
+                $rpos = $sfxlen === 2 ? $dot + 2 : $dot + 3;
+                $slash = strrpos($path, "/", $dot - 2 - strlen($path)) ? : 0;
+                $path = substr_replace($path, "", $slash + 1, $rpos - $slash - 1);
+                $pos = $slash;
+            }
+        }
+        return $path;
+    }
+
+    /** @param ?string $url
+     * @param string $ref
+     * @return ?string
+     * @deprecated */
+    function make_absolute_under($url, $ref) {
+        return $this->resolve_within($url, $ref);
+    }
+
+    /** @param ?string $url
+     * @param string $ref
+     * @return ?string */
+    function resolve_within($url, $ref = "") {
+        // Like `resolve`, but result is constrained to live under
+        // `$ref` (returns null if that wouldn’t hold).
+        // Relative paths in `$ref` are parsed relative to this server.
+        // Relative paths in `$url` are parsed relative to `$ref`.
+        // Note that `$ref` should generally end with a slash; if it does
+        // not, its last component will be dropped while resolving `$url`
+        // (which is how relative URIs are resolved), so the prefix won't
+        // generally match.
+        // If the return value is non-null, then it has the same server
+        // as the resolved `$ref`, and the path component of `$ref` (with
+        // slash termination) is its prefix. Query and fragment components
+        // of `$ref` are ignored.
+
+        if ($url === null) {
+            return null;
+        }
+
+        $rp = parse_url($ref);
+        assert($rp !== false);
+        $rp_server = self::resolve_relative_server($rp, $this->server);
+        if (isset($rp["host"])) {
+            if (($rp_path = $rp["path"] ?? "") === "") {
+                $rp_path = "/";
+            }
+        } else {
+            $rp_path = $rp["path"] ?? "";
+            if (!str_starts_with($rp_path, "/")) {
+                $my_path = $this->request_uri;
+                if ($this->query !== "") {
+                    $my_path = substr($my_path, 0, -strlen($this->query));
+                }
+                $rp_path = self::resolve_relative_path($rp_path, $my_path);
+            }
+        }
+
+        $up = parse_url($url);
+        if ($up === false) {
+            return null;
+        }
+        $up_server = self::resolve_relative_server($up, $rp_server);
+
+        // compare server components
+        if ($up_server !== $rp_server) {
+            // XXX host, scheme comparisons should be case insensitive
+            // but this is good enough
+            return null;
+        }
+
+        // merge + remove_dot_segments, but resulting path is always nonempty
+        $path = $up["path"] ?? "";
+        if (strpos($path, "//") !== false) { // reject empty segments
+            return null;
+        }
+        $path = self::resolve_relative_path($path, $rp_path);
+
+        // reject if not under $rp_path
+        $rp_pathlen = strlen($rp_path) - (str_ends_with($rp_path, "/") ? 1 : 0);
+        if (strlen($path) === $rp_pathlen) {
+            $path .= "/";
+        }
+        if (!str_starts_with($path, $rp_path) || $path[$rp_pathlen] !== "/") {
+            return null;
+        }
+
+        $url = $rp_server . $path;
+        if (isset($up["query"])) {
+            $url .= "?" . $up["query"];
+        }
+        if (isset($up["fragment"])) {
+            $url .= "#" . $up["fragment"];
+        }
+        return $url;
     }
 
     /** @param bool $allow_http_if_localhost
@@ -441,7 +663,11 @@ class Navigation {
     /** @return NavigationState */
     static function get() {
         if (!self::$s) {
-            self::$s = new NavigationState(PHP_SAPI !== "cli" ? $_SERVER : null);
+            if (PHP_SAPI !== "cli") {
+                self::$s = NavigationState::make_server($_SERVER);
+            } else {
+                self::$s = new NavigationState;
+            }
         }
         return self::$s;
     }
@@ -449,127 +675,6 @@ class Navigation {
     /** @return string */
     static function self() {
         return self::get()->self();
-    }
-
-    /** @return string
-     * @deprecated */
-    static function host() {
-        return self::get()->host;
-    }
-
-    /** @param bool $downcase_host
-     * @return string
-     * @deprecated */
-    static function site_absolute($downcase_host = false) {
-        return self::get()->site_absolute($downcase_host);
-    }
-
-    /** @param bool $downcase_host
-     * @return string
-     * @deprecated */
-    static function base_absolute($downcase_host = false) {
-        return self::get()->base_absolute($downcase_host);
-    }
-
-    /** @return string
-     * @deprecated */
-    static function site_path() {
-        return self::get()->site_path;
-    }
-
-    /** @return string
-     * @deprecated  */
-    static function base_path() {
-        return self::get()->base_path;
-    }
-
-    /** @param ?string $url
-     * @return string
-     * @deprecated */
-    static function siteurl($url = null) {
-        return self::get()->siteurl($url);
-    }
-
-    /** @param ?string $url
-     * @return string
-     * @deprecated */
-    static function siteurl_path($url = null) {
-        return self::get()->siteurl_path($url);
-    }
-
-    /** @param string $url
-     * @return string
-     * @deprecated */
-    static function set_siteurl($url) {
-        return self::get()->set_siteurl($url);
-    }
-
-    /** @return string
-     * @deprecated */
-    static function page() {
-        return self::get()->page;
-    }
-
-    /** @return string
-     * @deprecated  */
-    static function path() {
-        return self::get()->path;
-    }
-
-    /** @param int $n
-     * @param bool $decoded
-     * @return ?string
-     * @deprecated */
-    static function path_component($n, $decoded = false) {
-        return self::get()->path_component($n, $decoded);
-    }
-
-    /** @param int $n
-     * @return string
-     * @deprecated */
-    static function path_suffix($n) {
-        return self::get()->path_suffix($n);
-    }
-
-    /** @param int $n
-     * @return ?string
-     * @deprecated */
-    static function shift_path_components($n) {
-        return self::get()->shift_path_components($n);
-    }
-
-    /** @return string
-     * @deprecated */
-    static function shifted_path() {
-        return self::get()->shifted_path;
-    }
-
-    /** @param string $page
-     * @return string
-     * @deprecated */
-    static function set_page($page) {
-        return self::get()->set_page($page);
-    }
-
-    /** @param string $path
-     * @return string
-     * @deprecated */
-    static function set_path($path) {
-        return (self::get()->path = $path);
-    }
-
-    /** @return string
-     * @deprecated */
-    static function php_suffix() {
-        return self::get()->php_suffix;
-    }
-
-    /** @param string $url
-     * @param ?string $siteref
-     * @return string
-     * @deprecated */
-    static function make_absolute($url, $siteref = null) {
-        return self::get()->make_absolute($url, $siteref);
     }
 
     /** @param string $url

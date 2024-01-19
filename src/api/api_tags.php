@@ -14,7 +14,7 @@ class Tags_API {
         }
         $tmr->message_list = [];
         if ($tmr->ok
-            && $user->conf->tags()->has_allotment) {
+            && $user->conf->tags()->has(TagInfo::TF_ALLOTMENT)) {
             self::allotment_tagmessages($user, $tmr, $interest);
         }
         return $tmr;
@@ -25,9 +25,10 @@ class Tags_API {
     static private function allotment_tagmessages($user, $tmr, $interest) {
         $pfx = "{$user->contactId}~";
         $allotments = [];
-        foreach ($user->conf->tags()->filter("allotment") as $ltag => $t) {
+        foreach ($user->conf->tags()->sorted_entries_having(TagInfo::TF_ALLOTMENT) as $ti) {
+            $ltag = $ti->ltag();
             if ($interest === null || isset($interest["{$pfx}{$ltag}"])) {
-                $allotments["{$pfx}{$ltag}"] = [$t, 0.0];
+                $allotments["{$pfx}{$ltag}"] = [$ti, 0.0];
             }
         }
         if (empty($allotments)) {
@@ -92,7 +93,6 @@ class Tags_API {
         }
 
         // save tags using assigner
-        $pids = [];
         $x = ["paper,action,tag"];
         $interestall = !$prow || isset($qreq->tags);
         if ($prow) {
@@ -115,7 +115,6 @@ class Tags_API {
                     $pid = intval($w);
                 } else if ($w !== "" && $pid > 0) {
                     $x[] = "{$pid},tag," . CsvGenerator::quote($w);
-                    $pids[$pid] = true;
                 }
             }
         }
@@ -128,7 +127,7 @@ class Tags_API {
         $mlist = $assigner->message_list();
         $ok = $assigner->execute();
 
-        // exit
+        // execute
         if ($ok && $prow) {
             $prow->load_tags();
             if ($interestall) {
@@ -145,16 +144,15 @@ class Tags_API {
             $taginfo->message_list = self::combine_message_lists($mlist, $taginfo->message_list);
             $jr = new JsonResult($taginfo);
         } else if ($ok) {
-            $p = [];
-            if ($pids) {
-                foreach ($user->paper_set(["paperId" => array_keys($pids)]) as $pr) {
-                    $p[$pr->paperId] = new TagMessageReport;
-                    $pr->add_tag_info_json($p[$pr->paperId], $user);
-                }
-            }
-            $jr = new JsonResult(["ok" => true, "p" => $p]);
+            $jr = new JsonResult([
+                "ok" => true,
+                "p" => Assign_API::assigned_paper_info($user, $assigner)
+            ]);
         } else {
             $jr = new JsonResult(["ok" => false, "message_list" => $mlist]);
+        }
+        if ($qreq->search) {
+            Search_API::apply_search($jr, $user, $qreq, $qreq->search);
         }
         return $jr;
     }
@@ -162,7 +160,7 @@ class Tags_API {
     static function votereport_api(Contact $user, Qrequest $qreq, PaperInfo $prow) {
         $tagger = new Tagger($user);
         if (!($tag = $tagger->check($qreq->tag, Tagger::NOVALUE))) {
-            return MessageItem::make_error_json($tagger->error_ftext());
+            return JsonResult::make_error(400, $tagger->error_ftext());
         }
         if (!$user->can_view_peruser_tag($prow, $tag)) {
             return ["ok" => false, "error" => "Permission error"];

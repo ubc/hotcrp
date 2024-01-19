@@ -37,6 +37,11 @@ class Author_SearchTerm extends SearchTerm {
         }
         return new Author_SearchTerm($srch->user, $count, $cids, $word, $sword->quoted);
     }
+    function paper_requirements(&$options) {
+        if ($this->csm->has_contacts()) {
+            $options["allConflictType"] = true;
+        }
+    }
     function sqlexpr(SearchQueryInfo $sqi) {
         if ($this->csm->has_contacts() && !$this->csm->test(0)) {
             return "exists (select * from PaperConflict where PaperConflict.paperId=Paper.paperId and " . $this->csm->contact_match_sql("contactId") . " and conflictType>=" . CONFLICT_AUTHOR . ")";
@@ -80,7 +85,19 @@ class Author_SearchTerm extends SearchTerm {
             $srch->add_field_highlighter("au", $this->regex);
         }
     }
-    function about_reviews() {
-        return self::ABOUT_NO;
+    function script_expression(PaperInfo $row, $about) {
+        if ($this->csm->has_contacts()
+            || $this->regex
+            || $about !== self::ABOUT_PAPER) {
+            return $this->test($row, null);
+        } else {
+            return ["type" => "compar", "compar" => $this->csm->relation(), "child" => [
+                ["type" => "author_count"],
+                $this->csm->value()
+            ]];
+        }
+    }
+    function about() {
+        return self::ABOUT_PAPER;
     }
 }

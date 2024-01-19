@@ -105,11 +105,12 @@ class Banal_SettingParser extends SettingParser {
     static private function check_banal($sv) {
         $cf = new CheckFormat($sv->conf);
         $interesting_keys = ["papersize", "pagelimit", "textblock", "bodyfontsize", "bodylineheight"];
-        $cf->check_file(SiteLoader::find("etc/sample.pdf"), "letter;2;;6.5inx9in;12;14");
+        $doc = DocumentInfo::make_content_file($sv->conf, SiteLoader::find("etc/sample.pdf"), "application/pdf");
+        $cf->check_document($doc, "letter;2;;6.5inx9in;12;14");
         $s1 = self::cf_status($cf);
         $e1 = join(",", array_intersect($cf->problem_fields(), $interesting_keys)) ? : "none";
         $e1_papersize = $cf->has_problem_at("papersize");
-        $cf->check_file(SiteLoader::find("etc/sample.pdf"), "a4;1;;3inx3in;14;15");
+        $cf->check_document($doc, "a4;1;;3inx3in;14;15");
         $s2 = self::cf_status($cf);
         $e2 = join(",", array_intersect($cf->problem_fields(), $interesting_keys)) ? : "none";
         $want_e2 = join(",", $interesting_keys);
@@ -188,7 +189,7 @@ class Banal_SettingParser extends SettingParser {
             $cfs->pagelimit = null;
             $s = trim($sv->reqstr("format/{$ctr}/pagelimit"));
             if (!self::is_any_str($s)) {
-                if (($sx = cvtint($s, -1)) > 0) {
+                if (($sx = stoi($s) ?? -1) > 0) {
                     $cfs->pagelimit = [0, $sx];
                 } else if (preg_match('/\A(\d+)\s*(?:-|–)\s*(\d+)\z/', $s, $m)
                            && $m[1] > 0 && $m[2] > 0 && $m[1] <= $m[2]) {
@@ -211,7 +212,7 @@ class Banal_SettingParser extends SettingParser {
             $cfs->wordlimit = null;
             $s = trim($sv->reqstr("format/{$ctr}/wordlimit"));
             if (!self::is_any_str($s)) {
-                if (($sx = cvtint($s, -1)) >= 0) {
+                if (($sx = stoi($s) ?? -1) >= 0) {
                     $cfs->wordlimit = [0, $sx];
                 } else if (preg_match('/\A(\d+)\s*(?:-|–)\s*(\d+)\z/', $s, $m)
                            && $m[1] > 0 && $m[2] > 0 && $m[1] <= $m[2]) {
@@ -227,7 +228,7 @@ class Banal_SettingParser extends SettingParser {
             $cfs->columns = 0;
             $s = trim($sv->reqstr("format/{$ctr}/columns"));
             if (!self::is_any_str($s)) {
-                if (($sx = cvtint($s, -1)) >= 0) {
+                if (($sx = stoi($s) ?? -1) >= 0) {
                     $cfs->columns = $sx;
                 } else {
                     $sv->error_at("format/{$ctr}/columns", "<0>Requires a whole number");

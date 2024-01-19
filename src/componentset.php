@@ -43,9 +43,9 @@ class ComponentSet {
     private $_ctx;
     /** @var list<ComponentContext> */
     private $_ctxstack;
+    /** @var list<callable(object):(?bool)> */
+    private $_print_callbacks = [];
     private $_annexes = [];
-    /** @var list<callable(string,object,XtParams):(?bool)> */
-    private $_xt_checkers = [];
 
     static private $next_placeholder;
 
@@ -125,9 +125,18 @@ class ComponentSet {
     }
 
 
-    /** @param callable(string,object,XtParams):(?bool) $checker */
+    /** @param callable(string,object,XtParams):(?bool) $checker
+     * @return $this */
     function add_xt_checker($checker) {
         $this->xtp->primitive_checkers[] = $checker;
+        return $this;
+    }
+
+    /** @param callable(object):(?bool) $f
+     * @return $this */
+    function add_print_callback($f) {
+        $this->_print_callbacks[] = $f;
+        return $this;
     }
 
 
@@ -196,8 +205,8 @@ class ComponentSet {
      * @return list<object> */
     function members($name, $require_key = null) {
         if (!isset($this->_potential_members[$name])
-            && ($gj = $this->get($name))) {
-            $name = $gj->name;
+            && ($xj = $this->get($name))) {
+            $name = $xj->name;
         }
         $r = [];
         $alias = false;
@@ -409,23 +418,13 @@ class ComponentSet {
         if ((string) $hashid !== "") {
             echo ' id="', htmlspecialchars($hashid), '"';
         }
-        echo '>';
-        if (str_starts_with($ftext, "<") && Ftext::is_ftext($ftext)) {
-            echo Ftext::unparse_as($ftext, 5);
-        } else {
-            echo htmlspecialchars($ftext);
-        }
-        echo "</h3>\n";
+        echo '>', Ftext::as(5, $ftext, 0), "</h3>\n";
     }
 
     /** @param string $ftext
      * @return ?string */
     static function title_hashid($ftext) {
-        $ftext = strtolower($ftext);
-        if (str_starts_with($ftext, "<") && Ftext::is_ftext($ftext)) {
-            $ftext = Ftext::unparse_as($ftext, 0);
-        }
-        $hashid = preg_replace('/\A[^A-Za-z]+|[^A-Za-z0-9:.]+/', "-", $ftext);
+        $hashid = preg_replace('/\A[^A-Za-z]+|[^A-Za-z0-9:.]+/', "-", Ftext::as(0, strtolower($ftext)));
         if (str_starts_with($hashid, "-")) {
             $hashid = substr($hashid, 1);
         }
@@ -482,27 +481,28 @@ class ComponentSet {
         if ($sepgroup !== null) {
             $this->_separator_group = $sepgroup;
         }
-        return $this->_print_body($gj);
+        return $this->_print_body($gj, false);
     }
 
     /** @param object $gj
+     * @param bool $print_members
      * @return mixed */
-    private function _print_body($gj) {
+    private function _print_body($gj, $print_members) {
+        foreach ($this->_print_callbacks as $f) {
+            if ($f($gj) === false)
+                return false;
+        }
         $result = null;
         if (isset($gj->print_function)) {
             $result = $this->call_function($gj, $gj->print_function, $gj);
-        } else if (isset($gj->render_function)) {
-            error_log("deprecated render_function in " . json_encode($gj) . "\n" . debug_string_backtrace()); // XXX
-            $result = $this->call_function($gj, $gj->render_function, $gj);
         } else if (isset($gj->html_content)) {
             echo $gj->html_content;
         }
-        if ($result !== false && ($gj->print_members ?? false)) {
-            if ($gj->print_members === true) {
-                $result = $this->print_group($gj->name);
-            } else {
-                $result = $this->print_group($gj->print_members);
-            }
+        if (isset($gj->print_members)) {
+            $print_members = $gj->print_members;
+        }
+        if ($result !== false && $print_members) {
+            $result = $this->print_members($print_members === true ? $gj->name : $print_members);
         }
         if ($gj->separator_after ?? false) {
             $this->mark_separator();
@@ -512,20 +512,37 @@ class ComponentSet {
 
     /** @param string $name
      * @param bool $top
-     * @return mixed */
+     * @return mixed
+     * @deprecated */
     function print_group($name, $top = false) {
+        return $top ? $this->print_body_members($name) : $this->print_members($name);
+    }
+
+    /** @param string $name
+     * @return mixed */
+    function print_body_members($name) {
+        if (($gj = $this->get($name))) {
+            $this->start_print();
+            $result = $this->_print_body($gj, true);
+            $this->end_print();
+        } else {
+            $result = $this->print_members($name);
+        }
+        $this->print_end_section();
+        return $result;
+    }
+
+    /** @param string $name
+     * @return mixed */
+    function print_members($name) {
         $this->start_print();
         $result = null;
-        if ($top && ($gj = $this->get($name))) {
-            $result = $this->_print_body($gj);
-        }
         foreach ($this->members($name) as $gj) {
-            if ($result !== false) {
-                $result = $this->print($gj);
+            if (($result = $this->print($gj)) === false) {
+                break;
             }
         }
         $this->end_print();
-        $top && $this->print_end_section();
         return $result;
     }
 

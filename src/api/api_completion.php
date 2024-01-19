@@ -7,7 +7,7 @@ class Completion_API {
      * @param string $prefix
      * @param array $map
      * @param int $flags */
-    private static function simple_search_completion(&$comp, $prefix, $map, $flags = 0) {
+    static private function simple_search_completion(&$comp, $prefix, $map, $flags = 0) {
         foreach ($map as $id => $str) {
             $match = null;
             foreach (preg_split('/[^a-z0-9_]+/', strtolower($str)) as $word)
@@ -23,14 +23,8 @@ class Completion_API {
     }
 
     /** @param list &$comp */
-    static function has_search_completion(Contact $user, &$comp) {
+    static private function has_search_completion(Contact $user, &$comp) {
         $conf = $user->conf;
-        if ((int) $user->conf->opt("noPapers") !== 1) {
-            $comp[] = "has:submission";
-        }
-        if ((int) $user->conf->opt("noAbstract") !== 1) {
-            $comp[] = "has:abstract";
-        }
         if ($user->isPC
             && $conf->has_any_manager()) {
             $comp[] = "has:admin";
@@ -84,7 +78,7 @@ class Completion_API {
         }
         if ($user->can_view_tags()) {
             array_push($comp, "has:color", "has:style");
-            if ($conf->tags()->has_badge) {
+            if ($conf->tags()->has(TagInfo::TF_BADGE)) {
                 $comp[] = "has:badge";
             }
         }
@@ -96,21 +90,22 @@ class Completion_API {
         $comp = [];
         $old_overrides = $user->add_overrides(Contact::OVERRIDE_CONFLICT);
 
-        self::has_search_completion($user, $comp);
-
-        foreach ($user->user_option_list() as $o) {
-            if ($user->can_view_some_option($o)
-                && $o->search_keyword() !== false) {
-                foreach ($o->search_examples($user, SearchExample::COMPLETION) as $sex) {
+        // paper fields
+        foreach ($conf->options()->form_fields() as $opt) {
+            if ($user->can_view_some_option($opt)
+                && $opt->search_keyword() !== false) {
+                foreach ($opt->search_examples($user, SearchExample::COMPLETION) as $sex) {
                     $comp[] = $sex->q;
                 }
             }
         }
 
+        self::has_search_completion($user, $comp);
+
         if ((!$category || $category === "ss")
             && $user->isPC) {
-            foreach ($conf->named_searches() as $k => $v) {
-                $comp[] = "ss:" . $k;
+            foreach ($conf->named_searches() as $sj) {
+                $comp[] = "ss:" . $sj->name;
             }
         }
 
@@ -191,10 +186,10 @@ class Completion_API {
                 }
             }
             foreach (array_keys($cats) as $cat) {
-                $comp[] = "show:$cat";
-                $comp[] = "hide:$cat";
+                $comp[] = "show:{$cat}";
+                $comp[] = "hide:{$cat}";
             }
-            $comp[] = "show:kanban";
+            $comp[] = "show:facets";
             $comp[] = "show:statistics";
             $comp[] = "show:rownumbers";
         }
@@ -208,14 +203,24 @@ class Completion_API {
         return ["ok" => true, "searchcompletion" => self::search_completions($user, "")];
     }
 
+    const MENTION_PARSE = 0;
+    const MENTION_COMPLETION = 1;
+
     /** @param Contact $user
      * @param ?PaperInfo $prow
      * @param int $cvis
+     * @param 0|1 $reason
      * @return list<list<Contact|Author>> */
-    static function mention_lists($user, $prow, $cvis) {
-        $lists = [];
+    static function mention_lists($user, $prow, $cvis, $reason) {
+        $alist = $rlist = $pclist = [];
+
+        if ($prow
+            && $user->can_view_authors($prow)
+            && $cvis >= CommentInfo::CTVIS_AUTHOR) {
+            $alist = $prow->contact_list();
+        }
+
         if ($prow && $user->can_view_review_assignment($prow, null)) {
-            $rlist = [];
             $prow->ensure_reviewer_names();
             $xview = $user->conf->time_some_external_reviewer_view_comment();
             foreach ($prow->reviews_as_display() as $rrow) {
@@ -228,53 +233,59 @@ class Completion_API {
                     $au = new Author;
                     $au->lastName = "Reviewer " . unparse_latin_ordinal($rrow->reviewOrdinal);
                     $au->contactId = $rrow->contactId;
-                    if (!$viewid) {
-                        $au->author_index = -1;
-                    }
+                    $au->status = $viewid ? Author::STATUS_REVIEWER : Author::STATUS_ANONYMOUS_REVIEWER;
                     $rlist[] = $au;
                 }
                 if ($viewid
                     && $rrow->contactId !== $user->contactId
                     && ($cvis >= CommentInfo::CTVIS_REVIEWER || $rrow->reviewType >= REVIEW_PC)
-                    && !$rrow->reviewer()->disablement) {
+                    && !$rrow->reviewer()->is_dormant()) {
                     $rlist[] = $rrow->reviewer();
                 }
             }
             // XXX todo: list previous commentees in privileged position?
             // XXX todo: list lead and shepherd?
-            if (!empty($rlist)) {
-                $lists[] = $rlist;
-            }
         }
+
         if ($user->can_view_pc()) {
-            if (!$prow || !$user->conf->check_track_view_sensitivity()) {
+            if (!$prow
+                || $reason === self::MENTION_PARSE
+                || !$user->conf->check_track_view_sensitivity()) {
                 $pclist = $user->conf->enabled_pc_members();
             } else {
-                $pclist = [];
                 foreach ($user->conf->pc_members() as $p) {
-                    if ($p->disablement === 0
+                    if (!$p->is_dormant()
                         && $p->can_pc_view_paper_track($prow))
                         $pclist[] = $p;
                 }
             }
-            if (!empty($pclist)) {
-                $lists[] = $pclist;
-            }
         }
-        return $lists;
+
+        return [$alist, $rlist, $pclist];
     }
 
     /** @param Qrequest $qreq
      * @param ?PaperInfo $prow */
     static function mentioncompletion_api(Contact $user, $qreq, $prow) {
         $comp = [];
-        $mlists = self::mention_lists($user, $prow, CommentInfo::CTVIS_AUTHOR);
+        $mlists = self::mention_lists($user, $prow, CommentInfo::CTVIS_AUTHOR, self::MENTION_COMPLETION);
+        $aunames = [];
         foreach ($mlists as $i => $mlist) {
-            $skey = $i ? "sm1" : "s";
-            $pr1 = $i === 0 && count($mlists) > 1;
+            $skey = $i === 2 ? "sm1" : "s";
             foreach ($mlist as $au) {
                 $n = Text::name($au->firstName, $au->lastName, $au->email, NAME_P);
-                $comp[] = $pr1 ? [$skey => $n, "pri" => 1] : [$skey => $n];
+                $x = [$skey => $n];
+                if ($i === 0) {
+                    $x["au"] = true;
+                    if (in_array($n, $aunames)) { // duplicate contact names are common
+                        continue;
+                    }
+                    $aunames[] = $n;
+                }
+                if ($i < 2) {
+                    $x["pri"] = 1;
+                }
+                $comp[] = $x;
             }
         }
         return ["ok" => true, "mentioncompletion" => array_values($comp)];

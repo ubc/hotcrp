@@ -110,7 +110,7 @@ class Mail_Page {
         } else if ($qreq->has_a("p") && !isset($qreq->recheck)) {
             $papersel = [];
             foreach ($qreq->get_a("p") as $p) {
-                if (($p = cvtint($p)) > 0)
+                if (($p = stoi($p) ?? -1) > 0)
                     $papersel[] = $p;
             }
             sort($papersel);
@@ -153,7 +153,7 @@ class Mail_Page {
     function print_review_requests() {
         $plist = new PaperList("reqrevs", new PaperSearch($this->viewer, ["t" => "req", "q" => ""]));
         $plist->set_table_id_class("foldpl", "fullw");
-        $plist->set_view("sel", false);
+        $plist->set_view("sel", false, PaperList::VIEWORIGIN_MAX);
         if ($plist->is_empty()) {
             $this->conf->warning_msg("<5>You have not requested any external reviews. " . Ht::link("Return home", $this->conf->hoturl("index")));
         } else {
@@ -207,8 +207,8 @@ class Mail_Page {
                 && $o->on_render_context(FieldRender::CFMAIL);
         });
         usort($opts, function ($a, $b) {
-            if ($a->final !== $b->final) {
-                return $a->final ? 1 : -1;
+            if ($a->is_final() !== $b->is_final()) {
+                return $a->is_final() ? 1 : -1;
             } else {
                 return PaperOption::compare($a, $b);
             }

@@ -3,8 +3,33 @@
 // Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
 
 class PCConflicts_PaperOption extends PaperOption {
+    /** @var ?string */
+    private $visible_if;
+    /** @var ?SearchTerm */
+    private $_visible_term;
+    /** @var bool */
+    private $selectors;
+    /** @var bool */
+    private $warn_missing = true;
+
     function __construct(Conf $conf, $args) {
         parent::__construct($conf, $args);
+        // XXX `final`
+        // Presence for PC conflicts is special. The field is always present
+        // (test_exists() always returns true), so that admins can set
+        // conflicts. The presence/exists_if configuration affects *visibility*
+        // instead.
+        if (empty($this->conf->pc_members())) {
+            $this->visible_if = "NONE";
+        } else {
+            $this->visible_if = $this->exists_condition();
+        }
+        $this->override_exists_condition(true);
+        $this->selectors = !!($args->selectors ?? false);
+    }
+    /** @param bool $warn_missing */
+    function set_warn_missing($warn_missing) {
+        $this->warn_missing = $warn_missing;
     }
     /** @return array<int,int> */
     static private function paper_value_map(PaperInfo $prow) {
@@ -13,6 +38,17 @@ class PCConflicts_PaperOption extends PaperOption {
     /** @return array<int,?string> */
     static private function value_map(PaperValue $ov) {
         return array_combine($ov->value_list(), $ov->data_list());
+    }
+    /** @return bool */
+    final function test_visible(PaperInfo $prow) {
+        if ($this->visible_if === null) {
+            return true;
+        }
+        if ($this->_visible_term === null) {
+            $s = new PaperSearch($this->conf->root_user(), $this->visible_if);
+            $this->_visible_term = $s->full_term();
+        }
+        return $this->_visible_term->test($prow, null);
     }
     function value_force(PaperValue $ov) {
         $vm = self::paper_value_map($ov->prow);
@@ -41,8 +77,10 @@ class PCConflicts_PaperOption extends PaperOption {
         return (object) $pcc;
     }
     function value_check(PaperValue $ov, Contact $user) {
-        if ($this->conf->setting("sub_pcconf")) {
-            $this->_warn_missing_conflicts($ov, $user);
+        if ($this->test_visible($ov->prow)) {
+            if ($this->warn_missing) {
+                $this->_warn_missing_conflicts($ov, $user);
+            }
         } else if ($user->act_author_view($ov->prow)) {
             $this->_warn_changes($ov);
         }
@@ -61,7 +99,10 @@ class PCConflicts_PaperOption extends PaperOption {
             }
         }
         if (!empty($pcs)) {
-            $ov->warning($this->conf->_("<5>You may have missed conflicts of interest with {:list}. Please verify that all conflicts are correctly marked.", $pcs) . $this->conf->_(" Hover over “possible conflict” labels for more information."));
+            $ov->warning(Ftext::join_nonempty(" ", [
+                $this->conf->_("<5>You may have missed conflicts of interest with {:list}. Please verify that all conflicts are correctly marked.", $pcs),
+                $this->conf->_("<5>Hover over “possible conflict” labels for more information.")
+            ]));
         }
     }
     private function _warn_changes(PaperValue $ov) {
@@ -167,33 +208,30 @@ class PCConflicts_PaperOption extends PaperOption {
         return $pv;
     }
     function print_web_edit(PaperTable $pt, $ov, $reqov) {
-        if (!$this->conf->setting("sub_pcconf")) {
-            return;
-        }
-
         $admin = $pt->user->can_administer($ov->prow);
-        if ($pt->editable === "f" && !$admin) {
+        if (!$this->test_visible($ov->prow)
+            && !$pt->settings_mode) {
             return;
         }
 
         $this->conf->ensure_cached_user_collaborators();
         $pcm = $this->conf->pc_members();
-        if (empty($pcm)) {
+        if (empty($pcm)
+            && !$pt->settings_mode) {
             return;
         }
 
-        $selectors = $this->conf->setting("sub_pcconfsel");
         $confset = $this->conf->conflict_set();
         $ctypes = [];
-        if ($selectors) {
-            $ctypes[0] = $confset->unparse_text(0);
+        if ($this->selectors) {
+            $ctypes[0] = $confset->unparse_selector_text(0);
             foreach ($confset->basic_conflict_types() as $ct) {
-                $ctypes[$ct] = $confset->unparse_text($ct);
+                $ctypes[$ct] = $confset->unparse_selector_text($ct);
             }
             if ($admin) {
                 $ctypes["xsep"] = null;
                 $ct = Conflict::set_pinned(Conflict::GENERAL, true);
-                $ctypes[$ct] = $confset->unparse_text($ct);
+                $ctypes[$ct] = $confset->unparse_selector_text($ct);
             }
         }
 
@@ -210,80 +248,125 @@ class PCConflicts_PaperOption extends PaperOption {
             "id" => $this->formid, "for" => false
         ]);
         echo '<div class="papev"><ul class="pc-ctable">';
-        $readonly = !$this->test_editable($ov->prow);
 
         foreach ($pcm as $id => $p) {
             $pct = $ctmaps[0][$p->contactId] ?? 0;
             $ct = $ctmaps[1][$p->contactId] ?? 0;
+
+            $name = $pt->user->reviewer_html_for($p);
             $potconf = null;
             if ($ov->prow->paperId && $pct < CONFLICT_AUTHOR) {
                 $potconf = $ov->prow->potential_conflict_html($p, $pct <= 0);
             }
 
-            $label = $pt->user->reviewer_html_for($p);
-            if ($p->affiliation) {
-                $label .= '<span class="pcconfaff">' . htmlspecialchars(UnicodeHelper::utf8_abbreviate($p->affiliation, 60)) . '</span>';
-            }
-
-            echo '<li class="ctelt"><div class="ctelti';
-            if (!$selectors) {
-                echo ' checki';
-            }
-            echo ' clearfix';
-            if (Conflict::is_conflicted($pct)) {
-                echo ' tag-bold';
-            }
+            echo '<li class="ctelt"><div class="ctelti clearfix',
+                $this->selectors ? "" : " checki",
+                Conflict::is_conflicted($pct) ? " tag-bold" : "";
             if ($potconf) {
                 echo ' need-tooltip" data-tooltip-class="gray" data-tooltip="', str_replace('"', '&quot;', PaperInfo::potential_conflict_tooltip_html($potconf));
             }
-            echo '"><label>';
+            echo '">';
 
-            $js = ["id" => "pcconf:{$id}", "disabled" => $readonly];
+            $js = ["id" => "pcconf:{$id}"];
             $hidden = "";
             if (Conflict::is_author($pct)
                 || (!$admin && Conflict::is_pinned($pct))) {
-                if ($selectors) {
-                    echo '<span class="pcconf-editselector"><strong>';
+                if ($this->selectors) {
                     if (Conflict::is_author($pct)) {
-                        echo "Author";
+                        $confx = "<strong>Author</strong>";
                     } else if (Conflict::is_conflicted($pct)) {
-                        echo "Conflict"; // XXX conflict type?
+                        $confx = "<strong>Conflict</strong>"; // XXX conflict type?
                     } else {
-                        echo "Non-conflict";
+                        $confx = "<strong>No conflict</strong>";
                     }
-                    echo '</strong></span>';
                 } else {
-                    echo '<span class="checkc">', Ht::checkbox(null, 1, Conflict::is_conflicted($pct), ["disabled" => true]), '</span>';
+                    $confx = Ht::checkbox(null, 1, Conflict::is_conflicted($pct), ["disabled" => true]);
                 }
-                echo Ht::hidden("pcconf:{$id}", $pct, ["class" => "conflict-entry", "disabled" => true]);
-            } else if ($selectors) {
+                $hidden = Ht::hidden("pcconf:{$id}", $pct, ["class" => "conflict-entry", "disabled" => true]);
+            } else if ($this->selectors) {
                 $xctypes = $ctypes;
                 if (!isset($xctypes[$ct])) {
-                    $xctypes[$ct] = $confset->unparse_text($ct);
+                    $xctypes[$ct] = $confset->unparse_selector_text($ct);
                 }
                 $js["class"] = "conflict-entry";
                 $js["data-default-value"] = $pct;
-                echo '<span class="pcconf-editselector">',
-                    Ht::select("pcconf:$id", $xctypes, $ct, $js),
-                    '</span>';
+                $confx = Ht::select("pcconf:{$id}", $xctypes, $ct, $js);
             } else {
                 $js["data-default-checked"] = Conflict::is_conflicted($pct);
                 $js["data-range-type"] = "pcconf";
                 $js["class"] = "uic js-range-click conflict-entry";
                 $checked = Conflict::is_conflicted($ct);
-                echo '<span class="checkc">',
-                    Ht::checkbox("pcconf:{$id}", $checked ? $ct : Conflict::GENERAL, $checked, $js),
-                    '</span>';
+                $confx = Ht::checkbox("pcconf:{$id}", $checked ? $ct : Conflict::GENERAL, $checked, $js);
                 $hidden = Ht::hidden("has_pcconf:{$id}", 1);
             }
 
-            echo $label, "</label>", $hidden;
+            if ($this->selectors) {
+                echo "<label for=\"pcconf:{$id}\">", $name, "</label>",
+                    '<span class="pcconf-editselector">', $confx, '</span>';
+            } else {
+                echo "<label><span class=\"checkc\">", $confx, "</span>", $name, "</label>";
+            }
+            if ($p->affiliation) {
+                echo '<span class="pcconfaff">' . htmlspecialchars(UnicodeHelper::utf8_abbreviate($p->affiliation, 60)) . '</span>';
+            }
             if ($potconf) {
                 echo $potconf->announce;
             }
-            echo "</div></li>";
+            echo $hidden, "</div></li>";
         }
+
+        if (empty($pcm)) { // only in settings mode
+            echo '<li class="ctelt"><div class="ctelti"><em>(The PC has no members)</em></div></li>';
+        }
+
         echo "</ul></div></div>\n\n";
     }
-    // XXX no render because paper strip
+    /** @param FieldChangeSet $fcs */
+    function strip_unchanged_qreq(PaperInfo $prow, Qrequest $qreq, $fcs) {
+        foreach ($prow->conf->pc_members() as $cid => $pc) {
+            if ($fcs->test("pcconf:{$cid}") === FieldChangeSet::UNCHANGED) {
+                unset($qreq["has_pcconf:{$cid}"], $qreq["pcconf:{$cid}"]);
+            }
+        }
+    }
+    function render(FieldRender $fr, PaperValue $ov) {
+        if (!$this->test_visible($ov->prow)) {
+            return;
+        }
+        // XXX potential conflicts?
+        $user = $fr->user ?? Contact::make($this->conf);
+        $pcm = $this->conf->pc_members();
+        $confset = $this->selectors ? $this->conf->conflict_set() : null;
+        $names = [];
+        foreach ($ov->prow->conflict_type_list() as $cflt) {
+            if (Conflict::is_conflicted($cflt->conflictType)
+                && ($p = $pcm[$cflt->contactId] ?? null)) {
+                $t = $user->reviewer_html_for($p);
+                if ($p->affiliation) {
+                    $t .= " <span class=\"auaff\">(" . htmlspecialchars($p->affiliation) . ")</span>";
+                }
+                $ch = "";
+                if (Conflict::is_author($cflt->conflictType)) {
+                    $ch = "<strong>Author</strong>";
+                } else if ($confset) {
+                    $ch = $confset->unparse_html($cflt->conflictType);
+                }
+                if ($ch !== "") {
+                    $t .= " - {$ch}";
+                }
+                $names[$p->pc_index] = "<li class=\"odname\">{$t}</li>";
+            }
+        }
+        if (empty($names)) {
+            $names[] = "<li class=\"odname\">None</li>";
+        }
+        ksort($names);
+        $fr->set_html("<ul class=\"x namelist-columns\">" . join("", $names) . "</ul>");
+    }
+
+    function export_setting() {
+        $sfs = parent::export_setting();
+        $sfs->exists_if = $this->visible_if ?? "all";
+        return $sfs;
+    }
 }

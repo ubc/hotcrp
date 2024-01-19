@@ -9,8 +9,8 @@ class Paper_API extends MessageSet {
     /** @var Contact
      * @readonly */
     public $user;
-    /** @var array<string,mixed> */
-    private $psargs;
+    /** @var bool */
+    private $disable_users = false;
     /** @var ?ZipArchive */
     private $ziparchive;
     /** @var ?string */
@@ -22,11 +22,6 @@ class Paper_API extends MessageSet {
     function __construct(Contact $user) {
         $this->conf = $user->conf;
         $this->user = $user;
-        $this->psargs = [
-            "disable_users" => false,
-            "add_topics" => false,
-            "check_content_file" => false
-        ];
     }
 
     static function run_get(Contact $user, Qrequest $qreq, PaperInfo $prow = null) {
@@ -139,10 +134,13 @@ class Paper_API extends MessageSet {
 
         if ($this->user->privChair) {
             if ($qreq->disable_users) {
-                $this->psargs["disable_users"] = true;
+                $this->disable_users = true;
             }
             if ($qreq->add_topics) {
-                $this->psargs["add_topics"] = true;
+                foreach ($this->conf->options()->form_fields() as $opt) {
+                    if ($opt instanceof Topics_PaperOption)
+                        $opt->allow_new_topics(true);
+                }
             }
         }
 
@@ -179,7 +177,8 @@ class Paper_API extends MessageSet {
             }
             unset($j->pid, $j->id);
         }
-        if (!isset($j->pid) && !isset($j->id)
+        if (!isset($j->pid)
+            && !isset($j->id)
             && ($pidflags & self::PIDFLAG_MATCH_TITLE) !== 0
             && is_string($j->title ?? null)) {
             $pids = Dbl::fetch_first_columns($conf->dblink, "select paperId from Paper where title=?", simplify_whitespace($j->title));
@@ -207,18 +206,26 @@ class Paper_API extends MessageSet {
             $pstatus->error_at_option($o, "{$filename}: File not found");
             return false;
         }
-        // make room for large files in memory
-        if ($stat["size"] > 50000000
-            && $stat["size"] >= ini_get_bytes("memory_limit") * 0.3) {
-            ini_set("memory_limit", floor($stat["size"] * 3.25 / (1 << 20)) . "M");
+        // use resources to store large files
+        if ($stat["size"] > 50000000) {
+            if (PHP_VERSION_ID >= 80200) {
+                $content = $zip->getStreamIndex($stat["index"]);
+            } else {
+                $content = $zip->getStream($filename);
+            }
+        } else {
+            $content = $zip->getFromIndex($stat["index"]);
         }
-        $content = $zip->getFromIndex($stat["index"]);
         if ($content === false) {
             $pstatus->error_at_option($o, "{$filename}: File not found");
             return false;
         }
-        $docj->content = $content;
-        $docj->content_file = null;
+        if (is_string($content)) {
+            $docj->content = $content;
+            $docj->content_file = null;
+        } else {
+            $docj->content_file = $content;
+        }
         return true;
     }
 
@@ -239,8 +246,10 @@ class Paper_API extends MessageSet {
             return false;
         }
 
-        $ps = new PaperStatus($this->user, $this->psargs);
-        $ps->on_document_import([$this, "on_document_import"]);
+        $ps = (new PaperStatus($this->user))
+            ->set_disable_users($this->disable_users)
+            ->set_any_content_file(true)
+            ->on_document_import([$this, "on_document_import"]);
         $pid = $ps->save_paper_json($j);
 
         foreach ($ps->decorated_message_list() as $mi) {

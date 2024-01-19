@@ -15,8 +15,8 @@ class Response_Setting {
     public $grace;
     /** @var ?int */
     public $wordlimit;
-    /** @var bool */
-    public $truncate = false;
+    /** @var ?int */
+    public $hard_wordlimit;
     /** @var string */
     public $condition = "all";
     /** @var string */
@@ -28,7 +28,7 @@ class Response_Setting {
 
     /** @return string */
     function default_instructions(Conf $conf) {
-        return $conf->fmt()->default_itext("resp_instrux", new FmtArg("wordlimit", $this->old_wordlimit));
+        return $conf->fmt()->default_translation("resp_instrux", new FmtArg("wordlimit", $this->old_wordlimit));
     }
 
     /** @return Response_Setting */
@@ -39,8 +39,8 @@ class Response_Setting {
         $rs->open = $rrd->open;
         $rs->done = $rrd->done;
         $rs->grace = $rrd->grace;
-        $rs->wordlimit = $rs->old_wordlimit = $rrd->words;
-        $rs->truncate = $rrd->truncate;
+        $rs->wordlimit = $rs->old_wordlimit = $rrd->wordlimit;
+        $rs->hard_wordlimit = $rrd->hard_wordlimit;
         $rs->condition = $rrd->condition ?? "all";
         $rs->instructions = $rrd->instructions ?? $rs->default_instructions($conf);
         return $rs;
@@ -71,11 +71,12 @@ class Response_Setting {
         if ($this->grace > 0) {
             $j->grace = $this->grace;
         }
-        if ($this->wordlimit !== 500) {
-            $j->words = $this->wordlimit ?? 0;
-        }
-        if ($this->truncate) {
-            $j->truncate = true;
+        $wl = $this->wordlimit ?? 0;
+        if (($this->hard_wordlimit ?? 0) > 0) {
+            $j->wl = $wl <= 0 ? $this->hard_wordlimit : $wl;
+            $j->hwl = $this->hard_wordlimit;
+        } else if ($wl !== 500) {
+            $j->wl = $wl;
         }
         if (($this->condition ?? "") !== ""
             && $this->condition !== "all") {
@@ -116,7 +117,7 @@ class Response_SettingParser extends SettingParser {
     function default_value(Si $si, SettingValues $sv) {
         if ($si->name0 === "response/" && $si->name2 === "/instructions") {
             $n = $sv->oldv("response/{$si->name1}/wordlimit");
-            return $sv->conf->fmt()->default_itext("resp_instrux", new FmtArg("wordlimit", $n));
+            return $sv->conf->fmt()->default_translation("resp_instrux", new FmtArg("wordlimit", $n));
         } else {
             return null;
         }
@@ -127,7 +128,7 @@ class Response_SettingParser extends SettingParser {
             if ($si->name2 === "") {
                 $sv->set_oldv($si, Response_Setting::make_new($sv->conf));
             } else if ($si->name2 === "/title") {
-                $n = $sv->oldv("response/{$si->name1}/name");
+                $n = $sv->vstr("response/{$si->name1}/name");
                 $sv->set_oldv($si, $n ? "‘{$n}’ response" : "Response");
             }
         }
@@ -204,7 +205,7 @@ class Response_SettingParser extends SettingParser {
         if ($sv->has_req("response/{$ctr}/delete")) {
             Ht::hidden("response/{$ctr}/delete", "1", ["data-default-value" => ""]);
         }
-        $sv->print_group("responses/properties");
+        $sv->print_members("responses/properties");
         echo '</div>';
     }
 
@@ -318,10 +319,16 @@ class Response_SettingParser extends SettingParser {
     static function crosscheck(SettingValues $sv) {
         if ($sv->has_interest("response")) {
             foreach ($sv->conf->response_rounds() as $i => $rrd) {
+                $ctr = $i + 1;
+                if ($rrd->hard_wordlimit > 0
+                    && $rrd->wordlimit > $rrd->hard_wordlimit) {
+                    $sv->error_at("response/{$ctr}/wordlimit", "<0>Word limit cannot be larger than hard word limit");
+                    $sv->error_at("response/{$ctr}/hard_wordlimit", null);
+                }
                 if ($rrd->condition !== null) {
                     $s = new PaperSearch($sv->conf->root_user(), $rrd->condition);
                     foreach ($s->message_list() as $mi) {
-                        $sv->append_item_at("response/" . ($i + 1) . "/condition", $mi);
+                        $sv->append_item_at("response/{$ctr}/condition", $mi);
                     }
                 }
             }

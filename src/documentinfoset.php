@@ -1,6 +1,6 @@
 <?php
 // documentinfoset.php -- HotCRP document set
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class DocumentInfoSet_ZipInfo {
     /** @var ?int */
@@ -43,8 +43,8 @@ class DocumentInfoSet implements ArrayAccess, IteratorAggregate, Countable {
     private $_ms;
     /** @var ?string */
     private $_filename;
-    /** @var ?string */
-    private $_mimetype;
+    /** @var string */
+    private $_mimetype = "application/zip";
     /** @var ?string|false */
     private $_tmpdir;
     /** @var ?list<string> */
@@ -118,11 +118,10 @@ class DocumentInfoSet implements ArrayAccess, IteratorAggregate, Countable {
      * @param ?int $timestamp
      * @return bool */
     function add_string_as($text, $fn, $mimetype = null, $timestamp = null) {
-        return $this->add_as(new DocumentInfo([
-            "content" => $text, "size" => strlen($text),
-            "filename" => $fn, "mimetype" => $mimetype ?? "text/plain",
-            "timestamp" => $timestamp ?? Conf::$now
-        ], $this->conf), $fn);
+        $doc = DocumentInfo::make_content($this->conf, $text, $mimetype ?? "text/plain")
+            ->set_timestamp($timestamp ?? Conf::$now)
+            ->set_filename($fn);
+        return $this->add_as($doc, $fn);
     }
 
     /** @return list<DocumentInfo> */
@@ -156,7 +155,7 @@ class DocumentInfoSet implements ArrayAccess, IteratorAggregate, Countable {
     function checked_document_by_index($i) {
         $doc = $this->docs[$i] ?? null;
         if (!$doc) {
-            throw new Exception("DocumentInfoSet::checked_document_by_index($i) failure");
+            throw new Exception("DocumentInfoSet::checked_document_by_index({$i}) failure");
         }
         return $doc;
     }
@@ -401,9 +400,10 @@ class DocumentInfoSet implements ArrayAccess, IteratorAggregate, Countable {
         }
         return $this->_signature;
     }
+
     /** @return ?DocumentInfo */
     function make_zip_document() {
-        if (($dstore_tmp = Filer::docstore_tmpdir($this->conf))) {
+        if (($dstore_tmp = Filer::docstore_tempdir($this->conf))) {
             $this->_filestore = $dstore_tmp . $this->content_signature() . ".zip";
             // maybe zipfile with that signature already exists
             if (file_exists($this->_filestore)) {
@@ -440,12 +440,12 @@ class DocumentInfoSet implements ArrayAccess, IteratorAggregate, Countable {
                 $sz += fwrite($out, $zi->compressed);
             } else if (($f = $doc->available_content_file())) {
                 $filesize = $doc->size();
-                $sz += Filer::readfile_subrange($out, 0, $filesize, 0, $f, $filesize);
+                $sz += Downloader::readfile_subrange($out, 0, $filesize, 0, $f, $filesize);
             } else {
                 $sz += fwrite($out, $doc->content());
             }
             if ($sz !== $zi->local_end_offset() - $zi->local_offset) {
-                $mi = $this->error("<0>Write failure: wrote $sz, expected " . ($zi->local_end_offset() - $zi->local_offset));
+                $mi = $this->error("<0>Write failure: wrote {$sz}, expected " . ($zi->local_end_offset() - $zi->local_offset));
                 $mi->landmark = $this->ufn[$i];
                 fclose($out);
                 return null;
@@ -462,18 +462,17 @@ class DocumentInfoSet implements ArrayAccess, IteratorAggregate, Countable {
         }
 
         // success
-        rename($this->_filestore . "~", $this->_filestore);
+        rename("{$this->_filestore}~", $this->_filestore);
         return $this->_make_success_document();
     }
+
     /** @return DocumentInfo */
     private function _make_success_document() {
-        return new DocumentInfo([
-            "filename" => $this->_filename,
-            "mimetype" => $this->_mimetype ?? "application/zip",
-            "documentType" => DTYPE_EXPORT,
-            "content_file" => $this->_filestore
-        ], $this->conf);
+        return DocumentInfo::make_content_file($this->conf, $this->_filestore, $this->_mimetype)
+            ->set_filename($this->_filename)
+            ->set_document_type(DTYPE_EXPORT);
     }
+
     /** @param resource $out
      * @param int $r0
      * @param int $r1 */
@@ -497,13 +496,13 @@ class DocumentInfoSet implements ArrayAccess, IteratorAggregate, Countable {
             $zi = $this->_zipi[$d0];
             $doc = $this->docs[$d0];
             $p0 = $zi->local_offset;
-            $p0 += Filer::print_subrange($out, $r0, $r1, $p0, $zi->localh);
+            $p0 += Downloader::print_subrange($out, $r0, $r1, $p0, $zi->localh);
             if ($zi->compressed !== null) {
-                $p0 += Filer::print_subrange($out, $r0, $r1, $p0, $zi->compressed);
+                $p0 += Downloader::print_subrange($out, $r0, $r1, $p0, $zi->compressed);
             } else if (($f = $doc->available_content_file())) {
-                $p0 += Filer::readfile_subrange($out, $r0, $r1, $p0, $f, $doc->size());
+                $p0 += Downloader::readfile_subrange($out, $r0, $r1, $p0, $f, $doc->size());
             } else {
-                $p0 += Filer::print_subrange($out, $r0, $r1, $p0, $doc->content());
+                $p0 += Downloader::print_subrange($out, $r0, $r1, $p0, $doc->content());
             }
             if ($p0 < min($r1, $zi->local_end_offset())) {
                 throw new Exception("Failure writing {$this->ufn[$d0]}, wrote " . ($p0 - $zi->local_offset) . ", expected " . (min($r1, $zi->local_end_offset()) - $zi->local_offset));
@@ -512,23 +511,23 @@ class DocumentInfoSet implements ArrayAccess, IteratorAggregate, Countable {
         }
         if ($d0 === count($this->docs)) {
             foreach ($this->_zipi as $zi) {
-                Filer::print_subrange($out, $r0, $r1, $zi->central_offset, $zi->centralh);
+                Downloader::print_subrange($out, $r0, $r1, $zi->central_offset, $zi->centralh);
             }
         }
     }
-    /** @return bool */
-    private function _download_directly($opts = []) {
-        $opts["etag"] = "\"" . $this->content_signature() . "\"";
-        if (isset($opts["if-none-match"])
-            && $opts["if-none-match"] === $opts["etag"]) {
-            header("HTTP/1.1 304 Not Modified");
+
+    /** @param Downloader $dopt
+     * @return bool */
+    private function _download_directly($dopt) {
+        $dopt->etag = "\"" . $this->content_signature() . "\"";
+        if ($dopt->run_match()) {
             return true;
         }
 
         $this->_hotzip_make();
-        $filesize = $this->_hotzip_filesize();
-
-        if (!Filer::check_download_opts($filesize, $opts)) {
+        $dopt->content_length = $this->_hotzip_filesize();
+        $dopt->mimetype = Mimetype::type_with_charset($this->_mimetype);
+        if ($dopt->run_range_check()) {
             return true;
         }
 
@@ -536,39 +535,39 @@ class DocumentInfoSet implements ArrayAccess, IteratorAggregate, Countable {
         if (zlib_get_coding_type() !== false) {
             ini_set("zlib.output_compression", "0");
         }
-        $mimetype = Mimetype::type_with_charset($this->_mimetype);
-        if (!isset($opts["range"])) {
-            if (isset($opts["attachment"])) {
-                $attachment = $opts["attachment"];
-            } else {
-                $attachment = !Mimetype::disposition_inline($this->_mimetype);
-            }
+        if ($dopt->range === null) {
+            $attachment = $dopt->attachment ?? !Mimetype::disposition_inline($this->_mimetype);
             header("Content-Disposition: " . ($attachment ? "attachment" : "inline") . "; filename=" . mime_quote_string($this->_filename));
             // reduce likelihood of XSS attacks in IE
             header("X-Content-Type-Options: nosniff");
         }
-        if ($opts["cacheable"] ?? false) {
+        if ($dopt->cacheable) {
             header("Cache-Control: max-age=315576000, private");
             header("Expires: " . gmdate("D, d M Y H:i:s", Conf::$now + 315576000) . " GMT");
         }
+        if ($dopt->log_user && $dopt->range_overlaps(0, 4096)) {
+            DocumentInfo::log_download_activity($this->as_list(), $dopt->log_user);
+        }
         $out = fopen("php://output", "wb");
-        foreach (Filer::download_ranges($filesize, $mimetype, $opts) as $r) {
+        foreach ($dopt->run_output_ranges() as $r) {
             $this->_write_range($out, $r[0], $r[1]);
         }
         fclose($out);
         return true;
     }
 
-    /** @return bool */
-    function download($opts = []) {
+    /** @param ?Downloader $dopt
+     * @return bool */
+    function download($dopt = null) {
         if (!$this->_filename) {
             throw new Exception("trying to download blank-named DocumentInfoSet");
         }
+        $dopt = $dopt ?? new Downloader;
         if (count($this->docs) === 1
             && !$this->has_error()
-            && ($opts["single"] ?? false)) {
+            && $dopt->single) {
             $doc = $this->docs[0];
-            if ($doc->download($opts)) {
+            if ($doc->download($dopt)) {
                 return true;
             } else {
                 foreach ($doc->message_list() as $mi) {
@@ -577,7 +576,7 @@ class DocumentInfoSet implements ArrayAccess, IteratorAggregate, Countable {
                 return false;
             }
         } else {
-            return $this->_download_directly($opts);
+            return $this->_download_directly($dopt);
         }
     }
 }

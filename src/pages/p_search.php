@@ -44,7 +44,8 @@ class Search_Page {
     private function checkbox_item($column, $type, $title, $options = []) {
         $options["class"] = "uich js-plinfo";
         $x = '<label class="checki"><span class="checkc">'
-            . Ht::checkbox("show$type", 1, $this->pl->viewing($type), $options)
+            . Ht::hidden("has_show{$type}", 1)
+            . Ht::checkbox("show{$type}", 1, $this->pl->viewing($type), $options)
             . '</span>' . $title . '</label>';
         $this->item($column, $x);
     }
@@ -108,9 +109,8 @@ class Search_Page {
             }
             $this->checkbox_item(20, "tags", "Tags", $opt);
             if ($user->privChair) {
-                foreach ($this->conf->tags() as $t) {
-                    if ($t->allotment || $t->approval || $t->rank)
-                        $this->checkbox_item(20, "tagreport:{$t->tag}", "#~{$t->tag} report", $opt);
+                foreach ($this->conf->tags()->sorted_entries_having(TagInfo::TFM_VOTES | TagInfo::TF_RANK) as $ti) {
+                    $this->checkbox_item(20, "tagreport:{$ti->tag}", "#~{$ti->tag} report", $opt);
                 }
             }
         }
@@ -175,28 +175,38 @@ class Search_Page {
      * @return bool */
     private function print_saved_searches($always) {
         $ss = $this->conf->named_searches();
-        if (($show = !empty($ss) || $always)) {
-            echo '<div class="tld is-tla pb-2" id="saved-searches" role="tabpanel" aria-labelledby="tab-saved-searches">';
-            if (!empty($ss)) {
-                echo '<div class="ctable search-ctable column-count-3 mb-1">';
-                ksort($ss, SORT_NATURAL | SORT_FLAG_CASE);
-                foreach ($ss as $sn => $sv) {
-                    $q = $sv->q ?? "";
-                    if (isset($sv->t) && $sv->t !== "s") {
-                        $q = "({$q}) in:{$sv->t}";
-                    }
-                    echo '<div class="ctelt"><a href="',
-                        $this->conf->hoturl("search", ["q" => "ss:{$sn}"]),
-                        '">ss:', htmlspecialchars($sn), '</a>',
-                        '<div class="small">Definition: “<a href="',
-                        $this->conf->hoturl("search", ["q" => $q]),
-                        '">', htmlspecialchars($q), '</a>”</div></div>';
-                }
-                echo '</div>';
-            }
-            echo '<p class="mt-1 mb-0 text-end"><button class="small ui js-edit-namedsearches" type="button">Edit saved searches</button></p></div>';
+        if (empty($ss) && !$always) {
+            return false;
         }
-        return $show;
+        echo '<div class="tld is-tla pb-2" id="saved-searches" role="tabpanel" aria-labelledby="tab-saved-searches">';
+        $any = false;
+        foreach ($ss as $sj) {
+            if (($sj->display ?? null) === "none") {
+                continue;
+            }
+            if (!$any) {
+                Icons::stash_defs("solid_question");
+                echo Ht::unstash(), '<div class="ctable search-ctable column-count-3 mb-1">';
+                $any = true;
+            }
+            $q = $sj->q ?? "";
+            if (isset($sj->t) && $sj->t !== "s") {
+                $q = "({$q}) in:{$sj->t}";
+            }
+            echo '<div class="ctelt has-fold foldc">';
+            if (($sj->display ?? null) === "highlight") {
+                echo '⭐️ ';
+            }
+            echo Ht::link("ss:" . htmlspecialchars($sj->name), $this->conf->hoturl("search", ["q" => "ss:{$sj->name}"])),
+                ' <a href="" class="ui js-foldup small" title="Show expansion">', Icons::ui_use("solid_question"), '</a>',
+                '<div class="small fx ml-4">', htmlspecialchars($sj->q), '</div></div>';
+        }
+        if ($any) {
+            echo '</div>';
+        }
+        Icons::stash_defs("trash");
+        echo '<p class="mt-1 mb-0 text-end"><button class="small ui js-edit-namedsearches" type="button">Edit named searches</button></p></div>';
+        return true;
     }
 
     /** @param Qrequest $qreq */
@@ -226,10 +236,10 @@ class Search_Page {
 
         // Conflict display
         if ($this->user->is_manager()) {
-            echo '<td class="padlb">',
+            echo '<td class="padlb"><label class="checki"><span class="checkc">',
                 Ht::checkbox("showforce", 1, $this->pl->viewing("force"),
                              ["id" => "showforce", "class" => "uich js-plinfo"]),
-                "&nbsp;", Ht::label("Override conflicts", "showforce"), "</td>";
+                "</span>Override conflicts</label></td>";
         }
 
         echo '<td class="padlb">';
@@ -247,7 +257,7 @@ class Search_Page {
 
         if (!empty($this->user->hidden_papers)
             && $this->user->is_actas_user()) {
-            $this->pl->message_set()->warning_at(null, $this->conf->_("<0>Submissions {:numlist} are totally hidden when viewing the site as another user.", array_map(function ($n) { return "#{$n}"; }, array_keys($this->user->hidden_papers))));
+            $this->pl->message_set()->warning_at(null, $this->conf->_("<0>{Submissions} {:numlist} are totally hidden when viewing the site as another user.", array_map(function ($n) { return "#{$n}"; }, array_keys($this->user->hidden_papers))));
         }
         if ($search->has_message()) {
             echo '<div class="msgs-wide">',
@@ -302,7 +312,7 @@ class Search_Page {
         $this->pl->apply_view_session($qreq);
         $this->pl->apply_view_qreq($qreq);
         if (isset($qreq->q)) {
-            $this->pl->set_table_id_class("foldpl", null, "p#");
+            $this->pl->set_table_id_class("pl", null, "p#");
             $this->pl->set_table_decor(PaperList::DECOR_HEADER | PaperList::DECOR_FOOTER | PaperList::DECOR_STATISTICS | PaperList::DECOR_LIST | PaperList::DECOR_FULLWIDTH);
             $this->pl->set_table_fold_session("pldisplay.");
             if ($this->ssel->count()) {
@@ -405,6 +415,33 @@ class Search_Page {
         $qreq->print_footer();
     }
 
+    static function redisplay(Contact $user, Qrequest $qreq) {
+        // change session based on request
+        Session_API::parse_view($qreq, "pl", $qreq);
+        // redirect, including differences between search and request
+        // create PaperList
+        if (isset($qreq->q)) {
+            $search = new PaperSearch($user, $qreq);
+        } else {
+            $search = new PaperSearch($user, ["t" => $qreq->t, "q" => "NONE"]);
+        }
+        $pl = new PaperList("pl", $search, ["sort" => true], $qreq);
+        $pl->apply_view_report_default();
+        $pl->apply_view_session($qreq);
+        $pl->apply_view_qreq($qreq);
+        $param = ["#" => "view"];
+        foreach ($pl->unparse_view(PaperList::VIEWORIGIN_SEARCH, false) as $vx) {
+            error_log($vx);
+            if (str_starts_with($vx, "sort:score[")) {
+                $param["scoresort"] = substr($vx, 11, -1);
+            } else if (strpos($vx, "[") === false) {
+                $name = substr($vx, 5);
+                $show = str_starts_with($vx, "show:") ? 1 : 0;
+                $param[$name === "force" ? "forceShow" : "show{$name}"] = $show;
+            }
+        }
+        $user->conf->redirect_self($qreq, $param);
+    }
 
     /** @param Contact $user
      * @param Qrequest $qreq */
@@ -438,7 +475,7 @@ class Search_Page {
         // paper group
         if (!PaperSearch::viewable_limits($user, $qreq->t)) {
             $qreq->print_header("Search", "search");
-            $conf->error_msg("<0>You aren’t allowed to search submissions");
+            $conf->error_msg($conf->_("<0>You aren’t allowed to search {submissions}"));
             $qreq->print_footer();
             exit;
         }
@@ -450,39 +487,19 @@ class Search_Page {
         // look for search action
         if ($qreq->fn) {
             $fn = $qreq->fn;
-            if (strpos($fn, "/") === false && isset($qreq[$qreq->fn . "fn"])) {
-                $fn .= "/" . $qreq[$qreq->fn . "fn"];
+            $slash = strpos($fn, "/");
+            $subkey = ($slash ? substr($fn, 0, $slash) : $fn) . "fn";
+            if ($slash && !isset($qreq[$subkey])) {
+                $qreq[$subkey] = substr($fn, $slash + 1);
+            } else if ($slash === false && isset($qreq[$subkey])) {
+                $fn .= "/" . $qreq[$subkey];
             }
             ListAction::call($fn, $user, $qreq, $ssel);
         }
 
         // request and session parsing
         if ($qreq->redisplay) {
-            $viewlist = [];
-            foreach ($qreq as $k => $v) {
-                if ($v && substr($k, 0, 4) === "show") {
-                    $viewlist[] = "show:" . substr($k, 0, 4);
-                }
-            }
-            if ($qreq->scoresort
-                && ($ss = ScoreInfo::parse_score_sort($qreq->scoresort))) {
-                $viewlist[] = "sort:[score {$ss}]";
-            }
-            Session_API::parse_view($qreq, "pl", join(" ", $viewlist));
-        }
-        if ($qreq->redisplay) {
-            if (isset($qreq->forceShow) && !$qreq->forceShow && $qreq->showforce) {
-                $forceShow = 0;
-            } else {
-                $forceShow = $qreq->forceShow || $qreq->showforce ? 1 : null;
-            }
-            $conf->redirect_self($qreq, ["#" => "view", "forceShow" => $forceShow]);
-        }
-        if ($user->privChair
-            && !isset($qreq->forceShow)
-            && preg_match('/\b(show:|)force\b/', $qreq->csession("pldisplay") ?? "")) {
-            $qreq->forceShow = 1;
-            $user->add_overrides(Contact::OVERRIDE_CONFLICT);
+            self::redisplay($user, $qreq);
         }
 
         // display

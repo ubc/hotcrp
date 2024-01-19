@@ -56,7 +56,7 @@ class Topic_SettingParser extends SettingParser {
         echo "</p>\n", Ht::hidden("has_topic", 1);
 
         if (($topic_counters = $sv->oblist_keys("topic"))) {
-            echo '<div class="mg has-copy-topics"><table><thead><tr><th style="text-align:left">';
+            echo '<div class="mb-3 has-copy-topics"><table><thead><tr><th style="text-align:left">';
             if (!empty($interests)) {
                 echo '<span class="float-right n"># PC interests: </span>';
             }
@@ -82,7 +82,7 @@ class Topic_SettingParser extends SettingParser {
                 "</div>\n";
         }
 
-        echo '<div class="mg"><label for="new_topics"><strong>New topics</strong></label> (enter one per line)<br>',
+        echo '<div class="mb-3"><label for="new_topics"><strong>New topics</strong></label> (enter one per line)<br>',
             $sv->feedback_at("new_topics"),
             Ht::textarea("new_topics", $sv->use_req() ? $sv->reqstr("new_topics") : "", ["cols" => 80, "rows" => 2, "class" => ($sv->has_problem_at("new_topics") ? "has-error " : "") . "need-autogrow", "id" => "new_topics"]), "</div>";
     }
@@ -111,7 +111,9 @@ class Topic_SettingParser extends SettingParser {
             $tid = $sv->vstr("topic/{$ctr}/id") ?? "new";
             $tname = $sv->base_parse_req("topic/{$ctr}/name");
             if ($sv->reqstr("topic/{$ctr}/delete") || $tname === "") {
-                unset($this->topicj[$tid]);
+                if ($tid !== "new") {
+                    unset($this->topicj[$tid]);
+                }
             } else {
                 if ($tname !== null) {
                     if (preg_match('/\A(?:\d+\z|[-+,;:]|–|—)/', $tname)) {
@@ -129,7 +131,7 @@ class Topic_SettingParser extends SettingParser {
             && (json_encode_db($this->topicj) !== $oldj || !empty($this->newtopics))) {
             // this will be replaced in store_value, but useful for message context:
             $sv->save("has_topics", !empty($this->topicj) || !empty($this->newtopics));
-            $sv->request_write_lock("TopicArea", "PaperTopic", "TopicInterest");
+            $sv->request_write_lock("TopicArea", "PaperTopic", "TopicInterest", "PaperOption");
             $sv->request_store_value($si);
         }
         return true;
@@ -168,6 +170,14 @@ class Topic_SettingParser extends SettingParser {
             $sv->conf->qe("delete from TopicArea where topicId?a", array_keys($oldm));
             $sv->conf->qe("delete from PaperTopic where topicId?a", array_keys($oldm));
             $sv->conf->qe("delete from TopicInterest where topicId?a", array_keys($oldm));
+            $deloid = [];
+            foreach ($sv->conf->options() as $o) {
+                if ($o->type === "topics")
+                    $deloid[] = $o->id;
+            }
+            if (!empty($deloid)) {
+                $sv->conf->qe("delete from PaperOption where optionId?a and value?a", $deloid, array_keys($oldm));
+            }
         }
         if (!empty($changet)) {
             foreach ($changet as $tn) {

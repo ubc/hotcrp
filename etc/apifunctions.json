@@ -71,7 +71,11 @@
     },
     {
         "name": "graphdata", "get": true,
-        "function": "GraphData_Api::graphdata"
+        "function": "GraphData_API::graphdata"
+    },
+    {
+        "name": "job", "get": true,
+        "function": "Job_API::job"
     },
     {
         "name": "jserror", "get": true,
@@ -114,6 +118,10 @@
         "function": "Completion_API::mentioncompletion_api"
     },
     {
+        "name": "oauthtoken", "post": true, "allow_disabled": true, "check_token": false,
+        "function": "Authorize_Page::oauthtoken_api"
+    },
+    {
         "name": "paper", "get": true,
         "function": "Paper_API::run"
     },
@@ -128,6 +136,10 @@
     {
         "name": "review", "paper": true, "get": true, "post": true,
         "function": "Review_API::review"
+    },
+    {
+        "name": "reviewfieldlibrary", "get": true, "allow_if": "chair",
+        "function": "Settings_API::reviewfieldlibrary"
     },
     {
         "name": "reviewrating", "paper": true, "get": true, "post": true,
@@ -187,6 +199,10 @@
         "function": "PaperPC_API::shepherd_api"
     },
     {
+        "name": "submissionfieldlibrary", "get": true, "allow_if": "chair",
+        "function": "Settings_API::submissionfieldlibrary"
+    },
+    {
         "name": "taganno", "get": true,
         "function": "TagAnno_API::get"
     },
@@ -208,6 +224,10 @@
     {
         "name": "trackerstatus", "get": true, "post": true,
         "function": "MeetingTracker::trackerstatus_api"
+    },
+    {
+        "name": "upload", "post": true,
+        "function": "Upload_API::run"
     },
     {
         "name": "user", "get": true,

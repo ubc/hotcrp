@@ -53,6 +53,10 @@
     },
     {   "name": "pcconflict", "alias": "pcconf"   },
     {
+        "name": "phase",
+        "parse_function": "Phase_SearchTerm::parse"
+    },
+    {
         "name": "reconflict",
         "parse_function": "Reconflict_SearchTerm::parse"
     },
@@ -223,7 +227,7 @@
     {
         "name": "r",
         "parse_function": "Review_SearchTerm::parse",
-        "reblank": true, "has": ">0"
+        "reblank": true, "has": ">0", "needs_relation": true
     },
     {
         "name": "token",
@@ -319,7 +323,7 @@
     {   "name": "heading", "alias": "LEGEND"   },
     {
         "name": "ss",
-        "parse_function": "PaperSearch::parse_saved_search"
+        "parse_function": "PaperSearch::parse_named_search"
     },
     {   "name": "search", "alias": "ss"   },
     {
@@ -328,8 +332,8 @@
         "priority": 100
     },
     {
-        "name": "searchoption",
-        "parse_function": "PaperSearch::parse_searchoption",
+        "name": "searchcontrol",
+        "parse_function": "PaperSearch::parse_searchcontrol",
         "priority": 100
     }
 ]

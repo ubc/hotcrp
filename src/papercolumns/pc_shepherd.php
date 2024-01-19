@@ -15,8 +15,12 @@ class Shepherd_PaperColumn extends PaperColumn {
         return parent::add_user_sort_decoration($decor) || parent::add_decoration($decor);
     }
     function prepare(PaperList $pl, $visible) {
-        return $pl->user->can_view_shepherd(null)
-            && ($pl->conf->has_any_lead_or_shepherd() || $visible);
+        if (!$pl->user->can_view_shepherd(null)
+            || (!$pl->conf->has_any_lead_or_shepherd() && !$visible)) {
+            return false;
+        }
+        $pl->conf->pc_set(); // prepare cache
+        return true;
     }
     static private function cid(PaperList $pl, PaperInfo $row) {
         if ($row->shepherdContactId > 0 && $pl->user->can_view_shepherd($row)) {
@@ -43,7 +47,7 @@ class Shepherd_PaperColumn extends PaperColumn {
         return !self::cid($pl, $row);
     }
     function content(PaperList $pl, PaperInfo $row) {
-        return $pl->user_content($row->shepherdContactId);
+        return $pl->user_content($row->shepherdContactId, $row);
     }
     function text(PaperList $pl, PaperInfo $row) {
         return $pl->user_text($row->shepherdContactId);

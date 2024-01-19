@@ -46,11 +46,11 @@ class Multiconference {
         if (self::$conf_cache === null) {
             self::$conf_cache = [];
             if (Conf::$main && ($xconfid = Conf::$main->opt("confid"))) {
-                self::$conf_cache[SiteLoader::$root . "{}{$xconfid}"] = Conf::$main;
+                self::$conf_cache[SiteLoader::$root . "\0{$xconfid}"] = Conf::$main;
             }
         }
         $root = $root ?? SiteLoader::$root;
-        $key = "{$root}{}{$confid}";
+        $key = "{$root}\0{$confid}";
         if (!array_key_exists($key, self::$conf_cache)) {
             self::$conf_cache[$key] = self::load_conf($root, $confid);
         }
@@ -69,7 +69,7 @@ class Multiconference {
         SiteLoader::read_options_file("{$root}/conf/options.php");
         $Opt["confid"] = $confid;
         if ($Opt["include"] ?? null) {
-            SiteLoader::read_included_options();
+            SiteLoader::read_included_options($root);
         }
         $newconf = ($Opt["missing"] ?? null) ? null : new Conf($Opt, true);
         $Opt = $save_opt;
@@ -275,7 +275,7 @@ class Multiconference {
         if (defined("HOTCRP_TESTHARNESS") || $ex instanceof Error) {
             $s = $ex->getFile() . ":" . $ex->getLine() . ": " . $s;
         }
-        if (strpos($s, ":") === false) {
+        if ($s !== "" && strpos($s, ":") === false) {
             $script = $argv[0] ?? "";
             if (($slash = strrpos($script, "/")) !== false) {
                 if (($slash === 5 && str_starts_with($script, "batch"))
@@ -288,22 +288,31 @@ class Multiconference {
                 $s = "{$script}: {$s}";
             }
         }
-        if (substr($s, -1) !== "\n") {
+        if ($s !== "" && substr($s, -1) !== "\n") {
             $s = "{$s}\n";
         }
+        $exitStatus = 3;
+        if (property_exists($ex, "exitStatus") && is_int($ex->exitStatus)) {
+            $exitStatus = $ex->exitStatus;
+        }
         if (property_exists($ex, "getopt")
-            && $ex->getopt instanceof Getopt) {
+            && $ex->getopt instanceof Getopt
+            && $exitStatus !== 0) {
             $s .= $ex->getopt->short_usage();
+        }
+        if (property_exists($ex, "context") && is_array($ex->context)) {
+            foreach ($ex->context as $c) {
+                $i = 0;
+                while ($i !== strlen($c) && $c[$i] === " ") {
+                    ++$i;
+                }
+                $s .= prefix_word_wrap(str_repeat(" ", $i + 2), trim($c), 2);
+            }
         }
         if (defined("HOTCRP_TESTHARNESS") || $ex instanceof Error) {
             $s .= debug_string_backtrace($ex) . "\n";
         }
         fwrite(STDERR, $s);
-        if (property_exists($ex, "exitStatus")
-            && is_int($ex->exitStatus)) {
-            exit($ex->exitStatus);
-        } else {
-            exit(3);
-        }
+        exit($exitStatus);
     }
 }

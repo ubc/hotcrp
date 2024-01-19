@@ -1,6 +1,6 @@
 <?php
 // paperevents.php -- HotCRP paper events
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
 
 class PaperEvent {
     /** @var PaperInfo */
@@ -36,12 +36,15 @@ class PaperEvents {
     /** @var PaperInfoSet */
     private $prows;
 
+    /** @var int */
     private $limit;
+    /** @var null|false|float|array{int|float,int|float,int|float} */
     private $rposition;
     /** @var list<ReviewInfo> */
     private $rrows = [];
     /** @var ?PaperEvent */
     private $cur_rrow;
+    /** @var null|false|float|array{int|float,int|float,int|float} */
     private $cposition;
     /** @var list<CommentInfo> */
     private $crows = [];
@@ -60,7 +63,7 @@ class PaperEvents {
         } else {
             // Papers (perhaps limited to those being watched) whose reviews
             // are viewable.
-            $this->prows = $user->paper_set(["watch" => true, "myWatching" => true]);
+            $this->prows = $user->paper_set(["myWatching" => true, "myWatch" => true]);
         }
     }
 
@@ -71,10 +74,10 @@ class PaperEvents {
             $qv[] = $this->prows->paper_ids();
         }
         if (is_array($pos)) {
-            $where[] = "($key<? or ($key=? and (paperId>? or (paperId=? and contactId>?))))";
+            $where[] = "({$key}<? or ({$key}=? and (paperId>? or (paperId=? and contactId>?))))";
             array_push($qv, $pos[0], $pos[0], $pos[1], $pos[1], $pos[2]);
         } else {
-            $where[] = "$key<?";
+            $where[] = "{$key}<?";
             $qv[] = $pos;
         }
         return [$where, $qv];
@@ -83,7 +86,7 @@ class PaperEvents {
     private function more_reviews() {
         list($where, $qv) = $this->initial_wheres($this->rposition, "reviewModified");
         $where[] = "reviewSubmitted>0";
-        $q = "select * from PaperReview where " . join(" and ", $where) . " order by reviewModified desc, paperId asc, contactId asc limit $this->limit";
+        $q = "select * from PaperReview where " . join(" and ", $where) . " order by reviewModified desc, paperId asc, contactId asc limit {$this->limit}";
 
         $last = null;
         $result = $this->conf->qe_apply($q, $qv);
@@ -124,7 +127,7 @@ class PaperEvents {
 
     private function more_comments() {
         list($where, $qv) = $this->initial_wheres($this->cposition, "timeModified");
-        $q = "select * from PaperComment where " . join(" and ", $where) . " order by timeModified desc, paperId asc, contactId asc limit $this->limit";
+        $q = "select * from PaperComment where " . join(" and ", $where) . " order by timeModified desc, paperId asc, contactId asc limit {$this->limit}";
 
         $last = null;
         $result = $this->conf->qe_apply($q, $qv);
@@ -173,7 +176,7 @@ class PaperEvents {
                 $need[$crow->paperId] = true;
         }
         if (!empty($need)) {
-            $this->prows->add_result($this->conf->paper_result(["paperId" => array_keys($need), "watch" => true], $this->user), $this->user);
+            $this->prows->add_result($this->conf->paper_result(["paperId" => array_keys($need), "myWatch" => true], $this->user), $this->user);
         }
     }
 
@@ -195,6 +198,8 @@ class PaperEvents {
         }
     }
 
+    /** @param int $limit
+     * @return list<PaperEvent> */
     function events($starting, $limit) {
         $this->rrows = $this->crows = [];
         $this->cur_rrow = $this->cur_crow = null;

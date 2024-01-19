@@ -11,64 +11,58 @@ class TagInfo {
     public $tag;
     /** @var Conf */
     public $conf;
-    /** @var false|string */
-    public $pattern = false;
-    /** @var bool */
-    public $pattern_instance = false;
+    /** @var int */
+    public $flags = 0;
     /** @var int */
     public $pattern_version = 0;
-    /** @var bool */
-    public $is_private = false;
-    /** @var bool */
-    public $chair = false;
-    /** @var bool */
-    public $readonly = false;
-    /** @var bool */
-    public $hidden = false;
-    /** @var bool */
-    public $track = false;
-    /** @var bool */
-    public $sclass = false;
-    /** @var bool */
-    public $votish = false;
-    /** @var bool */
-    public $approval = false;
-    /** @var false|float */
-    public $allotment = false;
-    /** @var bool */
-    public $sitewide = false;
-    /** @var bool */
-    public $conflict_free = false;
-    /** @var bool */
-    public $rank = false;
-    /** @var bool */
-    public $public_peruser = false;
-    /** @var bool */
-    public $automatic = false;
-    /** @var bool */
-    public $order_anno = false;
     /** @var ?list<TagAnno> */
     private $_order_anno_list;
     /** @var int */
     private $_order_anno_search = 0;
+    /** @var ?string */
+    public $autosearch;
+    /** @var ?string */
+    public $autosearch_value;
+    /** @var ?SearchTerm */
+    private $_autosearch_term;
+    /** @var ?float */
+    public $allotment;
     /** @var ?list<TagStyle> */
     public $styles;
     /** @var ?TagStyle */
     public $badge;
     /** @var ?list<string> */
     public $emoji;
-    /** @var ?string */
-    public $autosearch;
-    /** @var ?string */
-    public $autosearch_value;
-    /** @param string $tag */
-    function __construct($tag, TagMap $tagmap) {
+
+    const TF_TRACK = 0x1;
+    const TF_SCLASS = 0x2;
+    const TF_CHAIR = 0x4;
+    const TF_PRIVATE = 0x8;
+    const TF_READONLY = 0x10;
+    const TF_HIDDEN = 0x20;
+    const TF_APPROVAL = 0x40;
+    const TF_ALLOTMENT = 0x80;
+    const TF_RANK = 0x100;
+    const TF_SITEWIDE = 0x200;
+    const TF_CONFLICT_FREE = 0x400;
+    const TF_PUBLIC_PERUSER = 0x800;
+    const TF_AUTOMATIC = 0x1000;
+    const TF_AUTOSEARCH = 0x2000;
+    const TF_STYLE = 0x4000;
+    const TF_BADGE = 0x8000;
+    const TF_EMOJI = 0x10000;
+    const TF_IS_SETTINGS = 0x20000;
+    const TF_IS_PATTERN = 0x40000;
+
+    const TFM_VOTES = 0xC0;
+    const TFM_DECORATION = 0x1C000;
+
+    /** @param string $tag
+     * @param int $flags */
+    function __construct($tag, TagMap $tagmap, $flags = 0) {
         $this->conf = $tagmap->conf;
-        $this->set_tag($tag, $tagmap);
-    }
-    /** @param string $tag */
-    function set_tag($tag, TagMap $tagmap) {
         $this->tag = $tag;
+        $this->flags = $flags;
         if (($ks = $tagmap->known_style($tag)) !== null) {
             $this->styles[] = $ks;
         } else if (str_starts_with($tag, ":")
@@ -77,37 +71,69 @@ class TagInfo {
         }
         if ($tag[0] === "~") {
             if ($tag[1] !== "~") {
-                $this->is_private = true;
+                $this->flags |= self::TF_PRIVATE;
             } else {
-                $this->chair = true;
+                $this->flags |= self::TF_CHAIR;
             }
         }
     }
-    function merge(TagInfo $t) {
-        foreach (["chair", "readonly", "hidden", "track", "votish", "allotment", "approval", "sitewide", "conflict_free", "rank", "public_peruser", "automatic", "autosearch", "autosearch_value", "badge"] as $property) {
-            if ($t->$property)
-                $this->$property = $t->$property;
+    /** @template T
+     * @param ?list<T> $l1
+     * @param list<T> $l2
+     * @return list<T> */
+    static private function merge_lists($l1, $l2) {
+        if (empty($l1)) {
+            return $l2;
         }
-        foreach (["styles", "emoji"] as $property) {
-            if (!empty($t->$property)) {
-                if (empty($this->$property)) {
-                    $this->$property = $t->$property;
-                } else {
-                    foreach ($t->$property as $x) {
-                        if (!in_array($x, $this->$property))
-                            $this->$property[] = $x;
-                    }
-                }
+        foreach ($l2 as $x) {
+            if (!in_array($x, $l1))
+                $l1[] = $x;
+        }
+        return $l1;
+    }
+    /** @param int|TagInfo $ti */
+    function merge($ti) {
+        if (is_int($ti)) {
+            $this->flags |= $ti;
+        } else {
+            $this->flags |= $ti->flags & ~(self::TF_IS_PATTERN | self::TF_IS_SETTINGS);
+            if ($ti->autosearch !== null) {
+                $this->autosearch = $ti->autosearch;
+                $this->autosearch_value = $ti->autosearch_value;
+                $this->_autosearch_term = null;
+            }
+            if ($ti->allotment !== null) {
+                $this->allotment = $ti->allotment;
+            }
+            if ($ti->styles) {
+                $this->styles = self::merge_lists($this->styles, $ti->styles);
+            }
+            if ($ti->badge) {
+                $this->badge = $ti->badge;
+            }
+            if ($ti->emoji) {
+                $this->emoji = self::merge_lists($this->emoji, $ti->emoji);
             }
         }
     }
+
+    /** @return string */
+    function ltag() {
+        return strtolower($this->tag);
+    }
+    /** @param int $f
+     * @return bool */
+    function is($f) {
+        return ($this->flags & $f) !== 0;
+    }
+
     /** @return string */
     function tag_regex() {
         $t = preg_quote($this->tag);
-        if ($this->pattern) {
-            $t = str_replace("\\*", "[^\\s#]*", $t);
+        if (($this->flags & self::TF_IS_PATTERN) !== 0) {
+            $t = str_replace("\\*", "[^\\s#~]*", $t);
         }
-        if ($this->is_private) {
+        if (($this->flags & self::TF_PRIVATE) !== 0) {
             $t = "\\d*" . $t;
         }
         return $t;
@@ -123,9 +149,10 @@ class TagInfo {
             }
             Dbl::free($result);
             $this->_order_anno_list[] = TagAnno::make_tag_fencepost($this->tag);
-            usort($this->_order_anno_list, function ($a, $b) {
+            $collator = $this->conf->collator();
+            usort($this->_order_anno_list, function ($a, $b) use ($collator) {
                 return $a->tagIndex <=> $b->tagIndex
-                    ? : (strcasecmp($a->heading, $b->heading)
+                    ? : ($collator->compare($a->heading, $b->heading)
                          ? : $a->annoId <=> $b->annoId);
             });
             $last_la = null;
@@ -148,37 +175,59 @@ class TagInfo {
      * @return ?TagAnno */
     function order_anno_search($tagIndex) {
         $ol = $this->order_anno_list();
-        $i = $this->_order_anno_search;
-        if ($i > 0 && $tagIndex < $ol[$i - 1]->tagIndex) {
-            $i = 0;
+        $l = $this->_order_anno_search;
+        $r = count($ol);
+        if ($l !== 0 && $tagIndex < $ol[$l-1]->tagIndex) {
+            $l = 0;
+        } else if ($tagIndex < $ol[$l]->tagIndex) {
+            $r = $l;
         }
-        while ($tagIndex >= $ol[$i]->tagIndex) {
-            ++$i;
+        while ($l < $r) {
+            $m = $l + (($r - $l) >> 1);
+            if ($tagIndex < $ol[$m]->tagIndex) {
+                $r = $m;
+            } else {
+                $l = $m + 1;
+            }
         }
-        $this->_order_anno_search = $i;
-        return $i ? $ol[$i - 1] : null;
+        $this->_order_anno_search = $l;
+        return $l !== 0 ? $ol[$l - 1] : null;
     }
     /** @return bool */
     function has_order_anno() {
         return count($this->order_anno_list()) > 1;
     }
+    function invalidate_order_anno() {
+        $this->_order_anno_list = null;
+        $this->_order_anno_search = 0;
+    }
     /** @return ?string */
     function automatic_search() {
         if ($this->autosearch !== null) {
             return $this->autosearch;
-        } else if ($this->votish) {
+        } else if (($this->flags & self::TFM_VOTES) !== 0) {
             return "#*~" . $this->tag;
         } else {
             return null;
         }
     }
+    /** @return ?SearchTerm */
+    function automatic_search_term() {
+        if ($this->_autosearch_term === null
+            && ($q = $this->automatic_search()) !== null) {
+            $this->_autosearch_term = (new PaperSearch($this->conf->root_user(), ["q" => $q, "t" => "all"]))
+                ->set_expand_automatic(true)
+                ->main_term();
+        }
+        return $this->_autosearch_term;
+    }
     /** @return ?string */
     function automatic_formula_expression() {
         if ($this->autosearch !== null) {
             return $this->autosearch_value ?? "0";
-        } else if ($this->approval) {
+        } else if (($this->flags & self::TF_APPROVAL) !== 0) {
             return "count.pc(#_~{$this->tag}) || null";
-        } else if ($this->allotment) {
+        } else if (($this->flags & self::TF_ALLOTMENT) !== 0) {
             return "sum.pc(#_~{$this->tag}) || null";
         } else {
             return null;
@@ -197,6 +246,7 @@ class TagAnno implements JsonSerializable {
     public $heading;
     /** @var ?int */
     public $annoFormat;
+    /** @var ?string */
     public $infoJson;
 
     /** @var int */
@@ -207,15 +257,9 @@ class TagAnno implements JsonSerializable {
     public $pos;
     /** @var ?int */
     public $count;
+    /** @var ?object */
+    private $_props;
 
-    /** @return bool */
-    function is_blank() {
-        return $this->heading === null || strcasecmp($this->heading, "none") === 0;
-    }
-    /** @return bool */
-    function is_fencepost() {
-        return $this->tagIndex >= (float) TAG_INDEXBOUND;
-    }
     /** @return ?TagAnno */
     static function fetch($result, Conf $conf) {
         $ta = $result ? $result->fetch_object("TagAnno") : null;
@@ -248,6 +292,37 @@ class TagAnno implements JsonSerializable {
         $ta->heading = "Untagged";
         return $ta;
     }
+
+    /** @return bool */
+    function is_blank() {
+        return $this->heading === null || strcasecmp($this->heading, "none") === 0;
+    }
+    /** @return bool */
+    function is_fencepost() {
+        return $this->tagIndex >= (float) TAG_INDEXBOUND;
+    }
+    private function decode_props() {
+        $j = json_decode($this->infoJson ?? "{}");
+        $this->_props = is_object($j) ? $j : null;
+    }
+    /** @param string $k
+     * @return mixed */
+    function prop($k) {
+        if ($this->_props === null && $this->infoJson !== null) {
+            $this->decode_props();
+        }
+        return $this->_props ? $this->_props->$k : null;
+    }
+    /** @param string $k
+     * @param mixed $v */
+    function set_prop($k, $v) {
+        if ($this->_props === null) {
+            $this->decode_props();
+            $this->_props = $this->_props ?? (object) [];
+        }
+        $this->_props->$k = $v;
+    }
+
     #[\ReturnTypeWillChange]
     function jsonSerialize() {
         $j = [];
@@ -266,11 +341,19 @@ class TagAnno implements JsonSerializable {
         }
         if ($this->heading !== null) {
             $j["legend"] = $this->heading; // XXX "heading" backward compat
+            if ($this->heading !== ""
+                && ($format = Conf::$main->check_format(null, $this->heading))) {
+                $j["format"] = +$format;
+            }
         }
-        if ($this->heading !== null
-            && $this->heading !== ""
-            && ($format = Conf::$main->check_format($this->annoFormat, $this->heading))) {
-            $j["format"] = +$format;
+        if ($this->_props === null && $this->infoJson !== null) {
+            $this->decode_props();
+        }
+        if ($this->_props !== null) {
+            foreach ($this->_props as $k => $v) {
+                if (!in_array($k, ["pos", "annoid", "tag", "tagval", "blank", "legend", "format"]))
+                    $j[$k] = $v;
+            }
         }
         return $j;
     }
@@ -413,57 +496,23 @@ class TagStyle {
     }
 }
 
-class TagMap implements IteratorAggregate {
+class TagMap {
     /** @var Conf */
     public $conf;
-    /** @var bool */
-    public $has_pattern = false;
-    /** @var bool */
-    public $has_chair = true;
-    /** @var bool */
-    public $has_readonly = true;
-    /** @var bool */
-    public $has_track = true;
-    /** @var bool */
-    public $has_hidden = false;
-    /** @var bool */
-    public $has_public_peruser = false;
-    /** @var bool */
-    public $has_votish = false;
-    /** @var bool */
-    public $has_approval = false;
-    /** @var bool */
-    public $has_allotment = false;
-    /** @var bool */
-    public $has_sitewide = false;
-    /** @var bool */
-    public $has_conflict_free = false;
-    /** @var bool */
-    public $has_rank = false;
-    /** @var bool */
-    public $has_colors = false;
-    /** @var bool */
-    public $has_badge = false;
-    /** @var bool */
-    public $has_emoji = false;
-    /** @var bool */
-    public $has_decoration = false;
-    /** @var bool */
-    public $has_order_anno = false;
-    /** @var bool */
-    public $has_automatic = false;
-    /** @var bool */
-    public $has_autosearch = false;
+    /** @var int */
+    public $flags;
     /** @var bool */
     public $has_role_decoration = false;
     /** @var array<string,TagInfo> */
     private $storage = [];
-    /** @var bool */
-    private $sorted = false;
-    /** @var ?string */
-    private $pattern_re;
+    /** @var list<TagInfo> */
+    private $setting_storage = [];
+    /** @var list<string> */
+    private $patterns = [];
     /** @var list<TagInfo> */
     private $pattern_storage = [];
+    /** @var ?string */
+    private $pattern_re;
     /** @var int */
     private $pattern_version = 0; // = count($pattern_storage)
     /** @var ?string */
@@ -472,6 +521,8 @@ class TagMap implements IteratorAggregate {
     private $badge_re;
     /** @var ?string */
     private $emoji_re;
+    /** @var ?list<TagInfo> */
+    private $automatic_entries;
 
     /** @var array<string,TagStyle> */
     private $style_lmap = [];
@@ -480,6 +531,7 @@ class TagMap implements IteratorAggregate {
 
     function __construct(Conf $conf) {
         $this->conf = $conf;
+        $this->flags = TagInfo::TF_CHAIR | TagInfo::TF_READONLY;
 
         $known_styles = ["black@ red@# orange@# yellow@# green@# blue@# purple@# gray@# white@# pink@ bold^ italic^ underline^ strikethrough^ big^ small^ dim^ violet=purple@# grey=gray@# normal=black@ default=black@"];
         $opt = $conf->opt("tagKnownStyles") ?? null;
@@ -496,6 +548,12 @@ class TagMap implements IteratorAggregate {
         }
     }
 
+    /** @param int $flags
+     * @return bool */
+    function has($flags) {
+        return ($this->flags & $flags) !== 0;
+    }
+
     /** @param string $ltag
      * @return string|false */
     function check_emoji_code($ltag) {
@@ -507,43 +565,47 @@ class TagMap implements IteratorAggregate {
             return false;
         }
     }
-    /** @return ?TagInfo */
-    private function update_patterns($tag, $ltag, TagInfo $t = null) {
+
+    /** @param string $tag
+     * @param string $ltag
+     * @return ?TagInfo */
+    private function update_patterns($tag, $ltag, TagInfo $ti = null) {
         if (!$this->pattern_re) {
             $a = [];
             foreach ($this->pattern_storage as $p) {
                 $a[] = strtolower($p->tag_regex());
             }
-            $this->pattern_re = "{\A(?:" . join("|", $a) . ")\z}";
+            $this->pattern_re = '{\A(?:' . join("|", $a) . ')\z}';
         }
         if (preg_match($this->pattern_re, $ltag)) {
-            $version = $t ? $t->pattern_version : 0;
-            foreach ($this->pattern_storage as $i => $p) {
-                if ($i >= $version && preg_match($p->pattern, $ltag)) {
-                    if (!$t) {
-                        $t = clone $p;
-                        $t->set_tag($tag, $this);
-                        $t->pattern = false;
-                        $t->pattern_instance = true;
-                        $this->storage[$ltag] = $t;
-                        $this->sorted = false;
-                    } else {
-                        $t->merge($p);
+            $i = $ti ? $ti->pattern_version : 0;
+            while ($i < $this->pattern_version) {
+                if (preg_match($this->patterns[$i], $ltag)) {
+                    if (!$ti) {
+                        $ti = new TagInfo($tag, $this);
+                        $this->storage[$ltag] = $ti;
+                    } else if (($ti->flags & TagInfo::TF_IS_SETTINGS) !== 0) {
+                        $ti = clone $ti;
+                        $ti->flags &= ~TagInfo::TF_IS_SETTINGS;
+                        $this->storage[$ltag] = $ti;
                     }
+                    $ti->merge($this->pattern_storage[$i]);
                 }
+                ++$i;
             }
         }
-        if ($t) {
-            $t->pattern_version = $this->pattern_version;
+        if ($ti) {
+            $ti->pattern_version = $this->pattern_version;
         }
-        return $t;
+        return $ti;
     }
+
     /** @param string $tag
      * @return ?TagInfo */
-    function check($tag) {
+    function find($tag) {
         $ltag = strtolower($tag);
-        $t = $this->storage[$ltag] ?? null;
-        if (!$t
+        $ti = $this->storage[$ltag] ?? null;
+        if (!$ti
             && $ltag !== ""
             && (($ltag[0] === ":" && $this->check_emoji_code($ltag))
                 || isset($this->style_lmap[$ltag])
@@ -551,87 +613,154 @@ class TagMap implements IteratorAggregate {
                 || (str_starts_with($ltag, "text-rgb-") && ctype_xdigit(substr($ltag, 9)))
                 || str_starts_with($ltag, "font-")
                 || str_starts_with($ltag, "weight-"))) {
-            $t = $this->add($tag);
+            $ti = $this->ensure($tag);
         }
-        if ($this->has_pattern
-            && (!$t || $t->pattern_version < $this->pattern_version)) {
-            $t = $this->update_patterns($tag, $ltag, $t);
+        if ($this->pattern_version > 0
+            && (!$ti || $ti->pattern_version < $this->pattern_version)) {
+            $ti = $this->update_patterns($tag, $ltag, $ti);
         }
-        return $t;
-    }
-    /** @param string $tag
-     * @return ?TagInfo */
-    function check_base($tag) {
-        return $this->check(Tagger::base($tag));
-    }
-    /** @param string $tag
-     * @return TagInfo */
-    function add($tag) {
-        $ltag = strtolower($tag);
-        $t = $this->storage[$ltag] ?? null;
-        if (!$t) {
-            $t = new TagInfo($tag, $this);
-            if (!Tagger::basic_check($ltag)) {
-                return $t;
-            }
-            $this->storage[$ltag] = $t;
-            $this->sorted = false;
-            if (strpos($ltag, "*") !== false) {
-                $t->pattern = "{\A" . strtolower(str_replace("\\*", "[^\\s#]*", $t->tag_regex())) . "\z}";
-                $this->has_pattern = true;
-                $this->pattern_storage[] = $t;
-                $this->pattern_re = null;
-                ++$this->pattern_version;
-            }
-        }
-        if ($this->has_pattern
-            && !$t->pattern
-            && $t->pattern_version < $this->pattern_version) {
-            $t = $this->update_patterns($tag, $ltag, $t);
-            '@phan-var TagInfo $t';
-        }
-        return $t;
-    }
-    private function sort_storage() {
-        ksort($this->storage);
-        $this->sorted = true;
-    }
-    /** @return Iterator<TagInfo> */
-    #[\ReturnTypeWillChange]
-    function getIterator() {
-        $this->sorted || $this->sort_storage();
-        return new ArrayIterator($this->storage);
-    }
-    /** @param string $property
-     * @return array<string,TagInfo> */
-    function filter($property) {
-        $x = [];
-        if ($this->{"has_{$property}"}) {
-            $this->sorted || $this->sort_storage();
-            foreach ($this->storage as $k => $t) {
-                if ($t->$property)
-                    $x[$k] = $t;
-            }
-        }
-        return $x;
-    }
-    /** @param callable $f
-     * @return array<string,TagInfo> */
-    function filter_by($f) {
-        $this->sorted || $this->sort_storage();
-        return array_filter($this->storage, $f);
-    }
-    /** @param string $tag
-     * @param non-empty-string $property
-     * @return ?TagInfo */
-    function check_property($tag, $property) {
-        $k = "has_{$property}";
-        return $this->$k
-            && ($t = $this->check(Tagger::base($tag)))
-            && $t->$property
-            ? $t : null;
+        return $ti;
     }
 
+    /** @param string $tag
+     * @return TagInfo */
+    function ensure($tag) {
+        $ltag = strtolower($tag);
+        $ti = $this->storage[$ltag] ?? null;
+        if (!$ti) {
+            $ti = new TagInfo($tag, $this);
+            if (!Tagger::basic_check($ltag)) {
+                return $ti;
+            }
+            $this->storage[$ltag] = $ti;
+        }
+        if ($ti->pattern_version < $this->pattern_version) {
+            $ti = $this->update_patterns($tag, $ltag, $ti);
+            '@phan-var TagInfo $ti';
+        }
+        return $ti;
+    }
+
+    /** @param string $tag
+     * @param int $flags
+     * @return ?TagInfo */
+    function find_having($tag, $flags) {
+        return ($this->flags & $flags) !== 0
+            && ($ti = $this->find(Tagger::tv_tag($tag)))
+            && ($ti->flags & $flags) !== 0
+            ? $ti : null;
+    }
+
+    /** @param string $tag
+     * @param int|TagInfo $data */
+    private function ensure_setting($tag, $data) {
+        if (!Tagger::basic_check($tag)) {
+            return;
+        }
+        if (strpos($tag, "*") !== false
+            || ($tag[0] === "~" && $tag[1] !== "~")) {
+            $ti = is_int($data) ? new TagInfo($tag, $this, $data) : $data;
+            $ti->flags |= TagInfo::TF_IS_PATTERN | TagInfo::TF_IS_SETTINGS;
+            $this->setting_storage[] = $ti;
+            $this->pattern_storage[] = $ti;
+            $this->patterns[] = '{\A' . strtolower($ti->tag_regex()) . '\z}';
+            $this->pattern_re = null;
+            ++$this->pattern_version;
+        } else {
+            $ltag = strtolower($tag);
+            $tix = $this->storage[$ltag] ?? null;
+            if ($tix && ($tix->flags & TagInfo::TF_IS_SETTINGS) !== 0) {
+                $tix->merge($data);
+                $ti = $tix;
+            } else {
+                $ti = is_int($data) ? new TagInfo($tag, $this, $data) : $data;
+                $this->setting_storage[] = $ti;
+                if ($tix) {
+                    $tix->merge($ti);
+                } else {
+                    $this->storage[$ltag] = $ti;
+                }
+                $ti->flags |= TagInfo::TF_IS_SETTINGS;
+            }
+        }
+        $this->flags |= $ti->flags;
+        if (($ti->flags & TagInfo::TF_AUTOMATIC) !== 0) {
+            $this->automatic_entries = null;
+        }
+        if (($ti->flags & TagInfo::TF_STYLE) !== 0) {
+            $this->color_re = null;
+        }
+        if (($ti->flags & TagInfo::TF_BADGE) !== 0) {
+            $this->badge_re = null;
+        }
+        if (($ti->flags & TagInfo::TF_EMOJI) !== 0) {
+            $this->emoji_re = null;
+        }
+    }
+    /** @param string $tag
+     * @param int $flags */
+    function set($tag, $flags) {
+        $this->ensure_setting($tag, $flags);
+    }
+    /** @param TagInfo $ti */
+    function merge($ti) {
+        $this->ensure_setting($ti->tag, $ti);
+    }
+
+    /** @param list<TagInfo> $tis
+     * @return list<TagInfo> $tis */
+    private function sorted($tis) {
+        if (count($tis) > 1) {
+            $collator = $this->conf->collator();
+            usort($tis, function ($a, $b) use ($collator) {
+                return $collator->compare($a->tag, $b->tag);
+            });
+        }
+        return $tis;
+    }
+
+    /** @param int $flags
+     * @return list<TagInfo> */
+    function entries_having($flags) {
+        if ($flags === TagInfo::TF_AUTOMATIC
+            && $this->automatic_entries !== null) {
+            return $this->automatic_entries;
+        }
+        $tis = [];
+        if (($this->flags & $flags) !== 0) {
+            foreach ($this->storage as $ti) {
+                if (($ti->flags & $flags) !== 0)
+                    $tis[] = $ti;
+            }
+        }
+        if ($flags === TagInfo::TF_AUTOMATIC) {
+            $this->automatic_entries = $tis;
+        }
+        return $tis;
+    }
+    /** @param int $flags
+     * @return list<TagInfo> */
+    function sorted_entries_having($flags) {
+        return $this->sorted($this->entries_having($flags));
+    }
+
+    /** @param int $flags
+     * @return list<TagInfo> */
+    function settings_having($flags) {
+        $tis = [];
+        if (($this->flags & $flags) !== 0) {
+            foreach ($this->setting_storage as $ti) {
+                if (($ti->flags & $flags) !== 0)
+                    $tis[] = $ti;
+            }
+        }
+        return $tis;
+    }
+    /** @param int $flags
+     * @return list<TagInfo> */
+    function sorted_settings_having($flags) {
+        return $this->sorted($this->settings_having($flags));
+    }
 
     /** @param string $tag
      * @return bool */
@@ -639,84 +768,84 @@ class TagMap implements IteratorAggregate {
         if ($tag[0] === "~") {
             return $tag[1] === "~";
         } else {
-            return !!$this->check_property($tag, "chair");
+            return !!$this->find_having($tag, TagInfo::TF_CHAIR);
         }
     }
     /** @param string $tag
      * @return bool */
     function is_readonly($tag) {
-        return !!$this->check_property($tag, "readonly");
+        return !!$this->find_having($tag, TagInfo::TF_READONLY);
     }
     /** @param string $tag
      * @return bool */
     function is_track($tag) {
-        return !!$this->check_property($tag, "track");
+        return !!$this->find_having($tag, TagInfo::TF_TRACK);
     }
     /** @param string $tag
      * @return bool */
     function is_hidden($tag) {
-        return !!$this->check_property($tag, "hidden");
+        return !!$this->find_having($tag, TagInfo::TF_HIDDEN);
     }
     /** @param string $tag
      * @return bool */
     function is_sitewide($tag) {
-        return !!$this->check_property($tag, "sitewide");
+        return !!$this->find_having($tag, TagInfo::TF_SITEWIDE);
     }
     /** @param string $tag
      * @return bool */
     function is_conflict_free($tag) {
-        return !!$this->check_property($tag, "conflict_free");
+        return !!$this->find_having($tag, TagInfo::TF_CONFLICT_FREE);
     }
     /** @param string $tag
      * @return bool */
     function is_public_peruser($tag) {
-        return !!$this->check_property($tag, "public_peruser");
+        return !!$this->find_having($tag, TagInfo::TF_PUBLIC_PERUSER);
     }
     /** @param string $tag
      * @return bool */
     function is_votish($tag) {
-        return !!$this->check_property($tag, "votish");
+        return !!$this->find_having($tag, TagInfo::TFM_VOTES);
     }
     /** @param string $tag
      * @return bool */
     function is_allotment($tag) {
-        return !!$this->check_property($tag, "allotment");
+        return !!$this->find_having($tag, TagInfo::TF_ALLOTMENT);
     }
     /** @param string $tag
      * @return bool */
     function is_approval($tag) {
-        return !!$this->check_property($tag, "approval");
+        return !!$this->find_having($tag, TagInfo::TF_APPROVAL);
     }
     /** @param string $tag
      * @return string|false */
     function votish_base($tag) {
-        if (!$this->has_votish
+        if (($this->flags & TagInfo::TFM_VOTES) === 0
             || ($twiddle = strpos($tag, "~")) === false) {
             return false;
         }
-        $tbase = substr(Tagger::base($tag), $twiddle + 1);
-        $t = $this->check($tbase);
-        return $t && $t->votish ? $tbase : false;
+        $tbase = substr(Tagger::tv_tag($tag), $twiddle + 1);
+        $t = $this->find($tbase);
+        return $t && ($t->flags & TagInfo::TFM_VOTES) !== 0 ? $tbase : false;
     }
     /** @param string $tag
      * @return bool */
     function is_rank($tag) {
-        return !!$this->check_property($tag, "rank");
+        return !!$this->find_having($tag, TagInfo::TF_RANK);
     }
     /** @param string $tag
      * @return bool */
     function is_emoji($tag) {
-        return !!$this->check_property($tag, "emoji");
+        return !!$this->find_having($tag, TagInfo::TF_EMOJI);
     }
     /** @param string $tag
      * @return bool */
     function is_automatic($tag) {
-        return !!$this->check_property($tag, "automatic");
+        return !!$this->find_having($tag, TagInfo::TF_AUTOMATIC);
     }
     /** @param string $tag
      * @return bool */
     function is_autosearch($tag) {
-        return !!$this->check_property($tag, "autosearch");
+        return !!$this->find_having($tag, TagInfo::TF_AUTOSEARCH);
     }
 
 
@@ -768,10 +897,10 @@ class TagMap implements IteratorAggregate {
                     $rex[] = $style;
             }
             $any = false;
-            if ($this->has_colors) {
-                foreach ($this->storage as $k => $t) {
-                    if (!empty($t->styles))
-                        $rex[] = $t->tag_regex();
+            if (($this->flags & TagInfo::TF_STYLE) !== 0) {
+                foreach ($this->setting_storage as $ti) {
+                    if (!empty($ti->styles))
+                        $rex[] = $ti->tag_regex();
                 }
             }
             $this->color_re = join("|", $rex) . "))(?=\\z|[# ])}i";
@@ -795,7 +924,7 @@ class TagMap implements IteratorAggregate {
         $kss = [];
         $sclass = 0;
         foreach ($ms[1] as $m) {
-            $t = $this->check(strtolower($m));
+            $t = $this->find(strtolower($m));
             if ($t === null || empty($t->styles)) {
                 continue;
             }
@@ -810,8 +939,9 @@ class TagMap implements IteratorAggregate {
 
     /** @param string|list<string> $tags
      * @param 0|8|16|24 $sclassmatch
+     * @param bool $no_ensure_pattern
      * @return ?list<string> */
-    function styles($tags, $sclassmatch = 0, $no_pattern_fill = false) {
+    function styles($tags, $sclassmatch = 0, $no_ensure_pattern = false) {
         $kss = $this->unique_tagstyles($tags, $sclassmatch);
         if (empty($kss)) {
             return null;
@@ -835,15 +965,16 @@ class TagMap implements IteratorAggregate {
         }
         // This seems out of place---it's redundant if we're going to
         // generate JSON, for example---but it is convenient.
-        if (!$no_pattern_fill
+        if (!$no_ensure_pattern
             && ($sclass & TagStyle::BG) !== 0
             && (($sclass & TagStyle::DYNAMIC) !== 0 || count($classes) > 2)) {
-            $this->mark_pattern_fill($classes);
+            self::stash_ensure_pattern($classes);
         }
         return $classes;
     }
 
-    function mark_pattern_fill($classes) {
+    /** @param list<string>|string $classes */
+    static function stash_ensure_pattern($classes) {
         $key = is_array($classes) ? join(" ", $classes) : $classes;
         if (!isset(self::$multicolor_map[$key])) {
             $arg = json_encode_browser($key);
@@ -866,7 +997,7 @@ class TagMap implements IteratorAggregate {
     function badge_regex() {
         if (!$this->badge_re) {
             $re = "{(?:\\A| )(?:\\d*~|)(";
-            foreach ($this->filter("badge") as $t) {
+            foreach ($this->settings_having(TagInfo::TF_BADGE) as $t) {
                 $re .= $t->tag_regex() . "|";
             }
             $this->badge_re = substr($re, 0, -1) . ")(?:#[-\\d.]+)?(?=\\z| )}i";
@@ -878,7 +1009,7 @@ class TagMap implements IteratorAggregate {
     function emoji_regex() {
         if (!$this->emoji_re) {
             $re = "{(?:\\A| )(?:\\d*~|~~|)(:\\S+:";
-            foreach ($this->filter("emoji") as $t) {
+            foreach ($this->settings_having(TagInfo::TF_EMOJI) as $t) {
                 $re .= "|" . $t->tag_regex();
             }
             $this->emoji_re = $re . ")(?:#[\\d.]+)?(?=\\z| )}i";
@@ -889,13 +1020,13 @@ class TagMap implements IteratorAggregate {
     /** @param string $tags
      * @return array<string,list<string>> */
     function emoji($tags) {
-        if (!$this->has_decoration || $tags === "" || $tags === " ") {
+        if (($this->flags & TagInfo::TF_EMOJI) === 0 || $tags === "" || $tags === " ") {
             return [];
         }
         preg_match_all($this->emoji_regex(), $tags, $m, PREG_SET_ORDER);
         $emoji = [];
         foreach ($m as $mx) {
-            if (($t = $this->check($mx[1])) && $t->emoji) {
+            if (($t = $this->find($mx[1])) && $t->emoji) {
                 foreach ($t->emoji as $e)
                     $emoji[$e][] = ltrim($mx[0]);
             }
@@ -906,13 +1037,13 @@ class TagMap implements IteratorAggregate {
     /** @param string $tags
      * @return list<array{string,string}> */
     function badges($tags) {
-        if (!$this->has_badge || $tags === "" || $tags === " ") {
+        if (($this->flags & TagInfo::TF_BADGE) === 0 || $tags === "" || $tags === " ") {
             return [];
         }
         preg_match_all($this->badge_regex(), $tags, $m, PREG_SET_ORDER);
         $badges = [];
         foreach ($m as $mx) {
-            if (($t = $this->check($mx[1])) && $t->badge) {
+            if (($t = $this->find($mx[1])) && $t->badge) {
                 $badges[] = [ltrim($mx[0]), $t->badge->style];
             }
         }
@@ -929,7 +1060,7 @@ class TagMap implements IteratorAggregate {
 
     static function assert_tag_string($tags, $strict = false) {
         if (!self::is_tag_string($tags, $strict)) {
-            trigger_error("Bad tag string $tags");
+            trigger_error("Bad tag string {$tags}");
         }
     }
 
@@ -947,18 +1078,21 @@ class TagMap implements IteratorAggregate {
         // preserve all tags/show no tags optimization
         $view_most = $user->can_view_most_tags($prow);
         $allow_admin = $user->allow_administer($prow);
-        if ($view_most
-            && (($ctype === self::CENSOR_SEARCH && $allow_admin)
-                || (!$this->has_hidden && strpos($tags, "~") === false))) {
-            return $tags;
-        } else if (!$view_most
-                   && !$this->has_conflict_free
-                   && (!$user->privChair || !$this->has_sitewide)) {
-            return "";
+        $conflict_free = TagInfo::TF_CONFLICT_FREE | ($user->privChair ? TagInfo::TF_SITEWIDE : 0);
+        if ($view_most) {
+            if (($ctype === self::CENSOR_SEARCH && $allow_admin)
+                || (($this->flags & TagInfo::TF_HIDDEN) === 0 && strpos($tags, "~") === false)) {
+                return $tags;
+            }
+        } else {
+            if (($this->flags & $conflict_free) === 0) {
+                return "";
+            }
         }
 
         // go tag by tag
-        $strip_hidden = $this->has_hidden && !$user->can_view_hidden_tags($prow);
+        $strip_hidden = ($this->flags & TagInfo::TF_HIDDEN) !== 0
+            && !$user->can_view_hidden_tags($prow);
         $mine_tw = $user->contactId > 0 ? strlen((string) $user->contactId) : 0;
         $p = 0;
         $l = strlen($tags);
@@ -972,10 +1106,8 @@ class TagMap implements IteratorAggregate {
                 } else if ($view_most) {
                     $ok = true;
                 } else {
-                    $dt = $this->check($t);
-                    $ok = $dt
-                        && ($dt->conflict_free
-                            || ($user->privChair && $dt->sitewide));
+                    $dt = $this->find($t);
+                    $ok = $dt && ($dt->flags & $conflict_free) !== 0;
                 }
             } else if ($tw !== false) {
                 if ($tw === $mine_tw
@@ -985,24 +1117,23 @@ class TagMap implements IteratorAggregate {
                     $ok = false;
                 } else if ($allow_admin && $view_most) {
                     $ok = true;
-                } else if (!$this->has_public_peruser) {
+                } else if (($this->flags & TagInfo::TF_PUBLIC_PERUSER) === 0) {
                     $ok = false;
                 } else {
-                    $dt = $this->check(substr($t, $tw + 1));
+                    $dt = $this->find(substr($t, $tw + 1));
                     $ok = $dt
-                        && $dt->public_peruser
+                        && ($dt->flags & TagInfo::TF_PUBLIC_PERUSER) !== 0
                         && ($view_most
-                            || $dt->conflict_free
-                            || ($user->privChair && $dt->sitewide));
+                            || ($dt->flags & $conflict_free) !== 0);
                 }
             } else if (!$view_most) {
-                $dt = $this->check($t);
+                $dt = $this->find($t);
                 $ok = $dt
-                    && (!$strip_hidden || !$dt->hidden)
-                    && ($dt->conflict_free || ($user->privChair && $dt->sitewide));
+                    && (!$strip_hidden || ($dt->flags & TagInfo::TF_HIDDEN) !== 0)
+                    && ($dt->flags & $conflict_free) !== 0;
             } else if ($strip_hidden) {
-                $dt = $this->check($t);
-                $ok = !$dt || !$dt->hidden;
+                $dt = $this->find($t);
+                $ok = !$dt || ($dt->flags & TagInfo::TF_HIDDEN) === 0;
             } else {
                 $ok = true;
             }
@@ -1076,76 +1207,59 @@ class TagMap implements IteratorAggregate {
     }
 
 
-    static function make(Conf $conf) {
-        $map = new TagMap($conf);
-        $ct = $conf->setting_data("tag_chair") ?? "";
-        foreach (Tagger::split_unpack($ct) as $ti) {
-            $t = $map->add($ti[0]);
-            $t->chair = $t->readonly = true;
-        }
+    private function merge_settings(Conf $conf) {
         foreach ($conf->track_tags() as $tn) {
-            $t = $map->add(Tagger::base($tn));
-            $t->chair = $t->readonly = $t->track = true;
+            $this->set($tn, TagInfo::TF_TRACK | TagInfo::TF_CHAIR);
         }
         if ($conf->has_named_submission_rounds()) {
             foreach ($conf->submission_round_list() as $sr) {
                 if ($sr->tag !== "") {
-                    $t = $map->add($sr->tag);
-                    $t->chair = $t->readonly = $t->sclass = true;
+                    $this->set($sr->tag, TagInfo::TF_SCLASS | TagInfo::TF_CHAIR);
                 }
             }
         }
+        $ct = $conf->setting_data("tag_chair") ?? "";
+        foreach (Tagger::split_unpack($ct) as $tv) {
+            $this->set($tv[0], TagInfo::TF_READONLY);
+        }
         $ct = $conf->setting_data("tag_hidden") ?? "";
-        foreach (Tagger::split_unpack($ct) as $ti) {
-            $map->add($ti[0])->hidden = $map->has_hidden = true;
+        foreach (Tagger::split_unpack($ct) as $tv) {
+            $this->set($tv[0], TagInfo::TF_HIDDEN);
         }
         $ct = $conf->setting_data("tag_sitewide") ?? "";
-        foreach (Tagger::split_unpack($ct) as $ti) {
-            $map->add($ti[0])->sitewide = $map->has_sitewide = true;
+        foreach (Tagger::split_unpack($ct) as $tv) {
+            $this->set($tv[0], TagInfo::TF_SITEWIDE);
         }
         $ct = $conf->setting_data("tag_conflict_free") ?? "";
-        foreach (Tagger::split_unpack($ct) as $ti) {
-            $map->add($ti[0])->conflict_free = $map->has_conflict_free = true;
+        foreach (Tagger::split_unpack($ct) as $tv) {
+            $this->set($tv[0], TagInfo::TF_CONFLICT_FREE);
         }
         $ppu = $conf->setting("tag_vote_private_peruser")
             || $conf->opt("secretPC");
+        $ppuf = $ppu ? 0 : TagInfo::TF_PUBLIC_PERUSER;
         $vt = $conf->setting_data("tag_vote") ?? "";
-        foreach (Tagger::split_unpack($vt) as $ti) {
-            $t = $map->add($ti[0]);
-            $t->allotment = ($ti[1] ?? 1.0);
-            $map->has_allotment = true;
-            $t->votish = $map->has_votish = true;
-            $t->automatic = $map->has_automatic = true;
-            if (!$ppu) {
-                $t->public_peruser = $map->has_public_peruser = true;
-            }
+        foreach (Tagger::split_unpack($vt) as $tv) {
+            $ti = new TagInfo($tv[0], $this, TagInfo::TF_ALLOTMENT | TagInfo::TF_AUTOMATIC | $ppuf);
+            $ti->allotment = ($tv[1] ?? 1.0);
+            $this->merge($ti);
         }
         $vt = $conf->setting_data("tag_approval") ?? "";
-        foreach (Tagger::split_unpack($vt) as $ti) {
-            $t = $map->add($ti[0]);
-            $t->approval = $map->has_approval = true;
-            $t->votish = $map->has_votish = true;
-            $t->automatic = $map->has_automatic = true;
-            if (!$ppu) {
-                $t->public_peruser = $map->has_public_peruser = true;
-            }
+        foreach (Tagger::split_unpack($vt) as $tv) {
+            $this->set($tv[0], TagInfo::TF_APPROVAL | TagInfo::TF_AUTOMATIC | $ppuf);
         }
         $rt = $conf->setting_data("tag_rank") ?? "";
-        foreach (Tagger::split_unpack($rt) as $ti) {
-            $t = $map->add($ti[0]);
-            $t->rank = $map->has_rank = true;
-            if (!$ppu) {
-                $t->public_peruser = $map->has_public_peruser = true;
-            }
+        foreach (Tagger::split_unpack($rt) as $tv) {
+            $this->set($tv[0], TagInfo::TF_RANK | $ppuf);
         }
         $ct = $conf->setting_data("tag_color") ?? "";
         if ($ct !== "") {
             foreach (explode(" ", $ct) as $k) {
                 if ($k !== ""
                     && ($p = strpos($k, "=")) > 0
-                    && ($ks = $map->known_style(substr($k, $p + 1))) !== null) {
-                    $map->add(substr($k, 0, $p))->styles[] = $ks;
-                    $map->has_colors = true;
+                    && ($ks = $this->known_style(substr($k, $p + 1))) !== null) {
+                    $ti = new TagInfo(substr($k, 0, $p), $this, TagInfo::TF_STYLE);
+                    $ti->styles[] = $ks;
+                    $this->merge($ti);
                 }
             }
         }
@@ -1154,9 +1268,10 @@ class TagMap implements IteratorAggregate {
             foreach (explode(" ", $bt) as $k) {
                 if ($k !== ""
                     && ($p = strpos($k, "=")) > 0
-                    && ($ks = $map->known_badge(substr($k, $p + 1))) !== null) {
-                    $map->add(substr($k, 0, $p))->badge = $ks;
-                    $map->has_badge = true;
+                    && ($ks = $this->known_badge(substr($k, $p + 1))) !== null) {
+                    $ti = new TagInfo(substr($k, 0, $p), $this, TagInfo::TF_BADGE);
+                    $ti->badge = $ks;
+                    $this->merge($ti);
                 }
             }
         }
@@ -1164,79 +1279,103 @@ class TagMap implements IteratorAggregate {
         if ($bt !== "") {
             foreach (explode(" ", $bt) as $k) {
                 if ($k !== "" && ($p = strpos($k, "=")) !== false) {
-                    $map->add(substr($k, 0, $p))->emoji[] = substr($k, $p + 1);
-                    $map->has_emoji = true;
+                    $ti = new TagInfo(substr($k, 0, $p), $this, TagInfo::TF_EMOJI);
+                    $ti->emoji[] = substr($k, $p + 1);
+                    $this->merge($ti);
                 }
             }
         }
         $tx = $conf->setting_data("tag_autosearch") ?? "";
         if ($tx !== "") {
             foreach (json_decode($tx) ? : [] as $tag => $search) {
-                $t = $map->add($tag);
-                $t->autosearch = $search->q;
-                if (isset($search->v)) {
-                    $t->autosearch_value = $search->v;
-                }
-                $t->automatic = $map->has_automatic = $map->has_autosearch = true;
+                $ti = new TagInfo($tag, $this, TagInfo::TF_AUTOMATIC | TagInfo::TF_AUTOSEARCH);
+                $ti->autosearch = $search->q;
+                $ti->autosearch_value = $search->v ?? null;
+                $this->merge($ti);
             }
+        }
+    }
+
+    private function merge_json($tag, $data) {
+        $flags = 0;
+        if ($data->chair ?? false) {
+            $flags |= TagInfo::TF_CHAIR;
+        }
+        if ($data->readonly ?? false) {
+            $flags |= TagInfo::TF_READONLY;
+        }
+        if ($data->hidden ?? false) {
+            $flags |= TagInfo::TF_HIDDEN;
+        }
+        if ($data->sitewide ?? false) {
+            $flags |= TagInfo::TF_SITEWIDE;
+        }
+        if ($data->conflict_free ?? false) {
+            $flags |= TagInfo::TF_CONFLICT_FREE;
+        }
+        if ($data->autosearch ?? null) {
+            $flags |= TagInfo::TF_AUTOMATIC | TagInfo::TF_AUTOSEARCH;
+        }
+        if ($data->style ?? $data->color /* XXX */ ?? null) {
+            $flags |= TagInfo::TF_STYLE;
+        }
+        if ($data->badge ?? null) {
+            $flags |= TagInfo::TF_BADGE;
+        }
+        if ($data->emoji ?? null) {
+            $flags |= TagInfo::TF_EMOJI;
+        }
+        if ($flags === 0) {
+            return;
+        }
+        $ti = new TagInfo($tag, $this, $flags);
+        if (($flags & TagInfo::TF_AUTOSEARCH) !== 0) {
+            $ti->autosearch = $data->autosearch;
+            $ti->autosearch_value = $data->autosearch_value ?? null;
+        }
+        if (($flags & TagInfo::TF_STYLE) !== 0) {
+            $x = $data->style ?? $data->color;
+            foreach (is_string($x) ? [$x] : $x as $c) {
+                if (($ks = $this->known_style($c)) !== null) {
+                    $ti->styles[] = $ks;
+                }
+            }
+        }
+        if (($flags & TagInfo::TF_BADGE) !== 0) {
+            $x = $data->badge;
+            foreach (is_string($x) ? [$x] : $x as $c) {
+                if (($ks = $this->known_badge($c)) !== null) {
+                    $ti->badge = $ks;
+                }
+            }
+        }
+        if (($flags & TagInfo::TF_EMOJI) !== 0) {
+            $x = $data->badge;
+            foreach (is_string($x) ? [$x] : $x as $c) {
+                $ti->emoji[] = $c;
+            }
+        }
+        $this->merge($ti);
+    }
+
+    /** @param bool $all
+     * @return TagMap */
+    static function make(Conf $conf, $all) {
+        $map = new TagMap($conf);
+        if ($all) {
+            $map->merge_settings($conf);
         }
         if (($od = $conf->opt("definedTags"))) {
             foreach (is_string($od) ? [$od] : $od as $ods) {
                 foreach (json_decode($ods) as $tag => $data) {
-                    $t = $map->add($tag);
-                    if ($data->chair ?? false) {
-                        $t->chair = $t->readonly = true;
-                    }
-                    if ($data->readonly ?? false) {
-                        $t->readonly = true;
-                    }
-                    if ($data->hidden ?? false) {
-                        $t->hidden = $map->has_hidden = true;
-                    }
-                    if ($data->sitewide ?? false) {
-                        $t->sitewide = $map->has_sitewide = true;
-                    }
-                    if ($data->conflict_free ?? false) {
-                        $t->conflict_free = $map->has_conflict_free = true;
-                    }
-                    if (($x = $data->autosearch ?? null)) {
-                        $t->autosearch = $x;
-                        if (isset($data->autosearch_value)) {
-                            $t->autosearch_value = $data->autosearch_value;
-                        }
-                        $t->automatic = true;
-                        $map->has_autosearch = $map->has_automatic = true;
-                    }
-                    if (($x = $data->color ?? null)) {
-                        foreach (is_string($x) ? [$x] : $x as $c) {
-                            if (($ks = $map->known_style($c)) !== null) {
-                                $t->styles[] = $ks;
-                                $map->has_colors = true;
-                            }
-                        }
-                    }
-                    if (($x = $data->badge ?? null)) {
-                        foreach (is_string($x) ? [$x] : $x as $c) {
-                            if (($ks = $map->known_badge($c)) !== null) {
-                                $t->badge = $ks;
-                                $map->has_badge = true;
-                            }
-                        }
-                    }
-                    if (($x = $data->emoji ?? null)) {
-                        foreach (is_string($x) ? [$x] : $x as $c) {
-                            $t->emoji[] = $c;
-                            $map->has_emoji = true;
-                        }
-                    }
+                    $map->merge_json($tag, $data);
                 }
             }
         }
-        if ($map->has_badge || $map->has_emoji || $conf->setting("has_colontag")) {
-            $map->has_decoration = true;
+        if ($conf->setting("has_colontag")) {
+            $map->flags |= TagInfo::TF_EMOJI;
         }
-        if (($map->has_colors || $map->has_badge || $map->has_emoji)
-            && ($t = $map->check("pc"))
+        if (($t = $map->find("pc"))
             && ($t->styles || $t->badge || $t->emoji)) {
             $map->has_role_decoration = true;
         }
@@ -1280,42 +1419,58 @@ class Tagger {
     }
 
 
-    /** @param string $tag
-     * @return string */
-    static function base($tag) {
-        if (($pos = strpos($tag, "#") ? : strpos($tag, "=")) !== false
-            && $pos > 0) {
-            return substr($tag, 0, $pos);
-        } else {
-            return $tag;
-        }
+    /** @param string $tv
+     * @return string
+     *
+     * Given a tag string optionally including a value (`tag[#value]`),
+     * return the `tag`. Does not handle initial `#`. */
+    static function tv_tag($tv) {
+        $pos = strpos($tv, "#");
+        return $pos ? substr($tv, 0, $pos) : $tv;
     }
 
-    /** @param string $tag
+    /** @param string $tv
+     * @return ?float
+     *
+     * Given a tag string optionally including a value (`tag[#value]`),
+     * return the value, or `null` if there is no value. */
+    static function tv_value($tv) {
+        $pos = strpos($tv, "#");
+        return $pos && $pos < strlen($tv) - 1 ? (float) substr($tv, $pos + 1) : null;
+    }
+
+    /** @param string $tv
+     * @return string
+     * @deprecated */
+    static function base($tv) {
+        return self::tv_tag($tv);
+    }
+
+    /** @param string $tv
      * @return array{false|string,?float} */
-    static function unpack($tag) {
-        if (!$tag) {
+    static function unpack($tv) {
+        if (!$tv) {
             return [false, null];
-        } else if (!($pos = strpos($tag, "#") ? : strpos($tag, "="))) {
-            return [$tag, null];
-        } else if ($pos === strlen($tag) - 1) {
-            return [substr($tag, 0, $pos), null];
+        } else if (!($pos = strpos($tv, "#"))) {
+            return [$tv, null];
+        } else if ($pos === strlen($tv) - 1) {
+            return [substr($tv, 0, $pos), null];
         } else {
-            return [substr($tag, 0, $pos), (float) substr($tag, $pos + 1)];
+            return [substr($tv, 0, $pos), (float) substr($tv, $pos + 1)];
         }
     }
 
-    /** @param string $taglist
+    /** @param string $tvlist
      * @return list<string> */
-    static function split($taglist) {
-        preg_match_all('/\S+/', $taglist, $m);
+    static function split($tvlist) {
+        preg_match_all('/\S+/', $tvlist, $m);
         return $m[0];
     }
 
-    /** @param string $taglist
+    /** @param string $tvlist
      * @return list<array{false|string,?float}> */
-    static function split_unpack($taglist) {
-        return array_map("Tagger::unpack", self::split($taglist));
+    static function split_unpack($tvlist) {
+        return array_map("Tagger::unpack", self::split($tvlist));
     }
 
     /** @param string $tag
@@ -1325,9 +1480,9 @@ class Tagger {
             && preg_match('{\A' . TAG_REGEX . '\z}', $tag);
     }
 
-    /** @param bool $sequential */
-    static function value_increment($sequential) {
-        return $sequential ? 1 : self::$value_increment_map[mt_rand(0, 9)];
+    /** @param bool $gapless */
+    static function value_increment($gapless) {
+        return $gapless ? 1 : self::$value_increment_map[mt_rand(0, 9)];
     }
 
 
@@ -1368,14 +1523,6 @@ class Tagger {
         default:
             return "<0>Invalid tag{$t}";
         }
-    }
-
-    /** @param bool $verbose
-     * @return ?string
-     * @deprecated */
-    function error_html($verbose = false) {
-        $s = $this->error_ftext($verbose);
-        return $s !== null ? Ftext::unparse_as($s, 5) : null;
     }
 
     /** @return int */
@@ -1545,7 +1692,7 @@ class Tagger {
         foreach ($dt->badges($tags) as $tb) {
             $klass = " class=\"badge badge-{$tb[1]}\"";
             if (str_starts_with($tb[1], "rgb-")) {
-                $dt->mark_pattern_fill("badge-{$tb[1]}");
+                TagMap::stash_ensure_pattern("badge-{$tb[1]}");
             }
             $tag = $this->unparse($tb[0]);
             if ($type === self::DECOR_PAPER && ($link = $this->link($tag))) {
@@ -1561,40 +1708,40 @@ class Tagger {
         return $x === "" ? "" : "<span class=\"tagdecoration\">{$x}</span>";
     }
 
-    /** @param string $tag
+    /** @param string $tv
      * @return string|false */
-    function link_base($tag) {
-        if (ctype_digit($tag[0])) {
+    function link_base($tv) {
+        if (ctype_digit($tv[0])) {
             $p = strlen((string) $this->_contactId);
-            if (substr($tag, 0, $p) != $this->_contactId || $tag[$p] !== "~") {
+            if (substr($tv, 0, $p) != $this->_contactId || $tv[$p] !== "~") {
                 return false;
             }
-            $tag = substr($tag, $p);
+            $tv = substr($tv, $p);
         }
-        return Tagger::base($tag);
+        return Tagger::tv_tag($tv);
     }
 
-    /** @param string $tag
+    /** @param string $tv
      * @param int $flags
      * @return string|false */
-    function link($tag, $flags = 0) {
-        if (ctype_digit($tag[0])) {
+    function link($tv, $flags = 0) {
+        if (ctype_digit($tv[0])) {
             $p = strlen((string) $this->_contactId);
-            if (substr($tag, 0, $p) != $this->_contactId || $tag[$p] !== "~") {
+            if (substr($tv, 0, $p) != $this->_contactId || $tv[$p] !== "~") {
                 return false;
             }
-            $tag = substr($tag, $p);
+            $tv = substr($tv, $p);
         }
-        $base = Tagger::base($tag);
+        $base = Tagger::tv_tag($tv);
         $dt = $this->conf->tags();
-        if ($dt->has_votish
+        if ($dt->has(TagInfo::TFM_VOTES)
             && ($dt->is_votish($base)
                 || ($base[0] === "~" && $dt->is_allotment(substr($base, 1))))) {
-            $q = "#$base showsort:-#$base";
-        } else if ($base === $tag) {
-            $q = "#$base";
+            $q = "#{$base} showsort:-#{$base}";
+        } else if ($base === $tv) {
+            $q = "#{$base}";
         } else {
-            $q = "order:#$base";
+            $q = "order:#{$base}";
         }
         return $this->conf->hoturl("search", ["q" => $q], $flags);
     }
@@ -1610,15 +1757,15 @@ class Tagger {
         // decorate with URL matches
         $dt = $this->conf->tags();
         $tt = [];
-        foreach (preg_split('/\s+/', $tags) as $tag) {
-            if (!($base = Tagger::base($tag))) {
+        foreach (preg_split('/\s+/', $tags) as $tv) {
+            if (!($base = Tagger::tv_tag($tv))) {
                 continue;
             }
-            if (($link = $this->link($tag))) {
-                $tsuf = substr($tag, strlen($base));
+            if (($link = $this->link($tv))) {
+                $tsuf = substr($tv, strlen($base));
                 $tx = "<a class=\"qo ibw\" href=\"{$link}\"><u class=\"x\">#{$base}</u>{$tsuf}</a>";
             } else {
-                $tx = "#{$tag}";
+                $tx = "#{$tv}";
             }
             if (($cc = $dt->styles($base))) {
                 $ccs = join(" ", $cc);

@@ -682,7 +682,7 @@ class ReviewInfo implements JsonSerializable {
      * @return bool */
     function prop_changed($prop = null) {
         return $this->_diff
-            && $this->_diff->view_score > VIEWSCORE_EMPTY
+            && !$this->_diff->is_empty()
             && (!$prop || array_key_exists($prop, $this->_diff->_old_prop));
     }
 
@@ -776,8 +776,9 @@ class ReviewInfo implements JsonSerializable {
     /** @return Contact */
     function reviewer() {
         if ($this->_reviewer === null) {
+            $this->prow && $this->prow->ensure_reviewer_names();
             $this->_reviewer = $this->conf->user_by_id($this->contactId, USER_SLICE)
-                ?? Contact::make_placeholder($this->conf, $this->contactId);
+                ?? Contact::make_deleted($this->conf, $this->contactId);
         }
         return $this->_reviewer;
     }
@@ -828,7 +829,7 @@ class ReviewInfo implements JsonSerializable {
             } else if ($this->prow) {
                 $this->prow->ensure_review_ratings($this);
             } else {
-                $result = $this->conf->qe("select " . $this->conf->query_ratings() . " from PaperReview where paperId=? and reviewId=?", $this->paperId, $this->reviewId);
+                $result = $this->conf->qe("select " . $this->conf->rating_signature_query() . " from PaperReview where paperId=? and reviewId=?", $this->paperId, $this->reviewId);
                 $row = $result->fetch_row();
                 Dbl::free($result);
                 $this->ratingSignature = $row ? $row[0] : "";

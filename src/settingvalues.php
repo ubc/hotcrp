@@ -50,6 +50,8 @@ class SettingValues extends MessageSet {
     private $_oblist_ctrmap = [];
     /** @var array<string,object> */
     private $_object_parsingv = [];
+    /** @var Collator */
+    private $_icollator;
 
     /** @var array<string,array{?int,?string}> */
     private $_savedv = [];
@@ -75,6 +77,8 @@ class SettingValues extends MessageSet {
     private $_jpath;
     /** @var ?JsonParser */
     private $_jp;
+    /** @var bool */
+    private $_inputs_printed = false;
 
     function __construct(Contact $user) {
         parent::__construct();
@@ -90,15 +94,14 @@ class SettingValues extends MessageSet {
                 $this->perm[] = $ti[1] >= 0;
             }
         }
+        $this->_icollator = new Collator("en_US.utf8");
+        $this->_icollator->setAttribute(Collator::NUMERIC_COLLATION, Collator::ON);
+        $this->_icollator->setAttribute(Collator::STRENGTH, Collator::SECONDARY);
     }
 
     /** @param Qrequest|array<string,string|int|float> $qreq */
     static function make_request(Contact $user, $qreq) {
-        $sv = (new SettingValues($user))->add_request($qreq);
-        if (!$sv->has_req("reset")) {
-            $sv->set_req("reset", "");
-        }
-        return $sv;
+        return (new SettingValues($user))->add_request($qreq);
     }
 
     /** @param string $page
@@ -237,7 +240,7 @@ class SettingValues extends MessageSet {
                         $mi->pos2 = $jpp->kpos2;
                     }
                 }
-            } else if (!$si->json_export()) {
+            } else if (!$si->json_import()) {
                 $this->warning_at(null, "<0>This setting cannot be changed in JSON");
             } else if ($si->internal && is_scalar($v)) {
                 $this->set_req($si->name, "{$v}");
@@ -303,7 +306,8 @@ class SettingValues extends MessageSet {
             $this->_cs->set_title_class("form-h")
                 ->set_section_class("form-section")
                 ->set_separator('<hr class="form-sep">')
-                ->set_context_args($this);
+                ->set_context_args($this)
+                ->add_print_callback([$this, "_print_callback"]);
         }
         return $this->_cs;
     }
@@ -346,10 +350,14 @@ class SettingValues extends MessageSet {
         }
     }
 
-    /** @param string $g
-     * @param bool $top */
-    function print_group($g, $top = false) {
-        $this->cs()->print_group($g, $top);
+    /** @param string $name */
+    function print($name) {
+        return $this->cs()->print($name);
+    }
+
+    /** @param string $g */
+    function print_members($g) {
+        $this->cs()->print_members($g);
     }
 
     /** @param string $title
@@ -358,11 +366,14 @@ class SettingValues extends MessageSet {
         $this->cs()->print_start_section($title, $hashid);
     }
 
-    /** @param string $title
-     * @param ?string $hashid
-     * @deprecated */
-    function print_section($title, $hashid = null) {
-        $this->print_start_section($title, $hashid);
+    /** @param object $gj
+     * @return ?bool */
+    function _print_callback($gj) {
+        $inputs = $gj->inputs ?? null;
+        if ($inputs || (isset($gj->print_function) && $inputs === null)) {
+            $this->_inputs_printed = true;
+        }
+        return null;
     }
 
 
@@ -763,15 +774,19 @@ class SettingValues extends MessageSet {
                     $o[$member] = $v;
                 }
             }
-            return empty($o) ? (object) $o : $o;
+            return (object) $o;
         }
         return $si->base_unparse_jsonv($this->choosev($si, $new), $this);
     }
 
-    /** @param bool $new
+    /** @param array{new?:bool,reset?:?bool} $args
      * @return object */
-    function all_json_choosev($new) {
+    function all_jsonv($args = []) {
+        $new = $args["new"] ?? false;
         $j = [];
+        if ($args["reset"] ?? false) {
+            $j["reset"] = true;
+        }
         foreach ($this->conf->si_set()->top_list() as $si) {
             if ($si->json_export()
                 && ($v = $this->json_choosev($si, $new)) !== null) {
@@ -779,11 +794,6 @@ class SettingValues extends MessageSet {
             }
         }
         return (object) $j;
-    }
-
-    /** @return object */
-    function all_json_oldv() {
-        return $this->all_json_choosev(false);
     }
 
 
@@ -835,7 +845,7 @@ class SettingValues extends MessageSet {
         // decide whether to mark unmentioned objects as deleted
         if ($this->_use_req) {
             $resetn = $this->has_req("{$pfx}_reset") ? "{$pfx}_reset" : "reset";
-            $resets = $this->reqstr($resetn) ?? "1";
+            $resets = $this->reqstr($resetn) ?? "";
             $reset = $resets !== "" && $resets !== "0";
         } else {
             $reset = false;
@@ -996,8 +1006,9 @@ class SettingValues extends MessageSet {
      * @param int|string $ctr
      * @param string $sfx
      * @param string $description
+     * @param bool $case_sensitive
      * @return bool */
-    function error_if_duplicate_member($pfx, $ctr, $sfx, $description) {
+    function error_if_duplicate_member($pfx, $ctr, $sfx, $description, $case_sensitive = false) {
         // NB: $pfx may or may not end with `/`; $sfx may or may not begin with `/`
         if (!str_ends_with($pfx, "/")) {
             $pfx .= "/";
@@ -1011,7 +1022,7 @@ class SettingValues extends MessageSet {
             return false;
         }
         $oim = $this->swap_ignore_messages(true);
-        $collator = $this->conf->collator();
+        $collator = $case_sensitive ? $this->conf->collator() : $this->_icollator;
         $v0 = $this->base_parse_req("{$pfx}{$ctr}{$sfx}");
         $badctr = null;
         for ($ctr1 = $ctr + 1; array_key_exists("{$pfx}{$ctr1}/id", $this->req); ++$ctr1) {
@@ -1241,12 +1252,44 @@ class SettingValues extends MessageSet {
     }
 
     /** @param string|Si $id
-     * @return void */
+     * @return void
+     * @deprecated */
     function unsave($id) {
         $si = is_string($id) ? $this->si($id) : $id;
         assert($si->storage_type !== Si::SI_NONE
-               && !($si->storage_type & (Si::SI_MEMBER | Si::SI_SLICE)));
+               && ($si->storage_type & (Si::SI_MEMBER | Si::SI_SLICE)) === 0);
         unset($this->_savedv[$si->storage_name()]);
+    }
+
+
+    /** @return SettingValuesConf */
+    function make_svconf() {
+        return new SettingValuesConf($this);
+    }
+
+    /** @param string $name
+     * @param 0|1 $idx */
+    function __saved_setting($name, $idx) {
+        if (array_key_exists($name, $this->_savedv)) {
+            $sv = $this->_savedv[$name] ?? [0, null];
+            return $sv[$idx];
+        } else if ($idx === 0) {
+            return $this->conf->setting($name);
+        } else {
+            return $this->conf->setting_data($name);
+        }
+    }
+
+    /** @param string $name */
+    function __saved_opt($name) {
+        $svkey = "opt.{$name}";
+        if (array_key_exists($svkey, $this->_savedv)) {
+            $sv = $this->_savedv[$svkey] ?? [0, null];
+            $idx = Si::$option_is_value[$name] ? 0 : 1;
+            return $sv[$idx];
+        } else {
+            return $this->conf->opt($name);
+        }
     }
 
 
@@ -1360,7 +1403,7 @@ class SettingValues extends MessageSet {
             foreach ($this->_table_lock as $t => $need) {
                 $tables .= ", $t " . ($need < 2 ? "read" : "write");
             }
-            $this->conf->qe_raw("lock tables $tables");
+            $this->conf->qe_raw("lock tables {$tables}");
             $this->conf->delay_logs();
 
             // load db settings, pre-crosscheck
@@ -1499,6 +1542,15 @@ class SettingValues extends MessageSet {
         return array_keys($this->_diffs);
     }
 
+
+    /** @return bool */
+    function inputs_printed() {
+        return $this->_inputs_printed;
+    }
+
+    function mark_inputs_printed() {
+        $this->_inputs_printed = true;
+    }
 
     /** @param string $html
      * @param string|Si $id
@@ -1661,21 +1713,15 @@ class SettingValues extends MessageSet {
     /** @param string $name
      * @param string $text
      * @param ?array<string,mixed> $js
-     * @param string $hint
      * @return void */
-    function print_checkbox($name, $text, $js = null, $hint = "") {
-        // XXX $hint deprecated
-        if ($hint !== "") {
-            error_log(debug_string_backtrace());
-        }
+    function print_checkbox($name, $text, $js = null) {
         $js = $js ?? [];
         $this->print_group_open($name, "checki", $js + ["no_control_class" => true]);
         echo '<span class="checkc">';
         $this->print_checkbox_only($name, $js);
         echo '</span>', $this->label($name, $text, ["for" => $name, "class" => $js["label_class"] ?? null]);
         $this->print_feedback_at($name);
-        $hint = (string) $hint === "" ? $js["hint"] ?? "" : $hint;
-        if ($hint) {
+        if (($hint = $js["hint"] ?? "")) {
             echo '<div class="', Ht::add_tokens("settings-ap f-hx", $js["hint_class"] ?? null), '">', $hint, '</div>';
         }
         if (!($js["group_open"] ?? null)) {
@@ -1704,7 +1750,7 @@ class SettingValues extends MessageSet {
 
         $this->print_group_open($name, "settings-radio", $rest + ["group_id" => $name]);
         if ($heading) {
-            echo '<div class="settings-itemheading">', $heading, '</div>';
+            echo '<div class="label">', $heading, '</div>';
         }
         foreach ($varr as $k => $item) {
             if (is_string($item)) {
@@ -1745,7 +1791,7 @@ class SettingValues extends MessageSet {
      * @return string */
     function entry($name, $js = null) {
         $si = $this->si($name);
-        $v = $this->vstr($si);
+        $v = $js["value"] ?? $this->vstr($si);
         $js = $this->sjs($si, $js ?? []);
         if (!isset($js["size"])
             && $si->size) {
@@ -1777,10 +1823,7 @@ class SettingValues extends MessageSet {
      * @param string $description
      * @param string $control
      * @param ?array<string,mixed> $js */
-    function print_control_group($id, $description, $control, $js = null, $hint = "") {
-        if ($hint !== "") {
-            error_log(debug_string_backtrace());
-        }
+    function print_control_group($id, $description, $control, $js = null) {
         $si = is_string($id) ? $this->si($id) : $id;
         $horizontal = !!($js["horizontal"] ?? false);
         $this->print_group_open($si->name, $horizontal ? "entryi" : "f-i", $js);
@@ -1801,7 +1844,7 @@ class SettingValues extends MessageSet {
             $this->print_feedback_at($si->name);
         }
         echo $control, $js["control_after"] ?? "";
-        $hint = (string) $hint === "" ? $js["hint"] ?? "" : $hint;
+        $hint = $js["hint"] ?? "";
         $thint = $this->type_hint($si->type);
         if ($hint || $thint) {
             echo '<div class="f-h">';
@@ -1827,10 +1870,9 @@ class SettingValues extends MessageSet {
     /** @param string $name
      * @param ?array<string,mixed> $js
      * @return void */
-    function print_entry_group($name, $description, $js = null, $hint = "") {
-        // XXX $hint deprecated
+    function print_entry_group($name, $description, $js = null) {
         $this->print_control_group($name, $description,
-            $this->entry($name, $js), $js, $hint);
+            $this->entry($name, $js), $js);
     }
 
     /** @param string $name
@@ -1847,10 +1889,9 @@ class SettingValues extends MessageSet {
      * @param string $description
      * @param array $values
      * @param ?array<string,mixed> $js */
-    function print_select_group($name, $description, $values, $js = null, $hint = "") {
-        // XXX $hint deprecated
+    function print_select_group($name, $description, $values, $js = null) {
         $this->print_control_group($name, $description,
-            $this->select($name, $values, $js), $js, $hint);
+            $this->select($name, $values, $js), $js);
     }
 
     /** @param string $name
@@ -1880,10 +1921,9 @@ class SettingValues extends MessageSet {
     /** @param string $name
      * @param ?array<string,mixed> $js
      * @return void */
-    function print_textarea_group($name, $description, $js = null, $hint = "") {
-        // XXX $hint deprecated
+    function print_textarea_group($name, $description, $js = null) {
         $this->print_control_group($name, $description,
-            $this->textarea($name, $js), $js, $hint);
+            $this->textarea($name, $js), $js);
     }
 
     /** @param string $name
@@ -1940,5 +1980,28 @@ class SettingValues extends MessageSet {
         echo '<div class="f-c n">(HTML allowed)</div>',
             $this->textarea($name),
             $hint, $close, "</div></div>";
+    }
+}
+
+
+class SettingValuesConf {
+    /** @var SettingValues */
+    private $sv;
+    function __construct(SettingValues $sv) {
+        $this->sv = $sv;
+    }
+    /** @param string $name
+     * @return ?int */
+    function setting($name) {
+        return $this->sv->__saved_setting($name, 0);
+    }
+    /** @param string $name
+     * @return ?string */
+    function setting_data($name) {
+        return $this->sv->__saved_setting($name, 1);
+    }
+    /** @param string $name */
+    function opt($name) {
+        return $this->sv->__saved_opt($name);
     }
 }

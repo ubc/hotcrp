@@ -72,9 +72,12 @@ class BulkAssign_Page {
     function complete_assignment($callback) {
         $ssel = SearchSelection::make($this->qreq, $this->user);
         $aset = new AssignmentSet($this->user);
-        $aset->override_conflicts();
+        $aset->set_override_conflicts(true);
+        if (isset($this->qreq->t)) {
+            $aset->set_search_type($this->qreq->t);
+        }
         if ($callback) {
-            $aset->add_progress_handler($callback);
+            $aset->add_progress_function($callback);
         }
         $aset->enable_papers($ssel->selection());
         $aset->parse($this->qreq->data, $this->qreq->filename, $this->assignment_defaults());
@@ -100,9 +103,12 @@ class BulkAssign_Page {
         }
 
         $aset = new AssignmentSet($this->user);
-        $aset->override_conflicts();
+        $aset->set_override_conflicts(true);
+        if ($this->qreq->t) {
+            $aset->set_search_type($this->qreq->t);
+        }
         $aset->set_csv_context(true);
-        $aset->add_progress_handler([$this, "keep_browser_alive"]);
+        $aset->add_progress_function([$this, "keep_browser_alive"]);
         $defaults = $this->assignment_defaults();
         $text = convert_to_utf8($text);
         $aset->parse($text, $filename, $defaults);
@@ -151,14 +157,16 @@ class BulkAssign_Page {
         echo "<section class=\"mt-7\">
 <h3><a class=\"ulh\" href=\"", $this->conf->hoturl("help", ["t" => "bulkassign"]), "\">Instructions</a></h3>
 
-<p class=\"w-text\">Upload a CSV (comma-separated value file) to prepare an assignment; HotCRP
-will display the consequences of the requested assignment for confirmation and
-approval. The <code>action</code> field determines the assignment to be
-performed. Supported actions include:</p>";
+<p class=\"w-text\">Upload a CSV (comma-separated value) to prepare an
+assignment. The first line of the CSV is a header defining the meaning of each
+column; every other line defines an assignment to be performed. The mandatory
+<code>action</code> column sets the kind of assignment. HotCRP will display
+the consequences of the requested assignment for confirmation and approval.
+Supported actions include:</p>";
 
         BulkAssign_HelpTopic::print_actions($this->user);
 
-        echo "<p class=\"w-text\">For example, this file clears existing R1 review assignments for papers
+        echo "<p class=\"w-text mt-3\">For example, this file clears existing R1 review assignments for papers
 tagged #redo, then assigns two primary reviews for submission #1 and one
 secondary review for submission #2:</p>
 
@@ -180,7 +188,7 @@ secondary review for submission #2:</p>
         // redirect if save cancelled
         if (isset($qreq->saveassignment)
             && isset($qreq->cancel)) {
-            unset($qreq->saveassignment);
+            unset($qreq->saveassignment, $qreq->p, $qreq->pap);
             $conf->redirect_self($qreq); // should not return
             return;
         }
@@ -191,6 +199,7 @@ secondary review for submission #2:</p>
             && isset($qreq->data)
             && $qreq->assignment_size_estimate < 1000
             && $this->complete_assignment(null)) {
+            unset($qreq->saveassignment, $qreq->p, $qreq->pap);
             $conf->redirect_self($qreq);
             return;
         }
@@ -250,33 +259,36 @@ Assignment methods:
         // Upload
         echo '<div class="f-i mt-3">',
             Ht::textarea("data", (string) $qreq->data,
-                         ["rows" => 1, "cols" => 80, "placeholder" => "Enter assignments", "class" => "need-autogrow", "spellcheck" => "false"]),
+                         ["rows" => 1, "cols" => 80, "placeholder" => "Enter CSV assignments with header", "class" => "need-autogrow", "spellcheck" => "false", "id" => "k-bulkassign-entry"]),
             '</div>';
 
         echo '<div class="mb-3"><strong>OR</strong> &nbsp;',
             '<input type="file" name="file" accept="text/plain,text/csv" size="30"></div>';
 
-        echo '<div id="foldoptions" class="mb-5 foldc fold2c fold3c"><label>',
-            'Default action:&nbsp; ',
-            Ht::select("default_action", ["guess" => "guess from input",
-                                          "primary" => "assign primary reviews",
-                                          "secondary" => "assign secondary reviews",
-                                          "optionalreview" => "assign optional PC reviews",
-                                          "metareview" => "assign metareviews",
-                                          "review" => "assign external reviews",
-                                          "conflict" => "assign PC conflicts",
-                                          "lead" => "assign discussion leads",
-                                          "shepherd" => "assign shepherds",
-                                          "settag" => "set tags",
-                                          "preference" => "set reviewer preferences"],
-                       $qreq->default_action ?? "guess",
-                       ["id" => "tsel"]),
-            '</label>';
-        Ht::stash_script('$(function(){
-$("#tsel").on("change",function(){
-hotcrp.foldup.call(this,null,{open:this.value==="review"});
-hotcrp.foldup.call(this,null,{open:/^(?:primary|secondary|(?:pc|meta)?review)$/.test(this.value),n:2});
-}).trigger("change")})');
+        $limits = PaperSearch::viewable_limits($this->user);
+        echo '<p class="mt-5 mb-2"><label>Paper collection: ',
+            PaperSearch::limit_selector($this->conf, $limits, in_array("all", $limits) ? "all" : PaperSearch::default_limit($this->user, $limits), ["class" => "ml-1"]),
+            '</label></p>';
+
+        echo '<div id="foldoptions" class="mb-5 foldc fold2c fold3c">',
+            '<label>Action: ',
+            Ht::select("default_action", [
+                ["value" => "guess", "label" => "Any", "data-csv-header" => "Enter CSV assignments with header"],
+                ["value" => "primary", "label" => "Assign primary reviews", "data-csv-header" => "paper,user"],
+                ["value" => "secondary", "label" => "Assign secondary reviews", "data-csv-header" => "paper,user"],
+                ["value" => "optionalreview", "label" => "Assign optional PC reviews", "data-csv-header" => "paper,user"],
+                ["value" => "metareview", "label" => "Assign metareviews", "data-csv-header" => "paper,user"],
+                ["value" => "review", "label" => "Assign external reviews", "data-csv-header" => "paper,user"],
+                ["value" => "conflict", "label" => "Assign PC conflicts", "data-csv-header" => "paper,user"],
+                ["value" => "lead", "label" => "Assign discussion leads", "data-csv-header" => "paper,user"],
+                ["value" => "shepherd", "label" => "Assign shepherds", "data-csv-header" => "paper,user"],
+                ["value" => "settag", "label" => "Set tags", "data-csv-header" => "paper,tags"],
+                ["value" => "preference", "label" => "Set reviewer preferences", "data-csv-header" => "paper,user,preference"]
+            ], $qreq->default_action ?? "guess",
+               ["id" => "k-action", "class" => "ml-1 uich js-bulkassign-action"]),
+            '</label> ';
+
+        Ht::stash_script('$(function(){$("#k-action").trigger("change")})');
 
         $rev_rounds = $conf->round_selector_options(null);
         $expected_round = $qreq->rev_round ? : $conf->assignment_round_option(false);
@@ -299,7 +311,7 @@ hotcrp.foldup.call(this,null,{open:/^(?:primary|secondary|(?:pc|meta)?review)$/.
             } else {
                 $t = $requestreview_template["body"];
             }
-            echo '<div class="fx checki"><label><span class="checkc">',
+            echo '<div class="fx checki mt-2"><label><span class="checkc">',
                 Ht::checkbox("requestreview_notify", 1, true),
                 "</span>Send email to external reviewers:</label><br>",
                 Ht::textarea("requestreview_body", $t, ["cols" => 80, "rows" => 20, "spellcheck" => "true", "class" => "text-monospace need-autogrow"]),
@@ -316,7 +328,7 @@ hotcrp.foldup.call(this,null,{open:/^(?:primary|secondary|(?:pc|meta)?review)$/.
 
         $this->print_instructions();
 
-        Ht::stash_script('$("#tsel").trigger("change")');
+        Ht::stash_script('$("#k-action").trigger("change")');
         $qreq->print_footer();
     }
 

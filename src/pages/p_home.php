@@ -33,8 +33,8 @@ class Home_Page {
 
     static function disabled_request(Contact $user, Qrequest $qreq) {
         if (!$user->is_empty() && $user->is_disabled()) {
+            $user->conf->warning_msg($user->conf->_i("account_disabled"));
             $qreq->print_header("Account disabled", "home", ["action_bar" => ""]);
-            $user->conf->warning_msg("<0>Your account on this site has been disabled by a site administrator. Please contact them with questions.");
             $qreq->print_footer();
             exit;
         }
@@ -48,7 +48,7 @@ class Home_Page {
             } else {
                 $result = $user->conf->qe("select reviewToken, paperId from PaperReview where reviewToken?a order by paperId", $user->review_tokens());
                 while (($row = $result->fetch_row())) {
-                    $ml[] = MessageItem::success("<5>Review token ‘" . htmlspecialchars(encode_token((int) $row[0])) . "’ lets you review " . Ht::link("submission #{$row[1]}", $user->conf->hoturl("paper", "p={$row[1]}")));
+                    $ml[] = MessageItem::success("<5>Review token ‘" . htmlspecialchars(encode_token((int) $row[0])) . "’ lets you review " . Ht::link("{$user->conf->snouns[0]} #{$row[1]}", $user->conf->hoturl("paper", "p={$row[1]}")));
                 }
             }
             $user->conf->feedback_msg($ml);
@@ -86,11 +86,7 @@ class Home_Page {
     }
 
     function print_head(Contact $user, Qrequest $qreq, $gx) {
-        if ($user->is_empty()) {
-            $qreq->print_header("Sign in", "home");
-        } else {
-            $qreq->print_header("Home", "home");
-        }
+        $qreq->print_header("Home", "home");
         if ($qreq->signedout && $user->is_empty()) {
             $user->conf->success_msg("<0>You have been signed out of the site");
         }
@@ -104,13 +100,13 @@ class Home_Page {
     function print_content(Contact $user, Qrequest $qreq, $gx) {
         echo '<main class="home-content">';
         ob_start();
-        $gx->print_group("home/sidebar");
+        $gx->print_members("home/sidebar");
         if (($t = ob_get_clean()) !== "") {
             echo '<nav class="home-sidebar">', $t, '</nav>';
             $this->_has_sidebar = true;
         }
         echo '<div class="home-main">';
-        $gx->print_group("home/main");
+        $gx->print_members("home/main");
         echo "</div></main>\n";
     }
 
@@ -121,7 +117,7 @@ class Home_Page {
 
     static function print_admin_sidebar(Contact $user, Qrequest $qreq, $gx) {
         echo '<div class="homegrp"><h2 class="home">Administration</h2><ul>';
-        $gx->print_group("home/sidebar/admin");
+        $gx->print_members("home/sidebar/admin");
         echo '</ul></div>';
     }
     static function print_admin_settings(Contact $user) {
@@ -143,7 +139,7 @@ class Home_Page {
 
     static function print_info_sidebar(Contact $user, Qrequest $qreq, $gx) {
         ob_start();
-        $gx->print_group("home/sidebar/info");
+        $gx->print_members("home/sidebar/info");
         if (($t = ob_get_clean())) {
             echo '<div class="homegrp"><h2 class="home">',
                 $user->conf->_c("home", "Program information"),
@@ -170,7 +166,7 @@ class Home_Page {
         assert($user->conf->time_all_author_view_decision());
         if ($user->conf->time_all_author_view_decision()) {
             list($n, $nyes) = $user->conf->count_submitted_accepted();
-            echo '<li>', $user->conf->_("%d papers accepted out of %d submitted.", $nyes, $n), '</li>';
+            echo '<li>', $user->conf->_("{} papers accepted out of {} submitted.", $nyes, $n), '</li>';
         }
     }
 
@@ -218,7 +214,21 @@ class Home_Page {
             ]), '<div class="form-basic-search-in"> in ',
             PaperSearch::limit_selector($this->conf, $limits, PaperSearch::default_limit($user, $limits)),
             Ht::submit("Search"),
-            "</div></form></div>\n";
+            "</div></form>";
+
+        if ($user->isPC) {
+            $hs = [];
+            foreach ($user->conf->named_searches() as $sj) {
+                if (($sj->display ?? null) === "highlight")
+                    $hs[] = '<li>⭐️ ' . Ht::link("ss:" . htmlspecialchars($sj->name), $this->conf->hoturl("search", ["q" => "ss:{$sj->name}"])) . '</li>';
+            }
+            if (!empty($hs)) {
+                echo '<div class="mt-1 font-weight-semibold"><ul class="inline">',
+                    join("", $hs), '</ul></div>';
+            }
+        }
+
+        echo '</div>';
     }
 
     /** @return list<Score_ReviewField> */
@@ -259,7 +269,7 @@ class Home_Page {
                 $q .= ", " . $rf->main_storage;
                 $scores[] = [];
             }
-            $result = $user->conf->qe("$q from PaperReview join Paper using (paperId) where (" . join(" or ", $where) . ") and (reviewSubmitted is not null or timeSubmitted>0)");
+            $result = $user->conf->qe("{$q} from PaperReview join Paper using (paperId) where (" . join(" or ", $where) . ") and (reviewSubmitted is not null or timeSubmitted>0)");
             while (($row = $result->fetch_row())) {
                 if ($row[1] || $row[3] < 0) {
                     $this->_r_num_submitted += 1;
@@ -293,7 +303,7 @@ class Home_Page {
                 $q .= ", group_concat(coalesce({$rf->main_storage},'')) {$rf->short_id}Scores";
                 $scores[] = [];
             }
-            $result = Dbl::qe_raw("$q from ContactInfo left join PaperReview on (PaperReview.contactId=ContactInfo.contactId and PaperReview.reviewSubmitted is not null)
+            $result = Dbl::qe_raw("{$q} from ContactInfo left join PaperReview on (PaperReview.contactId=ContactInfo.contactId and PaperReview.reviewSubmitted is not null)
                 where roles!=0 and (roles&" . Contact::ROLE_PC . ")!=0 group by ContactInfo.contactId");
             while (($row = $result->fetch_row())) {
                 ++$npc;
@@ -319,23 +329,24 @@ class Home_Page {
             $score_texts = [];
             foreach ($this->default_review_fields() as $i => $rf) {
                 if ($this->_rf_means[$i] !== null) {
-                    $score_texts[] = $conf->_("average %1\$s score %2\$s", $rf->name_html, $rf->unparse_computed($this->_rf_means[$i], "%.2f"), $this->_r_num_submitted);
+                    $score_texts[] = $conf->_("average {0} score {1}", $rf->name_html, $rf->unparse_computed($this->_rf_means[$i], "%.2f"), $this->_r_num_submitted);
                 }
             }
-            echo $conf->_("You have submitted %1\$d of <a href=\"%3\$s\">%2\$d reviews</a> with %4\$#As.",
-                $this->_r_num_submitted, $this->_r_num_needs_submit,
-                $conf->hoturl("search", "q=&amp;t=r"), $score_texts, count($score_texts)),
+            echo $conf->_("You have submitted {n} of <a href=\"{url}\">{na} reviews</a> with {scores:list}.",
+                new FmtArg("n", $this->_r_num_submitted), new FmtArg("na", $this->_r_num_needs_submit),
+                new FmtArg("url", $conf->hoturl_raw("search", "q=&t=r"), 0),
+                new FmtArg("scores", $score_texts)),
                 "<br>\n";
         }
         if (($user->isPC || $user->privChair) && $npc) {
             $score_texts = [];
             foreach ($this->default_review_fields() as $i => $rf) {
                 if ($pc_rf_means[$i] !== null) {
-                    $score_texts[] = $conf->_("average %1\$s score %2\$s", $rf->name_html, $rf->unparse_computed($pc_rf_means[$i], "%.2f"), null);
+                    $score_texts[] = $conf->_("average {0} score {1}", $rf->name_html, $rf->unparse_computed($pc_rf_means[$i], "%.2f"), null);
                 }
             }
-            echo $conf->_("The average PC member has submitted %1\$.1f reviews with %2\$#As.",
-                $sumpc_submit / $npc, $score_texts, count($score_texts));
+            echo $conf->_("The average PC member has submitted {n:.1f} reviews with {scores:list}.",
+                new FmtArg("n", $sumpc_submit / $npc), new FmtArg("scores", $score_texts));
             if ($user->isPC || $user->privChair) {
                 echo "&nbsp; <small class=\"nw\">(<a href=\"", $conf->hoturl("users", "t=pc"), "\">details</a><span class=\"barsep\">·</span><a href=\"", $conf->hoturl("graph", "group=procrastination"), "\">graphs</a>)</small>";
             }
@@ -505,15 +516,14 @@ class Home_Page {
 
     private function print_new_submission(Contact $user, SubmissionRound $sr) {
         $conf = $user->conf;
-        $isreg = $sr->register >= Conf::$now && $sr->register < $sr->submit;
-        $dlt = $isreg ? $sr->register : $sr->submit;
-        if ($dlt > 0) {
-            $dltype = $isreg ? "Registration" : "Submission";
-            if (!$sr->unnamed) {
-                $dltype = strtolower($dltype);
-            }
-            $dlspan = $conf->unparse_time_with_local_span($dlt);
-            $dltx = "<em class=\"deadline\">{$sr->title1}{$dltype} deadline: {$dlspan}</em>";
+        if ($sr->register >= Conf::$now && $sr->register < $sr->submit) {
+            $dname = $conf->_5("<5>{sclass} registration deadline", new FmtArg("sclass", $sr->tag, 0));
+            $dtime = $conf->unparse_time_with_local_span($sr->register);
+            $dltx = "<em class=\"deadline\">{$dname}: {$dtime}</em>";
+        } else if ($sr->submit > 0) {
+            $dname = $conf->_5("<5>{sclass} deadline", new FmtArg("sclass", $sr->tag, 0));
+            $dtime = $conf->unparse_time_with_local_span($sr->submit);
+            $dltx = "<em class=\"deadline\">{$dname}: {$dtime}</em>";
         } else {
             $dltx = "";
         }
@@ -522,7 +532,7 @@ class Home_Page {
                 "p" => "new", "sclass" => $sr->unnamed ? null : $sr->tag
             ]);
             $actions = [[
-                "<a class=\"btn\" href=\"{$url}\">New {$sr->title1}submission</a>",
+                "<a class=\"btn\" href=\"{$url}\">" . $conf->_c5("paper_edit", "<0>New {sclass} {submission}", new FmtArg("sclass", $sr->tag)) . "</a>",
                 $sr->time_register(true) ? "" : "(admin only)"
             ]];
             if ($dltx !== "") {
@@ -539,9 +549,9 @@ class Home_Page {
             // Be careful not to refer to a future deadline; perhaps an admin
             // just turned off submissions.
             if (!$sr->submit || $sr->submit + $sr->grace > Conf::$now) {
-                $deadlines[] = "The site is not open for {$sr->title1}submissions at the moment.";
+                $deadlines[] = "The site is not open for {$sr->title1}{$this->conf->snouns[1]} at the moment.";
             } else {
-                $deadlines[] = 'The <a href="' . $this->conf->hoturl("deadlines") . "\">{$sr->title1}submission deadline</a> has passed.";
+                $deadlines[] = 'The <a href="' . $this->conf->hoturl("deadlines") . "\">{$sr->title1}{$this->conf->snouns[0]} deadline</a> has passed.";
             }
         } else if (!$sr->time_update(true)) {
             $deadlines[] = 'The <a href="' . $this->conf->hoturl("deadlines") . "\">{$sr->title1}update deadline</a> has passed, but you can still submit.";
@@ -561,10 +571,13 @@ class Home_Page {
         $conf = $user->conf;
         $srlist = [];
         $any_open = false;
-        foreach ($conf->submission_round_list() as $sr) {
-            $any_open = $any_open || $sr->open > 0;
-            if ($user->privChair || $sr->time_register(true)) {
-                $srlist[] = $sr;
+        $sl = $conf->site_lock("paper:start");
+        if ($sl === 0 || ($sl === 1 && $user->is_manager())) {
+            foreach ($conf->submission_round_list() as $sr) {
+                $any_open = $any_open || $sr->open > 0;
+                if ($user->privChair || $sr->time_register(true)) {
+                    $srlist[] = $sr;
+                }
             }
         }
         if (!$user->is_author()
@@ -574,13 +587,17 @@ class Home_Page {
             return;
         }
 
-        echo '<div class="homegrp" id="homeau">',
-            $this->print_h2_home($user->is_author() ? "Your Submissions" : "Submissions");
+        if ($user->is_author()) {
+            $t = $conf->_c("home", "<0>Your {Submissions}");
+        } else {
+            $t = $conf->_c("home", "<0>{Submissions}");
+        }
+        echo '<div class="homegrp" id="homeau">', $this->print_h2_home(Ftext::as(5, $t));
 
         if (!empty($srlist)) {
             if (!$user->has_email()) {
-                echo '<p>', Ht::link("Sign in", $conf->hoturl("signin")),
-                    ' to start submissions.</p>';
+                echo "<p>", Ht::link("Sign in", $conf->hoturl("signin")),
+                    " to manage {$conf->snouns[1]}.</p>";
             }
             usort($srlist, "SubmissionRound::compare");
             foreach ($srlist as $sr) {
@@ -612,11 +629,11 @@ class Home_Page {
                 $this->submission_round_deadlines($deadlines, $sr);
             }
         }
-        if (empty($srlist) && !count($deadlines)) {
+        if (empty($srlist) && empty($deadlines)) {
             if ($any_open) {
-                $deadlines[] = 'The <a href="' . $conf->hoturl("deadlines") . '">deadline</a> for registering submissions has passed.';
+                $deadlines[] = "The <a href=\"" . $conf->hoturl("deadlines") . "\">deadline</a> for registering {$conf->snouns[1]} has passed.";
             } else {
-                $deadlines[] = "The site is not open for submissions at the moment.";
+                $deadlines[] = "The site is not open for {$conf->snouns[1]} at the moment.";
             }
         }
         // NB only has("accepted") if author can see an accepted paper

@@ -57,13 +57,11 @@ class Review_Autoassigner extends Autoassigner {
 
         $this->extract_balance_method($subreq);
         $this->extract_max_load($subreq);
+        $this->extract_gadget_costs($subreq);
 
-        $n = $subreq["count"] ?? $gj->count ?? 1;
-        if (is_string($n)) {
-            $n = cvtint($n);
-        }
-        if (!is_int($n) || $n <= 0) {
-            $this->error_at("count", "<0>Count should be a positive number");
+        $n = stoi($subreq["count"] ?? $gj->count ?? 1) ?? -1;
+        if ($n <= 0) {
+            $this->error_at("count", "<0>Positive number expected");
             $n = 1;
         }
         $this->count = $n;
@@ -94,7 +92,7 @@ class Review_Autoassigner extends Autoassigner {
         if ($this->load === self::LOAD_ROUND) {
             $rname = $this->assignment_column("round")
                 ?? $this->conf->assignment_round_option($this->rtype === REVIEW_EXTERNAL);
-            $round = $this->conf->round_number($rname, false);
+            $round = $this->conf->round_number($rname);
             if ($round !== null) {
                 $q .= " and reviewRound={$round}";
             } else {
@@ -104,6 +102,16 @@ class Review_Autoassigner extends Autoassigner {
         $result = $this->conf->qe($q . " group by contactId", $this->user_ids());
         while (($row = $result->fetch_row())) {
             $this->add_aauser_load((int) $row[0], (int) $row[1]);
+        }
+        Dbl::free($result);
+    }
+
+    private function set_ensure() {
+        $result = $this->conf->qe("select paperId, count(reviewId) from PaperReview where reviewType={$this->rtype} group by paperId");
+        while (($row = $result->fetch_row())) {
+            if (($ap = $this->aapaper((int) $row[0]))) {
+                $ap->ndesired = max($ap->ndesired - (int) $row[1], 0);
+            }
         }
         Dbl::free($result);
     }
@@ -123,15 +131,10 @@ class Review_Autoassigner extends Autoassigner {
             $ap->ndesired = $count;
         }
         if ($this->kind === self::KIND_ENSURE) {
-            $result = $this->conf->qe("select paperId, count(reviewId) from PaperReview where reviewType={$this->rtype} group by paperId");
-            while (($row = $result->fetch_row())) {
-                if (($ap = $this->aapaper((int) $row[0]))) {
-                    $ap->ndesired = max($ap->ndesired - (int) $row[1], 0);
-                }
-            }
-            Dbl::free($result);
+            $this->set_ensure();
         }
         $this->reset_desired_assignment_count();
+        gc_collect_cycles();
 
         $this->assign_method();
         $this->finish_assignment(); // recover memory

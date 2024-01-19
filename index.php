@@ -6,23 +6,19 @@ require_once("lib/navigation.php");
 
 /** @param Contact $user
  * @param Qrequest $qreq
- * @param string $group
+ * @param object $pagej
  * @param ComponentSet $pc */
-function handle_request_components($user, $qreq, $group, $pc) {
-    $pc->add_xt_checker([$qreq, "xt_allow"]);
-    $reqgj = [];
-    $not_allowed = false;
-    foreach ($pc->members($group, "request_function") as $gj) {
-        if ($pc->allowed($gj->allow_request_if ?? null, $gj)) {
-            $reqgj[] = $gj;
-        } else {
-            $not_allowed = true;
+function handle_request_components($user, $qreq, $pagej, $pc) {
+    if (isset($pagej->request_function)
+        && $pc->call_function($pagej, $pagej->request_function, $pagej) === false) {
+        return;
+    }
+    foreach ($pc->members($pagej->group, "request_function") as $gj) {
+        if (isset($gj->allow_request_if)) { /* XXX backward compat */
+            error_log("Warning: allow_request_if is deprecated");
+            if (!$pc->allowed($gj->allow_request_if, $gj))
+                continue;
         }
-    }
-    if ($not_allowed && $qreq->is_post() && !$qreq->valid_token()) {
-        $user->conf->error_msg($user->conf->_i("badpost"));
-    }
-    foreach ($reqgj as $gj) {
         if ($pc->call_function($gj, $gj->request_function, $gj) === false) {
             break;
         }
@@ -43,11 +39,11 @@ function handle_request($nav) {
         if (!$pagej || str_starts_with($pagej->name, "__")) {
             Multiconference::fail($qreq, 404, ["link" => true], "<0>Page not found");
         } else if ($user->is_disabled() && !($pagej->allow_disabled ?? false)) {
-            Multiconference::fail($qreq, 403, ["link" => true], "<0>Your account is disabled");
+            Multiconference::fail($qreq, 403, ["link" => true], $user->conf->_i("account_disabled"));
         } else {
             $pc->set_root($pagej->group);
-            handle_request_components($user, $qreq, $pagej->group, $pc);
-            $pc->print_group($pagej->group, true);
+            handle_request_components($user, $qreq, $pagej, $pc);
+            $pc->print_body_members($pagej->group);
         }
     } catch (Redirection $redir) {
         Conf::$main->redirect($redir->url);

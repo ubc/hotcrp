@@ -222,36 +222,47 @@ class HelpRenderer extends Ht {
         return $this->trow($this->search_form($q, 36), $entry);
     }
 
-    /** @param string $property
-     * @return string */
-    function example_tag($property) {
-        $vt = [];
+    /** @param int $flags
+     * @return ?string */
+    function example_tag($flags) {
         if ($this->user->isPC) {
-            $vt = $this->conf->tags()->filter($property);
+            foreach ($this->conf->tags()->settings_having($flags) as $dt) {
+                if ($this->user->can_view_some_tag($dt->tag))
+                    return $dt->tag;
+            }
         }
-        return empty($vt) ? $property : current($vt)->tag;
+        return null;
     }
 
-    /** @param string $property
-     * @return string */
-    function current_tag_list($property) {
-        $vt = [];
+    /** @param int $flags
+     * @return list<string> */
+    function tag_settings_having($flags) {
+        $ts = [];
         if ($this->user->isPC) {
-            $vt = $this->conf->tags()->filter($property);
+            foreach ($this->conf->tags()->sorted_settings_having($flags) as $dt) {
+                if ($this->user->can_view_some_tag($dt->tag))
+                    $ts[] = $dt->tag;
+            }
         }
-        if (empty($vt)) {
+        return $ts;
+    }
+
+    /** @param int $flags
+     * @return string */
+    function tag_settings_having_note($flags) {
+        $ts = $this->tag_settings_having($flags);
+        if (empty($ts)) {
             return "";
         } else {
             return " (currently " . join(", ", array_map(function ($t) {
-                return $this->search_link($t->tag, "#{$t->tag}");
-            }, $vt)) . ")";
+                return $this->search_link($t, "#{$t}");
+            }, $ts)) . ")";
         }
     }
 
-    /** @param string $topic
-     * @param bool $top */
-    function print_group($topic, $top = false) {
-        $this->_help_topics->print_group($topic, $top);
+    /** @param string $topic */
+    function print_members($topic) {
+        $this->_help_topics->print_members($topic);
     }
 
     /** @return list<object> */

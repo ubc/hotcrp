@@ -109,7 +109,7 @@ class Assign_Page {
         }
 
         $aset = new AssignmentSet($this->user);
-        $aset->override_conflicts();
+        $aset->set_override_conflicts(true);
         $aset->enable_papers($this->prow);
         $aset->parse(join("", $t));
         $ok = $aset->execute();
@@ -453,7 +453,11 @@ class Assign_Page {
                 $rrow ? $rrow->round_h() : "";
         }
         if ($revtype >= 0) {
-            echo unparse_preference_span($this->prow->preference($pc, true));
+            $pf = $this->prow->preference($pc);
+            $tv = $pf->preference ? null : $this->prow->topic_interest_score($pc);
+            if ($pf->exists() || $tv) {
+                echo " ", $pf->unparse_span($tv);
+            }
         }
         echo '</div>'; // .pctbname
         if ($potconf) {
@@ -541,8 +545,8 @@ class Assign_Page {
                 '<div class="revcard-body">',
                 Ht::form($this->conf->hoturl("=assign", "p=$prow->paperId"), [
                     "id" => "f-pc-assignments",
-                    "class" => "need-unload-protection",
-                    "data-alert-toggle" => "paper-alert"
+                    "class" => "need-unload-protection need-diff-check",
+                    "data-differs-toggle" => "paper-alert"
                 ]);
             Ht::stash_script('$(hotcrp.load_editable_pc_assignments)');
 
@@ -657,9 +661,6 @@ class Assign_Page {
             $user->escape();
         }
         $user->add_overrides(Contact::OVERRIDE_CONFLICT);
-        // ensure site contact exists before locking tables
-        $user->conf->site_contact();
-
         $ap = new Assign_Page($user, $qreq);
         $ap->assign_load();
         $ap->handle_request();

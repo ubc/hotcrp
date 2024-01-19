@@ -76,7 +76,7 @@
         "order": 30050,
         "allow_if": "view_review",
         "function": "+GetReviews_ListAction",
-        "zip": false, "abstract": true, "author_view": false
+        "zip": false, "abstract": true, "author_view": false, "submitted": true
     },
     {
         "name": "get/rev", "get": true,
@@ -84,7 +84,7 @@
         "order": 30100,
         "allow_if": "view_review",
         "function": "+GetReviews_ListAction",
-        "zip": false, "abstract": false, "author_view": false
+        "zip": false, "abstract": false, "author_view": false, "submitted": true
     },
     {
         "name": "get/revz", "get": true,
@@ -92,23 +92,39 @@
         "order": 30105,
         "allow_if": "view_review",
         "function": "+GetReviews_ListAction",
-        "zip": true, "abstract": false, "author_view": false
+        "zip": true, "abstract": false, "author_view": false, "submitted": true
+    },
+    {
+        "name": "get/revdraft", "get": true,
+        "title": "Reviews/Reviews (text, include drafts)",
+        "order": 30150,
+        "allow_if": "view_review && admin",
+        "function": "+GetReviews_ListAction",
+        "zip": false, "abstract": false, "author_view": false, "submitted": false
+    },
+    {
+        "name": "get/revdraftz", "get": true,
+        "title": "Reviews/Reviews (zip, include drafts)",
+        "order": 30151,
+        "allow_if": "view_review && admin",
+        "function": "+GetReviews_ListAction",
+        "zip": true, "abstract": false, "author_view": false, "submitted": false
     },
     {
         "name": "get/revau", "get": true,
         "title": "Reviews/Reviews (text, author view)",
         "order": 30200,
-        "allow_if": ["view_review", "admin"],
+        "allow_if": "view_review && admin",
         "function": "+GetReviews_ListAction",
-        "zip": false, "abstract": false, "author_view": true
+        "zip": false, "abstract": false, "author_view": true, "submitted": true
     },
     {
         "name": "get/revauz", "get": true,
         "title": "Reviews/Reviews (zip, author view)",
         "order": 30205,
-        "allow_if": ["view_review", "admin"],
+        "allow_if": "view_review && admin",
         "function": "+GetReviews_ListAction",
-        "zip": true, "abstract": false, "author_view": true
+        "zip": true, "abstract": false, "author_view": true, "submitted": true
     },
     {
         "name": "get/revcsv", "get": true,
@@ -121,7 +137,7 @@
         "name": "get/revaucsv", "get": true,
         "title": "Reviews/Reviews (CSV, author view)",
         "order": 30210,
-        "allow_if": ["view_review", "admin"],
+        "allow_if": "view_review && admin",
         "function": "+GetReviewCSV_ListAction",
         "author_view": true
     },
@@ -134,20 +150,20 @@
     },
     {
         "name": "get/rank", "get": true,
-        "allow_if": ["setting.tag_rank", "reviewer"], "display_if": false,
+        "allow_if": "setting.tag_rank && reviewer", "display_if": false,
         "function": "+GetRank_ListAction"
     },
     {
         "name": "get/lead", "get": true,
         "title": "Reviews/Discussion leads (CSV)", "order": 30600,
-        "allow_if": "pc", "display_if": "lead",
+        "allow_if": "pc", "display_if": "conf.has_any_lead_or_shepherd",
         "function": "+GetLead_ListAction",
         "type": "lead"
     },
     {
         "name": "get/shepherd", "get": true,
         "title": "Reviews/Shepherds (CSV)", "order": 30650,
-        "allow_if": "pc", "display_if": "shepherd",
+        "allow_if": "pc", "display_if": "conf.has_any_lead_or_shepherd",
         "function": "+GetLead_ListAction",
         "type": "shepherd"
     },

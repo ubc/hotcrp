@@ -16,7 +16,7 @@ class Decide_ListAction extends ListAction {
                 . $pl->action_submit("decide")];
     }
     function run(Contact $user, Qrequest $qreq, SearchSelection $ssel) {
-        $aset = (new AssignmentSet($user))->override_conflicts();
+        $aset = (new AssignmentSet($user))->set_override_conflicts(true);
         $did = $qreq->decision;
         if (is_numeric($did)
             && ($dec = $user->conf->decision_set()->get(+$did))) {
@@ -24,7 +24,7 @@ class Decide_ListAction extends ListAction {
         }
         $aset->parse("paper,action,decision\n" . join(" ", $ssel->selection()) . ",decision," . CsvGenerator::quote($did));
         if ($aset->execute()) {
-            return new Redirection($user->conf->site_referrer_url($qreq, ["atab" => "decide", "decision" => $qreq->decision], Conf::HOTURL_RAW));
+            return new Redirection($user->conf->selfurl($qreq, ["atab" => "decide", "decision" => $qreq->decision], Conf::HOTURL_RAW | Conf::HOTURL_REDIRECTABLE));
         } else {
             $user->conf->feedback_msg($aset->message_list());
         }

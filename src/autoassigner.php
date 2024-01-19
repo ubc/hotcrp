@@ -1,17 +1,6 @@
 <?php
 // autoassigner.php -- HotCRP helper classes for autoassignment
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
-
-class AutoassignerCosts implements JsonSerializable {
-    public $assignment = 100;
-    public $preference = 60;
-    public $expertise_x = -200;
-    public $expertise_y = -140;
-    #[\ReturnTypeWillChange]
-    function jsonSerialize() {
-        return get_object_vars($this);
-    }
-}
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class AutoassignerElement {
     /** @var int */
@@ -123,9 +112,15 @@ abstract class Autoassigner extends MessageSet {
     /** @var int */
     protected $balance = self::BALANCE_NEW;
     /** @var int */
-    private $review_gadget = self::REVIEW_GADGET_DEFAULT;
-    /** @var AutoassignerCosts */
-    public $costs;
+    protected $review_gadget;
+    /** @var int */
+    public $assignment_cost = 100;
+    /** @var int */
+    public $preference_cost = 60;
+    /** @var int */
+    public $expertise_x_cost = -200;
+    /** @var int */
+    public $expertise_y_cost = -140;
     private $progressf = [];
     /** @var ?MinCostMaxFlow */
     protected $mcmf;
@@ -148,7 +143,7 @@ abstract class Autoassigner extends MessageSet {
     const BALANCE_NEW = 0;
     const BALANCE_ALL = 1;
 
-    const REVIEW_GADGET_DEFAULT = 0;
+    const REVIEW_GADGET_PLAIN = 0;
     const REVIEW_GADGET_EXPERTISE = 1;
 
     const ENOASSIGN = 1;
@@ -170,12 +165,23 @@ abstract class Autoassigner extends MessageSet {
         foreach ($papersel as $pid) {
             $this->aps[$pid] = new AutoassignerPaper($pid);
         }
-        $this->costs = new AutoassignerCosts;
+
+        if ($this->conf->opt("autoassignReviewGadget") === "expertise") {
+            $this->review_gadget = self::REVIEW_GADGET_EXPERTISE;
+        } else {
+            $this->review_gadget = self::REVIEW_GADGET_PLAIN;
+        }
+        if (($jc = json_decode_object($this->conf->opt("autoassignCosts")))) {
+            $this->assignment_cost = $jc->assignment ?? $this->assignment_cost;
+            $this->preference_cost = $jc->preference ?? $this->preference_cost;
+            $this->expertise_x_cost = $jc->expertise_x ?? $this->expertise_x_cost;
+            $this->expertise_y_cost = $jc->expertise_y ?? $this->expertise_y_cost;
+        }
     }
 
     /** @param int $cid1
      * @param int $cid2 */
-    function avoid_pair_assignment($cid1, $cid2) {
+    function avoid_coassignment($cid1, $cid2) {
         assert($cid1 > 0 && $cid2 > 0);
         if ($cid1 !== $cid2
             && !in_array($cid2, $this->avoid_lists[$cid1] ?? [])) {
@@ -233,6 +239,22 @@ abstract class Autoassigner extends MessageSet {
         }
     }
 
+    /** @param array<string,mixed> $args
+     * @param string $key
+     * @param ?int $min
+     * @return ?int */
+    function extract_intval($args, $key, $min) {
+        if (!isset($args[$key])) {
+            return null;
+        }
+        $n = stoi($args[$key]);
+        if ($n === null || ($min !== null && $n < $min)) {
+            $this->error_at($key, $min !== null && $min >= 0 ? "<0>Positive whole number expected" : "<0>Whole number expected");
+            return null;
+        }
+        return $n;
+    }
+
     /** @param array<string,mixed> $args */
     function extract_max_load($args) {
         if (($ml = $this->extract_tag($args, "max_load_tag"))) {
@@ -243,27 +265,52 @@ abstract class Autoassigner extends MessageSet {
                 }
             }
         }
-        if (($m = $args["max_load"] ?? null) !== null) {
-            if (is_string($m)) {
-                $m = cvtint($m);
-            }
-            if (!is_int($m) || $m <= 0) {
-                $this->error_at("max_load", "<0>Maximum load should be a positive number");
-            } else {
-                foreach ($this->acs as $ac) {
-                    $ac->max_load = min($m, $ac->max_load);
-                }
+        if (($m = $this->extract_intval($args, "max_load", 1)) !== null) {
+            foreach ($this->acs as $ac) {
+                $ac->max_load = min($m, $ac->max_load);
             }
         }
     }
 
-    function set_review_gadget($review_gadget) {
-        $this->review_gadget = $review_gadget;
+    /** @param array<string,mixed> $args */
+    function extract_gadget_costs($args) {
+        $gadget = $args["gadget"] ?? null;
+        if ($gadget === "default") {
+            $gadget = null;
+        } else if ($gadget !== "expertise" && $gadget !== "plain" && $gadget !== null) {
+            $this->error_at("gadget", "<0>Review gadget should be ‘plain’ or ‘expertise’");
+            $gadget = null;
+        }
+        $x = friendly_boolean($args["expertise"] ?? null);
+        if ($gadget === "expertise"
+            || ($gadget === null && $x === true)) {
+            $this->review_gadget = self::REVIEW_GADGET_EXPERTISE;
+        } else if ($gadget === "plain"
+                   || ($gadget === null && $x === false)) {
+            $this->review_gadget = self::REVIEW_GADGET_PLAIN;
+        }
+
+        $this->assignment_cost = $this->extract_intval($args, "assignment_cost", 1)
+            ?? $this->assignment_cost;
+        $this->preference_cost = $this->extract_intval($args, "preference_cost", 1)
+            ?? $this->preference_cost;
+        $this->expertise_x_cost = $this->extract_intval($args, "expertise_x_cost", null)
+            ?? $this->expertise_x_cost;
+        $this->expertise_y_cost = $this->extract_intval($args, "expertise_y_cost", null)
+            ?? $this->expertise_y_cost;
     }
 
-    /** @param callable $progressf */
+    /** @param callable $progressf
+     * @deprecated */
     function add_progress_handler($progressf) {
         $this->progressf[] = $progressf;
+    }
+
+    /** @param callable(string) $progressf
+     * @return $this */
+    function add_progress_function($progressf) {
+        $this->progressf[] = $progressf;
+        return $this;
     }
 
     /** @param string $action */
@@ -638,7 +685,10 @@ abstract class Autoassigner extends MessageSet {
             // process conflicts and preferences
             foreach ($this->acs as $ac) {
                 $a = $this->ainfo[$ac->cid][$pid];
-                list($a->pref, $a->exp, $a->topicscore) = $row->preference($ac->user, true);
+                $pf = $row->preference($ac->user);
+                $a->pref = $pf->preference;
+                $a->exp = $pf->expertise;
+                $a->topicscore = $row->topic_interest_score($ac->user);
                 if ($a->eass < self::ENOASSIGN
                     && ($row->has_conflict($ac->user)
                         || !$ac->user->can_accept_review_assignment($row))) {
@@ -659,7 +709,7 @@ abstract class Autoassigner extends MessageSet {
     }
 
     /** @return bool */
-    private function action_avoids_pairs() {
+    private function might_coassign() {
         return $this->ass_action !== "lead" && $this->ass_action !== "shepherd";
     }
 
@@ -768,7 +818,7 @@ abstract class Autoassigner extends MessageSet {
     /** @return int */
     private function assign_mcmf_once() {
         $m = new MinCostMaxFlow;
-        $m->add_progress_handler([$this, "mcmf_progress"]);
+        $m->add_progress_function([$this, "mcmf_progress"]);
         $this->mcmf_max_cost = null;
         $this->mark_progress("Preparing assignment optimizer" . $this->mcmf_round_descriptor);
         // existing assignment counts
@@ -795,9 +845,9 @@ abstract class Autoassigner extends MessageSet {
                 $m->add_node("p{$pid}x", "px");
                 $m->add_node("p{$pid}y", "py");
                 $m->add_node("p{$pid}xy", "pxy");
-                $m->add_edge("p{$pid}x", "p{$pid}xy", 1, $this->costs->expertise_x);
+                $m->add_edge("p{$pid}x", "p{$pid}xy", 1, $this->expertise_x_cost);
                 $m->add_edge("p{$pid}x", "p{$pid}y", $tct, 0);
-                $m->add_edge("p{$pid}y", "p{$pid}xy", 2, $this->costs->expertise_y);
+                $m->add_edge("p{$pid}y", "p{$pid}xy", 2, $this->expertise_y_cost);
                 $m->add_edge("p{$pid}y", "p{$pid}", $tct, 0);
                 $m->add_edge("p{$pid}xy", "p{$pid}", 2, 0);
             }
@@ -819,7 +869,7 @@ abstract class Autoassigner extends MessageSet {
             } else {
                 for ($ld = 0; $ac->load + $ld < min($maxload, $ac->max_load); ++$ld) {
                     $c = $ac->balance + $ld - $minbalance;
-                    $m->add_edge(".source", "u{$cid}", 1, $this->costs->assignment * $c);
+                    $m->add_edge(".source", "u{$cid}", 1, $this->assignment_cost * $c);
                 }
             }
             if ($ceass[$cid]) {
@@ -828,7 +878,7 @@ abstract class Autoassigner extends MessageSet {
         }
         // figure out members of badpairs classes
         $bpmembers = [];
-        if ($this->action_avoids_pairs() && !empty($this->avoid_lists)) {
+        if ($this->might_coassign() && !empty($this->avoid_lists)) {
             $this->compute_avoid_class();
             foreach ($this->acs as $ac) {
                 $bpmembers[$ac->avoid_class][] = $ac->cid;
@@ -874,7 +924,7 @@ abstract class Autoassigner extends MessageSet {
                 } else {
                     $dst = "p{$pid}";
                 }
-                $cost = (int) ($a->pref_index * $this->costs->preference / $ac->pref_index_bound);
+                $cost = (int) ($a->pref_index * $this->preference_cost / $ac->pref_index_bound);
                 $m->add_edge("u{$cid}", $dst, 1, $cost, $a->eass ? 1 : 0);
             }
         }
@@ -905,6 +955,7 @@ abstract class Autoassigner extends MessageSet {
         if ($m->mincost_start_at) {
             $this->profile["mincost"] = $m->mincost_end_at - $m->mincost_start_at;
         }
+        $this->profile["memory"] = memory_get_usage();
         $this->mcmf = null;
         $this->profile["traverse"] = microtime(true) - $time;
         return $nassigned;
@@ -945,4 +996,40 @@ abstract class Autoassigner extends MessageSet {
 
 
     abstract function run();
+
+
+
+    /** @param string $help
+     * @return ?object */
+    static function expand_parameter_help($help) {
+        if (!preg_match('/\A(\??)(\S+)\s*(|\{\S*\})\s*(|[^{].*)\z/', $help, $m)) {
+            return null;
+        }
+        if ($m[4] === "") {
+            if ($m[2] === "count") {
+                $m[3] = $m[3] ? : "{n}";
+                $m[4] = "Number of assignments";
+            } else if ($m[2] === "rtype") {
+                $m[4] = "Review type";
+            } else if ($m[2] === "method") {
+                $m[4] = "Assignment method (default, random, stupid) [default]";
+            } else if ($m[2] === "balance") {
+                $m[4] = "Load-balancing method (all, new) [all]";
+            } else if ($m[2] === "max_load") {
+                $m[3] = $m[3] ? : "{n}";
+                $m[4] = "Maximum load per PC";
+            } else if ($m[2] === "max_load_tag") {
+                $m[3] = $m[3] ? : "{tag}";
+                $m[4] = "PC tag defining maximum load per PC";
+            } else if ($m[2] === "round") {
+                $m[4] = "Review round";
+            }
+        }
+        if ($m[3] === "") {
+            $argname = strtoupper($m[2]);
+        } else {
+            $argname = strtoupper(substr($m[3], 1, -1));
+        }
+        return (object) ["required" => $m[1] === "", "name" => $m[2], "argname" => $argname, "description" => $m[4]];
+    }
 }

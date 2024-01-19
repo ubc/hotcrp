@@ -14,7 +14,15 @@ class Conflict_PaperColumn extends PaperColumn {
     /** @var bool */
     private $editable = false;
     /** @var bool */
-    private $basicheader = false;
+    private $simple = false;
+    /** @var bool */
+    private $pin_no = false;
+    /** @var bool */
+    private $pin_yes = false;
+    /** @var string */
+    private $usuffix;
+    /** @var Conflict */
+    private $cset;
     function __construct(Conf $conf, $cj) {
         parent::__construct($conf, $cj);
         $this->override = PaperColumn::OVERRIDE_IFEMPTY;
@@ -28,11 +36,15 @@ class Conflict_PaperColumn extends PaperColumn {
         }
     }
     function add_decoration($decor) {
-        if ($decor === "basicheader") {
-            $this->basicheader = true;
+        if ($decor === "simple") {
+            $this->simple = true;
             return $this->__add_decoration($decor);
         } else if ($decor === "edit") {
             $this->mark_editable();
+            return $this->__add_decoration($decor);
+        } else if (str_starts_with($decor, "pin=")) {
+            $this->pin_no = $decor === "pin=all" || $decor === "pin=unconflicted";
+            $this->pin_yes = $decor === "pin=all" || $decor === "pin=conflicted";
             return $this->__add_decoration($decor);
         } else {
             return parent::add_decoration($decor);
@@ -45,6 +57,8 @@ class Conflict_PaperColumn extends PaperColumn {
     function prepare(PaperList $pl, $visible) {
         $this->contact = $this->contact ? : $pl->reviewer_user();
         $this->not_me = $this->contact->contactId !== $pl->user->contactId;
+        $this->usuffix = $this->simple ? "" : "u{$this->contact->contactId}";
+        $this->cset = $pl->conf->conflict_set();
         return true;
     }
     private function conflict_type(PaperList $pl, $row) {
@@ -71,7 +85,7 @@ class Conflict_PaperColumn extends PaperColumn {
     }
     function header(PaperList $pl, $is_text) {
         if ((!$this->show_user && !$this->not_me && !$this->editable)
-            || $this->basicheader) {
+            || $this->simple) {
             return "Conflict";
         } else if ($is_text) {
             return $pl->user->reviewer_text_for($this->contact) . " conflict";
@@ -96,7 +110,7 @@ class Conflict_PaperColumn extends PaperColumn {
         } else if (!$this->show_description) {
             return review_type_icon(-1);
         } else {
-            return $pl->conf->conflict_set()->unparse_html(min($ct, CONFLICT_AUTHOR));
+            return $this->cset->unparse_html(min($ct, CONFLICT_AUTHOR));
         }
     }
     function edit_content(PaperList $pl, PaperInfo $row) {
@@ -107,15 +121,20 @@ class Conflict_PaperColumn extends PaperColumn {
         if (Conflict::is_author($ct)) {
             return "Author";
         }
-        $t = "<input type=\"checkbox\" class=\"uic uikd uich js-assign-review js-range-click\" data-range-type=\"assrevu{$this->contact->contactId}\" name=\"assrev{$row->paperId}u{$this->contact->contactId}\" value=\"conflict\" autocomplete=\"off\"";
         if (Conflict::is_conflicted($ct)) {
-            $t .= " checked";
+            $suffix = " checked";
+            $value = $this->cset->unparse_assignment($ct);
+            $nonvalue = $this->pin_no ? "pinned unconflicted" : "unconflicted";
+        } else {
+            $suffix = "";
+            $value = $this->pin_yes ? "pinned conflicted" : "conflicted";
+            $nonvalue = $this->cset->unparse_assignment($ct);
         }
         if ($this->show_user) {
             $n = htmlspecialchars($pl->user->name_text_for($this->contact));
-            $t .= " title=\"{$n} conflict\"";
+            $suffix .= " title=\"{$n} conflict\"";
         }
-        return $t . '>';
+        return "<input type=\"checkbox\" class=\"uic uikd uich js-assign-review js-range-click\" data-range-type=\"assrev{$this->usuffix}\" name=\"assrev{$row->paperId}u{$this->contact->contactId}\" value=\"{$value}\" data-unconflicted-value=\"{$nonvalue}\" autocomplete=\"off\" tabindex=\"0\"{$suffix}>";
     }
     function text(PaperList $pl, PaperInfo $row) {
         $ct = $this->conflict_type($pl, $row);
@@ -124,7 +143,7 @@ class Conflict_PaperColumn extends PaperColumn {
         } else if (!$this->show_description) {
             return "Y";
         } else {
-            return $pl->conf->conflict_set()->unparse_csv(min($ct, CONFLICT_AUTHOR));
+            return $this->cset->unparse_csv(min($ct, CONFLICT_AUTHOR));
         }
     }
 

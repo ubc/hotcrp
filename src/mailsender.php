@@ -41,8 +41,8 @@ class MailSender {
     private $mcount = 0;
     /** @var int */
     private $skipcount = 0;
+    /** @var array<int,true> */
     private $mrecipients = [];
-    private $prep_recipients = [];
     /** @var int */
     private $cbcount = 0;
 
@@ -259,7 +259,7 @@ class MailSender {
                 '<div id="mailwarnings"></div>',
                 '<div class="fx">',
                   '<div class="msg msg-confirm">',
-                    '<p class="feedback is-confirm">',
+                    '<p class="feedback is-success">',
                       'Sent to:&nbsp;', $this->recip->unparse(),
                       '<span id="mailinfo"></span>',
                     '</p>',
@@ -358,7 +358,7 @@ class MailSender {
         // mails from different papers, unless those mails are to the same
         // person.
         $mail_differs = !$prep->can_merge($last_prep);
-        if (!$mail_differs && !$prep->contains_all_recipients($last_prep)) {
+        if (!$mail_differs && !$prep->has_all_recipients($last_prep)) {
             $this->groupable = true;
         }
 
@@ -375,7 +375,7 @@ class MailSender {
         if (!$prep->fake
             && ($must_include
                 || !$recipient
-                || !in_array($recipient->contactId, $last_prep->contactIds))) {
+                || !$last_prep->has_recipient($recipient))) {
             if ($last_prep !== $prep) {
                 $last_prep->merge($prep);
             }
@@ -388,7 +388,7 @@ class MailSender {
     /** @param HotCRPMailPreparation $prep
      * @return string */
     static private function prep_key($prep) {
-        return "c" . join("_", $prep->contactIds) . "p" . $prep->paperId;
+        return "c" . join("_", $prep->recipient_uids()) . "p" . $prep->paperId;
     }
 
     /** @param HotCRPMailPreparation $prep */
@@ -401,13 +401,12 @@ class MailSender {
         $show_prep = $prep;
         if ($prep->censored_preparation) {
             $show_prep = $prep->censored_preparation;
-            $show_prep->to = $prep->to;
             $show_prep->finalize();
         }
 
-        echo '<fieldset class="mail-preview-send main-width uimd ui js-click-child';
+        echo '<fieldset class="mail-preview-send main-width';
         if (!$this->sending) {
-            echo ' d-flex"><div class="pr-2">',
+            echo ' uimd ui js-click-child d-flex"><div class="pr-2">',
                 Ht::checkbox(self::prep_key($prep), 1, true, [
                     "class" => "uic js-range-click js-mail-preview-choose",
                     "data-range-type" => "mhcb", "id" => "psel{$this->cbcount}"
@@ -418,8 +417,13 @@ class MailSender {
         foreach (["To", "cc", "bcc", "reply-to", "Subject"] as $k) {
             if ($k == "To") {
                 $vh = [];
-                foreach ($show_prep->to as $to) {
-                    $vh[] = htmlspecialchars(MimeText::decode_header($to));
+                foreach ($prep->recipients() as $u) {
+                    $t = htmlspecialchars(MailPreparation::recipient_address($u));
+                    if ($u->can_receive_mail($prep->self_requested())) {
+                        $vh[] = $t;
+                    } else {
+                        $vh[] = "<del>{$t}</del>";
+                    }
                 }
                 $vh = '<span class="nw">' . join(',</span> <span class="nw">', $vh) . '</span>';
             } else if ($k == "Subject") {
@@ -457,7 +461,7 @@ class MailSender {
         }
 
         ++$this->mcount;
-        foreach ($prep->contactIds as $cid) {
+        foreach ($prep->recipient_uids() as $cid) {
             $this->mrecipients[$cid] = true;
             if ($this->sending) {
                 // Log format matters
@@ -531,7 +535,7 @@ class MailSender {
             $mailer->reset($contact, $rest);
             $prep = $mailer->prepare($template, $rest);
 
-            foreach ($prep->errors as $mi) {
+            foreach ($prep->message_list() as $mi) {
                 $this->recip->append_item($mi);
                 if (!$has_decoration) {
                     $this->recip->msg_at($mi->field, "<0>Put names in \"double quotes\" and email addresses in <angle brackets>, and separate destinations with commas.", MessageSet::INFORM);
@@ -539,7 +543,7 @@ class MailSender {
                 }
             }
 
-            if (!$prep->errors && $this->process_prep($prep, $last_prep, $contact)) {
+            if (!$prep->has_error() && $this->process_prep($prep, $last_prep, $contact)) {
                 if ((!$this->user->privChair || $this->conf->opt("chairHidePasswords"))
                     && !$last_prep->censored_preparation
                     && $rest["censor"] === Mailer::CENSOR_NONE) {

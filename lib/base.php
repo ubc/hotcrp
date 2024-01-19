@@ -52,6 +52,30 @@ function is_string_list($x) {
     }
 }
 
+/** @return list */
+function make_array(...$x) {
+    // This works around a syntax error in PHP 7
+    return $x;
+}
+
+/** @param list<mixed> &$a */
+function array_sort_unique(&$a) {
+    if (($n = count($a)) > 1) {
+        sort($a);
+        for ($i = 0, $j = 1; $j !== $n; ++$j) {
+            if ($a[$i] !== $a[$j]) {
+                ++$i;
+                if ($i !== $j) {
+                    $a[$i] = $a[$j];
+                }
+            }
+        }
+        if ($i !== $n - 1) {
+            array_splice($a, $i + 1);
+        }
+    }
+}
+
 
 // string helpers
 
@@ -475,9 +499,56 @@ if (defined("JSON_UNESCAPED_LINE_TERMINATORS")) {
         return json_encode($x, $flags);
     }
 }
+
 /** @return string */
 function json_encode_db($x, $flags = 0) {
     return json_encode($x, $flags | JSON_UNESCAPED_UNICODE);
+}
+
+/** @param ?string $x
+ * @return ?object */
+function json_decode_object($x) {
+    if ($x === null || $x === "" || !is_object(($j = json_decode($x)))) {
+        return null;
+    }
+    return $j;
+}
+
+/** @param ?string &$s
+ * @param ?object &$x
+ * @param mixed $k
+ * @param mixed $v
+ * @param 1|2 $n
+ * @return bool */
+function json_encode_object_change(&$s, &$x, $k, $v, $n) {
+    if ($n === 1) {
+        if ($k === null || is_string($k)) {
+            $news = $k;
+        } else {
+            $news = json_encode_db($k);
+        }
+        if ($s === $news) {
+            return false;
+        }
+        $s = $news;
+        $x = null;
+        return true;
+    }
+    assert(is_string($k));
+    if ($x === null) {
+        $x = json_decode_object($s);
+    }
+    if (($x->$k ?? null) === $v) {
+        return false;
+    }
+    if ($v !== null) {
+        $x = $x ?? (object) [];
+        $x->$k = $v;
+    } else {
+        unset($x->$k);
+    }
+    $s = json_encode_db($x);
+    return true;
 }
 
 
@@ -537,14 +608,13 @@ function object_replace_recursive($a, $b) {
             unset($a->$ak);
         }
     }
-    unset($ba[OBJECT_REPLACE_NO_RECURSE]);
     foreach ($ba as $k => $v) {
         if (is_object($v) || is_associative_array($v)) {
             if (!is_object($a->$k ?? null)) {
                 $a->$k = (object) [];
             }
             object_replace_recursive($a->$k, $v);
-        } else if ($v !== null) {
+        } else if ($v !== null && $k !== OBJECT_REPLACE_NO_RECURSE) {
             $a->$k = $v;
         } else {
             unset($a->$k);
@@ -627,7 +697,8 @@ function debug_string_backtrace($ex = null, $limit = 32) {
 // zlib helper
 
 if (!function_exists("zlib_get_coding_type")) {
-    /** @phan-suppress-next-line PhanRedefineFunctionInternal */
+    /** @return bool
+     * @phan-suppress-next-line PhanRedefineFunctionInternal */
     function zlib_get_coding_type() {
         return false;
     }
@@ -707,4 +778,15 @@ if (PHP_VERSION_ID >= 70300) {
                          $options["path"] ?? "", $options["domain"] ?? "",
                          $options["secure"] ?? false, $options["httponly"] ?? false);
     }
+}
+
+
+/** @return string */
+function uuid_v4() {
+    $b = random_bytes(16);
+    $b[6] = chr((ord($b[6]) & 0x0F) | 0x40);
+    $b[8] = chr((ord($b[8]) & 0x3F) | 0x80);
+    $h = bin2hex($b);
+    return substr($h, 0, 8) . "-" . substr($h, 8, 4) . "-" . substr($h, 12, 4)
+        . "-" . substr($h, 16, 4) . "-" . substr($h, 20);
 }

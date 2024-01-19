@@ -9,6 +9,8 @@ class Getopt {
     private $subcommand;
     /** @var ?string */
     private $helpopt;
+    /** @var ?callable(?array<string,mixed>,Getopt):(?string) */
+    private $helpcallback;
     /** @var ?string */
     private $description;
     /** @var bool */
@@ -69,7 +71,7 @@ class Getopt {
                 continue;
             }
             // Format of a `long` string:
-            // "option[,option,option] ['{'ARGTYPE'}'] ['='ARGNAME] HELPSTRING"
+            // "option[,option,option] ['{'ARGTYPE'}'] ['='ARGNAME] [!SUBCOMMAND] HELPSTRING"
             // Each `option` can be followed by:
             // * `:` - single mandatory argument
             // * `::` - single optional argument
@@ -84,9 +86,17 @@ class Getopt {
             if (($sp = strpos($s, " ")) !== false) {
                 $help = substr($s, $sp + 1);
                 $s = substr($s, 0, $sp);
-                if ($help !== "" && $help[0] === "{" && ($rbr = strpos($help, "}")) !== false) {
-                    $type = substr($help, 1, $rbr - 1);
-                    $help = $rbr === strlen($help) - 1 ? "" : ltrim(substr($help, $rbr + 1));
+                $p = 0;
+                while ($p < strlen($help)
+                       && ($help[$p] === "=" || $help[$p] === "!")
+                       && ($sp = strpos($help, " ", $p + 1)) !== false) {
+                    $p = $sp + 1;
+                }
+                if ($p < strlen($help)
+                    && $help[$p] === "{"
+                    && ($rbr = strpos($help, "}", $p + 1)) !== false) {
+                    $type = substr($help, $p + 1, $rbr - $p - 1);
+                    $help = substr($help, 0, $p) . ltrim(substr($help, $rbr + 1));
                 }
             }
             $po = null;
@@ -125,6 +135,13 @@ class Getopt {
      * @return $this */
     function helpopt($helpopt) {
         $this->helpopt = $helpopt;
+        return $this;
+    }
+
+    /** @param ?callable(?array<string,mixed>,Getopt):(?string) $helpcallback
+     * @return $this */
+    function helpcallback($helpcallback) {
+        $this->helpcallback = $helpcallback;
         return $this;
     }
 
@@ -187,7 +204,7 @@ class Getopt {
     /** @param string $opt
      * @param string $help
      * @return string */
-    static private function format_help_line($opt, $help) {
+    static function format_help_line($opt, $help) {
         if ($help === "") {
             $sep = "";
         } else if (strlen($opt) <= 24) {
@@ -198,9 +215,44 @@ class Getopt {
         return "{$opt}{$sep}{$help}\n";
     }
 
-    /** @param null|false|string $subtype
+    /** @param string $matcher
+     * @param string $subtype
+     * @return bool */
+    static function subtype_matches($matcher, $subtype) {
+        $p = 0;
+        $len = strlen($matcher);
+        while ($p < $len) {
+            if (($comma = strpos($matcher, ",", $p)) === false) {
+                $comma = $len;
+            }
+            if (($negated = $p < $comma && $matcher[$p] === "!")) {
+                ++$p;
+            }
+            $word = substr($matcher, $p, $comma - $p);
+            if (fnmatch($word, $subtype) === !$negated) {
+                return true;
+            }
+            $p = $comma + 1;
+        }
+        return false;
+    }
+
+    /** @param null|string|array<string,mixed> $arg
      * @return string */
-    function help($subtype = null) {
+    function help($arg = null) {
+        if (is_string($arg)) {
+            $subtype = $arg;
+            $arg = null;
+        } else if (is_array($arg)) {
+            $subtype = $arg[$this->helpopt] ?? false;
+        } else {
+            $subtype = false;
+        }
+        if (($subtype === false || $subtype === "")
+            && !empty($this->subcommand)
+            && isset($arg["_subcommand"])) {
+            $subtype = $arg["_subcommand"];
+        }
         $s = [];
         if ($this->description) {
             $s[] = $this->description;
@@ -210,7 +262,8 @@ class Getopt {
                 $s[] = "\n";
             }
         }
-        if (!empty($this->subcommand)) {
+        if (!empty($this->subcommand)
+            && !isset($arg["_subcommand"])) {
             $s[] = "Subcommands:\n";
             foreach ($this->subcommand as $sc) {
                 if (($space = strpos($sc, " ")) !== false) {
@@ -223,7 +276,10 @@ class Getopt {
                     $comma = $space;
                 }
                 $on = substr($sc, 0, $comma);
-                $s[] = self::format_help_line("  {$on}", ltrim(substr($sc, $space)));
+                $desc = ltrim(substr($sc, $space));
+                if ($desc !== "!") {
+                    $s[] = self::format_help_line("  {$on}", $desc);
+                }
             }
             $s[] = "\n";
         }
@@ -237,27 +293,28 @@ class Getopt {
             } else {
                 $help = $po->help ?? "";
             }
-            if (!isset($od[$maint])) {
-                if ($help !== ""
-                    && $help[0] === "="
-                    && preg_match('/\A=([A-Z]\S*)\s*/', $help, $m)) {
-                    $argname = $m[1];
-                    $help = substr($help, strlen($m[0]));
-                } else {
-                    $argname = "ARG";
-                }
-                if ($help === "!"
-                    || ($subtype && !str_starts_with($help, "!{$subtype}"))
-                    || (!$subtype && str_starts_with($help, "!"))) {
+            if ($help !== ""
+                && $help[0] === "="
+                && preg_match('/\A=([A-Z]\S*)\s*/', $help, $m)) {
+                $argname = $m[1];
+                $help = substr($help, strlen($m[0]));
+            } else {
+                $argname = "ARG";
+            }
+            if ($help === "!") {
+                continue;
+            } else if (str_starts_with($help, "!")) {
+                if (!$subtype
+                    || ($space = strpos($help, " ")) === false
+                    || !self::subtype_matches(substr($help, 1, $space - 1), $subtype)) {
                     continue;
                 }
-                if ($subtype) {
-                    $help = substr($help, strlen($subtype) + 1);
-                    if ($help !== "" && !str_starts_with($help, " ")) {
-                        continue;
-                    }
-                    $help = ltrim($help);
-                }
+                $help = ltrim(substr($help, $space + 1));
+                $prio = 0;
+            } else {
+                $prio = 1;
+            }
+            if (!isset($od[$maint])) {
                 if ($po->arg === self::ARG || $po->arg === self::MARG) {
                     $arg = " {$argname}";
                 } else if ($po->arg === self::MARG2) {
@@ -267,7 +324,7 @@ class Getopt {
                 } else {
                     $arg = "";
                 }
-                $od[$maint] = [null, null, $arg, $help];
+                $od[$maint] = [null, null, $arg, $help, $prio];
             }
             if ($help !== "" && $od[$maint][3] === "") {
                 $od[$maint][3] = $help;
@@ -278,21 +335,28 @@ class Getopt {
                 $od[$maint][1] = "--{$t}";
             }
         }
-        if (!empty($od)) {
-            $s[] = $subtype ? "{$subtype} options:\n" : "Options:\n";
-            foreach ($od as $tx) {
-                '@phan-var array{?string,?string,string,string} $tx';
-                if ($tx[0] !== null && $tx[1] !== null) {
-                    $oax = "  {$tx[0]}, {$tx[1]}{$tx[2]}";
-                } else {
-                    $oa = $tx[0] ?? $tx[1];
-                    $oax = "  {$oa}{$tx[2]}";
-                }
-                $s[] = self::format_help_line($oax, $tx[3]);
+        $sbp = [[], []];
+        foreach ($od as $tx) {
+            '@phan-var array{?string,?string,string,string,0|1} $tx';
+            if ($tx[0] !== null && $tx[1] !== null) {
+                $oax = "  {$tx[0]}, {$tx[1]}{$tx[2]}";
+            } else {
+                $oa = $tx[0] ?? $tx[1];
+                $oax = "  {$oa}{$tx[2]}";
             }
+            $sbp[$tx[4]][] = self::format_help_line($oax, $tx[3]);
+        }
+        foreach ($sbp as $prio => $sl) {
+            if (empty($sl)) {
+                continue;
+            }
+            $s[] = $prio ? ($subtype ? "Global options:\n" : "Options:\n") : "{$subtype} options:\n";
+            array_push($s, ...$sl);
             $s[] = "\n";
-        } else {
-            $s[] = "There are no {$subtype} options.\n\n";
+        }
+        if ($this->helpcallback
+            && ($t = call_user_func($this->helpcallback, $arg, $this) ?? "") !== "") {
+            $s[] = rtrim($t) . "\n\n";
         }
         return join("", $s);
     }
@@ -472,12 +536,12 @@ class Getopt {
 
             $active_po = $pot === self::MARG2 ? $po : null;
         }
+        $res["_"] = $rest;
         if ($this->helpopt !== null
             && (isset($res[$this->helpopt]) || ($res["_subcommand"] ?? null) === "{help}")) {
-            fwrite(STDOUT, $this->help($res[$this->helpopt] ?? false));
+            fwrite(STDOUT, $this->help($res));
             exit(0);
         }
-        $res["_"] = $rest;
         if ($this->maxarg !== null && count($rest) > $this->maxarg) {
             throw new CommandLineException("Too many arguments", $this);
         } else if ($this->minarg !== null && count($rest) < $this->minarg) {
@@ -536,14 +600,35 @@ class CommandLineException extends Exception {
     public $getopt;
     /** @var int */
     public $exitStatus;
+    /** @var ?list<string> */
+    public $context;
     /** @var int */
     static public $default_exit_status = 1;
     /** @param string $message
      * @param ?Getopt $getopt
      * @param ?int $exit_status */
-    function __construct($message, $getopt = null, $exit_status = null) {
+    function __construct($message = "", $getopt = null, $exit_status = null) {
         parent::__construct($message);
         $this->getopt = $getopt;
         $this->exitStatus = $exit_status ?? self::$default_exit_status;
+    }
+    /** @param int $exit_status
+     * @return $this
+     * @deprecated */
+    function exit_status($exit_status) {
+        $this->exitStatus = $exit_status;
+        return $this;
+    }
+    /** @param int $exit_status
+     * @return $this */
+    function set_exit_status($exit_status) {
+        $this->exitStatus = $exit_status;
+        return $this;
+    }
+    /** @param string ...$context
+     * @return $this */
+    function add_context(...$context) {
+        $this->context = array_merge($this->context ?? [], $context);
+        return $this;
     }
 }

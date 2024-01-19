@@ -3,6 +3,7 @@
 // Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
 
 class Sf_Setting {
+    /** @var int|string */
     public $id;
     public $name;
     public $order;
@@ -11,18 +12,29 @@ class Sf_Setting {
     public $display;
     public $visibility;
     public $required;
-    public $presence;
     public $exists_if;
+    public $exists_disabled;
+    public $editable_if;
     public $values;
     public $ids;
     public $min;
     public $max;
 
-    public $final;
-    /** @var list<SfValue_Setting> */
-    public $xvalues;
+    /** @var ?int */
+    public $option_id;
+    /** @var ?string */
+    public $json_key;
+    /** @var ?string */
+    public $function;
+    /** @var PaperOption */
+    public $source_option;
+    /** @var bool */
+    public $existed = true;
     /** @var bool */
     public $deleted = false;
+
+    /** @var list<SfValue_Setting> */
+    public $xvalues;
 }
 
 class SfValue_Setting {

@@ -32,7 +32,7 @@ class S3Transfer_Batch {
         $result = $this->conf->qe_raw("select paperStorageId, sha1 from PaperStorage where paperStorageId>1");
         $dids = [];
         while (($row = $result->fetch_row())) {
-            if (!$matcher || $matcher->test_hash(Filer::hash_as_text($row[1])))
+            if (!$matcher || $matcher->test_hash(HashAnalysis::hash_as_text($row[1])))
                 $dids[] = (int) $row[0];
         }
         Dbl::free($result);
@@ -59,8 +59,8 @@ class S3Transfer_Batch {
             $chash = $doc->content_binary_hash($doc->binary_hash());
             if ($chash !== $doc->binary_hash()) {
                 $saved = $checked = false;
-                error_log("$front: S3 upload cancelled: data claims checksum " . $doc->text_hash()
-                          . ", has checksum " . Filer::hash_as_text($chash));
+                error_log("{$front}: S3 upload cancelled: data claims checksum {$doc->text_hash()}"
+                          . ", has checksum " . HashAnalysis::hash_as_text($chash));
             } else {
                 $saved = $checked = $doc->check_s3();
                 if (!$saved) {
@@ -73,11 +73,11 @@ class S3Transfer_Batch {
             }
 
             if ($checked) {
-                fwrite(STDOUT, "$front: " . $doc->s3_key() . " exists\n");
+                fwrite(STDOUT, "{$front}: {$doc->s3_key()} exists\n");
             } else if ($saved) {
-                fwrite(STDOUT, "$front: " . $doc->s3_key() . " saved\n");
+                fwrite(STDOUT, "{$front}: {$doc->s3_key()} saved\n");
             } else {
-                fwrite(STDOUT, "$front: SAVE FAILED\n");
+                fwrite(STDOUT, "{$front}: SAVE FAILED\n");
                 ++$failures;
             }
             if ($saved && $this->kill) {
@@ -109,7 +109,7 @@ Usage: php batch/s3transfer.php [--active] [--kill] [-m MATCH]")
          ->parse($argv);
 
         $conf = initialize_conf($arg["config"] ?? null, $arg["name"] ?? null);
-        if (!$conf->setting_data("s3_bucket")) {
+        if (!$conf->s3_client()) {
             throw new ErrorException("S3 is not configured for this conference");
         }
         return new S3Transfer_Batch($conf, $arg);

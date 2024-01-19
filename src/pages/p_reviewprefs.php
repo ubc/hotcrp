@@ -16,7 +16,7 @@ class ReviewPrefs_Page {
                 if (str_ends_with($k, $suffix)) {
                     $k = substr($k, 0, -strlen($suffix));
                 }
-                if (($p = cvtint(substr($k, 7))) > 0) {
+                if (($p = stoi(substr($k, 7)) ?? -1) > 0) {
                     $csvg->add_row([$p, $reviewer->email, $v]);
                 }
             }
@@ -26,7 +26,7 @@ class ReviewPrefs_Page {
             return;
         }
 
-        $aset = (new AssignmentSet($user))->override_conflicts();
+        $aset = (new AssignmentSet($user))->set_override_conflicts(true);
         $aset->parse($csvg->unparse());
         $ok = $aset->execute();
         $ok && $aset->prepend_msg("<0>Preferences saved", MessageSet::SUCCESS);
@@ -53,9 +53,10 @@ class ReviewPrefs_Page {
 
         $qreq->print_header("Review preferences", "reviewprefs");
 
-        if (($prefdesc = $conf->_i("revprefdescription", $conf->has_topics()))) {
+        $targ = new FmtArg("topics", $conf->has_topics());
+        if (($prefdesc = $conf->_i("revprefdescription", $targ))) {
             echo '<div class="msg demargin remargin-left remargin-right">',
-                $prefdesc, '</div>';
+                Ftext::as(5, $prefdesc), '</div>';
         }
 
         $search = (new PaperSearch($user, [
@@ -65,7 +66,7 @@ class ReviewPrefs_Page {
         $pl->apply_view_report_default();
         $pl->apply_view_session($qreq);
         $pl->apply_view_qreq($qreq);
-        $pl->set_table_id_class("foldpl", null, "p#");
+        $pl->set_table_id_class("pl", null, "p#");
         $pl->set_table_decor(PaperList::DECOR_HEADER | PaperList::DECOR_FOOTER | PaperList::DECOR_LIST | PaperList::DECOR_FULLWIDTH);
         $pl->set_table_fold_session("pfdisplay.");
 

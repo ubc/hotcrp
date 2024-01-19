@@ -118,13 +118,14 @@ etc/optiontypes.json
 etc/pages.json
 etc/papercolumns.json
 etc/profilegroups.json
+etc/reviewfieldlibrary.json
 etc/reviewfieldtypes.json
-etc/reviewformlibrary.json
 etc/sample.pdf
 etc/searchkeywords.json
 etc/settingdescriptions.md
 etc/settinginfo.json
 etc/settinggroups.json
+etc/submissionfieldlibrary.json
 
 lib/.htaccess
 lib/abbreviationmatcher.php
@@ -143,11 +144,13 @@ lib/dbhelper.sh
 lib/dbl.php
 lib/diff_match_patch.php
 lib/dkimsigner.php
+lib/downloader.php
 lib/filer.php
 lib/fmt.php
 lib/ftext.php
 lib/getopt.php
 lib/gmpshim.php
+lib/hashanalysis.php
 lib/hclcolor.php
 lib/ht.php
 lib/icons.php
@@ -207,6 +210,7 @@ src/api/api_session.php
 src/api/api_settings.php
 src/api/api_taganno.php
 src/api/api_tags.php
+src/api/api_upload.php
 src/api/api_user.php
 src/apihelpers.php
 src/assigners/a_conflict.php
@@ -219,13 +223,13 @@ src/assigners/a_preference.php
 src/assigners/a_review.php
 src/assigners/a_status.php
 src/assigners/a_tag.php
+src/assigners/a_taganno.php
 src/assigners/a_unsubmitreview.php
 src/assignmentcountset.php
 src/assignmentset.php
 src/author.php
 src/authormatcher.php
 src/autoassigner.php
-src/autoassignerinterface.php
 src/autoassigners/aa_clear.php
 src/autoassigners/aa_discussionorder.php
 src/autoassigners/aa_paperpc.php
@@ -255,6 +259,7 @@ src/documentinfo.php
 src/documentinfoset.php
 src/documenthashmatcher.php
 src/documentrequest.php
+src/fieldchangeset.php
 src/fieldrender.php
 src/filefilter.php
 src/formatspec.php
@@ -325,6 +330,7 @@ src/meetingtracker.php
 src/mentionparser.php
 src/mergecontacts.php
 src/multiconference.php
+src/notificationinfo.php
 src/options/o_abstract.php
 src/options/o_attachments.php
 src/options/o_authors.php
@@ -336,7 +342,6 @@ src/options/o_nonblind.php
 src/options/o_numeric.php
 src/options/o_pcconflicts.php
 src/options/o_realnumber.php
-src/options/o_submissionversion.php
 src/options/o_title.php
 src/options/o_topics.php
 src/pages/p_adminhome.php
@@ -402,6 +407,7 @@ src/paperexport.php
 src/paperinfo.php
 src/paperlist.php
 src/paperoption.php
+src/paperoptionlist.php
 src/paperrequest.php
 src/papersearch.php
 src/paperstatus.php
@@ -449,6 +455,7 @@ src/search/st_paperstatus.php
 src/search/st_proposal.php
 src/search/st_perm.php
 src/search/st_pdf.php
+src/search/st_phase.php
 src/search/st_realnumberoption.php
 src/search/st_reconflict.php
 src/search/st_review.php
@@ -457,7 +464,9 @@ src/search/st_revpref.php
 src/search/st_sclass.php
 src/search/st_tag.php
 src/search/st_topic.php
+src/searchatom.php
 src/searchexample.php
+src/searchoperator.php
 src/searchselection.php
 src/searchsplitter.php
 src/searchterm.php
@@ -473,6 +482,7 @@ src/settings/s_decisionvisibility.php
 src/settings/s_finalversions.php
 src/settings/s_json.php
 src/settings/s_messages.php
+src/settings/s_namedsearch.php
 src/settings/s_options.php
 src/settings/s_response.php
 src/settings/s_review.php

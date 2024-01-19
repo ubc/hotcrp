@@ -1,5 +1,8 @@
 # HotCRP CSS
 
+This page documents aspects of HotCRP styles not obvious from the style file
+itself.
+
 ## `z-index`
 
 Page-level stacking contexts
@@ -18,12 +21,12 @@ Generic values
 * `.modal-dialog`: 16 (must be > `.modal`)
 * `.bubble`: 20
 
-* `#header-page.header-page-submission`: 1
+* `body.page #p-header`: 3 (to occlude `.pslcard-nav`)
+* `.pspcard`: 3 (to occlude `.pslcard-nav`)
+* `.pslcard-nav`: (0)
+* `.pslcard-home`: -1
 * `.home-sidebar`: 1
 * `button:hover`, `button:focus`, etc.: 1
-* `.pspcard`: 2
-* `.pslcard-nav`: 1
-* `.pslcard-home`: -1
 * `.longtext-fader`: 1
 * `.longtext-expander`: 2
 * `.overlong-content`: 1
@@ -45,7 +48,7 @@ Generic values
         * `#p-body`
     * `#p-footer`
 * `id^=i-` is for icons
-* `id^=f-` is for forms (this should be phased out)
+* `id^=f-` is for forms
 * `id^=h-` is for header elements
     * `#h-site`
     * `#h-page`
@@ -57,5 +60,5 @@ Generic values
     * `#n-prev`
     * `#n-search`
     * `#n-list`
-* `id^=k-` is for programmatically assigned IDs, generally of inputs, e.g.,
-  elements that need IDs for reference by `label`
+* `id^=k-` is for inputs and for programmatically assigned IDs, e.g., elements
+  that need IDs for reference by `label`

@@ -9,24 +9,23 @@ class SiteLoader {
         "AssignmentParser" => "src/assignmentset.php",
         "AutoassignerCosts" => "src/autoassigner.php",
         "Collator" => "lib/collatorshim.php",
+        "CommandLineException" => "lib/getopt.php",
         "CsvGenerator" => "lib/csv.php",
         "CsvParser" => "lib/csv.php",
         "Discrete_ReviewField" => "src/reviewfield.php",
         "DiscreteValues_ReviewField" => "src/reviewfield.php",
+        "Document_PaperOption" => "src/paperoption.php",
         "False_SearchTerm" => "src/searchterm.php",
         "Fexpr" => "src/formula.php",
         "FmtArg" => "lib/fmt.php",
         "FormulaCall" => "src/formula.php",
         "FormatChecker" => "src/formatspec.php",
-        "HashAnalysis" => "lib/filer.php",
-        "IntlMsgSet" => "lib/fmt.php",
         "JsonSerializable" => "lib/json.php",
         "Limit_SearchTerm" => "src/searchterm.php",
         "LogEntryGenerator" => "src/logentry.php",
         "LoginHelper" => "lib/login.php",
         "MessageItem" => "lib/messageset.php",
         "PaperInfoSet" => "src/paperinfo.php",
-        "PaperOptionList" => "src/paperoption.php",
         "QrequestFile" => "lib/qrequest.php",
         "ReviewFieldInfo" => "src/reviewfield.php",
         "ReviewValues" => "src/reviewform.php",
@@ -205,7 +204,7 @@ class SiteLoader {
             }
             if (empty($matches) && $includepath === null) {
                 global $Opt;
-                $includepath = $Opt["includePath"] ?? $Opt["includepath"] ?? [];
+                $includepath = $Opt["includePath"] ?? $Opt["includepath"] /* XXX */ ?? [];
             }
             if (empty($matches) && !empty($includepath)) {
                 if ($f2 !== null) {
@@ -233,13 +232,28 @@ class SiteLoader {
         }
     }
 
-    /** @param ?string $file */
-    static function read_main_options($file = null) {
+    /** @param ?string $file
+     * @param ?string $confid */
+    static function read_main_options($file, $confid) {
+        global $Opt;
+        $Opt = $Opt ?? [];
         $file = $file ?? (defined("HOTCRP_OPTIONS") ? HOTCRP_OPTIONS : "conf/options.php");
         if (!str_starts_with($file, "/")) {
             $file = self::$root . "/{$file}";
         }
         self::read_options_file($file);
+        if ($Opt["multiconference"] ?? null) {
+            Multiconference::init($confid);
+        } else if ($confid !== null) {
+            if (!isset($Opt["confid"])) {
+                $Opt["confid"] = $confid;
+            } else if ($Opt["confid"] !== $confid) {
+                $Opt["missing"][] = "__invalid__";
+            }
+        }
+        if (empty($Opt["missing"]) && !empty($Opt["include"])) {
+            self::read_included_options();
+        }
     }
 
     /** @param ?string $root */

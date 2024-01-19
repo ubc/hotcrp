@@ -65,7 +65,7 @@ class Sround_SettingParser extends SettingParser {
         if ($si->name0 === "submission/" && $si->name2 === "") {
             $sv->set_oldv($si, new Sround_Setting);
         } else if ($si->name0 === "submission/" && $si->name2 === "/title") {
-            $n = $sv->oldv("submission/{$si->name1}/tag");
+            $n = $sv->vstr("submission/{$si->name1}/tag");
             $sv->set_oldv($si, ($n === "" ? "Default" : "‘{$n}’") . " submission class");
         }
     }
@@ -100,7 +100,7 @@ class Sround_SettingParser extends SettingParser {
         $namesi = $sv->si("submission/{$ctr}/tag");
         echo '<legend>', $sv->label($namesi->name, "Submission class"), ' &nbsp;',
             $sv->entry($namesi->name, ["class" => "uii uich js-settings-submission-round-name want-focus want-delete-marker"]),
-            Ht::button(Icons::ui_use("trash"), ["id" => "submission/{$ctr}/deleter", "class" => "ui js-settings-submission-round-delete ml-2 need-tooltip", "aria-label" => "Delete review round", "tabindex" => -1]);
+            Ht::button(Icons::ui_use("trash"), ["name" => "submission/{$ctr}/deleter", "class" => "ui js-settings-submission-round-delete ml-2 need-tooltip", "aria-label" => "Delete review round", "tabindex" => -1]);
         /*if ($id > 0 && ($round_map[$id - 1] ?? 0) > 0) {
             echo '<span class="ml-3 d-inline-block">',
                 '<a href="', $sv->conf->hoturl("search", ["q" => "re:" . ($id > 1 ? $sv->conf->round_name($id - 1) : "unnamed")]), '" target="_blank" rel="noopener">',
@@ -181,7 +181,7 @@ class Sround_SettingParser extends SettingParser {
         if ($sv->has_interest("submission") || $sv->has_interest("tag_readonly")) {
             foreach ($sv->conf->submission_round_list() as $i => $sr) {
                 if (!$sr->unnamed
-                    && !$sv->conf->tags()->is_chair($sr->tag)) {
+                    && !$sv->conf->tags()->is_readonly($sr->tag)) {
                     $ctr = $i + 1;
                     $sv->warning_at("submission/{$ctr}/tag", "<5>PC members can change the tag ‘" . htmlspecialchars($sr->tag) . "’. Tags used for submission classes should usually be " . $sv->setting_link("read-only", "tag_readonly") . ".");
                     $sv->warning_at("tag_readonly");

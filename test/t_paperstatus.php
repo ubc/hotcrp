@@ -1,6 +1,6 @@
 <?php
 // t_paperstatus.php -- HotCRP tests
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class PaperStatus_Tester {
     /** @var Conf
@@ -46,7 +46,7 @@ class PaperStatus_Tester {
         $conf->save_setting("sub_sub", Conf::$now + 100);
         $conf->save_setting("opt.contentHashMethod", 1, "sha1");
         $conf->save_setting("rev_open", 1);
-        $conf->save_setting("pc_seeallrev", null);
+        $conf->save_setting("viewrev", null);
         $conf->refresh_settings();
         $this->u_chair = $conf->checked_user_by_email("chair@_.com");
         $this->u_estrin = $conf->checked_user_by_email("estrin@usc.edu"); // pc
@@ -69,6 +69,31 @@ class PaperStatus_Tester {
         $ps->save_paper_json((object) ["id" => 1, "title" => "Scalable Timers? for Soft State Protocols"]);
         xassert_paper_status($ps);
         $paper1->invalidate_conflicts();
+        xassert_eqq($paper1->conflict_type($this->u_estrin), CONFLICT_AUTHOR);
+
+        $ps->save_paper_json(json_decode('{
+            "id": 1, "title": "Scalable Timers? for Soft State Protocols",
+            "authors": [
+                {"name": "Puneet Sharma", "email": "puneet@catarina.usc.edu", "affiliation": "Information Sciences Institute, University of Southern California"},
+                {"name": "Sally Floyd", "email": "floyd@ee.lbl.gov", "affiliation": "Lawrence Berkeley National Laboratory"},
+                {"name": "Van Jacobson", "email": "van@ee.lbl.gov", "affiliation": "Lawrence Berkeley National Laboratory"}
+            ]
+        }'));
+        xassert_paper_status($ps);
+        $paper1->invalidate_conflicts();
+        xassert_eqq($paper1->conflict_type($this->u_estrin), CONFLICT_CONTACTAUTHOR);
+
+        $ps->save_paper_json(json_decode('{
+            "id": 1, "title": "Scalable Timers? for Soft State Protocols",
+            "authors": [
+                {"name": "Puneet Sharma", "email": "puneet@catarina.usc.edu", "affiliation": "Information Sciences Institute, University of Southern California"},
+                {"name": "Deborah Estrin", "email": "estrin@USC.edu", "affiliation": "Information Sciences Institute, University of Southern California"},
+                {"name": "Sally Floyd", "email": "floyd@ee.lbl.gov", "affiliation": "Lawrence Berkeley National Laboratory"},
+                {"name": "Van Jacobson", "email": "van@ee.lbl.gov", "affiliation": "Lawrence Berkeley National Laboratory"}
+            ]
+        }'));
+        xassert_paper_status($ps);
+        $paper1->invalidate_conflicts();
         xassert_eqq($paper1->conflict_type($this->u_estrin), CONFLICT_AUTHOR | CONFLICT_CONTACTAUTHOR);
     }
 
@@ -85,7 +110,7 @@ class PaperStatus_Tester {
                 $s1 = substr($s1, 10);
                 $s2 = substr($s2, 10);
             }
-            error_log("   > $s1\n   > $s2");
+            error_log("   > {$s1}\n   > {$s2}");
         }
     }
 
@@ -114,6 +139,15 @@ class PaperStatus_Tester {
         $paper2b = $pex->paper_json(2);
         xassert_eqq($paper2b->submission->hash, "24aaabecc9fac961d52ae62f620a47f04facc2ce");
 
+        // final versions can’t be saved unless final versions are open
+        $this->conf->qe("update Paper set outcome=1 where paperId=2");
+        $this->conf->qe("insert into Settings (name,value) values ('final_open',1), ('au_seedec',1)");
+        $this->conf->load_settings();
+
+        $p2 = $this->conf->checked_paper_by_id(2);
+        xassert_gt($p2->outcome_sign, 0);
+        xassert_eqq($p2->phase(), PaperInfo::PHASE_FINAL);
+
         $ps->save_paper_json(json_decode("{\"id\":2,\"final\":{\"content\":\"%PDF-goodbye\\n\",\"type\":\"application/pdf\"}}"));
         xassert_paper_status($ps);
         xassert(ConfInvariants::test_document_inactive($this->conf));
@@ -131,6 +165,9 @@ class PaperStatus_Tester {
         xassert_eqq($paper2->final->hash, "e04c778a0af702582bb0e9345fab6540acb28e45");
         $paper2 = $this->u_estrin->checked_paper_by_id(2);
         xassert_eqq(bin2hex($paper2->sha1), "e04c778a0af702582bb0e9345fab6540acb28e45");
+
+        $this->conf->qe("delete from Settings where name='final_open' or name='au_seedec'");
+        $this->conf->qe("update Paper set outcome=0 where paperId=2");
     }
 
     function test_document_options_storage() {
@@ -231,8 +268,8 @@ class PaperStatus_Tester {
         $doc = $paper3->document($opt->id);
         xassert(!!$doc);
         xassert_eqq($doc->mimetype, "image/gif");
-        xassert_eqq($doc->metadata()->width ?? 0, 32);
-        xassert_eqq($doc->metadata()->height ?? 0, 30);
+        xassert_eqq($doc->width(), 32);
+        xassert_eqq($doc->height(), 30);
 
         $this->conf->qe("delete from PaperOption where optionId=?", $opt->id);
         $sv = SettingValues::make_request($this->u_chair, [
@@ -254,7 +291,7 @@ class PaperStatus_Tester {
         ConfInvariants::test_all($this->conf);
 
         $ps = new PaperStatus($this->u_estrin);
-        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:1:name" => "Bobby Flay", "authors:1:email" => "flay@_.com"]), null, "update"));
+        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:1:name" => "Bobby Flay", "authors:1:email" => "flay@_.com"]), null));
         xassert_paper_status($ps);
         xassert($ps->has_change_at("title"));
         xassert($ps->has_change_at("abstract"));
@@ -279,7 +316,7 @@ class PaperStatus_Tester {
         xassert_eqq($newpaper->conflict_type($this->u_estrin), CONFLICT_CONTACTAUTHOR);
 
         $ps = new PaperStatus($this->u_estrin);
-        xassert($ps->prepare_save_paper_web(new Qrequest("POST", []), $newpaper, "submit"));
+        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["status:submit" => 1]), $newpaper));
         xassert_array_eqq($ps->changed_keys(), [], true);
         xassert($ps->execute_save());
         xassert_paper_status_saved_nonrequired($ps, MessageSet::WARNING);
@@ -301,7 +338,7 @@ class PaperStatus_Tester {
 
     function test_save_submit_new_paper() {
         $ps = new PaperStatus($this->u_estrin);
-        xassert($ps->prepare_save_paper_web((new Qrequest("POST", ["status:submit" => 1, "title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:1:name" => "Bobby Flay", "authors:1:email" => "flay@_.com", "has_submission" => 1]))->set_file_content("submission", "%PDF-2", null, "application/pdf"), null, "update"));
+        xassert($ps->prepare_save_paper_web((new Qrequest("POST", ["status:submit" => 1, "title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:1:name" => "Bobby Flay", "authors:1:email" => "flay@_.com", "has_submission" => 1]))->set_file_content("submission", "%PDF-2", null, "application/pdf"), null));
         xassert_paper_status($ps);
         xassert($ps->has_change_at("title"));
         xassert($ps->has_change_at("abstract"));
@@ -328,7 +365,7 @@ class PaperStatus_Tester {
 
     function test_save_submit_new_paper_empty_contacts() {
         $ps = new PaperStatus($this->u_estrin);
-        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:1:name" => "Bobby Flay", "authors:1:email" => "flay@_.com", "has_contacts" => 1]), null, "update"));
+        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:1:name" => "Bobby Flay", "authors:1:email" => "flay@_.com", "has_contacts" => 1]), null));
         xassert($ps->has_change_at("title"));
         xassert($ps->has_change_at("abstract"));
         xassert($ps->has_change_at("authors"));
@@ -354,7 +391,7 @@ class PaperStatus_Tester {
     function test_save_draft_new_paper() {
         $ps = new PaperStatus($this->u_estrin);
         // NB old style of entries
-        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:name_1" => "Bobby Flay", "authors:email_1" => "flay@_.com", "has_submission" => 1]), null, "update"));
+        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:name_1" => "Bobby Flay", "authors:email_1" => "flay@_.com", "has_submission" => 1]), null));
         xassert_paper_status($ps);
         xassert($ps->has_change_at("title"));
         xassert($ps->has_change_at("abstract"));
@@ -377,7 +414,7 @@ class PaperStatus_Tester {
 
         $ps = new PaperStatus($this->u_estrin);
         xassert(!$ps->user->privChair);
-        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:1:name" => "Bobby Flay", "authors:1:email" => "flay@_.com", "has_submission" => 1]), null, "update"));
+        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:1:name" => "Bobby Flay", "authors:1:email" => "flay@_.com", "has_submission" => 1]), null));
         xassert($ps->has_change_at("title"));
         xassert($ps->has_change_at("abstract"));
         xassert($ps->has_change_at("authors"));
@@ -391,7 +428,7 @@ class PaperStatus_Tester {
         // updating existing paper would succeed though
         $ps = new PaperStatus($this->u_estrin);
         $paper1 = $this->conf->checked_paper_by_id(1);
-        xassert(!!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols???"]), $paper1, "update"));
+        xassert(!!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols???"]), $paper1));
         xassert($ps->has_change_at("title"));
 
         $this->conf->save_refresh_setting("sub_reg", $old_sub_reg);
@@ -408,7 +445,7 @@ class PaperStatus_Tester {
         $ps = new PaperStatus($this->u_estrin);
         $paper1 = $this->conf->checked_paper_by_id(1);
         xassert(!$ps->user->privChair);
-        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols!!!!"]), $paper1, "update"));
+        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols!!!!"]), $paper1));
         xassert($ps->has_change_at("title"));
         try {
             $ok = $ps->execute_save();
@@ -434,7 +471,7 @@ class PaperStatus_Tester {
 
         $ps = new PaperStatus($this->u_estrin);
         $paper1 = $this->conf->checked_paper_by_id(1);
-        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols 2"]), $paper1, "submit"));
+        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols 2", "status:submit" => 1]), $paper1));
         xassert($ps->has_change_at("title"));
         try {
             $ok = $ps->execute_save();
@@ -446,7 +483,7 @@ class PaperStatus_Tester {
         $ps = new PaperStatus($this->u_estrin);
         $paper1 = $this->conf->checked_paper_by_id(1);
         xassert_eqq($paper1->title, "Scalable Timers for Soft State Protocols");
-        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols"]), $paper1, "submit"));
+        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols", "status:submit" => 1]), $paper1));
         xassert(!$ps->has_change_at("title"));
         xassert($ps->execute_save());
 
@@ -470,16 +507,16 @@ class PaperStatus_Tester {
 
         $ps = new PaperStatus($nonpc);
         $paper1 = $this->conf->checked_paper_by_id(1);
-        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols 2"]), $paper1, "submit"));
+        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols 2", "status:submit" => 1]), $paper1));
         xassert(!$ps->has_change_at("title"));
-        xassert_eqq($ps->decorated_feedback_text(), "You aren’t allowed to view submission #1.\n");
+        xassert_eqq($ps->decorated_feedback_text(), "You aren’t allowed to view submission #1\n");
 
         $ps = new PaperStatus($nonpc);
         $paper1 = $this->conf->checked_paper_by_id(1);
         xassert_eqq($paper1->title, "Scalable Timers for Soft State Protocols");
-        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols"]), $paper1, "submit"));
+        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "Scalable Timers for Soft State Protocols", "status:submit" => 1]), $paper1));
         xassert(!$ps->has_change_at("title"));
-        xassert_eqq($ps->decorated_feedback_text(), "You aren’t allowed to view submission #1.\n");
+        xassert_eqq($ps->decorated_feedback_text(), "You aren’t allowed to view submission #1\n");
 
         $this->conf->save_refresh_setting("sub_update", $old_sub_update);
     }
@@ -514,18 +551,18 @@ class PaperStatus_Tester {
         xassert($this->newpaper1->timeSubmitted > 0);
 
         $ps = new PaperStatus($this->u_estrin);
-        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["opt1" => "10", "has_opt1" => "1", "has_status:submit" => 1]), $this->newpaper1, "update"));
+        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["opt1" => "10", "has_opt1" => "1", "has_status:submit" => 1]), $this->newpaper1));
         xassert_array_eqq($ps->changed_keys(), ["calories", "status"], true);
         xassert($ps->execute_save());
         xassert_paper_status($ps);
 
         $ps = new PaperStatus($this->u_estrin);
-        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["opt1" => "10xxxxx", "has_opt1" => "1"]), $this->newpaper1, "update"));
+        xassert(!$ps->prepare_save_paper_web(new Qrequest("POST", ["opt1" => "10xxxxx", "has_opt1" => "1"]), $this->newpaper1));
         xassert_array_eqq($ps->changed_keys(), [], true);
         xassert($ps->has_error_at("opt1"));
 
         $ps = new PaperStatus($this->u_estrin);
-        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["opt1" => "none", "has_opt1" => "1"]), $this->newpaper1, "update"));
+        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["opt1" => "none", "has_opt1" => "1"]), $this->newpaper1));
         xassert_array_eqq($ps->changed_keys(), ["calories"], true);
         xassert_paper_status($ps);
         // ...but do not save!!
@@ -547,7 +584,7 @@ class PaperStatus_Tester {
 
     function test_save_old_authors() {
         $ps = new PaperStatus($this->u_estrin);
-        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["has_authors" => "1", "auname1" => "Robert Flay", "auemail1" => "flay@_.com"]), $this->newpaper1, "update"));
+        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["has_authors" => "1", "auname1" => "Robert Flay", "auemail1" => "flay@_.com"]), $this->newpaper1));
         xassert($ps->has_change_at("authors"));
         xassert($ps->execute_save());
         xassert_paper_status($ps);
@@ -572,7 +609,7 @@ class PaperStatus_Tester {
         $qreq->set_file("submission", ["name" => "amazing-sample.pdf", "tmp_name" => SiteLoader::find("etc/sample.pdf"), "type" => "application/pdf", "error" => UPLOAD_ERR_OK]);
         $qreq->set_file("opt2:1:file", ["name" => "attachment1.pdf", "type" => "application/pdf", "content" => "%PDF-whatever\n", "error" => UPLOAD_ERR_OK]);
         $ps = new PaperStatus($this->u_estrin);
-        xassert($ps->prepare_save_paper_web($qreq, null, "update"));
+        xassert($ps->prepare_save_paper_web($qreq, null));
         xassert($ps->has_change_at("title"));
         xassert($ps->has_change_at("abstract"));
         xassert($ps->has_change_at("authors"));
@@ -594,7 +631,7 @@ class PaperStatus_Tester {
         $attenu = $this->conf->user_by_email("atten@_.com");
         xassert_eqq($nprow1->conflict_type($attenu), CONFLICT_AUTHOR);
         xassert_eqq($attenu->roles & Contact::ROLE_DBMASK, 0);
-        xassert_eqq($attenu->disablement, Contact::DISABLEMENT_PLACEHOLDER);
+        xassert_eqq($attenu->disabled_flags(), Contact::CF_PLACEHOLDER);
         xassert($nprow1->timeSubmitted > 0);
         xassert($nprow1->timeWithdrawn <= 0);
         xassert(!$nprow1->option(1));
@@ -612,7 +649,7 @@ class PaperStatus_Tester {
         $qreq = new Qrequest("POST", ["status:submit" => 1, "has_authors" => "1", "authors:1:name" => "David Attenborough", "authors:1:email" => "atten@_.com", "authors:1:affiliation" => "BBC", "abstract" => "They see lots of colors.", "has_submission" => "1"]);
         $qreq->set_file("submission", ["name" => "amazing-sample.pdf", "tmp_name" => SiteLoader::find("etc/sample.pdf"), "type" => "application/pdf", "error" => UPLOAD_ERR_OK]);
         $ps = new PaperStatus($this->u_estrin);
-        $ps->prepare_save_paper_web($qreq, null, "update");
+        $ps->prepare_save_paper_web($qreq, null);
         xassert($ps->has_error_at("title"));
         xassert_eqq(count($ps->error_fields()), 1);
         xassert_eqq($ps->feedback_text($ps->error_list()), "Entry required\n");
@@ -620,7 +657,7 @@ class PaperStatus_Tester {
         $qreq = new Qrequest("POST", ["status:submit" => 1, "title" => "", "has_authors" => "1", "authors:1:name" => "David Attenborough", "authors:1:email" => "atten@_.com", "authors:1:affiliation" => "BBC", "abstract" => "They see lots of colors.", "has_submission" => "1"]);
         $qreq->set_file("submission", ["name" => "amazing-sample.pdf", "tmp_name" => SiteLoader::find("etc/sample.pdf"), "type" => "application/pdf", "error" => UPLOAD_ERR_OK]);
         $ps = new PaperStatus($this->u_estrin);
-        $ps->prepare_save_paper_web($qreq, null, "update");
+        $ps->prepare_save_paper_web($qreq, null);
         xassert($ps->has_error_at("title"));
         xassert_eqq(count($ps->error_fields()), 1);
         xassert_eqq($ps->feedback_text($ps->error_list()), "Entry required\n");
@@ -628,7 +665,7 @@ class PaperStatus_Tester {
         $qreq = new Qrequest("POST", ["status:submit" => 1, "title" => "Another Mantis Shrimp Paper", "has_authors" => "1", "authors:1:name" => "David Attenborough", "authors:1:email" => "atten@_.com", "authors:1:affiliation" => "BBC", "has_submission" => "1"]);
         $qreq->set_file("submission", ["name" => "amazing-sample.pdf", "tmp_name" => SiteLoader::find("etc/sample.pdf"), "type" => "application/pdf", "error" => UPLOAD_ERR_OK]);
         $ps = new PaperStatus($this->u_estrin);
-        $ps->prepare_save_paper_web($qreq, null, "update");
+        $ps->prepare_save_paper_web($qreq, null);
         xassert($ps->has_error_at("abstract"));
         xassert_eqq(count($ps->error_fields()), 1);
         xassert_eqq($ps->feedback_text($ps->error_list()), "Entry required\n");
@@ -641,10 +678,13 @@ class PaperStatus_Tester {
         $qreq = new Qrequest("POST", ["status:submit" => 1, "title" => "Another Mantis Shrimp Paper", "has_authors" => "1", "authors:1:name" => "David Attenborough", "authors:1:email" => "atten@_.com", "authors:1:affiliation" => "BBC", "has_submission" => "1"]);
         $qreq->set_file("submission", ["name" => "amazing-sample.pdf", "tmp_name" => SiteLoader::find("etc/sample.pdf"), "type" => "application/pdf", "error" => UPLOAD_ERR_OK]);
         $ps = new PaperStatus($this->u_estrin);
-        $ps->prepare_save_paper_web($qreq, null, "update");
+        $ps->prepare_save_paper_web($qreq, null);
         xassert(!$ps->has_error_at("abstract"));
         xassert_eqq(count($ps->error_fields()), 0);
         xassert_eqq($ps->feedback_text($ps->error_list()), "");
+
+        $this->conf->set_opt("noAbstract", null);
+        $this->conf->invalidate_caches(["options" => true]);
     }
 
     function test_save_abstract_format() {
@@ -652,7 +692,7 @@ class PaperStatus_Tester {
         xassert_eqq($nprow1->abstract, "They see lots of colors.");
 
         $ps = new PaperStatus($this->u_estrin);
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "abstract" => " They\nsee\r\nlots of\n\n\ncolors. \n\n\n"]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "abstract" => " They\nsee\r\nlots of\n\n\ncolors. \n\n\n"]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), ["abstract"], true);
         $nprow1 = $this->u_estrin->checked_paper_by_id($this->pid2);
@@ -665,7 +705,7 @@ class PaperStatus_Tester {
         $this->conf->save_refresh_setting("sub_collab", 1);
 
         $ps = new PaperStatus($this->u_estrin);
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "collaborators" => "  John Fart\rMIT\n\nButt Man (UCLA)"]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "collaborators" => "  John Fart\rMIT\n\nButt Man (UCLA)"]), $nprow1);
         xassert_paper_status($ps, MessageSet::WARNING);
         xassert_array_eqq($ps->changed_keys(), ["collaborators"], true);
         $nprow1 = $this->u_estrin->checked_paper_by_id($this->pid2);
@@ -675,7 +715,7 @@ class PaperStatus_Tester {
     function test_save_collaborators_normalization() {
         $nprow1 = $this->u_estrin->checked_paper_by_id($this->pid2);
         $ps = new PaperStatus($this->u_estrin);
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "collaborators" => "Sal Stolfo, Guofei Gu, Manos Antonakakis, Roberto Perdisci, Weidong Cui, Xiapu Luo, Rocky Chang, Kapil Singh, Helen Wang, Zhichun Li, Junjie Zhang, David Dagon, Nick Feamster, Phil Porras."]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "collaborators" => "Sal Stolfo, Guofei Gu, Manos Antonakakis, Roberto Perdisci, Weidong Cui, Xiapu Luo, Rocky Chang, Kapil Singh, Helen Wang, Zhichun Li, Junjie Zhang, David Dagon, Nick Feamster, Phil Porras."]), $nprow1);
         xassert_paper_status($ps, MessageSet::WARNING);
         xassert_array_eqq($ps->changed_keys(), ["collaborators"], true);
 
@@ -703,7 +743,7 @@ Phil Porras.");
         }
         $long_collab = join("\n", $long_collab);
         $ps = new PaperStatus($this->u_estrin);
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "collaborators" => $long_collab]), $this->u_estrin->checked_paper_by_id($this->pid2), "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "collaborators" => $long_collab]), $this->u_estrin->checked_paper_by_id($this->pid2));
         xassert_paper_status($ps);
         xassert_array_eqq($ps->changed_keys(), ["collaborators"], true);
 
@@ -714,7 +754,7 @@ Phil Porras.");
 
         // the collaborators are short again
         $ps = new PaperStatus($this->u_estrin);
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "collaborators" => "One guy (MIT)"]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "collaborators" => "One guy (MIT)"]), $nprow1);
         xassert_paper_status($ps);
         xassert_array_eqq($ps->changed_keys(), ["collaborators"], true);
 
@@ -789,7 +829,10 @@ Phil Porras.");
         $nprow1->invalidate_topics();
         xassert_eqq($nprow1->topic_list(), []); // XXX should be unchanged
 
-        $ps = new PaperStatus($this->u_estrin, ["add_topics" => true]);
+        $topic_option = $this->conf->option_by_id(PaperOption::TOPICSID);
+        assert($topic_option instanceof Topics_PaperOption);
+        $topic_option->allow_new_topics(true);
+        $ps = new PaperStatus($this->u_estrin);
         $ps->save_paper_json((object) [
             "id" => $this->pid2,
             "topics" => ["fartchitecture", "architecture"]
@@ -800,10 +843,11 @@ Phil Porras.");
         xassert_eqq($nprow1->topic_list(), [2, 5]);
 
         $qreq = new Qrequest("POST", ["status:submit" => 1, "has_topics" => 1, "topics:1" => 1, "topics:5" => 1]);
-        $ps->save_paper_web($qreq, $nprow1, "update");
+        $ps->save_paper_web($qreq, $nprow1);
         xassert(!$ps->has_problem());
         $nprow1->invalidate_topics();
         xassert_eqq($nprow1->topic_list(), [1, 5]);
+        $topic_option->allow_new_topics(false);
     }
 
     /** @param PaperInfo $prow
@@ -1007,7 +1051,7 @@ Phil Porras.");
         xassert_eqq(sorted_conflicts($nprow1, TESTSC_CONTACTS | TESTSC_DISABLED), "atten@_.com estrin@usc.edu");
 
         // old style of request
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1, "contacts:1:email" => "estrin@usc.edu"]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1, "contacts:1:email" => "estrin@usc.edu", "has_contacts:1:active" => 1]), $nprow1);
         xassert($ps->has_problem());
         xassert_eqq($ps->feedback_text_at("contacts"), "You can’t remove yourself from the submission’s contacts
     (Ask another contact to remove you.)\n");
@@ -1026,7 +1070,7 @@ Phil Porras.");
     function test_save_contacts_ignore_empty() {
         $ps = new PaperStatus($this->u_estrin);
         $nprow1 = $this->u_estrin->checked_paper_by_id($this->pid2);
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1, "contacts:1:email" => "estrin@usc.edu", "contacts:1:active" => 1, "contacts:2:email" => "", "contacts:2:active" => 1]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1, "contacts:1:email" => "estrin@usc.edu", "contacts:1:active" => 1, "contacts:2:email" => "", "contacts:2:active" => 1]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), [], true);
     }
@@ -1053,7 +1097,7 @@ Phil Porras.");
         $ps = new PaperStatus($this->u_estrin);
         $nprow1 = $this->u_estrin->checked_paper_by_id($this->pid2);
         xassert(!$this->conf->fresh_user_by_email("gestrin@gusc.gedu"));
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1, "contacts:1:email" => "estrin@usc.edu", "contacts:1:active" => 1, "contacts:2:email" => "festrin@fusc.fedu", "contacts:3:email" => "gestrin@gusc.gedu", "contacts:3:name" => "Geborah Gestrin", "contacts:3:active" => 1]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1, "contacts:1:email" => "estrin@usc.edu", "contacts:1:active" => 1, "contacts:2:email" => "festrin@fusc.fedu", "has_contacts:2:active" => 1, "contacts:3:email" => "gestrin@gusc.gedu", "contacts:3:name" => "Geborah Gestrin", "contacts:3:active" => 1]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), ["contacts"], true);
 
@@ -1071,7 +1115,7 @@ Phil Porras.");
     function test_save_contacts_partial_update() {
         $ps = new PaperStatus($this->u_estrin);
         $nprow1 = $this->u_estrin->checked_paper_by_id($this->pid2);
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), [], true);
 
@@ -1080,7 +1124,7 @@ Phil Porras.");
         $this->u_atten = $this->conf->checked_user_by_email("atten@_.com");
         xassert_eqq($nprow1->conflict_type($this->u_atten), CONFLICT_AUTHOR);
 
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1, "contacts:1:email" => "atten@_.com", "contacts:1:active" => 1]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1, "contacts:1:email" => "atten@_.com", "contacts:1:active" => 1]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), ["contacts"], true);
 
@@ -1090,7 +1134,7 @@ Phil Porras.");
         $this->u_atten = $this->conf->checked_user_by_email("ATTEN@_.coM");
         xassert_eqq($nprow1->conflict_type($this->u_atten), CONFLICT_AUTHOR | CONFLICT_CONTACTAUTHOR);
 
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1, "contacts:1:email" => "gestrin@gusc.gedu", "contacts:2:email" => "atten@_.com"]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => 1, "contacts:1:email" => "gestrin@gusc.gedu", "has_contacts:1:active" => 1, "contacts:2:email" => "atten@_.com", "has_contacts:2:active" => 1]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), ["contacts"], true);
         $nprow1->invalidate_conflicts();
@@ -1108,7 +1152,7 @@ Phil Porras.");
     function test_save_authors_resolve_primary() {
         $ps = new PaperStatus($this->u_estrin);
         $nprow1 = $this->u_estrin->checked_paper_by_id($this->pid2);
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_authors" => "1", "authors:1:name" => "David Attenborough", "authors:1:email" => "atten@_.com", "authors:2:name" => "Geborah Gestrin", "authors:2:email" => "gestrin@gusc.gedu"]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_authors" => "1", "authors:1:name" => "David Attenborough", "authors:1:email" => "atten@_.com", "authors:2:name" => "Geborah Gestrin", "authors:2:email" => "gestrin@gusc.gedu"]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), ["authors", "contacts"], true);
 
@@ -1119,7 +1163,7 @@ Phil Porras.");
         xassert_eqq($nprow1->conflict_type($this->gestrin_cid), CONFLICT_AUTHOR);
         xassert_eqq($nprow1->conflict_type($this->u_estrin), CONFLICT_CONTACTAUTHOR);
 
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_authors" => "1", "authors:1:name" => "David Attenborough", "authors:1:email" => "atten@_.com"]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_authors" => "1", "authors:1:name" => "David Attenborough", "authors:1:email" => "atten@_.com"]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), ["authors", "contacts"], true);
         $nprow1 = $this->conf->checked_paper_by_id($this->pid2);
@@ -1131,7 +1175,7 @@ Phil Porras.");
     function test_save_contacts_resolve_primary() {
         $ps = new PaperStatus($this->u_estrin);
         $nprow1 = $this->u_estrin->checked_paper_by_id($this->pid2);
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => "1", "contacts:1:email" => "gestrin@gusc.gedu", "contacts:1:active" => "1"]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => "1", "contacts:1:email" => "gestrin@gusc.gedu", "contacts:1:active" => "1"]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), ["contacts"], true);
 
@@ -1142,7 +1186,7 @@ Phil Porras.");
         xassert_eqq($nprow1->conflict_type($this->festrin_cid), CONFLICT_CONTACTAUTHOR);
         xassert_eqq($nprow1->conflict_type($this->gestrin_cid), 0);
 
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => "1", "contacts:1:email" => "gestrin@gusc.gedu"]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => "1", "contacts:1:email" => "gestrin@gusc.gedu", "has_contacts:1:active" => 1]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), [], true);
 
@@ -1153,7 +1197,7 @@ Phil Porras.");
         xassert_eqq($nprow1->conflict_type($this->festrin_cid), CONFLICT_CONTACTAUTHOR);
         xassert_eqq($nprow1->conflict_type($this->gestrin_cid), 0);
 
-        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => "1", "contacts:1:email" => "festrin@fusc.fedu", "contacts:2:email" => "gestrin@gusc.gedu"]), $nprow1, "update");
+        $ps->save_paper_web(new Qrequest("POST", ["status:submit" => 1, "has_contacts" => "1", "contacts:1:email" => "festrin@fusc.fedu", "has_contacts:1:active" => 1, "contacts:2:email" => "gestrin@gusc.gedu", "has_contacts:2:active" => 1]), $nprow1);
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), ["contacts"], true);
 
@@ -1184,14 +1228,14 @@ Phil Porras.");
     }
 
     function test_content_text_signature() {
-        $doc = new DocumentInfo(["content" => "ABCdefGHIjklMNO"], $this->conf);
+        $doc = DocumentInfo::make_content($this->conf, "ABCdefGHIjklMNO");
         xassert_eqq($doc->content_text_signature(), "starts with “ABCdefGH”");
-        $doc = new DocumentInfo(["content" => "\x02\x00A\x80BCdefGHIjklMN"], $this->conf);
+        $doc = DocumentInfo::make_content($this->conf, "\x02\x00A\x80BCdefGHIjklMN");
         xassert_eqq($doc->content_text_signature(), "starts with “\\x02\\x00A\\x80BCde”");
-        $doc = new DocumentInfo(["content" => ""], $this->conf);
+        $doc = DocumentInfo::make_content($this->conf, "");
         xassert_eqq($doc->content_text_signature(), "is empty");
 
-        $doc = new DocumentInfo(["content_file" => "/tmp/this-file-is-expected-not-to-exist.png.zip"], $this->conf);
+        $doc = DocumentInfo::make_content_file($this->conf, "/tmp/this-file-is-expected-not-to-exist.png.zip");
         ++Xassert::$disabled;
         $s = $doc->content_text_signature();
         --Xassert::$disabled;
@@ -1199,7 +1243,8 @@ Phil Porras.");
     }
 
     function test_banal() {
-        $spects = max(Conf::$now - 10, @filemtime(SiteLoader::find("src/banal")));
+        $spects = $this->conf->setting("sub_banal") ?? Conf::$now - 10;
+        $spects = max($spects, @filemtime(SiteLoader::find("src/banal")));
         $this->conf->save_setting("sub_banal", $spects, "letter;30;;6.5x9in");
         $this->conf->invalidate_caches(["options" => true]);
         xassert_eq($this->conf->format_spec(DTYPE_SUBMISSION)->timestamp, $spects);
@@ -1234,10 +1279,11 @@ Phil Porras.");
         xassert_eq($paper3->pdfFormatStatus, -$spects);
 
         // change the format spec
-        $this->conf->save_setting("sub_banal", $spects + 1, "letter;30;;7.5x9in");
+        ++$spects;
+        $this->conf->save_setting("sub_banal", $spects, "letter;30;;7.5x9in");
         $this->conf->invalidate_caches(["options" => true]);
 
-        // that actually requires rerunning banal because its cached result is truncated
+        // that requires rerunning banal because cached result was truncated
         $doc = $paper3->document(DTYPE_SUBMISSION);
         $cf_nec->check_document($doc);
         xassert_eqq(join(" ", $cf_nec->problem_fields()), "pagelimit");
@@ -1265,7 +1311,8 @@ Phil Porras.");
         xassert($cf_nec->run_attempted());
 
         // we can reuse the banal JSON output on another spec
-        $this->conf->save_setting("sub_banal", $spects + 1, "letter;1;;7.5x9in");
+        ++$spects;
+        $this->conf->save_setting("sub_banal", $spects, "letter;1;;7.5x9in");
         $this->conf->invalidate_caches(["options" => true]);
 
         $paper3->invalidate_documents();
@@ -1275,7 +1322,8 @@ Phil Porras.");
         xassert(!$cf_nec->need_recheck());
         xassert(!$cf_nec->run_attempted());
 
-        $this->conf->save_setting("sub_banal", $spects + 1, "letter;2;;7.5x9in");
+        ++$spects;
+        $this->conf->save_setting("sub_banal", $spects, "letter;2;;7.5x9in");
     }
 
     function test_option_name_parens() {
@@ -1368,7 +1416,8 @@ Phil Porras.");
             "order": 2, "presence": "custom", "condition": "SubTyp:First",
             "required": "register"
         }
-    ]
+    ],
+    "sf_abstract": "optional"
 }');
         xassert($sv->execute());
         $o1 = $this->conf->options()->find("Submission Type");
@@ -1378,6 +1427,7 @@ Phil Porras.");
         $ps->save_paper_json((object) [
             "id" => "new",
             "title" => "Conditional Field Test",
+            "abstract" => "This is my submission",
             "authors" => [
                 (object) ["name" => "Deborah", "email" => $this->u_estrin->email]
             ],
@@ -1401,6 +1451,60 @@ Phil Porras.");
         xassert_eqq($prow->title(), "Conditional Field Test");
         xassert_eqq($prow->option($o1)->value, 2);
         xassert_eqq($prow->option($o2)->data(), "Feck");
+    }
+
+    function test_if_unmodified_since() {
+        $p2 = $this->conf->checked_paper_by_id(2);
+        $p2au = $this->conf->checked_user_by_email("micke@cdt.luth.se");
+        $p2_title = $p2->title();
+        $p2_abstract = $p2->abstract();
+        $p2_modified_at = $p2->timeModified;
+
+        $ps = new PaperStatus($p2au);
+        $x = $ps->save_paper_web(new Qrequest("POST", [
+            "status:submit" => 1,
+            "title" => "{$p2_title}?",
+            "abstract" => $p2_abstract,
+            "status:if_unmodified_since" => $p2_modified_at
+        ]), $p2);
+        xassert_eqq($x, 2);
+
+        $p2b = $this->conf->checked_paper_by_id(2);
+        xassert_eqq($p2b->title, "{$p2_title}?");
+        xassert_eqq($p2b->abstract, $p2_abstract);
+        xassert_neqq($p2b->timeModified, $p2_modified_at);
+
+        $ps = new PaperStatus($p2au);
+        $qreq = new Qrequest("POST", [
+            "status:submit" => 1,
+            "title" => "{$p2_title}??",
+            "abstract" => "{$p2_abstract}??",
+            "status:if_unmodified_since" => $p2_modified_at
+        ]);
+        $x = $ps->save_paper_web($qreq, $p2b);
+        xassert_eqq($x, false);
+        xassert($ps->has_error_at("status:if_unmodified_since"));
+        $fl = $ps->changed_fields_qreq($qreq, $p2b);
+        xassert_eqq(count($fl), 2);
+        xassert_eqq($fl[0]->formid, "title");
+        xassert_eqq($fl[1]->formid, "abstract");
+
+        $ps = new PaperStatus($p2au);
+        $qreq = new Qrequest("POST", [
+            "status:submit" => 1,
+            "title" => "{$p2_title}??",
+            "abstract" => "{$p2_abstract}??",
+            "status:if_unmodified_since" => $p2_modified_at,
+            "status:changed" => "title",
+            "status:unchanged" => "abstract"
+        ]);
+        $x = $ps->save_paper_web($qreq, $p2b);
+        xassert_eqq($x, false);
+        xassert($ps->has_error_at("status:if_unmodified_since"));
+        $ps->strip_unchanged_fields_qreq($qreq, $p2b);
+        $fl = $ps->changed_fields_qreq($qreq, $p2b);
+        xassert_eqq(count($fl), 1);
+        xassert_eqq($fl[0]->formid, "title");
     }
 
     function test_invariants_last() {

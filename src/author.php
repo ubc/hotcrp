@@ -13,25 +13,33 @@ class Author {
     public $affiliation = "";
     /** @var ?string */
     private $_name;
-    /** @var ?array{string,string,string} */
+    /** @var null|Author|array{string,string,string} */
     private $_deaccents;
     /** @var ?int */
     public $contactId;
     /** @var int */
     public $roles = 0;
     /** @var int */
-    public $disablement = 0;
+    private $disablement = 0;
     /** @var ?int */
     public $conflictType;
-    /** @var ?bool */
-    public $nonauthor;
+    /** @var ?int */
+    public $status;
     /** @var ?int */
     public $author_index;
 
-    const COLLABORATORS_INDEX = -200;
+    const STATUS_AUTHOR = 1;
+    const STATUS_REVIEWER = 2;
+    const STATUS_ANONYMOUS_REVIEWER = 3;
+    const STATUS_PC = 4;
+    const STATUS_NONAUTHOR = 5;
 
-    /** @param null|string|object $x */
-    function __construct($x = null) {
+    const COLLABORATORS_INDEX = -200;
+    const UNINITIALIZED_INDEX = -400; // see also PaperConflictInfo
+
+    /** @param null|string|object $x
+     * @param null|1|2|3|4|5 $status */
+    function __construct($x = null, $status = null) {
         if (is_object($x)) {
             $this->firstName = $x->firstName;
             $this->lastName = $x->lastName;
@@ -40,6 +48,7 @@ class Author {
         } else if ($x !== null && $x !== "") {
             $this->assign_string($x);
         }
+        $this->status = $status;
     }
 
     /** @param string $s
@@ -94,7 +103,16 @@ class Author {
         $au = new Author($u);
         $au->contactId = $u->contactId;
         $au->roles = $u->roles;
-        $au->disablement = $u->disablement;
+        $au->disablement = $u->disabled_flags();
+        return $au;
+    }
+
+    /** @return $this */
+    function copy() {
+        $au = clone $this;
+        if (!is_object($this->_deaccents)) {
+            $au->_deaccents = $this;
+        }
         return $au;
     }
 
@@ -169,37 +187,29 @@ class Author {
         }
     }
 
-    static private $object_keys = [
-        "firstName" => "firstName", "first" => "firstName", "givenName" => "firstName",
-        "given" => "firstName", "lastName" => "lastName", "last" => "lastName",
-        "familyName" => "lastName", "family" => "lastName", "email" => "email",
-        "affiliation" => "affiliation", "name" => "name", "fullName" => "name"
-    ];
-
-    /** @param object|array<string,mixed> $o */
-    function assign_keyed($o) {
-        if (!is_object($o) && !is_array($o)) {
+    /** @param object|array<string,mixed> $x */
+    function assign_keyed($x) {
+        if (!is_object($x) && !is_array($x)) {
             throw new Exception("invalid Author::make_keyed");
         }
-        $x = [];
-        foreach (is_object($o) ? get_object_vars($o) : $o as $k => $v) {
-            $mk = self::$object_keys[$k] ?? null;
-            if ($mk !== null && is_string($v)) {
-                if ($mk === "name") {
-                    $this->_name = $v;
-                    list($f, $l, $e) = Text::split_name($v, true);
-                    if (!isset($x["firstName"]) && !isset($x["lastName"])) {
-                        $this->firstName = $f;
-                        $this->lastName = $l;
-                    }
-                    if ($e !== null && !isset($x["email"])) {
-                        $this->email = $e;
-                    }
-                } else {
-                    $x[$mk] = $this->$mk = $v;
-                }
+        $arr = is_object($x) ? get_object_vars($x) : $x;
+        $f = $arr["firstName"] ?? $arr["first"] ?? $arr["givenName"] ?? $arr["given"] ?? null;
+        $l = $arr["lastName"] ?? $arr["last"] ?? $arr["familyName"] ?? $arr["family"] ?? null;
+        $e = $arr["email"] ?? null;
+        $a = $arr["affiliation"] ?? null;
+        if (($n = $arr["name"] ?? $arr["fullName"] ?? null) !== null) {
+            $this->_name = $n;
+            list($ff, $ll, $ee) = Text::split_name($n, true);
+            if ($f === null && $l === null) {
+                $f = $ff;
+                $l = $ll;
             }
+            $e = $e ?? $ee;
         }
+        $this->firstName = $f ?? "";
+        $this->lastName = $l ?? "";
+        $this->email = $e ?? "";
+        $this->affiliation = $a ?? "";
     }
 
     /** @param string $s
@@ -245,6 +255,9 @@ class Author {
     /** @param 0|1|2 $component
      * @return string */
     function deaccent($component) {
+        if (is_object($this->_deaccents)) {
+            return $this->_deaccents->deaccent($component);
+        }
         if ($this->_deaccents === null) {
             $this->_deaccents = [
                 strtolower(UnicodeHelper::deaccent($this->firstName)),
@@ -264,6 +277,21 @@ class Author {
     function is_conflicted() {
         assert($this->conflictType !== null);
         return $this->conflictType > CONFLICT_MAXUNCONFLICTED;
+    }
+
+    /** @return bool */
+    function is_nonauthor() {
+        return $this->status === self::STATUS_NONAUTHOR;
+    }
+
+    /** @return bool */
+    function is_placeholder() {
+        return ($this->disablement & Contact::CF_PLACEHOLDER) !== 0;
+    }
+
+    /** @return int */
+    function disabled_flags() {
+        return $this->disablement;
     }
 
     /** @param Author|Contact $x

@@ -1,6 +1,6 @@
 <?php
 // updatecontactdb.php -- HotCRP maintenance script
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
 
 if (realpath($_SERVER["PHP_SELF"]) === __FILE__) {
     require_once(dirname(__DIR__) . "/src/init.php");
@@ -25,7 +25,11 @@ class UpdateContactdb_Batch {
     /** @var bool */
     public $authors;
     /** @var bool */
+    public $metadata;
+    /** @var bool */
     public $verbose;
+    /** @var ?\mysqli */
+    private $_cdb;
 
     function __construct(Conf $conf, $arg) {
         $this->conf = $conf;
@@ -34,8 +38,9 @@ class UpdateContactdb_Batch {
         $this->users = isset($arg["users"]);
         $this->collaborators = isset($arg["collaborators"]);
         $this->authors = isset($arg["authors"]);
+        $this->metadata = isset($arg["metadata"]);
         $this->verbose = isset($arg["V"]);
-        if (!$this->papers && !$this->users && !$this->collaborators && !$this->authors) {
+        if (!$this->papers && !$this->users && !$this->collaborators && !$this->authors && !$this->metadata) {
             $this->papers = $this->users = true;
         }
     }
@@ -46,12 +51,13 @@ class UpdateContactdb_Batch {
         if (!$cdb) {
             return null;
         }
-        $result = Dbl::ql($cdb, "select * from Conferences where `dbname`=?", $this->conf->dbname);
+        $result = Dbl::ql($cdb, "select * from Conferences where confuid=?", $this->conf->cdb_confuid());
         $this->confrow = Dbl::fetch_first_object($result);
         if (!$this->confrow) {
             throw new ErrorException("Conference is not recorded in contactdb");
         }
         $this->cdb_confid = $this->confrow->confid = (int) $this->confrow->confid;
+        $this->confrow->conf_flags = (int) $this->confrow->conf_flags;
         $qf = $qv = [];
         if ($this->conf->short_name !== $this->confrow->shortName) {
             $qf[] = "shortName=?";
@@ -65,15 +71,27 @@ class UpdateContactdb_Batch {
             $qf[] = "url=?";
             $qv[] = $this->conf->opt("paperSite");
         }
+        if ($this->conf->opt("conferenceSite") !== $this->confrow->conferenceSite) {
+            $qf[] = "conferenceSite=?";
+            $qv[] = $this->conf->opt("conferenceSite");
+        }
         $email = $this->conf->opt_override["emailReplyTo"] ?? $this->conf->opt("emailReplyTo");
         if ($email && $email !== $this->confrow->requester_email) {
             $qf[] = "requester_email=?";
             $qv[] = $email;
         }
-        if (($sub = $this->conf->setting("sub_sub"))
-            && $sub !== $this->confrow->submission_deadline_at) {
+        $max_sub = 0;
+        foreach ($this->conf->submission_round_list() as $sr) {
+            $max_sub = max($max_sub, $sr->register, $sr->update, $sr->submit);
+        }
+        if ($max_sub && $max_sub != $this->confrow->submission_deadline_at) {
             $qf[] = "submission_deadline_at=?";
-            $qv[] = $sub;
+            $qv[] = $max_sub;
+        }
+        $timezone = $this->conf->opt("timezone") ?? null;
+        if ($timezone !== $this->confrow->timezone) {
+            $qf[] = "timezone=?";
+            $qv[] = $timezone;
         }
         if (!empty($qf)) {
             $qv[] = $this->cdb_confid;
@@ -84,57 +102,54 @@ class UpdateContactdb_Batch {
 
     /** @return \mysqli */
     private function cdb() {
-        $cdb = $this->try_cdb();
-        if (!$cdb) {
+        $this->_cdb = $this->_cdb ?? $this->try_cdb();
+        if (!$this->_cdb) {
             throw new ErrorException("Conference has no contactdb");
         }
-        return $cdb;
+        return $this->_cdb;
     }
 
-    /** @param \mysqli $cdb */
-    private function run_users($cdb) {
+    private function run_users() {
         // read current cdb roles
-        $result = Dbl::ql($cdb, "select Roles.*, email, password
-            from Roles
-            join ContactInfo using (contactDbId)
-            where confid=?", $this->cdb_confid);
-        $cdb_users = [];
-        while ($result && ($user = $result->fetch_object())) {
-            $cdb_users[$user->email] = $user;
+        $cdb = $this->cdb();
+        $result = Dbl::ql($cdb, "select contactDbId from Roles where confid=?", $this->cdb_confid);
+        $ecdbids = [];
+        while (($row = $result->fetch_row())) {
+            $ecdbids[(int) $row[0]] = true;
         }
-        Dbl::free($result);
+        $result->close();
 
         // read current db roles
-        $result = Dbl::ql($this->conf->dblink, "select ContactInfo.contactId, email, firstName, lastName, unaccentedName, disabled,
+        $result = Dbl::ql($this->conf->dblink, "select ContactInfo.contactId, email, firstName, lastName, affiliation, cflags,
             (ContactInfo.roles
              | if(exists (select * from PaperConflict where contactId=ContactInfo.contactId and conflictType>=" . CONFLICT_AUTHOR . ")," . Contact::ROLE_AUTHOR . ",0)
              | if(exists (select * from PaperReview where contactId=ContactInfo.contactId)," . Contact::ROLE_REVIEWER . ",0)) roles,
             " . (Contact::ROLE_DBMASK | Contact::ROLE_AUTHOR | Contact::ROLE_REVIEWER) . " role_mask,
             lastLogin
             from ContactInfo");
+        $us = ContactSet::make_result($result, $this->conf);
+
         $cdbids = [];
         $qv = [];
-        while (($u = Contact::fetch($result, $this->conf))) {
+        foreach ($us as $u) {
             $cdb_roles = $u->cdb_roles();
-            if ($cdb_roles == 0 || $u->is_anonymous_user()) {
+            if ($cdb_roles === 0 || $u->is_anonymous_user()) {
                 continue;
             }
-            $cdbu = $cdb_users[$u->email] ?? null;
-            $cdbid = $cdbu ? (int) $cdbu->contactDbId : 0;
-            if ($cdbu
-                && (int) $cdbu->roles === $cdb_roles
-                && $cdbu->activity_at) {
-                /* skip */;
-            } else if ($cdbu && $cdbu->password !== null) {
-                $qv[] = [$cdbid, $this->cdb_confid, $cdb_roles, $u->activity_at ?? 0];
-            } else {
-                $cdbid = $u->update_cdb();
+            $cdbu = $u->cdb_user();
+            if ($cdbu) {
+                unset($ecdbids[$cdbu->contactDbId]);
             }
-            if ($cdbid) {
-                $cdbids[] = $cdbid;
+            if ($cdbu
+                && (($cdbu->roles ^ $cdb_roles) & Contact::ROLE_CDBMASK) === 0
+                && ($cdbu->activity_at || ($u->activity_at ?? 0) === 0)) {
+                /* skip */;
+            } else if ($cdbu) {
+                $qv[] = [$cdbu->contactDbId, $this->cdb_confid, $cdb_roles, $u->activity_at ?? 0];
+            } else {
+                $u->update_cdb();
             }
         }
-        Dbl::free($result);
 
         // perform role updates
         if (!empty($qv)) {
@@ -142,16 +157,17 @@ class UpdateContactdb_Batch {
         }
 
         // remove old roles
-        Dbl::ql($cdb, "delete from Roles where confid=? and contactDbId?A", $this->cdb_confid, $cdbids);
+        if (!empty($ecdbids)) {
+            Dbl::ql($cdb, "delete from Roles where confid=? and contactDbId?a", $this->cdb_confid, array_keys($ecdbids));
+        }
     }
 
-    /** @param \mysqli $cdb */
-    private function run_collaborators($cdb) {
+    private function run_collaborators() {
         $result = Dbl::ql($this->conf->dblink, "select email, collaborators, updateTime, lastLogin from ContactInfo where collaborators is not null and collaborators!=''");
         while (($row = $result->fetch_row())) {
             $time = (int) $row[2] ? : (int) $row[3];
             if ($time > 0) {
-                Dbl::ql($cdb, "update ContactInfo set collaborators=?, updateTime=? where email=? and (collaborators is null or collaborators='' or updateTime<?)", $row[1], $time, $row[0], $time);
+                Dbl::ql($this->cdb(), "update ContactInfo set collaborators=?, updateTime=? where email=? and (collaborators is null or collaborators='' or updateTime<?)", $row[1], $time, $row[0], $time);
             }
         }
         Dbl::free($result);
@@ -193,7 +209,7 @@ class UpdateContactdb_Batch {
                     "firstName" => $au->firstName,
                     "lastName" => $au->lastName,
                     "affiliation" => $au->affiliation,
-                    "disablement" => Contact::DISABLEMENT_PLACEHOLDER
+                    "disablement" => Contact::CF_PLACEHOLDER
                 ])->store();
                 // NB: Contact::store() creates CONFLICT_AUTHOR records.
                 $u->update_cdb();
@@ -202,8 +218,18 @@ class UpdateContactdb_Batch {
     }
 
 
-    /** @param \mysqli $cdb */
-    private function run_papers($cdb) {
+    private function run_papers() {
+        $cdb = $this->cdb();
+        $result = Dbl::qe($cdb, "select * from ConferencePapers where confid=?", $this->cdb_confid);
+        $epapers = [];
+        while (($erow = $result->fetch_object())) {
+            $erow->paperId = (int) $erow->paperId;
+            $erow->timeSubmitted = (int) $erow->timeSubmitted;
+            $epapers[$erow->paperId] = $erow;
+        }
+        $result->close();
+
+        $subcount_type = ($this->confrow->conf_flags & 15);
         $result = Dbl::ql($this->conf->dblink, "select paperId, title, timeSubmitted, exists (select * from PaperReview where paperId=Paper.paperId and reviewModified>0) from Paper");
         $max_submitted = 0;
         $nsubmitted = 0;
@@ -211,21 +237,32 @@ class UpdateContactdb_Batch {
         $qv = [];
         while (($row = $result->fetch_row())) {
             $pid = (int) $row[0];
-            $st = (int) $row[2];
-            $qv[] = [$this->cdb_confid, $pid, $row[1], $st];
             $pids[] = $pid;
-            $max_submitted = max($max_submitted, $st);
-            if ($st > 0 || ($st < 0 && (int) $row[3] > 0)) {
+            $timeSubmitted = (int) $row[2];
+            $has_review = (int) $row[3] > 0;
+            $erow = $epapers[$pid] ?? null;
+            if (!$erow
+                || $erow->title !== $row[1]
+                || $erow->timeSubmitted !== $timeSubmitted) {
+                $qv[] = [$this->cdb_confid, $pid, $row[1], $timeSubmitted];
+            }
+            unset($epapers[$pid]);
+            $max_submitted = max($max_submitted, abs($timeSubmitted));
+            if ($timeSubmitted > 0
+                || ($timeSubmitted < 0
+                    && ($has_review || $subcount_type === 1))) {
                 ++$nsubmitted;
             }
         }
-        Dbl::free($result);
+        $result->close();
 
         if (!empty($qv)) {
             Dbl::ql($cdb, "insert into ConferencePapers (confid,paperId,title,timeSubmitted) values ?v ?U on duplicate key update title=?U(title), timeSubmitted=?U(timeSubmitted)", $qv);
         }
-        Dbl::ql($cdb, "delete from ConferencePapers where confid=? and paperId?A", $this->cdb_confid, $pids);
-        if ($this->confrow->last_submission_at != $max_submitted
+        if (!empty($epapers)) {
+            Dbl::ql($cdb, "delete from ConferencePapers where confid=? and paperId?a", $this->cdb_confid, array_keys($epapers));
+        }
+        if ($this->confrow->last_submission_at < $max_submitted
             || $this->confrow->submission_count != $nsubmitted) {
             Dbl::ql($cdb, "update Conferences set submission_count=?, last_submission_at=greatest(coalesce(last_submission_at,0), ?) where confid=?", $nsubmitted, $max_submitted, $this->cdb_confid);
         }
@@ -236,21 +273,20 @@ class UpdateContactdb_Batch {
 
     /** @return int */
     function run() {
-        $cdb = null;
+        if ($this->metadata) {
+            $this->cdb();
+        }
         if ($this->authors) {
             $this->run_authors();
         }
         if ($this->users) {
-            $cdb = $cdb ?? $this->cdb();
-            $this->run_users($cdb);
+            $this->run_users();
         }
         if ($this->collaborators) {
-            $cdb = $cdb ?? $this->cdb();
-            $this->run_collaborators($cdb);
+            $this->run_collaborators();
         }
         if ($this->papers) {
-            $cdb = $cdb ?? $this->cdb();
-            $this->run_papers($cdb);
+            $this->run_papers();
         }
         return 0;
     }
@@ -266,6 +302,7 @@ class UpdateContactdb_Batch {
             "users,u",
             "collaborators",
             "authors",
+            "metadata",
             "V,verbose"
         )->description("Update HotCRP contactdb for a conference.
 Usage: php batch/updatecontactdb.php [-n CONFID | --config CONFIG] [--papers] [--users] [--collaborators] [--authors]")

@@ -390,7 +390,7 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
      * @return $this */
     function set_file_content($name, $content, $filename = null, $mimetype = null) {
         $this->_files[$name] = new QrequestFile([
-            "name" => $filename ?? "__set_file_content.$name",
+            "name" => $filename ?? "__set_file_content.{$name}",
             "type" => $mimetype,
             "size" => strlen($content),
             "content" => $content
@@ -508,19 +508,17 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
      * @return ?bool */
     function xt_allow($e) {
         if ($e === "post") {
-            return $this->_method === "POST" && $this->_post_ok;
+            return $this->_post_ok && $this->_method === "POST";
         } else if ($e === "anypost") {
             return $this->_method === "POST";
         } else if ($e === "getpost") {
             return in_array($this->_method, ["POST", "GET", "HEAD"]) && $this->_post_ok;
+        } else if ($e === "get") {
+            return $this->_method === "GET";
+        } else if ($e === "head") {
+            return $this->_method === "HEAD";
         } else if (str_starts_with($e, "req.")) {
-            foreach (explode(" ", $e) as $w) {
-                if (str_starts_with($w, "req.")
-                    && $this->has(substr($w, 4))) {
-                    return true;
-                }
-            }
-            return false;
+            return $this->has(substr($e, 4));
         } else {
             return null;
         }
@@ -605,28 +603,40 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
 
     /** @param string $name
      * @param string $value
-     * @param int $expires_at */
-    function set_cookie($name, $value, $expires_at) {
-        $secure = $this->_conf->opt("sessionSecure") ?? false;
-        $samesite = $this->_conf->opt("sessionSameSite") ?? "Lax";
-        $opt = [
-            "expires" => $expires_at,
-            "path" => $this->_navigation->base_path,
-            "domain" => $this->_conf->opt("sessionDomain") ?? "",
-            "secure" => $secure
-        ];
-        if ($samesite && ($secure || $samesite !== "None")) {
-            $opt["samesite"] = $samesite;
+     * @param array $opt */
+    function set_cookie_opt($name, $value, $opt) {
+        $opt["path"] = $opt["path"] ?? $this->_navigation->base_path;
+        $opt["domain"] = $opt["domain"] ?? $this->_conf->opt("sessionDomain") ?? "";
+        $opt["secure"] = $opt["secure"] ?? $this->_conf->opt("sessionSecure") ?? false;
+        if (!isset($opt["samesite"])) {
+            $samesite = $this->_conf->opt("sessionSameSite") ?? "Lax";
+            if ($samesite && ($opt["secure"] || $samesite !== "None")) {
+                $opt["samesite"] = $samesite;
+            }
         }
         if (!hotcrp_setcookie($name, $value, $opt)) {
             error_log(debug_string_backtrace());
         }
     }
 
+    /** @param string $name
+     * @param string $value
+     * @param int $expires_at */
+    function set_cookie($name, $value, $expires_at) {
+        $this->set_cookie_opt($name, $value, ["expires" => $expires_at]);
+    }
+
+    /** @param string $name
+     * @param string $value
+     * @param int $expires_at */
+    function set_httponly_cookie($name, $value, $expires_at) {
+        $this->set_cookie_opt($name, $value, ["expires" => $expires_at, "httponly" => true]);
+    }
+
 
     /** @param string|list<string> $title
      * @param string $id
-     * @param array{paperId?:int|string,body_class?:string,action_bar?:string,title_div?:string,subtitle?:string,save_messages?:bool} $extra */
+     * @param array{paperId?:int|string,body_class?:string,action_bar?:string,title_div?:string,subtitle?:string,save_messages?:bool,hide_title?:bool} $extra */
     function print_header($title, $id, $extra = []) {
         if (!$this->_conf->_header_printed) {
             $this->_conf->print_head_tag($this, $title, $extra);
@@ -749,18 +759,22 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
         }
     }
 
-    /** @param bool $allow_empty
-     * @return string */
-    function post_value($allow_empty = false) {
-        $sid = $this->_qsession->sid;
-        if ($sid === null && !$allow_empty) {
+    /** @return string */
+    function post_value() {
+        if ($this->_qsession->sid === null) {
             $this->_qsession->open();
-            $sid = $this->_qsession->sid;
         }
-        if ($sid === null || $sid === "") {
+        return $this->maybe_post_value();
+    }
+
+    /** @return string */
+    function maybe_post_value() {
+        $sid = $this->_qsession->sid ?? "";
+        if ($sid !== "") {
+            return urlencode(substr($sid, strlen($sid) > 16 ? 8 : 0, 12));
+        } else {
             return ".empty";
         }
-        return urlencode(substr($sid, strlen($sid) > 16 ? 8 : 0, 12));
     }
 }
 

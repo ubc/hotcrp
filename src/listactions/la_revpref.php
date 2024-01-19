@@ -69,7 +69,7 @@ class Revpref_ListAction extends ListAction {
             if ($not_me) {
                 $item["email"] = $reviewer->email;
             }
-            $item["preference"] = unparse_preference($prow->preference($reviewer));
+            $item["preference"] = $prow->preference($reviewer)->unparse();
             if ($prow->has_conflict($reviewer)) {
                 $item["notes"] = "conflict";
                 $fields["notes"] = true;
@@ -103,7 +103,7 @@ class Revpref_ListAction extends ListAction {
         foreach ($ssel->selection() as $p) {
             $csvg->add_row([$p, $reviewer->email, $qreq->pref]);
         }
-        $aset = (new AssignmentSet($user))->override_conflicts();
+        $aset = (new AssignmentSet($user))->set_override_conflicts(true);
         $aset->parse($csvg->unparse());
         $ok = $aset->execute();
         if ($qreq->ajax) {
@@ -115,7 +115,7 @@ class Revpref_ListAction extends ListAction {
                 $aset->prepend_msg("<0>Preference changes saved", MessageSet::SUCCESS);
             }
             $user->conf->feedback_msg($aset->message_list());
-            return new Redirection($user->conf->site_referrer_url($qreq));
+            return new Redirection($user->conf->selfurl($qreq, null, Conf::HOTURL_RAW | Conf::HOTURL_REDIRECTABLE));
         } else {
             $user->conf->feedback_msg($aset->message_list());
         }
@@ -148,7 +148,7 @@ class Revpref_ListAction extends ListAction {
         $reviewer_arg = $user->contactId === $reviewer->contactId ? null : $reviewer->email;
         $conf = $user->conf;
         if ($qreq->cancel) {
-            return new Redirection($conf->site_referrer_url($qreq));
+            return new Redirection($user->conf->selfurl($qreq, null, Conf::HOTURL_RAW | Conf::HOTURL_REDIRECTABLE));
         } else if ($qreq->file) {
             $csv = self::preference_file_csv($qreq->file, $qreq->filename);
         } else if ($qreq->has_file("fileupload")) {
@@ -157,7 +157,7 @@ class Revpref_ListAction extends ListAction {
             return MessageItem::error("<0>File upload required");
         }
 
-        $aset = (new AssignmentSet($user))->override_conflicts();
+        $aset = (new AssignmentSet($user))->set_override_conflicts(true);
         $aset->set_search_type("editpref");
         $aset->set_reviewer($reviewer);
         $aset->enable_actions("pref");
@@ -172,17 +172,17 @@ class Revpref_ListAction extends ListAction {
                 $aset->prepend_msg("<0>No changes", MessageSet::WARNING_NOTE);
             }
             $conf->feedback_msg($aset->message_list());
-            return new Redirection($conf->site_referrer_url($qreq));
+            return new Redirection($user->conf->selfurl($qreq, null, Conf::HOTURL_RAW | Conf::HOTURL_REDIRECTABLE));
         } else if ($this->name === "applyuploadpref" || $this->name === "uploadpref") {
             $aset->execute(true);
-            return new Redirection($conf->site_referrer_url($qreq));
+            return new Redirection($user->conf->selfurl($qreq, null, Conf::HOTURL_RAW | Conf::HOTURL_REDIRECTABLE));
         } else {
             $qreq->print_header("Review preferences", "revpref");
             $conf->feedback_msg($aset->message_list());
 
-            echo Ht::form($conf->hoturl("=reviewprefs", ["reviewer" => $reviewer_arg]), ["class" => "alert need-unload-protection"]),
+            echo Ht::form($conf->hoturl("=reviewprefs", ["reviewer" => $reviewer_arg]), ["class" => "differs need-unload-protection"]),
                 Ht::hidden("fn", "applyuploadpref"),
-                Ht::hidden("file", $aset->make_acsv()->unparse()),
+                Ht::hidden("file", $aset->make_acsv()->unparse(), ["data-default-value" => ""]),
                 Ht::hidden("filename", $csv->filename());
 
             echo '<h3>Proposed preference assignment</h3>';

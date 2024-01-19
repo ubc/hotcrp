@@ -200,7 +200,7 @@ class ReviewForm {
         echo '<div class="rve">';
         foreach ($rrow->viewable_fields($contact, true) as $f) {
             if (!$f->test_exists($rrow)) {
-                $rvalues->warning_at($f->short_id, "This review field is currently hidden by a field condition and is not visible to others.");
+                $rvalues->warning_at($f->short_id, "<0>This review field is currently hidden by a field condition and is not visible to others.");
             }
             $fv = $rrow->fields[$f->order];
             $reqstr = $rvalues->req[$f->short_id] ?? null;
@@ -424,8 +424,8 @@ Ready\n";
         $my_review = !$rrow || $user->is_my_review($rrow);
         $pc_deadline = $user->act_pc($prow) || $user->allow_administer($prow);
         if (!$this->conf->time_review($rrow ? $rrow->reviewRound : null, $rrow ? $rrow->reviewType : $pc_deadline, true)) {
-            $whyNot = new PermissionProblem($this->conf, ["deadline" => ($rrow && $rrow->reviewType < REVIEW_PC ? "extrev_hard" : "pcrev_hard")]);
-            $override_text = $whyNot->unparse_html() . " Are you sure you want to override the deadline?";
+            $whyNot = new PermissionProblem($this->conf, ["deadline" => ($rrow && $rrow->reviewType < REVIEW_PC ? "extrev_hard" : "pcrev_hard"), "confirmOverride" => true]);
+            $override_text = $whyNot->unparse_html();
             if (!$submitted) {
                 $buttons[] = [Ht::button("Submit review", ["class" => "btn-primary btn-savereview ui js-override-deadlines", "data-override-text" => $override_text, "data-override-submit" => "submitreview"]), "(admin only)"];
                 $buttons[] = [Ht::button("Save draft", ["class" => "btn-savereview ui js-override-deadlines", "data-override-text" => $override_text, "data-override-submit" => "savedraft"]), "(admin only)"];
@@ -504,8 +504,9 @@ Ready\n";
         }
         echo '">',
             Ht::form($reviewPostLink, [
-                "id" => "f-review", "class" => "need-unload-protection",
-                "data-alert-toggle" => "review-alert"
+                "id" => "f-review",
+                "class" => "need-unload-protection need-diff-check",
+                "data-differs-toggle" => "review-alert"
             ]),
             Ht::hidden_default_submit("default", "");
         if ($rrow->reviewId) {
@@ -1064,7 +1065,7 @@ class ReviewValues extends MessageSet {
         if ($this->paperId) {
             /* OK */
         } else if (isset($this->req["paperNumber"])
-                   && ($pid = cvtint(trim($this->req["paperNumber"]), -1)) > 0) {
+                   && ($pid = stoi(trim($this->req["paperNumber"])) ?? -1) > 0) {
             $this->paperId = $pid;
         } else if ($nfields > 0) {
             $this->rmsg("paperNumber", "<0>This review form doesn’t report which paper number it is for. Make sure you’ve entered the paper number in the right place and try again.", self::ERROR);
@@ -1164,13 +1165,13 @@ class ReviewValues extends MessageSet {
             if (isset(self::$ignore_web_keys[$k]) || !is_scalar($v)) {
                 /* skip */
             } else if ($k === "p") {
-                $this->paperId = cvtint($v);
+                $this->paperId = stoi($v) ?? -1;
             } else if ($k === "override") {
                 $this->req["override"] = !!$v;
             } else if ($k === "edit_version") {
-                $this->req[$k] = cvtint($v);
+                $this->req[$k] = stoi($v) ?? -1;
             } else if ($k === "blind" || $k === "ready") {
-                $this->req[$k] = is_bool($v) ? (int) $v : cvtint($v);
+                $this->req[$k] = is_bool($v) ? (int) $v : (stoi($v) ?? -1);
             } else if (str_starts_with($k, "has_")) {
                 if ($k !== "has_blind" && $k !== "has_override" && $k !== "has_ready") {
                     $hasreqs[] = substr($k, 4);
@@ -1263,7 +1264,7 @@ class ReviewValues extends MessageSet {
         if (!$rrow) {
             $extra = [];
             if (isset($this->req["round"])) {
-                $extra["round_number"] = (int) $this->conf->round_number($this->req["round"], false);
+                $extra["round_number"] = (int) $this->conf->round_number($this->req["round"]);
             }
             if (($whyNot = $user->perm_create_review($prow, $reviewer, $extra["round_number"] ?? null))) {
                 if ($user !== $reviewer) {
@@ -1411,7 +1412,7 @@ class ReviewValues extends MessageSet {
                 $tmpl = "@reviewupdate";
             }
             $always_combine = false;
-            $diff_view_score = $diffinfo->view_score;
+            $diff_view_score = $diffinfo->view_score();
         } else if ($newstatus < ReviewInfo::RS_COMPLETED
                    && $newstatus >= ReviewInfo::RS_DELIVERED
                    && ($diffinfo->fields() || $newstatus !== $oldstatus)
@@ -1630,7 +1631,7 @@ class ReviewValues extends MessageSet {
         if (!$rrow->reviewId || $rrow->prop_changed()) {
             $rrow->set_prop("reviewViewScore", $view_score);
             // XXX distinction between VIEWSCORE_AUTHOR/VIEWSCORE_AUTHORDEC?
-            if ($diffinfo->view_score >= $author_view_score) {
+            if ($diffinfo->view_score() >= $author_view_score) {
                 // Author can see modification.
                 $rrow->set_prop("reviewAuthorModified", $now);
             } else if (!$rrow->reviewAuthorModified
@@ -1642,7 +1643,7 @@ class ReviewValues extends MessageSet {
             }
             // do not notify on updates within 3 hours, except fresh submits
             if ($newstatus >= ReviewInfo::RS_COMPLETED
-                && $diffinfo->view_score > VIEWSCORE_REVIEWERONLY
+                && $diffinfo->view_score() > VIEWSCORE_REVIEWERONLY
                 && !$this->no_notify) {
                 if (!$rrow->reviewNotified
                     || $rrow->reviewNotified < $notification_bound
@@ -1652,7 +1653,7 @@ class ReviewValues extends MessageSet {
                 }
                 if ((!$rrow->reviewAuthorNotified
                      || $rrow->reviewAuthorNotified < $notification_bound)
-                    && $diffinfo->view_score >= $author_view_score
+                    && $diffinfo->view_score() >= $author_view_score
                     && $prow->can_author_view_submitted_review()) {
                     $rrow->set_prop("reviewAuthorNotified", $now);
                     $diffinfo->notify_author = true;
@@ -1665,11 +1666,11 @@ class ReviewValues extends MessageSet {
         $locked = $newordinal = false;
         if ((!$rrow->reviewId
              && $newsubmit
-             && $diffinfo->view_score >= VIEWSCORE_AUTHORDEC)
+             && $diffinfo->view_score() >= VIEWSCORE_AUTHORDEC)
             || ($rrow->reviewId
                 && !$rrow->reviewOrdinal
                 && ($newsubmit || $rrow->reviewStatus >= ReviewInfo::RS_COMPLETED)
-                && ($diffinfo->view_score >= VIEWSCORE_AUTHORDEC
+                && ($diffinfo->view_score() >= VIEWSCORE_AUTHORDEC
                     || $this->rf->nonempty_view_score($rrow) >= VIEWSCORE_AUTHORDEC))) {
             $result = $this->conf->qe_raw("lock tables PaperReview write");
             if (Dbl::is_error($result)) {
@@ -1819,7 +1820,8 @@ class ReviewValues extends MessageSet {
 
     /** @param int $status
      * @param string $fmt
-     * @param list<string> $info */
+     * @param list<string> $info
+     * @param null|'draft'|'approvable' $single */
     private function _confirm_message($status, $fmt, $info, $single = null) {
         $pids = [];
         foreach ($info as &$x) {
@@ -1830,10 +1832,10 @@ class ReviewValues extends MessageSet {
             }
         }
         unset($x);
-        if ($single === null) {
-            $single = $this->text === null;
+        if ($single === null && $this->text === null) {
+            $single = "yes";
         }
-        $t = $this->conf->_($fmt, $info, $single);
+        $t = $this->conf->_($fmt, $info, new FmtArg("single", $single));
         assert(str_starts_with($t, "<5>"));
         if (count($pids) > 1) {
             $pids = join("+", $pids);
@@ -1842,11 +1844,14 @@ class ReviewValues extends MessageSet {
         $this->msg_at(null, $t, $status);
     }
 
+    /** @return null|'approvable'|'draft' */
     private function _single_approval_state() {
         if ($this->text !== null || $this->single_approval < 0) {
             return null;
+        } else if ($this->single_approval > 0) {
+            return "approvable";
         } else {
-            return $this->single_approval == 0 ? 2 : 3;
+            return "draft";
         }
     }
 

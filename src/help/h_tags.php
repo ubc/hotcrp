@@ -38,7 +38,7 @@ case insensitive, so “#TAG” and “#tAg” are considered identical.</p>";
         echo $hth->subhead("Find tags", "find");
         echo "<p>A paper’s tags are shown like this on the paper page:</p>
 
-<div class=\"pcard-left p c\" style=\"position:static;margin-bottom:1rem\">
+<div class=\"pcard-left c\" style=\"position:static;margin-bottom:1rem\">
 <div class=\"pspcard\"><div class=\"psc has-fold foldc\"><div class=\"pst ui js-foldup\">",
     '<span class="psfn"><button type="button" class="q ui js-foldup">',
     expander(null, 0), "Tags</button></span></div><div class=\"psv\">",
@@ -53,7 +53,7 @@ case insensitive, so “#TAG” and “#tAg” are considered identical.</p>";
 
 <p>To find all papers with tag “#discuss”:</p>
 
-<div class=\"p\">", $hth->search_form("#discuss"), "</div>
+<div class=\"mb-p\">", $hth->search_form("#discuss"), "</div>
 
 <p>You can also search with “", $hth->search_link("show:tags"), "” to see each
 paper’s tags, or “", $hth->search_link("show:#tagname"), "” to see a particular tag
@@ -102,7 +102,7 @@ assignments using ", $hth->hotlink("bulk assignment", "bulkassign"), ".</p></li>
 
 <p>Although any PC member can view or search
 most tags, certain tags may be changed only by administrators",
-          $this->hth->current_tag_list("chair"), ".",
+          $this->hth->tag_settings_having_note(TagInfo::TF_READONLY), ".",
           $this->hth->change_setting_link("tag_readonly"), "</p>";
     }
 
@@ -158,7 +158,7 @@ gray.</p>\n";
     function print_examples() {
         echo $this->hth->subhead("Examples");
         echo "<p>Here are some common ways tags are used.</p>\n";
-        $this->hth->print_group("tagexamples");
+        $this->hth->print_members("tagexamples");
     }
 
     function print_example_r1reject() {
@@ -186,15 +186,15 @@ high-ranked paper, but it’s usually better to trust the PC.)</p>\n";
     }
 
     function print_example_allotment() {
-        $vt = $this->hth->example_tag("allotment");
+        $vt = $this->hth->example_tag(TagInfo::TF_ALLOTMENT) ?? "vote";
         echo "<p><strong>Vote for papers.</strong>
- The chair can define tags used for allotment voting", $this->hth->current_tag_list("allotment"), ".",
+ The chair can define tags used for allotment voting", $this->hth->tag_settings_having_note(TagInfo::TF_ALLOTMENT), ".",
             $this->hth->change_setting_link("tag_vote_allotment"),
             " Each PC member is assigned an allotment of votes to distribute among papers.
  For instance, if “#{$vt}” were a voting tag with an allotment of 10, then a PC member could assign 5 votes to a paper by adding the twiddle tag “#~{$vt}#5”.
  The system automatically sums PC members’ votes into the public “#{$vt}” tag.
  To search for papers by vote count, search for “", $this->hth->search_link("rorder:#$vt"),
-    "”. (", $this->hth->help_link("votetags"), ")</p>\n";
+    "”. (", $this->hth->help_link("voting"), ")</p>\n";
     }
 
     function print_example_rank() {

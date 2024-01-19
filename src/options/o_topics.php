@@ -3,16 +3,13 @@
 // Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
 
 class Topics_PaperOption extends CheckboxesBase_PaperOption {
+    /** @var bool */
+    private $_add_topics = false;
+
     function __construct(Conf $conf, $args) {
         parent::__construct($conf, $args);
-        if ($conf->setting("has_topics")) {
-            $this->min_count = $conf->setting("topic_min") ?? $this->min_count;
-            $this->max_count = $conf->setting("topic_max") ?? 0;
-            if ($this->min_count > 0 && $this->required === 0) {
-                $this->required = self::REQ_REGISTER;
-            }
-        } else {
-            $this->set_exists_condition(false);
+        if (!$this->conf->has_topics()) {
+            $this->override_exists_condition(false);
         }
     }
 
@@ -36,8 +33,15 @@ class Topics_PaperOption extends CheckboxesBase_PaperOption {
         return $user ? $user->topic_interest_map() : [];
     }
 
+    /** @param bool $allow */
+    function allow_new_topics($allow) {
+        $this->_add_topics = $allow;
+        $x = $allow || $this->conf->has_topics() ? null : false;
+        $this->override_exists_condition($x);
+    }
+
     function value_store_new_values(PaperValue $ov, PaperStatus $ps) {
-        if (!$ps->add_topics()) {
+        if (!$this->_add_topics) {
             return;
         }
         $vs = $ov->value_list();
@@ -62,13 +66,19 @@ class Topics_PaperOption extends CheckboxesBase_PaperOption {
 
 
     function value_force(PaperValue $ov) {
-        $vs = $ov->prow->topic_list();
-        $ov->set_value_data($vs, array_fill(0, count($vs), null));
+        if ($this->id === PaperOption::TOPICSID) {
+            $vs = $ov->prow->topic_list();
+            $ov->set_value_data($vs, array_fill(0, count($vs), null));
+        }
     }
 
     function value_save(PaperValue $ov, PaperStatus $ps) {
-        $ps->change_at($this);
-        $ov->prow->set_prop("topicIds", join(",", $ov->value_list()));
-        return true;
+        if ($this->id === PaperOption::TOPICSID) {
+            $ps->change_at($this);
+            $ov->prow->set_prop("topicIds", join(",", $ov->value_list()));
+            return true;
+        } else {
+            return false;
+        }
     }
 }

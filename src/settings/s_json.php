@@ -5,8 +5,8 @@
 class JSON_SettingParser extends SettingParser {
     static function print(SettingValues $sv) {
         $wantjreq = $sv->use_req() && $sv->has_req("json_settings");
-        $defj = json_encode_browser($sv->all_json_oldv(), JSON_PRETTY_PRINT);
-        $mainj = $wantjreq ? cleannl($sv->reqstr("json_settings")) : $defj;
+        $defj = json_encode_browser($sv->all_jsonv(), JSON_PRETTY_PRINT);
+        $mainj = $wantjreq ? $sv->reqstr("json_settings") : $defj;
         $mainh = htmlspecialchars($mainj);
         echo '<div class="settings-json-panels">',
             '<div class="settings-json-panel-edit textarea">',
@@ -57,14 +57,15 @@ class JSON_SettingParser extends SettingParser {
     }
     function apply_req(Si $si, SettingValues $sv) {
         if (($v = $sv->reqstr($si->name)) !== null) {
+            $v = cleannl($v);
+            $sv->set_req($si->name, $v);
             if (($v2 = $sv->reqstr("json_settings:copy")) !== null
-                && $v !== $v2) {
+                && $v !== cleannl($v2)) {
                 $sv->error_at($si, "<0>Internal error: Inconsistent JSON submitted by browser");
                 $sv->inform_at($si, "<0>Please report this problem to the HotCRP.com maintainer.");
                 $sv->inform_at($si, "<0>Lengths: " . json_encode([strlen($v), strlen($v2)]));
             } else {
                 $sv->set_link_json(true);
-                $sv->set_req("reset", "1"); // JSON settings reset by default
                 $sv->add_json_string($v);
             }
         }

@@ -10,7 +10,7 @@ class Help_Page {
             if ($ht->name !== "list" && isset($ht->title)) {
                 echo '<dt><strong><a href="', $hth->conf->hoturl("help", "t=$ht->name"), '">',
                     $ht->title, '</a></strong></dt><dd>',
-                    Ftext::unparse_as($ht->description ?? "", 5), "</dd>\n";
+                    Ftext::as(5, $ht->description ?? ""), "</dd>\n";
             }
         }
         echo "</dl>\n";
@@ -56,26 +56,24 @@ class Help_Page {
             echo "Help";
         }
         echo '</h1><ul class="leftmenu-list">';
-        $gap = false;
+        $klass = "";
         foreach ($help_topics->groups() as $gj) {
-            if (($title = $gj->short_title ?? $gj->title ?? null) !== null) {
-                echo '<li class="leftmenu-item',
-                    ($gap ? " leftmenu-item-gap3" : ""),
-                    ($gj->name === $topic ? ' active">' : ' ui js-click-child">');
-                if ($gj->name === $topic) {
-                    echo $title;
-                } else {
-                    echo Ht::link($title, $conf->hoturl("help", "t=$gj->name"));
-                }
-                echo '</li>';
-                $gap = $gj->name === "list";
+            $title = $gj->short_title ?? $gj->title ?? null;
+            if ($gj->name === $topic) {
+                echo "<li class=\"leftmenu-item{$klass} active\">", $title ?? "(Unlisted)", "</li>";
+            } else if ($title && !($gj->unlisted ?? false)) {
+                echo "<li class=\"leftmenu-item{$klass} ui js-click-child\"><a href=\"",
+                    $conf->hoturl("help", "t={$gj->name}"), "\">", $title, "</a></li>";
+            } else {
+                continue;
             }
+            $klass = $gj->name === "list" ? " leftmenu-item-gap3" : "";
         }
         echo "</ul></nav></div>\n",
             '<main id="helpcontent" class="leftmenu-content main-column">',
             '<h2 class="leftmenu">', $topicj->title, '</h2>';
         $conf->report_saved_messages();
-        $hth->print_group($topic, true);
+        $help_topics->print_body_members($topic);
         echo "</main>\n";
 
         $qreq->print_footer();

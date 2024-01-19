@@ -50,8 +50,11 @@ class GetDocument_ListAction extends ListAction {
             );
         } else {
             $qreq->qsession()->commit();
-            if ($docset->download(DocumentRequest::add_connection_options(["attachment" => true, "single" => true]))) {
-                DocumentInfo::log_download_activity($docset->as_list(), $user);
+            $dopt = Downloader::make_server_request();
+            $dopt->attachment = true;
+            $dopt->single = true;
+            $dopt->log_user = $user;
+            if ($docset->download($dopt)) {
                 exit;
             } else {
                 $user->conf->feedback_msg($docset->message_list());

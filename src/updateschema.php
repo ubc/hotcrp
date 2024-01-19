@@ -13,6 +13,15 @@ class UpdateSchema {
         $this->conf = $conf;
     }
 
+    private function save_options_setting($options_data) {
+        if (empty($options_data)) {
+            $this->conf->save_setting("options", null);
+        } else {
+            $osv = max($this->conf->setting("options") ?? 0, 1);
+            $this->conf->save_setting("options", $osv, $options_data);
+        }
+    }
+
     private function v1_options_setting($options_data) {
         $options_array = [];
         foreach (get_object_vars($options_data) as $k => $v) {
@@ -27,7 +36,7 @@ class UpdateSchema {
                 return false;
             }
         }
-        $this->conf->save_setting("options", 1, $options_array);
+        $this->save_options_setting($options_array);
         return $options_array;
     }
 
@@ -168,7 +177,7 @@ class UpdateSchema {
             $opsj[] = $opj;
         }
 
-        $this->conf->save_setting("options", 1, $opsj);
+        $this->save_options_setting($opsj);
         return true;
     }
 
@@ -310,7 +319,7 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
      * @param string $column
      * @return ?int */
     private function check_column_exists($table, $column) {
-        return Dbl::fetch_ivalue($this->conf->dblink, "select exists (select * from information_schema.columns where table_schema=database() and `table_name`='$table' and `column_name`='$column') from dual");
+        return Dbl::fetch_ivalue($this->conf->dblink, "select exists (select * from information_schema.columns where table_schema=database() and `table_name`='{$table}' and `column_name`='{$column}') from dual");
     }
 
     private function v154_mimetype_extensions() {
@@ -574,7 +583,7 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
                 }
             }
         }
-        $this->conf->save_setting("options", 1, $options_array);
+        $this->save_options_setting($options_array);
         return $options_array;
     }
 
@@ -586,7 +595,7 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
             "PaperReviewRefused", "PaperStorage", "PaperTag", "PaperTagAnno",
             "PaperTopic", "PaperWatch", "ReviewRating", "ReviewRequest",
             "Settings", "TopicArea", "TopicInterest"] as $t) {
-            if (!$this->conf->ql("alter table $t character set utf8mb4"))
+            if (!$this->conf->ql("alter table {$t} character set utf8mb4"))
                 return false;
         }
         return true;
@@ -918,6 +927,236 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
     }
 
     /** @return bool */
+    private function v277_update_named_searches() {
+        $sjs = $names = [];
+        $result = $this->conf->ql("select name, data from Settings where name like 'ss:%'");
+        if (!$result) {
+            return false;
+        }
+        while (($row = $result->fetch_row())) {
+            $names[] = $row[0];
+            if (($jx = json_decode($row[1] ?? "null")) && is_object($jx)) {
+                $j = (object) ["name" => substr($row[0], 3)];
+                foreach ((array) $jx as $k => $v) {
+                    if ($k !== "name")
+                        $j->$k = $v;
+                }
+                $sjs[] = $j;
+            }
+        }
+        Dbl::free($result);
+        return empty($names)
+            || ($this->conf->ql_ok("delete from Settings where name?a", $names)
+                && (empty($sjs)
+                    || $this->conf->save_setting("named_searches", 1, json_encode_db($sjs))));
+    }
+
+    private function v278_options_setting($options_array) {
+        $diff = false;
+        foreach ($options_array as $v) {
+            if (is_object($v)) {
+                if (($v->type ?? null) === "selector") {
+                    $v->type = "dropdown";
+                    $diff = true;
+                }
+                if (isset($v->selector)
+                    && in_array($v->type ?? "", ["dropdown", "radio"])) {
+                    $v->values = $v->values ?? $v->selector;
+                    unset($v->selector);
+                    $diff = true;
+                }
+                if (isset($v->view_type)) {
+                    $v->visibility = $v->visibility ?? $v->view_type;
+                    unset($v->view_type);
+                    $diff = true;
+                }
+                if (isset($v->position)) {
+                    $v->order = $v->order ?? $v->position;
+                    unset($v->position);
+                    $diff = true;
+                }
+                if (isset($v->form_position)) {
+                    $v->form_order = $v->form_order ?? $v->form_position;
+                    unset($v->form_position);
+                    $diff = true;
+                }
+                if (isset($v->page_position) || isset($v->display_position)) {
+                    $v->page_order = $v->page_order ?? $v->page_position ?? $v->display_position;
+                    unset($v->form_position, $v->display_position);
+                    $diff = true;
+                }
+                if (isset($v->edit_condition)) {
+                    if (!property_exists($v, "exists_if")) {
+                        $v->exists_if = $v->edit_condition;
+                    }
+                    unset($v->edit_condition);
+                    $diff = true;
+                }
+            }
+        }
+        if ($diff) {
+            $this->save_options_setting($options_array);
+        }
+        return $options_array;
+    }
+
+    private function v279_options_setting($options_array) {
+        $diff = false;
+        foreach ($options_array as $v) {
+            if (!is_object($v)) {
+                error_log("{$this->conf->dbname}: options update failure");
+                return;
+            }
+            $id = $v->id ?? null;
+            if (is_string($id) && ctype_digit($id)) {
+                $id = $v->id = intval($id);
+                $diff = true;
+            }
+            if (!is_int($id)) {
+                error_log("{$this->conf->dbname}: options update failure");
+            }
+            if (($v->visibility ?? null) === "rev") {
+                unset($v->visibility);
+                $diff = true;
+            }
+            $disp = $v->display ?? null;
+            if ($disp === "submission") {
+                $v->display = "top";
+                $diff = true;
+            } else if ($disp === "prominent") {
+                $v->display = "right";
+                $diff = true;
+            } else if ($disp === "topics") {
+                $v->display = "rest";
+                $diff = true;
+            }
+        }
+        usort($options_array, function ($a, $b) {
+            return ($a->order ?? 0) <=> ($b->order ?? 0)
+                ? : ($a->id ?? 0) <=> ($b->id ?? 0);
+        });
+        foreach ($options_array as $i => $v) {
+            if (is_object($v)
+                && ($v->order ?? 0) !== $i + 1) {
+                $v->order = $i + 1;
+                $diff = true;
+            }
+        }
+        if ($diff) {
+            $this->save_options_setting($options_array);
+        }
+        return $options_array;
+    }
+
+    private function v280_filter_download_log() {
+        $result = $this->conf->ql("select * from ActionLog where (action='Download paper' or action='Download final' or action='Download submission') and paperId is not null order by logId");
+        $byp = [];
+        $dels = [];
+        while (($row = $result->fetch_object())) {
+            $pid = (int) $row->paperId;
+            if (($xrow = $byp[$pid] ?? null)
+                && $row->ipaddr === $xrow->ipaddr
+                && $row->action === $xrow->action
+                && $row->contactId === $xrow->contactId
+                && $row->destContactId === $xrow->destContactId
+                && $row->trueContactId === $xrow->trueContactId
+                && $row->timestamp < $xrow->timestamp + 3600) {
+                $dels[] = (int) $row->logId;
+            } else {
+                $byp[$pid] = $row;
+            }
+        }
+        $result->close();
+        if (!empty($dels)) {
+            $this->conf->ql("delete from ActionLog where logId?a", $dels);
+        }
+    }
+
+    private function v281_update_response_rounds() {
+        $respv = $this->conf->setting("responses");
+        $jresp = json_decode($this->conf->setting_data("responses") ?? "[]");
+        $njresp = [];
+        foreach ($jresp ?? [] as $i => $rrj) {
+            if (isset($rrj->words)) {
+                $rrj->wl = $rrj->words;
+            }
+            if (isset($rrj->truncate)) {
+                $rrj->wl = $rrj->hwl = $rrj->wl ?? 500;
+            }
+            unset($rrj->words, $rrj->truncate);
+            $njresp[] = $rrj;
+        }
+        if (!empty($njresp)) {
+            $this->conf->save_setting("responses", $respv, json_encode_db($njresp));
+        }
+    }
+
+    private function v282_update_viewrev() {
+        $conf = $this->conf;
+
+        $sv = $conf->setting("extrev_seerev") ?? 0;
+        $conf->save_setting("viewrev_ext", $sv <= 0 ? -1 : null);
+        $conf->save_setting("extrev_seerev", null);
+
+        $sv = $conf->setting("extrev_seerevid") ?? 0;
+        $conf->save_setting("viewrevid_ext", $sv <= 0 ? -1 : ($sv === 1 ? null : 1));
+        $conf->save_setting("extrev_seerevid", null);
+
+        $sv = $conf->setting("pc_seeblindrev") ?? 0;
+        $conf->save_setting("viewrevid", $sv <= 0 ? 1 : null);
+        $conf->save_setting("pc_seeblindrev", null);
+
+        $sv = $conf->setting("pc_seeallrev") ?? 0;
+        if ($sv === 2) {
+            $conf->save_setting("viewrevid", null);
+            $sv = 1;
+        }
+        $conf->save_setting("viewrev", $sv === 0 ? null : $sv);
+        $conf->save_setting("pc_seeallrev", null);
+
+        if (($t = $conf->setting_data("round_settings"))
+            && ($j = json_decode($t))
+            && is_array($j)) {
+            foreach ($j as $x) {
+                if (is_object($x)) {
+                    if (isset($x->pc_seeallrev)) {
+                        $x->viewrev = $x->pc_seeallrev;
+                    }
+                    if (isset($x->pc_seeblindrev)) {
+                        $x->viewrevid = $x->pc_seeblindrev <= 0 ? 1 : 0;
+                    }
+                    if (isset($x->extrev_seerev)) {
+                        $x->viewrev_ext = $x->extrev_seerev <= 0 ? -1 : 0;
+                    }
+                    if (isset($x->extrev_seerevid)) {
+                        $sv = $x->extrev_seerevid;
+                        $x->viewrevid_ext = $sv <= 0 ? -1 : ($sv === 1 ? 0 : 1);
+                    }
+                    unset($x->pc_seeallrev, $x->pc_seeblindrev, $x->extrev_seerev, $x->extrev_seerevid);
+                }
+            }
+            $conf->save_setting("round_settings", 1, json_encode_db($j));
+        }
+
+        $conf->save_setting("__extrev_seerev_v282", 1);
+    }
+
+    private function v283_ensure_rev_roundtag() {
+        $t1 = $this->conf->setting_data("rev_roundtag") ?? "";
+        $t2 = $this->conf->setting_data("extrev_roundtag") ?? "";
+        $tl = $tlx = trim($this->conf->setting_data("tag_rounds") ?? "");
+        if ($t1 !== "" && strcasecmp($t1, "unnamed") !== 0 && stripos(" {$tlx} ", $t1) === false) {
+            $tlx = $tlx === "" ? $t1 : "{$tlx} {$t1}";
+        }
+        if ($t2 !== "" && strcasecmp($t2, "unnamed") !== 0 && stripos(" {$tlx} ", $t2) === false) {
+            $tlx = $tlx === "" ? $t2 : "{$tlx} {$t2}";
+        }
+        if ($tlx !== $tl) {
+            $this->conf->save_setting("tag_rounds", 1, $tlx);
+        }
+    }
+
+    /** @return bool */
     function run() {
         $conf = $this->conf;
 
@@ -936,7 +1175,9 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
         $old_conf_g = Conf::$main;
         Conf::$main = $conf;
 
-        error_log($conf->dbname . ": updating schema from version " . $conf->sversion);
+        if (!$conf->opt("__quietUpdateSchema")) {
+            error_log($conf->dbname . ": updating schema from version " . $conf->sversion);
+        }
 
         // change `options` into an array, not an associative array
         // (must do this early because PaperOptionList depends on that format)
@@ -946,6 +1187,12 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
         }
         if (is_array($options_data) && $conf->sversion <= 247) {
             $options_data = $this->v248_options_setting($options_data);
+        }
+        if (is_array($options_data) && $conf->sversion <= 277) {
+            $options_data = $this->v278_options_setting($options_data);
+        }
+        if (is_array($options_data) && $conf->sversion <= 278) {
+            $options_data = $this->v279_options_setting($options_data);
         }
 
         // update `review_form`
@@ -1002,6 +1249,17 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
         if ($conf->sversion <= 274
             && $conf->setting("has_permtag")) {
             $conf->save_setting("has_permtag", null);
+        }
+
+        // update saved searches
+        if ($conf->sversion <= 276) {
+            $this->v277_update_named_searches();
+        }
+
+        // update extrev_seerev => view_rev_ext
+        if ($conf->sversion <= 281
+            && !$conf->setting("__extrev_seerev_v282")) {
+            $this->v282_update_viewrev();
         }
 
         if ($conf->sversion === 6
@@ -2641,6 +2899,57 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
         if ($conf->sversion === 273
             || $conf->sversion === 274) {
             $conf->update_schema_version(275);
+        }
+        if ($conf->sversion === 275
+            && $conf->ql_ok("alter table PaperStorage add `npages` int(3) NOT NULL DEFAULT -1")
+            && $conf->ql_ok("alter table PaperStorage add `width` int(8) NOT NULL DEFAULT -1")
+            && $conf->ql_ok("alter table PaperStorage add `height` int(8) NOT NULL DEFAULT -1")) {
+            $conf->update_schema_version(276);
+        }
+        if ($conf->sversion === 276
+            || $conf->sversion === 277
+            || $conf->sversion === 278) {
+            $conf->update_schema_version(279);
+        }
+        if ($conf->sversion === 279) {
+            $this->v280_filter_download_log();
+            $conf->update_schema_version(280);
+        }
+        if ($conf->sversion === 280) {
+            $this->v281_update_response_rounds();
+            $conf->update_schema_version(281);
+        }
+        if ($conf->sversion === 281) {
+            $conf->save_setting("__extrev_seerev_v282", null);
+            $conf->update_schema_version(282);
+        }
+        if ($conf->sversion === 282) {
+            $this->v283_ensure_rev_roundtag();
+            $conf->update_schema_version(283);
+        }
+        if ($conf->sversion === 283
+            && $conf->ql_ok("delete from Settings where name like 'msg.resp\\_instrux%'")) {
+            $conf->update_schema_version(284);
+        }
+        if ($conf->sversion === 284
+            && $conf->ql_ok("alter table ContactInfo add `cflags` int(11) NOT NULL DEFAULT 0")
+            && $conf->ql_ok("update ContactInfo set cflags=disabled")) {
+            $conf->update_schema_version(285);
+        }
+        if ($conf->sversion === 285
+            && $conf->ql_ok("update ContactInfo set cflags=34 where cflags=2")) {
+            $conf->update_schema_version(286);
+        }
+        if ($conf->sversion === 286
+            && $conf->ql_ok("alter table Capability change `otherId` `reviewId` int(11) NOT NULL DEFAULT 0")
+            && $conf->ql_ok("alter table Capability change `data` `data` varbinary(16384) DEFAULT NULL")
+            && $conf->ql_oK("alter table Capability add `output` longblob DEFAULT NULL")) {
+            $conf->update_schema_version(287);
+        }
+        if ($conf->sversion === 287
+            && $conf->ql_ok("alter table Capability change `output` `outputData` longblob DEFAULT NULL")
+            && $conf->ql_ok("alter table Capability add `inputData` varbinary(16384) DEFAULT NULL")) {
+            $conf->update_schema_version(288);
         }
 
         $conf->ql_ok("delete from Settings where name='__schema_lock'");

@@ -34,6 +34,12 @@ class Search_Tester {
                     "-has:submission");
         xassert_eqq(PaperSearch::canonical_query("NOT (foo OR bar)", "", "", "", $this->conf),
                     "NOT (foo OR bar)");
+        xassert_eqq(PaperSearch::canonical_query("ti:foo OR bar ti:(foo OR bar)", "", "", "tag", $this->conf),
+                    "ti:foo OR (#bar ti:(foo OR bar))");
+        xassert_eqq(PaperSearch::canonical_query("ti:foo OR bar ti:(foo bar)", "", "", "tag", $this->conf),
+                    "ti:foo OR (#bar ti:(foo bar))");
+        xassert_eqq(PaperSearch::canonical_query("ti:foo OR bar ti:(ab:foo)", "", "", "tag", $this->conf),
+                    "ti:foo OR (#bar ti:(ab:foo))");
     }
 
     function test_sort_etag() {
@@ -72,11 +78,11 @@ class Search_Tester {
     function test_review_term_to_round_mask() {
         $rl = $this->conf->round_list();
         xassert_eqq($rl[0], "");
-        xassert_eqq($this->conf->round_number("unnamed", false), 0);
+        xassert_eqq($this->conf->round_number("unnamed"), 0);
         xassert_eqq($rl[1], "R1");
-        xassert_eqq($this->conf->round_number("R1", false), 1);
+        xassert_eqq($this->conf->round_number("R1"), 1);
         xassert_eqq($rl[2], "R2");
-        xassert_eqq($this->conf->round_number("R2", false), 2);
+        xassert_eqq($this->conf->round_number("R2"), 2);
         xassert_eqq($rl[3], "R3");
 
         $u = $this->conf->root_user();
@@ -106,5 +112,76 @@ class Search_Tester {
 
         $st = (new PaperSearch($u, "(re:unnamed) OR (re:R1 OR re:R2)"))->main_term();
         xassert_eqq(Review_SearchTerm::term_round_mask($st), [7, false]);
+    }
+
+    function test_term_phase() {
+        $u = $this->conf->root_user();
+        $st = (new PaperSearch($u, "phase:final"))->main_term();
+        xassert_eqq(Phase_SearchTerm::term_phase($st), PaperInfo::PHASE_FINAL);
+        $st = (new PaperSearch($u, "phase:review"))->main_term();
+        xassert_eqq(Phase_SearchTerm::term_phase($st), PaperInfo::PHASE_REVIEW);
+        $st = (new PaperSearch($u, "NOT phase:final"))->main_term();
+        xassert_eqq(Phase_SearchTerm::term_phase($st), null);
+        $st = (new PaperSearch($u, "all"))->main_term();
+        xassert_eqq(Phase_SearchTerm::term_phase($st), null);
+        $st = (new PaperSearch($u, "phase:final 1-10 OR phase:final 12-30"))->main_term();
+        xassert_eqq(Phase_SearchTerm::term_phase($st), PaperInfo::PHASE_FINAL);
+        $st = (new PaperSearch($u, "phase:final AND 1-10"))->main_term();
+        xassert_eqq(Phase_SearchTerm::term_phase($st), PaperInfo::PHASE_FINAL);
+        $st = (new PaperSearch($u, "phase:final 1-10 OR 12-30"))->main_term();
+        xassert_eqq(Phase_SearchTerm::term_phase($st), null);
+    }
+
+    function test_all() {
+        $u = $this->conf->root_user();
+        $base_ids = (new PaperSearch($u, ""))->paper_ids();
+        $ids = (new PaperSearch($u, "all"))->paper_ids();
+        xassert_eqq($ids, $base_ids);
+        $ids = (new PaperSearch($u, "show:title all"))->paper_ids();
+        xassert_eqq($ids, $base_ids);
+        $ids = (new PaperSearch($u, "show:title ALL"))->paper_ids();
+        xassert_eqq($ids, $base_ids);
+        $ids = (new PaperSearch($u, "\"all\""))->paper_ids();
+        xassert_neqq($ids, $base_ids);
+    }
+
+    function test_search_overflow() {
+        $s = join(" AND ", array_fill(0, 1024, "a"));
+        $splitter = new SearchSplitter($s);
+        xassert_neqq($splitter->parse_expression("SPACE", 1024), null);
+
+        $s = join(" AND ", array_fill(0, 1026, "a"));
+        $splitter = new SearchSplitter($s);
+        xassert_eqq($splitter->parse_expression("SPACE", 1024), null);
+
+        $s = "ti:x";
+        for ($i = 0; $i < 500; ++$i) {
+            $s = "ti:({$s})";
+        }
+        xassert_eqq(PaperSearch::canonical_query($s, "", "", "", $this->conf), $s);
+
+        $s = "ti:x";
+        for ($i = 0; $i < 1025; ++$i) {
+            $s = "ti:({$s})";
+        }
+        xassert_neqq(PaperSearch::canonical_query($s, "", "", "", $this->conf), $s);
+    }
+
+    function test_search_splitter_parens() {
+        $s = "((a) XOR #whatever)";
+        $splitter = new SearchSplitter($s);
+        $a = $splitter->parse_expression();
+        xassert_eqq(json_encode($a->unparse_json()), '{"op":"(","child":[{"op":"xor","child":[{"op":"(","child":["a"]},"#whatever"]}]}');
+
+        $s = "(() XOR #whatever)";
+        $splitter = new SearchSplitter($s);
+        $a = $splitter->parse_expression();
+        xassert_eqq(json_encode($a->unparse_json()), '{"op":"(","child":[{"op":"xor","child":[{"op":"(","child":[""]},"#whatever"]}]}');
+    }
+
+    function test_equal_quote() {
+        $u = $this->conf->root_user();
+        assert_search_papers($u, "ti:\"scalable timers\"", 1);
+        assert_search_papers($u, "ti=\"scalable timers\"", 1);
     }
 }

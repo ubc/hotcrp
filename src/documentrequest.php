@@ -64,7 +64,7 @@ class DocumentRequest implements JsonSerializable {
                 } else if (isset($req["dt"])) {
                     $dtname = $req["dt"];
                 }
-            } else if (preg_match(',\A(p|paper|sub|submission|final|)(\d+)-?([-A-Za-z0-9_]*)(?:|\.[^/]+|/+(.*))\z,', $s, $m)) {
+            } else if (preg_match('/\A(p|paper|sub|submission|final|)(\d+)-?([-A-Za-z0-9_]*)(?:|\.[^\/]+|\/+(.*))\z/', $s, $m)) {
                 $this->paperId = intval($m[2]);
                 $dtname = $m[3];
                 if ($dtname === "" && $m[1] === "" && isset($req["dt"])) {
@@ -76,13 +76,13 @@ class DocumentRequest implements JsonSerializable {
                 if ($m[1] !== "") {
                     $base_dtname = $m[1] === "final" ? "final" : "paper";
                 }
-            } else if (preg_match(',\A([A-Za-z_][-A-Za-z0-9_]*?)?-?(\d+)(?:|\.[^/]+|/+(.*))\z,', $s, $m)) {
+            } else if (preg_match('/\A([A-Za-z_][-A-Za-z0-9_]*?)?-?(\d+)(?:|\.[^\/]+|\/+(.*))\z/', $s, $m)) {
                 $this->paperId = intval($m[2]);
                 $dtname = $m[1];
                 if (isset($m[3])) {
                     $this->attachment = urldecode($m[3]);
                 }
-            } else if (preg_match(',\A([^/]+?)(?:|\.[^/]+|/+(.*)|)\z,', $s, $m)) {
+            } else if (preg_match('/\A([^\/]+?)(?:|\.[^\/]+|\/+(.*)|)\z/', $s, $m)) {
                 $this->paperId = -2;
                 $dtname = $m[1];
                 if (isset($m[2])) {
@@ -97,17 +97,17 @@ class DocumentRequest implements JsonSerializable {
         $this->opt = $this->dtype = null;
         while ($dtname !== "" && $this->dtype === null) {
             if (str_starts_with($dtname, "comment-")
-                && preg_match('{\Acomment-(?:c[aAxX]?\d+|(?:|[a-zA-Z](?:|[-a-zA-Z0-9]*))response)\z}', $dtname)) {
+                && preg_match('/\Acomment-(?:c[aAxX]?\d+|(?:|[a-zA-Z](?:|[-a-zA-Z0-9]*))response)\z/', $dtname)) {
                 $this->dtype = DTYPE_COMMENT;
                 $this->linkid = substr($dtname, 8);
                 break;
             } else if ((str_starts_with($dtname, "response") || str_ends_with($dtname, "response"))
-                       && preg_match('{\A[-a-zA-Z0-9]*\z}', $dtname)) {
+                       && preg_match('/\A[-a-zA-Z0-9]*\z/', $dtname)) {
                 $this->dtype = DTYPE_COMMENT;
                 $this->linkid = $dtname;
                 break;
             }
-            if (($dtnum = cvtint($dtname, null)) !== null) {
+            if (($dtnum = stoi($dtname)) !== null) {
                 $this->opt = $conf->option_by_id($dtnum);
             } else if ($this->paperId >= 0) {
                 $this->opt = $conf->options()->find($dtname);
@@ -251,58 +251,5 @@ class DocumentRequest implements JsonSerializable {
             $j["filters"][] = $f->name;
         }
         return $j;
-    }
-
-
-    /** @param array $opts
-     * @return array */
-    static function add_connection_options($opts = []) {
-        $ifnonematch = $_SERVER["HTTP_IF_NONE_MATCH"] ?? null;
-        $range = $_SERVER["HTTP_RANGE"] ?? null;
-        $ifrange = $_SERVER["HTTP_IF_RANGE"] ?? null;
-        if ($ifnonematch !== null
-            && !array_key_exists("if-none-match", $opts)) {
-            $opts["if-none-match"] = $ifnonematch;
-        }
-        if ($range !== null
-            && !array_key_exists("range", $opts)
-            && preg_match('/\Abytes\s*=\s*(?:(?:\d+-\d+|-\d+|\d+-)\s*,?\s*)+\z/', $range)
-            && $_SERVER["REQUEST_METHOD"] === "GET") {
-            $opts["range"] = [];
-            $lastr = null;
-            preg_match_all('/\d+-\d+|-\d+|\d+-/', $range, $m);
-            foreach ($m[0] as $t) {
-                $dash = strpos($t, "-");
-                $r1 = $dash === 0 ? null : intval(substr($t, 0, $dash));
-                $r2 = $dash === strlen($t) - 1 ? null : intval(substr($t, $dash + 1));
-                if ($r1 === null && $r2 !== 0) {
-                    $opts["range"][] = $lastr = [$r1, $r2];
-                } else if ($r2 === null || ($r1 !== null && $r1 <= $r2)) {
-                    if ($lastr !== null
-                        && $lastr[0] !== null
-                        && $lastr[1] !== null
-                        && $r1 >= $lastr[0]
-                        && $r1 - $lastr[1] <= 100) {
-                        $nr = count($opts["range"]);
-                        $opts["range"][$nr - 1][1] = $lastr[1] = $r2;
-                    } else {
-                        $opts["range"][] = $lastr = [$r1, $r2];
-                    }
-                } else {
-                    unset($opts["range"]);
-                    break;
-                }
-            }
-        }
-        if ($ifrange !== null
-            && !array_key_exists("if-range", $opts)
-            && $_SERVER["REQUEST_METHOD"] === "GET") {
-            $opts["if-range"] = $ifrange;
-        }
-        if ($_SERVER["REQUEST_METHOD"] === "HEAD"
-            && !array_key_exists("head", $opts)) {
-            $opts["head"] = true;
-        }
-        return $opts;
     }
 }

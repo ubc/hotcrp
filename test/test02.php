@@ -9,6 +9,7 @@ TestRunner::run(
     "XtCheck_Tester",
     "Navigation_Tester",
     "AuthorMatch_Tester",
+    "Ht_Tester",
     "Fmt_Tester",
     "Abbreviation_Tester",
     "DocumentBasics_Tester",
@@ -17,5 +18,6 @@ TestRunner::run(
     "Search_Tester",
     "Settings_Tester",
     "UpdateSchema_Tester",
-    "Batch_Tester"
+    "Batch_Tester",
+    "Mimetype_Tester"
 );

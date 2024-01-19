@@ -34,10 +34,18 @@ class Paper_Page {
 
     /** @param bool $error */
     function print_header($error) {
-        PaperTable::print_header($this->pt, $this->qreq, $error);
+        $pt = $this->prow ? $this->pt() : null;
+        PaperTable::print_header($pt, $this->qreq, $error);
     }
 
-    function error_exit() {
+    /** @param ?PermissionProblem $perm */
+    function error_exit($perm = null) {
+        if ($perm) {
+            $perm->set("listViewable", $this->user->is_author() || $this->user->is_reviewer());
+            if (!$perm->secondary || $this->conf->saved_messages_status() < 2) {
+                $this->conf->error_msg("<5>" . $perm->unparse_html());
+            }
+        }
         $this->print_header(true);
         Ht::stash_script("hotcrp.shortcut().add()");
         $this->qreq->print_footer();
@@ -53,11 +61,7 @@ class Paper_Page {
             assert(PaperRequest::simple_qreq($this->qreq));
             throw $redir;
         } catch (PermissionProblem $perm) {
-            $perm->set("listViewable", $this->user->is_author() || $this->user->is_reviewer());
-            if (!$perm->secondary || $this->conf->saved_messages_status() < 2) {
-                $this->conf->error_msg("<5>" . $perm->unparse_html());
-            }
-            $this->error_exit();
+            $this->error_exit($perm);
         }
     }
 
@@ -70,7 +74,7 @@ class Paper_Page {
 
     function handle_withdraw() {
         if (($whynot = $this->user->perm_withdraw_paper($this->prow))) {
-            $this->conf->error_msg("<5>" . $whynot->unparse_html() . " The submission has not been withdrawn.");
+            $this->conf->error_msg("<5>" . $whynot->unparse_html() . " The {$this->conf->snouns[0]} has not been withdrawn.");
             return;
         }
 
@@ -82,7 +86,7 @@ class Paper_Page {
         }
 
         $aset = new AssignmentSet($this->user);
-        $aset->override_conflicts();
+        $aset->set_override_conflicts(true);
         $aset->enable_papers($this->prow);
         $aset->parse("paper,action,withdraw reason\n{$this->prow->paperId},withdraw," . CsvGenerator::quote($reason));
         if (!$aset->execute()) {
@@ -98,7 +102,7 @@ class Paper_Page {
         }
 
         $aset = new AssignmentSet($this->user);
-        $aset->override_conflicts();
+        $aset->set_override_conflicts(true);
         $aset->enable_papers($this->prow);
         $aset->parse("paper,action\n{$this->prow->paperId},revive");
         if (!$aset->execute()) {
@@ -109,11 +113,11 @@ class Paper_Page {
 
     function handle_delete() {
         if ($this->prow->paperId <= 0) {
-            $this->conf->success_msg("<0>Submission deleted");
+            $this->conf->success_msg("<0>{$this->conf->snouns[2]} deleted");
         } else if (!$this->user->can_administer($this->prow)) {
             $this->conf->feedback_msg(
-                MessageItem::error("<0>Only program chairs can permanently delete a submission"),
-                MessageItem::inform("<0>Authors can withdraw submissions.")
+                MessageItem::error("<0>Only program chairs can permanently delete a {$this->conf->snouns[0]}"),
+                MessageItem::inform("<0>Authors can withdraw {$this->conf->snouns[1]}.")
             );
         } else {
             // mail first, before contact info goes away
@@ -124,7 +128,7 @@ class Paper_Page {
                 ]);
             }
             if ($this->prow->delete_from_database($this->user)) {
-                $this->conf->success_msg("<0>Submission #{$this->prow->paperId} deleted");
+                $this->conf->success_msg("<0>{$this->conf->snouns[2]} #{$this->prow->paperId} deleted");
             }
             $this->error_exit();
         }
@@ -143,40 +147,59 @@ class Paper_Page {
             $msg = $this->conf->_($msg, $this->conf->unparse_time_with_local_span($t));
         }
         if ($msg !== "" && $t < Conf::$now) {
-            $msg = "<5><strong>" . Ftext::unparse_as($msg, 5) . "</strong>";
+            $msg = "<5><strong>" . Ftext::as(5, $msg) . "</strong>";
         }
         return $msg;
     }
 
-    function handle_update($action) {
+    private function handle_if_unmodified_since() {
+        $stripfields = $this->ps->strip_unchanged_fields_qreq($this->qreq, $this->prow);
+        $fields = $this->ps->changed_fields_qreq($this->qreq, $this->prow);
+        if (empty($fields) && $this->prow->paperId) {
+            $this->conf->redirect_self($this->qreq, ["p" => $this->prow->paperId, "m" => "edit"]);
+        } else {
+            $this->ps->inform_at("status:if_unmodified_since",
+                $this->conf->_("<5>Your unsaved changes to {:list} are highlighted. Check them and save again, or <a href=\"{url}\" class=\"uic js-ignore-unload-protection\">discard your edits</a>.",
+                    PaperTable::field_title_links($fields, "edit_title"),
+                    new FmtArg("url", $this->prow->hoturl(["m" => "edit"], Conf::HOTURL_RAW), 0)));
+        }
+    }
+
+    function handle_update() {
         $conf = $this->conf;
         // XXX lock tables
         $is_new = $this->prow->paperId <= 0;
         $was_submitted = $this->prow->timeSubmitted > 0;
+        $is_final = $this->prow->phase() === PaperInfo::PHASE_FINAL
+            && $this->qreq["status:phase"] === "final";
         $this->useRequest = true;
 
         $this->ps = new PaperStatus($this->user);
-        $prepared = $this->ps->prepare_save_paper_web($this->qreq, $this->prow, $action);
+        $prepared = $this->ps->prepare_save_paper_web($this->qreq, $this->prow);
 
         if (!$prepared) {
             if ($is_new && $this->qreq->has_files()) {
                 // XXX save uploaded files
                 $this->ps->prepend_msg("<5><strong>Your uploaded files were ignored.</strong>", 2);
             }
-            $this->ps->prepend_msg("<0>Changes not saved; please correct these errors and try again.", 2);
+            if ($this->ps->has_error_at("status:if_unmodified_since")) {
+                $this->handle_if_unmodified_since();
+            } else {
+                $this->ps->prepend_msg("<0>Changes not saved; please correct these errors and try again.", 2);
+            }
             $conf->feedback_msg($this->ps->decorated_message_list());
             return;
         }
 
         // check deadlines
-        // NB At this point, PaperStatus also checks deadlines.
+        // NB PaperStatus also checks deadlines now; this is likely redundant.
         if ($is_new) {
             // we know that can_start_paper implies can_finalize_paper
             $whynot = $this->user->perm_start_paper($this->prow);
         } else {
             $whynot = $this->user->perm_edit_paper($this->prow);
             if ($whynot
-                && $action === "update"
+                && !$is_final
                 && !count(array_diff($this->ps->changed_keys(), ["contacts", "status"]))) {
                 $whynot = $this->user->perm_finalize_paper($this->prow);
             }
@@ -192,9 +215,12 @@ class Paper_Page {
 
         $new_prow = $conf->paper_by_id($this->ps->paperId, $this->user, ["topics" => true, "options" => true]);
         if (!$new_prow) {
-            $this->ps->prepend_msg("<0>Submission not saved; please correct these errors and try again", MessageSet::ERROR);
+            $this->ps->prepend_msg($conf->_("<0>{Submission} not saved; please correct these errors and try again"), MessageSet::ERROR);
             $conf->feedback_msg($this->ps->decorated_message_list());
             return;
+        }
+        if (!$this->user->can_view_paper($new_prow)) {
+            error_log("{$conf->dbname}: user {$this->user->email} #{$this->user->contactId} cannot view new paper #{$new_prow->paperId} because " . json_encode($this->user->perm_view_paper($new_prow)));
         }
         assert($this->user->can_view_paper($new_prow));
 
@@ -208,7 +234,7 @@ class Paper_Page {
         $sr = $new_prow->submission_round();
 
         // confirmation message
-        if ($action === "final") {
+        if ($is_final) {
             $template = "@submitfinalpaper";
         } else if ($newsubmit) {
             $template = "@submitpaper";
@@ -226,35 +252,35 @@ class Paper_Page {
         $note_status = MessageSet::PLAIN;
         if ($this->ps->has_error()) {
             // only print save error message; to do otherwise is confusing
-        } else if ($action == "final") {
+        } else if ($is_final) {
             if ($new_prow->timeFinalSubmitted <= 0) {
                 $notes[] = $conf->_("<0>The final version has not yet been submitted.");
             }
             $notes[] = $this->time_note($this->conf->setting("final_soft") ?? 0,
-                "<5>You have until %s to make further changes.",
-                "<5>The deadline for submitting final versions was %s.");
+                "<5>You have until {} to make further changes.",
+                "<5>The deadline for submitting final versions was {}.");
         } else if ($new_prow->timeSubmitted > 0) {
             $note_status = MessageSet::SUCCESS;
-            $notes[] = $conf->_("<0>The submission is ready for review.");
+            $notes[] = $conf->_("<0>The {submission} is ready for review.");
             if (!$sr->freeze) {
                 $notes[] = $this->time_note($sr->update,
-                    "<5>You have until %s to make further changes.", "");
+                    "<5>You have until {} to make further changes.", "");
             }
         } else {
             $note_status = MessageSet::URGENT_NOTE;
             if ($sr->freeze) {
-                $notes[] = $conf->_("<0>This submission has not yet been completed.");
+                $notes[] = $conf->_("<0>This {submission} has not yet been completed.");
             } else if (($missing = PaperTable::missing_required_fields($new_prow))) {
-                $notes[] = $conf->_("<5>This submission is not ready for review. Required fields %#s are missing.", PaperTable::field_title_links($missing, "missing_title"));
+                $notes[] = $conf->_("<5>This {submission} is not ready for review. Required fields {:list} are missing.", PaperTable::field_title_links($missing, "missing_title"));
             } else {
-                $first = $conf->_("<5>This submission is marked as not ready for review.");
-                $notes[] = "<5><strong>" . Ftext::unparse_as($first, 5) . "</strong>";
+                $first = $conf->_("<5>This {submission} is marked as not ready for review.");
+                $notes[] = "<5><strong>" . Ftext::as(5, $first) . "</strong>";
             }
             $notes[] = $this->time_note($sr->update,
-                "<5>You have until %s to make further changes.",
-                "<5>The deadline for updating submissions was %s.");
+                "<5>You have until {} to make further changes.",
+                "<5>The deadline for updating {submissions} was {}.");
             if (($msg = $this->time_note($sr->submit,
-                "<5>Submissions incomplete as of %s will not be considered.", "")) !== "") {
+                "<5>{Submissions} incomplete as of {} will not be considered.", "")) !== "") {
                 $notes[] = $msg;
             }
         }
@@ -266,11 +292,10 @@ class Paper_Page {
                 $this->ps->splice_msg($msgpos++, $conf->_("<0>No changes"), MessageSet::WARNING_NOTE);
             }
         } else if ($is_new) {
-            $this->ps->splice_msg($msgpos++, $conf->_("<0>Registered submission as #%d", $new_prow->paperId), MessageSet::SUCCESS);
+            $this->ps->splice_msg($msgpos++, $conf->_("<0>Registered {submission} as #{}", $new_prow->paperId), MessageSet::SUCCESS);
         } else {
-            $t = $action === "final" ? "<0>Updated final version (changed %#s)" : "<0>Updated submission (changed %#s)";
             $chf = array_map(function ($f) { return $f->edit_title(); }, $this->ps->changed_fields());
-            $this->ps->splice_msg($msgpos++, $conf->_($t, $chf), MessageSet::SUCCESS);
+            $this->ps->splice_msg($msgpos++, $conf->_("<0>Updated {submission} (changed {:list})", $chf, new FmtArg("phase", $is_final ? "final" : "review")), MessageSet::SUCCESS);
         }
         if ($this->ps->has_error()) {
             if (!$this->ps->has_change()) {
@@ -279,11 +304,11 @@ class Paper_Page {
                 $this->ps->splice_msg($msgpos++, $conf->_("<0>Please correct these issues and save again."), MessageSet::URGENT_NOTE);
             }
         } else if ($this->ps->has_problem() && !$sr->freeze) {
-            $this->ps->splice_msg($msgpos++, $conf->_("<0>Please check these issues before completing the submission."), MessageSet::WARNING_NOTE);
+            $this->ps->splice_msg($msgpos++, $conf->_("<0>Please check these issues before completing the {submission}."), MessageSet::WARNING_NOTE);
         }
-        $notes = array_filter($notes, function ($n) { return $n !== ""; });
-        if (!empty($notes)) {
-            $this->ps->splice_msg(-1, Ftext::join(" ", $notes), $note_status);
+        $notes_ftext = Ftext::join_nonempty(" ", $notes);
+        if ($notes_ftext !== "") {
+            $this->ps->splice_msg(-1, $notes_ftext, $note_status);
         }
         $conf->feedback_msg($this->ps->decorated_message_list());
 
@@ -300,20 +325,20 @@ class Paper_Page {
                         $options["reason"] = $this->qreq["status:notify_reason"];
                     }
                 }
-                if (!empty($notes)) {
-                    $options["notes"] = Ftext::unparse_as(Ftext::join(" ", $notes), 0) . "\n\n";
+                if ($notes_ftext !== "") {
+                    $options["notes"] = Ftext::as(0, $notes_ftext) . "\n\n";
                 }
                 if (!$is_new) {
                     $chf = array_map(function ($f) { return $f->edit_title(); }, $this->ps->changed_fields());
                     if (!empty($chf)) {
-                        $options["change"] = $conf->_("%#s were changed.", $chf);
+                        $options["change"] = $conf->_("{:list} were changed.", $chf);
                     }
                 }
                 HotCRPMailer::send_contacts($template, $new_prow, $options);
             }
 
             // other mail confirmations
-            if ($action === "final" && $new_prow->timeFinalSubmitted > 0) {
+            if ($is_final && $new_prow->timeFinalSubmitted > 0) {
                 $followers = $new_prow->final_update_followers();
                 $template = "@finalsubmitnotify";
             } else if ($is_new || $newsubmit) {
@@ -333,6 +358,7 @@ class Paper_Page {
         if (!$this->ps->has_error() || ($is_new && $new_prow)) {
             $conf->redirect_self($this->qreq, ["p" => $new_prow->paperId, "m" => "edit"]);
         }
+        $this->useRequest = false;
     }
 
     function handle_updatecontacts() {
@@ -346,24 +372,26 @@ class Paper_Page {
         }
 
         $this->ps = new PaperStatus($this->user);
-        if (!$this->ps->prepare_save_paper_web($this->qreq, $this->prow, "updatecontacts")) {
-            $conf->feedback_msg($this->ps);
+        $this->qreq["status:phase"] = "contacts";
+        if (!$this->ps->prepare_save_paper_web($this->qreq, $this->prow)) {
+            $conf->feedback_msg($this->ps->decorated_message_list([PaperOption::CONTACTSID]));
             return;
         }
 
         if (!$this->ps->has_change()) {
             $this->ps->prepend_msg($conf->_("<0>No changes", $this->prow->paperId), MessageSet::WARNING_NOTE);
             $this->ps->warning_at(null, "");
-            $conf->feedback_msg($this->ps);
+            $conf->feedback_msg($this->ps->decorated_message_list([PaperOption::CONTACTSID]));
         } else if ($this->ps->execute_save()) {
             $this->ps->prepend_msg($conf->_("<0>Updated contacts", $this->prow->paperId), MessageSet::SUCCESS);
-            $conf->feedback_msg($this->ps);
+            $conf->feedback_msg($this->ps->decorated_message_list([PaperOption::CONTACTSID]));
             $this->ps->log_save_activity();
         }
 
         if (!$this->ps->has_error()) {
             $conf->redirect_self($this->qreq);
         }
+        $this->useRequest = false;
     }
 
     private function prepare_edit_mode() {
@@ -382,18 +410,16 @@ class Paper_Page {
             $this->prow->set_allow_absent(false);
         }
 
-        $editable = $this->user->can_edit_paper($this->prow);
-        $this->pt->set_edit_status($this->ps, $editable, $editable && $this->useRequest);
+        $this->pt->set_edit_status($this->ps, $this->useRequest);
     }
 
     /** @param int $capuid */
     private function print_capability_user_message($capuid) {
         if (($u = $this->conf->user_by_id($capuid, USER_SLICE))) {
-            if ($this->user->has_email()) {
-                $m = "<0>You’re accessing this submission using a special link for reviewer {$u->email}. (You are signed in as {$this->user->email}.)";
-            } else {
-                $m = "<5>You’re accessing this submission using a special link for reviewer {$u->email}. " . Ht::link("Sign in to the site", $this->conf->hoturl("signin", ["email" => $u->email, "cap" => null]), ["class" => "nw"]);
-            }
+            $m = $this->conf->_("<0>You’re accessing this {submission} using a special link for reviewer {reviewer}",
+                new FmtArg("reviewer", $u->email, 0),
+                new FmtArg("self", $this->user->email, 0),
+                new FmtArg("signinurl", $this->conf->hoturl_raw("signin", ["email" => $u->email, "cap" => null])));
             $this->pt()->add_pre_status_feedback(new MessageItem(null, $m, MessageSet::WARNING_NOTE));
         }
     }
@@ -401,12 +427,12 @@ class Paper_Page {
     function print() {
         // correct modes
         $pt = $this->pt();
+        $pt->resolve_comments();
         if ($pt->can_view_reviews()
             || $pt->mode === "re"
             || ($this->prow->paperId > 0 && $this->user->can_edit_some_review($this->prow))) {
             $pt->resolve_review(false);
         }
-        $pt->resolve_comments();
         if ($pt->mode === "edit") {
             $this->prepare_edit_mode();
         }
@@ -486,15 +512,15 @@ class Paper_Page {
         $pp = new Paper_Page($user, $qreq);
         $pp->load_prow();
 
-        // fix user
-        if ($qreq->is_post() && $qreq->valid_token()) {
-            $user->ensure_account_here();
-            // XXX escape unless update && can_start_paper???
-        }
-        if ($pp->prow->paperId === 0
-            && $user->privChair
-            && !$pp->prow->submission_round()->time_register(true)) {
-            $user->add_overrides(Contact::OVERRIDE_CONFLICT);
+        // new papers: maybe fix user, maybe error exit
+        if ($pp->prow->paperId === 0) {
+            if (!$pp->prow->submission_round()->time_register(true)
+                && $user->privChair) {
+                $user->add_overrides(Contact::OVERRIDE_CONFLICT);
+            }
+            if (($perm = $user->perm_start_paper($pp->prow))) {
+                $pp->error_exit($perm);
+            }
         }
 
         // fix request
@@ -513,7 +539,10 @@ class Paper_Page {
         if ($qreq->cancel) {
             $pp->handle_cancel();
         } else if ($qreq->update && $qreq->valid_post()) {
-            $pp->handle_update($qreq->submitfinal ? "final" : "update");
+            if (!isset($qreq["status:phase"])) {
+                $qreq["status:phase"] = $qreq->submitfinal ? "final" : "review"; /* XXX backward compat */
+            }
+            $pp->handle_update();
         } else if ($qreq->updatecontacts && $qreq->valid_post()) {
             $pp->handle_updatecontacts();
         } else if ($qreq->withdraw && $qreq->valid_post()) {

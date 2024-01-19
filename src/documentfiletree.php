@@ -28,6 +28,8 @@ class DocumentFileTree implements JsonSerializable {
 
     /** @var array<string,DocumentFileTreeDir> */
     private $_dirinfo = [];
+    /** @var string */
+    private $_extension_regex;
 
     /** @param string $dp
      * @param int $treeid */
@@ -38,14 +40,14 @@ class DocumentFileTree implements JsonSerializable {
         foreach (preg_split("/\/+/", $dp) as $fdir) {
             if ($fdir !== "") {
                 if (preg_match('/%\d*[%hHjaAwx]/', $fdir)) {
-                    if (count($this->_components) % 2 == 0) {
+                    if (count($this->_components) % 2 === 0) {
                         $this->_components[] = "";
                     }
-                    $this->_components[] = "/$fdir";
-                } else if (count($this->_components) % 2 == 0) {
-                    $this->_components[] = "/$fdir";
+                    $this->_components[] = "/{$fdir}";
+                } else if (count($this->_components) % 2 === 0) {
+                    $this->_components[] = "/{$fdir}";
                 } else {
-                    $this->_components[count($this->_components) - 1] .= "/$fdir";
+                    $this->_components[count($this->_components) - 1] .= "/{$fdir}";
                 }
             }
         }
@@ -62,7 +64,7 @@ class DocumentFileTree implements JsonSerializable {
      * @param int $pos
      * @return int */
     private function populate_dirinfo($dir, $pos) {
-        if ($pos < $this->_n && $pos % 1 == 0) {
+        if ($pos < $this->_n && $pos % 1 === 0) {
             $dir .= $this->_components[$pos];
             ++$pos;
         }
@@ -74,9 +76,9 @@ class DocumentFileTree implements JsonSerializable {
         $n = 0;
         $isdir = $pos + 1 < $this->_n;
         foreach (is_dir($dir) ? scandir($dir, SCANDIR_SORT_NONE) : [] as $x) {
-            $x = "/$x";
+            $x = "/{$x}";
             if ($x !== "/." && $x !== "/.." && preg_match($preg, $x)) {
-                $c = $isdir ? $this->populate_dirinfo("$dir$x", $pos + 1) : 1;
+                $c = $isdir ? $this->populate_dirinfo("{$dir}{$x}", $pos + 1) : 1;
                 if ($c) {
                     $di[] = $n;
                     $di[] = $x;
@@ -84,8 +86,10 @@ class DocumentFileTree implements JsonSerializable {
                 }
             }
         }
-        $di[] = $n;
-        $this->_dirinfo[$dir] = new DocumentFileTreeDir($di);
+        if (!empty($di)) {
+            $di[] = $n;
+            $this->_dirinfo[$dir] = new DocumentFileTreeDir($dir, $di);
+        }
         return $n;
     }
 
@@ -129,12 +133,22 @@ class DocumentFileTree implements JsonSerializable {
                     }
                     $build .= $xext;
                     $text = substr($text, strlen($xext));
-                } else if (preg_match('/\A(\.(?:avi|bib|bin|bmp|bz2|csv|docx?|gif|gz|html|jpg|json|md|mov|mp4|mpeg|pdf|png|pptx?|ps|rtf|smil|svgz?|tar|tex|tiff|txt|webm|xlsx?|xz|zip))/', $text, $m)) {
-                    $xext = $m[1];
-                    $build .= $m[1];
-                    $text = substr($text, strlen($m[1]));
-                } else {
+                } else if (!str_starts_with($text, ".")) {
                     $xext = "";
+                } else {
+                    $n = $text === "" ? strlen($text) : min(Mimetype::max_extension_length(), strlen($text));
+                    $mt = Mimetype::lookup(substr($text, 0, $n));
+                    while (!$mt && $text !== "" && $n > 2) {
+                        --$n;
+                        $mt = Mimetype::lookup(substr($text, 0, $n));
+                    }
+                    if ($mt) {
+                        $xext = substr($text, 0, $n);
+                        $build .= $xext;
+                        $text = substr($text, $n);
+                    } else {
+                        $xext = "";
+                    }
                 }
             } else if ($fn === "w") {
                 preg_match('/\A([^%\/]*)(.*)\z/', $match, $mm);
@@ -158,11 +172,11 @@ class DocumentFileTree implements JsonSerializable {
                     if (strlen($mm[1]) > strlen($xhash)) {
                         $xhash = $mm[1];
                     }
-                    if (strlen($mm[1]) == 2 && $xalgo === null) {
+                    if (strlen($mm[1]) === 2 && $xalgo === null) {
                         $xalgo = "";
                     }
                     // XXX don't track that algo *cannot* be SHA-1
-                    if (strlen($mm[1]) == 2 ? $xalgo !== "" : $xalgo === "") {
+                    if (strlen($mm[1]) === 2 ? $xalgo !== "" : $xalgo === "") {
                         return null;
                     }
                     $build .= $mm[1];
@@ -192,16 +206,10 @@ class DocumentFileTree implements JsonSerializable {
                         if (!str_starts_with($text, $xalgo)) {
                             return null;
                         }
-                    } else if (preg_match('/\A(sha2-|[0-9a-f]+)/', $text, $mm)) {
-                        if ($mm[1] === "sha2-" || strlen($mm[1]) === 64) {
-                            $xalgo = "sha2-";
-                        } else if (strlen($mm[1]) === 40) {
-                            $xalgo = "";
-                        } else {
-                            return null;
-                        }
+                    } else if (str_starts_with($text, "sha2-")) {
+                        $xalgo = "sha2-";
                     } else {
-                        return null;
+                        $xalgo = "";
                     }
                     $build .= $xalgo;
                     $text = substr($text, strlen($xalgo));
@@ -250,7 +258,7 @@ class DocumentFileTree implements JsonSerializable {
         $l = 0;
         $r = count($di) - 1;
         $val = mt_rand(0, $di[$r] - 1);
-        if ($di[$r] == ($r >> 1)) {
+        if ($di[$r] === ($r >> 1)) {
             $l = $r = $val << 1;
             //$verbose && error_log("*$val ?{$l}[" . $di[$l] . "," . $di[$l + 2] . ")");
         }
@@ -271,7 +279,7 @@ class DocumentFileTree implements JsonSerializable {
         $this->clear();
         $fm = new DocumentFileTreeMatch($this->treeid);
         for ($i = 0; $i < $this->_n; ++$i) {
-            if ($i % 2 == 0) {
+            if ($i % 2 === 0) {
                 $fm->fname .= $this->_components[$i];
             } else {
                 $di = $this->_dirinfo[$fm->fname];
@@ -291,7 +299,7 @@ class DocumentFileTree implements JsonSerializable {
         $this->clear();
         $fm = new DocumentFileTreeMatch($this->treeid);
         for ($i = 0; $i < $this->_n; ++$i) {
-            if ($i % 2 == 0) {
+            if ($i % 2 === 0) {
                 $fm->fname .= $this->_components[$i];
             } else {
                 $di = $this->_dirinfo[$fm->fname];
@@ -383,6 +391,8 @@ class DocumentFileTreeMatch {
 }
 
 class DocumentFileTreeDir implements JsonSerializable {
+    /** @var string */
+    private $_dir;
     /** @var list<int|string> */
     private $_di;
     /** @var array<int,true> */
@@ -390,8 +400,10 @@ class DocumentFileTreeDir implements JsonSerializable {
     /** @var bool */
     private $_sorted = false;
 
-    /** @param list<int> $di */
-    function __construct($di) {
+    /** @param string $dir
+     * @param list<int> $di */
+    function __construct($dir, $di) {
+        $this->_dir = $dir;
         $this->_di = $di;
     }
 
@@ -419,7 +431,8 @@ class DocumentFileTreeDir implements JsonSerializable {
     private function random_index() {
         $l = 0;
         $r = count($this->_di) - 1;
-        if (count($this->_used) >= ($this->_di[$r] >> 2)) {
+        $nused = count($this->_used);
+        if ($nused >= ($this->_di[$r] >> 2)) {
             $this->clean();
             $r = count($this->_di) - 1;
         }
@@ -429,7 +442,7 @@ class DocumentFileTreeDir implements JsonSerializable {
         do {
             $val = mt_rand(0, $this->_di[$r] - 1);
         } while (isset($this->_used[$val]));
-        if ($this->_di[$r] == ($r >> 1)) {
+        if ($this->_di[$r] === ($r >> 1)) {
             $l = $r = $val << 1;
         }
         while ($l + 2 < $r) {

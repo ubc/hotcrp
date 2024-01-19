@@ -77,52 +77,60 @@ class LoginHelper {
                 $qreq[$k] = rawurldecode($qreq[$k]);
             }
         }
-        return ["ok" => true, "user" => $conf->user_by_email($qreq->email)
-            ?? Contact::make_keyed($conf, $qreq->subset_as_array(
-                "firstName", "first", "lastName", "last", "name", "email", "affiliation"
-            ))];
+        if (!($u = $conf->user_by_email($qreq->email))) {
+            $keys = $qreq->subset_as_array("firstName", "first", "lastName", "last", "name", "email", "affiliation");
+            $u = Contact::make_keyed($conf, $keys);
+        }
+        return ["ok" => true, "user" => $u];
     }
 
     /** @return array{ok:true,user:Contact}|array{ok:false} */
     static function login_info(Conf $conf, Qrequest $qreq) {
-        assert(!$conf->external_login());
         assert($qreq->valid_post());
 
-        $info = self::user_lookup($conf, $qreq);
-        if ($info["ok"]) {
-            $info = $info["user"]->check_password_info(trim((string) $qreq->password));
-        }
-        return $info;
-    }
-
-    /** @return array{ok:true,user:Contact}|array{ok:false,disabled?:true,email?:true} */
-    static function external_login_info(Conf $conf, Qrequest $qreq) {
-        assert($conf->external_login());
-
-        $info = self::user_lookup($conf, $qreq);
-        if (!$info["ok"]) {
-            return $info;
-        }
-        $user = $info["user"];
-
-        // do LDAP login before validation, since we might create an account
-        if ($conf->opt("ldapLogin")) {
+        // LDAP login precedes validation (to set $qreq components)
+        if (($lt = $conf->login_type()) === "ldap") {
             $info = LdapLogin::ldap_login_info($conf, $qreq);
-            if (!$info["ok"]) {
-                return $info;
+        } else if ($lt === "none" || $lt === "oauth") {
+            $info = ["ok" => false, "nologin" => true];
+        } else {
+            $info = ["ok" => true];
+        }
+
+        // look up user
+        if ($info["ok"]) {
+            $info = self::user_lookup($conf, $qreq);
+        }
+
+        // check password or connect to external login service
+        if ($info["ok"]) {
+            /** @phan-suppress-next-line PhanTypePossiblyInvalidDimOffset */
+            $user = $info["user"];
+            if ($lt) {
+                $info = self::check_external_login($user);
+            } else {
+                $info = $user->check_password_info(trim((string) $qreq->password));
             }
         }
 
-        // auto-create account if external login
-        if (!$user->contactId
-            && !$user->store(Contact::SAVE_ANY_EMAIL)) {
-            return ["ok" => false, "internal" => true, "email" => true];
-        }
+        return $info;
+    }
 
-        // if user disabled, then fail
-        if ($user->is_disabled()
-            || (($cdbuser = $user->cdb_user()) && $cdbuser->is_disabled())) {
+    /** @param Contact $user
+     * @return array{ok:true,user:Contact}|array{ok:false,disabled?:true,email?:true} */
+    static function check_external_login($user) {
+        $cdbuser = $user->cdb_user();
+        if ($cdbuser && $cdbuser->is_disabled()) {
             return ["ok" => false, "disabled" => true, "email" => true];
+        }
+        if (!$user->contactId) {
+            $user->store(Contact::SAVE_ANY_EMAIL | Contact::SAVE_SELF_REGISTER);
+        }
+        if ($user->is_disabled()) {
+            return ["ok" => false, "disabled" => true, "email" => true];
+        } else if (!$user->contactId
+                   || ($user->is_dormant() && !$user->conf->allow_user_self_register())) {
+            return ["ok" => false, "email" => true, "noaccount" => true];
         } else {
             return ["ok" => true, "user" => $user];
         }
@@ -140,7 +148,8 @@ class LoginHelper {
 
         // store authentication
         $qreq->qsession()->open_new_sid();
-        self::change_session_users($qreq, [$xuser->email => 1]);
+        UpdateSession::user_change($qreq, $xuser->email, true);
+        UpdateSession::usec_add_list($qreq, $xuser->email, $info["usec"] ?? [], 0);
 
         // activate
         $user = $xuser->activate($qreq, false);
@@ -164,38 +173,6 @@ class LoginHelper {
         return $info;
     }
 
-    /** @param Qrequest $qreq
-     * @param array<string,1|-1> $uinstr */
-    static function change_session_users($qreq, $uinstr) {
-        $us = Contact::session_users($qreq);
-        $any_deleted = false;
-        foreach ($uinstr as $e => $delta) {
-            for ($i = 0; $i !== count($us); ++$i) {
-                if (strcasecmp($us[$i], $e) === 0)
-                    break;
-            }
-            if ($delta < 0 && $i !== count($us)) {
-                array_splice($us, $i, 1);
-                $any_deleted = true;
-            } else if ($delta > 0 && $i === count($us)) {
-                $us[] = $e;
-            }
-        }
-        if (count($us) > 1) {
-            $qreq->set_gsession("us", $us);
-        } else {
-            $qreq->unset_gsession("us");
-        }
-        if (empty($us)) {
-            $qreq->unset_gsession("u");
-        } else if ($qreq->gsession("u") !== $us[0]) {
-            $qreq->set_gsession("u", $us[0]);
-        }
-        if ($any_deleted) {
-            $qreq->unset_gsession("uchoice");
-        }
-    }
-
     /** @return bool */
     static private function check_setup_phase(Contact $user) {
         if ($user->conf->setting("setupPhase")) {
@@ -215,11 +192,11 @@ class LoginHelper {
             ]);
             return;
         }
-        $qreq->unset_gsession("testsession");
 
         // Go places
-        if (isset($qreq->redirect)) {
-            $where = $qreq->redirect;
+        if ($qreq->redirect
+            && ($url = $user->conf->qreq_redirect_url($qreq))) {
+            $where = $url;
         } else if (($login_bounce = $qreq->gsession("login_bounce"))
                    && $login_bounce[0] === $user->conf->session_key) {
             $where = $login_bounce[1];
@@ -234,7 +211,7 @@ class LoginHelper {
 
     /** @return array{ok:true,user:Contact}|array{ok:false,email?:true} */
     static function new_account_info(Conf $conf, Qrequest $qreq) {
-        assert($conf->allow_user_self_register());
+        assert(!$conf->external_login() && $conf->allow_user_self_register());
         assert($qreq->valid_post());
 
         $info = self::user_lookup($conf, $qreq);
@@ -300,8 +277,9 @@ class LoginHelper {
 
         // disabled users get mail saying they're disabled
         if ($user->is_disabled()
-            || (!$user->contactId && !$conf->allow_user_self_register())
-            || ($cdbu && $cdbu->is_disabled())) {
+            || ($cdbu && $cdbu->is_disabled())
+            || ((!$user->contactId || $user->is_dormant())
+                && !$conf->allow_user_self_register())) {
             $template = "@resetdisabled";
         } else {
             $template = "@resetpassword";
@@ -319,7 +297,7 @@ class LoginHelper {
             $qsess->commit();
         }
         if ($explicit) {
-            if ($user->conf->opt("httpAuthLogin")) {
+            if ($user->conf->login_type() === "htauth") {
                 $qsess->open_new_sid();
                 $qsess->set("reauth", true);
             } else {
@@ -334,47 +312,55 @@ class LoginHelper {
 
     /** @param ?string $email
      * @param array $info
-     * @param MessageSet $ms
+     * @param ?MessageSet $ms
      * @return void */
     static function login_error(Conf $conf, $email, $info, $ms) {
         $email = trim($email ?? "");
-        $args = [];
+        $problem = isset($info["invalid"]) ? "bad_password" : null;
         $e = "";
+        $args = [];
+
         if (isset($info["ldap"]) && isset($info["ldap_detail"])) {
             $e = $info["ldap_detail"];
         } else if (isset($info["noemail"])) {
-            $e = $conf->opt("ldapLogin") ? "<0>Enter your username" : "<0>Enter your email address";
+            $e = $conf->login_type() ? "<0>Enter your username" : "<0>Enter your email address";
         } else if (isset($info["invalidemail"])) {
             $e = "<0>Enter a valid email address";
-        } else if (isset($info["nocreate"])) {
-            $e = "<0>Users can’t self-register for this site";
         } else if (isset($info["noreset"])) {
             $e = "<0>Password reset links aren’t used for this site. Contact your system administrator if you’ve forgotten your password.";
         } else if (isset($info["nologin"])) {
             $e = "<0>User {$email} is not allowed to sign in to this site";
-        } else if (isset($info["userexists"])) {
-            $e = "<0>User {$email} already has an account on this site";
-            $args[] = new FmtArg("context", "account_exists");
-        } else if (isset($info["unset"])) {
-            $e = "<0>User {$email} does not have an account";
-            $args[] = new FmtArg("context", "no_account");
-            if ($conf->allow_user_self_register() && $email !== "") {
+        } else if (isset($info["noaccount"])) {
+            $e = "<0>User {$email} does not have an account here";
+            $problem = "no_account";
+            if (!$conf->login_type()
+                && $conf->allow_user_self_register()
+                && $email !== "") {
                 $args[] = new FmtArg("newaccount", $conf->hoturl_raw("newaccount", ["email" => $email]));
             }
+        } else if (isset($info["unset"])) {
+            $e = "<0>User {$email} has not set a password yet";
+            $problem = "no_password";
+        } else if (isset($info["userexists"])) {
+            $e = "<0>User {$email} already has an account on this site";
+            $problem = "account_exists";
         } else if (isset($info["disabled"])) {
-            $e = "<0>Your account on this site is disabled. Contact the site administrator for more information.";
+            $e = $conf->_i("account_disabled");
         } else if (isset($info["reset"])) {
             $e = "<0>Your password has expired";
-            $args[] = new FmtArg("context", "password_expired");
+            $problem = "password_expired";
         } else if (isset($info["nopw"])) {
             $e = "<0>Enter your password";
         } else if (isset($info["nopost"])) {
             $e = "<0>Automatic login links have been disabled for security. Use this form to sign in.";
         } else if (isset($info["internal"])) {
             $e = "<0>Internal error";
+        } else if (isset($info["nologin"])) {
+            $e = "<0>Direct signin is not allowed on this site";
         } else {
             $e = "<0>Incorrect password";
         }
+
         if ($email !== "") {
             $args[] = new FmtArg("email", $email, 0);
             $args[] = new FmtArg("signin", $conf->hoturl_raw("signin", ["email" => $email]), 0);
@@ -382,13 +368,29 @@ class LoginHelper {
                 $args[] = new FmtArg("forgotpassword", $conf->hoturl_raw("forgotpassword", ["email" => $email]), 0);
             }
         }
-        if (isset($info["invalid"]) && !Fmt::find_arg($args, "context")) {
-            $args[] = new FmtArg("context", "bad_password");
+        if ($problem) {
+            $args[] = new FmtArg("problem", $problem);
         }
-        $e = $conf->_i("signin_error", new FmtArg("message", $e), ...$args);
-        $ms->error_at(isset($info["email"]) ? "email" : "password", $e);
-        if (isset($info["password"])) {
-            $ms->error_at("password");
+        if ($info["allow_redirect"] ?? false) {
+            $args[] = new FmtArg("allow_redirect", true);
+        }
+
+        $msg = $conf->_i("signin_error", new FmtArg("message", $e), ...$args);
+
+        if (($info["allow_redirect"] ?? false)
+            && $problem !== "bad_password"
+            && ($urlarg = Fmt::find_arg($args, "forgotpassword"))) {
+            $conf->error_msg($msg);
+            $conf->redirect($urlarg->value);
+        }
+
+        if ($ms) {
+            $ms->error_at(isset($info["email"]) ? "email" : "password", $msg);
+            if (isset($info["password"])) {
+                $ms->error_at("password");
+            }
+        } else {
+            $conf->error_msg($msg);
         }
     }
 }

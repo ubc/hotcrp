@@ -18,6 +18,9 @@ class Settings_API {
                 return JsonResult::make_permission_error();
             }
             $sv->add_json_string($jtext, $qreq->filename);
+            if (isset($qreq->reset)) {
+                $sv->set_req("reset", friendly_boolean($qreq->reset) ? "1" : "");
+            }
             $sv->parse();
             $dry_run = $qreq->dryrun || $qreq->dry_run;
             if ($dry_run) {
@@ -36,7 +39,7 @@ class Settings_API {
         if (!$sv->viewable_by_user()) {
             return JsonResult::make_permission_error();
         }
-        $content["settings"] = $sv->all_json_oldv();
+        $content["settings"] = $sv->all_jsonv(["reset" => !!$qreq->reset]);
         return new JsonResult($content);
     }
 
@@ -108,5 +111,85 @@ class Settings_API {
             }
         }
         return new JsonResult(["ok" => true, "setting_descriptions" => $m]);
+    }
+
+    /** @param &$m array<string,list<object>>
+     * @return callable(mixed):bool */
+    static function make_field_library_collector(&$m) {
+        $mn = 0;
+        return function ($j) use (&$m, &$mn) {
+            if (!is_string($j->legend ?? null)) {
+                return false;
+            }
+            $name = $j->legend;
+            ++$mn;
+            if ($j->unique ?? false) {
+                $name .= "\${$mn}";
+            }
+            $m[$name][] = $j;
+            return true;
+        };
+    }
+
+    /** @param XtParams $xtp
+     * @param list<string> $defaults
+     * @param ?string $optname
+     * @return list<object> */
+    static function make_field_library($xtp, $defaults, $optname) {
+        $m = [];
+        $f1 = self::make_field_library_collector($m);
+        $f2 = function ($entry, $landmark) use ($f1, $xtp) {
+            if (strpos($entry, "::") === false) {
+                return false;
+            }
+            return call_user_func($entry, $xtp);
+        };
+        expand_json_includes_callback($defaults, $f1);
+        if (($olist = $xtp->conf->opt($optname))) {
+            expand_json_includes_callback($olist, $f1, $f2);
+        }
+
+        $l = [];
+        foreach ($m as $name => $list) {
+            if (($j = $xtp->search_list($list))) {
+                $l[] = $j;
+            }
+        }
+
+        usort($l, "Conf::xt_pure_order_compare");
+        return $l;
+    }
+
+    static function submissionfieldlibrary(Contact $user, Qrequest $qreq) {
+        $sv = new SettingValues($user);
+        $xtp = new XtParams($user->conf, $user);
+        $xtp->qreq = $qreq;
+        $otmap = $user->conf->option_type_map();
+
+        $samples = [];
+        $osr = $sv->cs()->callable("Options_SettingParser");
+        foreach (self::make_field_library($xtp, ["etc/submissionfieldlibrary.json"], "submissionFieldLibraries") as $samp) {
+            if (!($otype = $otmap[$samp->type] ?? null)
+                || !$xtp->check($otype->display_if ?? null, $otype)) {
+                continue;
+            }
+            $samples[] = $osr->make_sample_json($sv, $samp);
+        }
+
+        return (new JsonResult([
+            "ok" => true,
+            "samples" => $samples,
+            "types" => Options_SettingParser::make_types_json($otmap)
+        ]))->pretty_print(true);
+    }
+
+    static function reviewfieldlibrary(Contact $user, Qrequest $qreq) {
+        $xtp = new XtParams($user->conf, $user);
+        $xtp->qreq = $qreq;
+        return new JsonResult([
+            "ok" => true,
+            "samples" => self::make_field_library($xtp, ["etc/reviewfieldlibrary.json"], "reviewFieldLibraries"),
+            "types" => ReviewForm_SettingParser::make_types_json($user->conf->review_field_type_map())
+        ]);
     }
 }

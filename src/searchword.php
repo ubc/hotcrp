@@ -18,11 +18,13 @@ class SearchWord {
     /** @var ?string */
     public $cword;
     /** @var ?int */
-    public $pos1w;
+    public $kwpos1;
     /** @var ?int */
     public $pos1;
     /** @var ?int */
     public $pos2;
+    /** @var ?SearchStringContext */
+    public $string_context;
 
     /** @param string $word
      * @return SearchWord */
@@ -34,17 +36,19 @@ class SearchWord {
     }
 
     /** @param string $kwarg
-     * @param int $pos1w
+     * @param int $kwpos1
      * @param int $pos1
-     * @param int $pos2 */
-    static function make_kwarg($kwarg, $pos1w, $pos1, $pos2) {
+     * @param int $pos2
+     * @param ?SearchStringContext $string_context
+     * @return SearchWord */
+    static function make_kwarg($kwarg, $kwpos1, $pos1, $pos2, $string_context) {
         $sw = new SearchWord;
         $sw->qword = $kwarg;
-        $sw->quoted = self::is_quoted($kwarg);
-        $sw->word = $sw->quoted ? substr($kwarg, 1, -1) : $kwarg;
-        $sw->pos1w = $pos1w;
+        list($sw->word, $sw->quoted) = self::maybe_unquote($kwarg);
+        $sw->kwpos1 = $kwpos1;
         $sw->pos1 = $pos1;
         $sw->pos2 = $pos2;
+        $sw->string_context = $string_context;
         return $sw;
     }
 
@@ -59,23 +63,46 @@ class SearchWord {
     }
 
     /** @param string $str
-     * @return bool */
-    static function is_quoted($str) {
-        return $str !== ""
-            && $str[0] === "\""
-            && strpos($str, "\"", 1) === strlen($str) - 1;
-    }
-
-    /** @param string $str
      * @return string */
     static function unquote($str) {
-        return self::is_quoted($str) ? substr($str, 1, -1) : $str;
+        $len = strlen($str);
+        if ($len === 0) {
+            return "";
+        }
+        $ch = ord($str[0]);
+        if ($ch === 34) {
+            $len1 = 1;
+        } else if ($ch === 0xE2
+                   && $len > 3
+                   && ord($str[1]) === 0x80
+                   && (ord($str[2]) | 1) === 0x9D) { // i.e., “”
+            $len1 = 3;
+        } else {
+            $len1 = 0;
+        }
+        if ($len1 === 0 || $len === $len1) {
+            $len2 = 0;
+        } else {
+            $ch = ord($str[$len - 1]);
+            if ($ch === 34) {
+                $len2 = 1;
+            } else if (($ch | 1) === 0x9D
+                       && $len >= $len1 + 3
+                       && ord($str[$len - 2]) === 0x80
+                       && ord($str[$len - 3]) === 0xE2) {
+                $len2 = 3;
+            } else {
+                $len2 = 0;
+            }
+        }
+        return substr($str, $len1, $len - $len1 - $len2);
     }
 
     /** @param string $str
      * @return array{string,bool} */
     static function maybe_unquote($str) {
-        return self::is_quoted($str) ? [substr($str, 1, -1), true] : [$str, false];
+        $uq = self::unquote($str);
+        return strlen($str) === strlen($uq) ? [$str, false] : [$uq, true];
     }
 
     /** @param ?string $cword */

@@ -5,7 +5,9 @@
 class Nonblind_PaperOption extends PaperOption {
     function __construct(Conf $conf, $args) {
         parent::__construct($conf, $args);
-        $this->set_exists_condition($this->conf->submission_blindness() == Conf::BLIND_OPTIONAL);
+        if ($this->conf->submission_blindness() != Conf::BLIND_OPTIONAL) {
+            $this->override_exists_condition(false);
+        }
     }
     function value_force(PaperValue $ov) {
         if (!$ov->prow->blind) {
@@ -31,11 +33,10 @@ class Nonblind_PaperOption extends PaperOption {
         }
     }
     function print_web_edit(PaperTable $pt, $ov, $reqov) {
-        if ($pt->editable !== "f") {
+        if ($ov->prow->phase() !== PaperInfo::PHASE_FINAL) {
             $cb = Ht::checkbox("blind", 1, !$reqov->value, [
                 "id" => false,
-                "data-default-checked" => !$ov->value,
-                "disabled" => !$this->test_editable($ov->prow)
+                "data-default-checked" => !$ov->value
             ]);
             $pt->print_editable_option_papt($this,
                 '<span class="checkc">' . $cb . '</span>' . $pt->edit_title_html($this),

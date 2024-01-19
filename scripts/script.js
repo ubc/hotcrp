@@ -2,7 +2,7 @@
 // Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
 
 "use strict";
-var siteinfo, hotcrp, hotcrp_status;
+var siteinfo, hotcrp;
 hotcrp = {};
 
 function $$(id) {
@@ -499,7 +499,7 @@ $.ajaxPrefilter(function (options) {
         if (!rjson.message_list)
             rjson.message_list = [{message: jqxhr_error_ftext(jqxhr, status, errormsg), status: 2}];
         for (i = 0; i !== success.length; ++i)
-            success[i](rjson, jqxhr, status);
+            success[i](rjson, status, jqxhr);
     }
     var success = options.success || [], error = options.error;
     if (!$.isArray(success))
@@ -570,12 +570,21 @@ function scrollIntoView1(e, opts) {
     while (e && e.nodeType !== 1) {
         e = e.parentNode;
     }
-    var p = e.parentNode, pr, er, mt, mb, wh = window.innerHeight;
-    while (p !== root && window.getComputedStyle(p).overflowY === "visible") {
+    var p = e.parentNode, sty, x, pr, er, mt, mb, wh = window.innerHeight;
+    while (p !== root) {
+        sty = window.getComputedStyle(p);
+        x = sty.overflowY;
+        if (((x === "auto" || x === "scroll" || x === "hidden")
+             && p.scrollHeight > p.clientHeight + 5)
+            || sty.position === "fixed") {
+            break;
+        }
         p = p.parentNode;
     }
     if (p !== root) {
-        scrollIntoView1(p, {});
+        if (sty.position !== "fixed") {
+            scrollIntoView1(p, {});
+        }
         pr = p.getBoundingClientRect();
         if (pr.bottom < 0 || pr.top > wh) {
             return; // it's hopeless, nothing to do
@@ -694,11 +703,12 @@ function plural(n, what) {
     return n + " " + plural_noun(n, what);
 }
 
+/* exported ordinal */
 function ordinal(n) {
-    if (n >= 1 && n <= 3)
-        return n + ["st", "nd", "rd"][Math.floor(n - 1)];
-    else
-        return n + "th";
+    let x = Math.abs(Math.round(n));
+    x > 100 && (x = x % 100);
+    x > 20 && (x = x % 10);
+    return n + ["th", "st", "nd", "rd"][x > 3 ? 0 : x];
 }
 
 function commajoin(a, joinword) {
@@ -714,6 +724,7 @@ function commajoin(a, joinword) {
         return a.slice(0, l - 1).join(", ") + ", " + joinword + " " + a[l - 1];
 }
 
+/* exported common_prefix */
 function common_prefix(a, b) {
     var i = 0;
     while (i != a.length && i != b.length && a.charAt(i) == b.charAt(i))
@@ -807,11 +818,11 @@ var strftime = (function () {
         else if (is24)
             return strftime("%H:%M:%S", d);
         else if (alt && d.getSeconds())
-            return strftime("%#l:%M:%S%P", d);
+            return strftime("%#l:%M:%S %p", d);
         else if (alt && d.getMinutes())
-            return strftime("%#l:%M%P", d);
+            return strftime("%#l:%M %p", d);
         else if (alt)
-            return strftime("%#l%P", d);
+            return strftime("%#l %p", d);
         else
             return strftime("%I:%M:%S %p", d);
     }
@@ -833,7 +844,7 @@ var strftime = (function () {
         I: function (d) { return pad(d.getHours() % 12 || 12, "0", 2); },
         l: function (d, alt) { return pad(d.getHours() % 12 || 12, alt & 1 ? "" : " ", 2); },
         M: function (d, alt) { return pad(alt & 2 ? d.getUTCMinutes() : d.getMinutes(), "0", 2); },
-        X: function (d) { return strftime("%#e %b %Y %#q", d); },
+        X: function (d) { return strftime("%b %#e, %Y %#q", d); },
         p: function (d) { return d.getHours() < 12 ? "AM" : "PM"; },
         P: function (d) { return d.getHours() < 12 ? "am" : "pm"; },
         q: function (d, alt) { return unparse_q(d, alt, strftime.is24); },
@@ -887,20 +898,20 @@ function unparse_time_relative(t, now, format) {
     var d = Math.abs(now - t), unit = 0;
     if (d >= 5227200) { // 60.5d
         if (!(format & 1))
-            return strftime((format & 8 ? "on " : "") + "%#e %b %Y", t);
+            return strftime((format & 8 ? "on " : "") + "%b %#e, %Y", t);
         unit = 5;
     } else if (d >= 259200) // 3d
         unit = 4;
-    else if (d >= 28800)
+    else if (d >= 36000)
         unit = 3;
-    else if (d >= 3630)
+    else if (d >= 5430)
         unit = 2;
     else if (d >= 180.5)
         unit = 1;
-    var x = [1, 60, 1800, 3600, 86400, 604800][unit];
+    var x = [1, 60, 360, 3600, 86400, 604800][unit];
     d = Math.ceil((d - x / 2) / x);
     if (unit == 2)
-        d /= 2;
+        d /= 10;
     if (format & 4)
         d += "smhhdw".charAt(unit);
     else
@@ -941,6 +952,7 @@ function unparse_byte_size(n) {
         return "0B";
 }
 
+/* exported unparse_byte_size_binary */
 function unparse_byte_size_binary(n) {
     if (n > 1073689395)
         return (Math.round(n / 10737418.24) / 100) + "GiB";
@@ -954,13 +966,14 @@ function unparse_byte_size_binary(n) {
         return "0B";
 }
 
-var strnatcmp = (function () {
+var strnatcasecmp = (function () {
 try {
-    var collator = new Intl.Collator(undefined, {sensitivity: "case", numeric: true, ignorePunctuation: true});
+    var collator = new Intl.Collator(undefined, {sensitivity: "accent", numeric: true, ignorePunctuation: true});
     return function (a, b) {
         var cmp = collator.compare(a, b);
-        if (cmp === 0 && a !== b)
+        if (cmp === 0 && a !== b) {
             cmp = a < b ? -1 : 1;
+        }
         return cmp;
     };
 } catch (e) {
@@ -1073,41 +1086,87 @@ function make_link_callback(elt) {
 
 
 // localStorage
-var wstorage = function () { return false; };
-try {
-    if (window.localStorage && window.JSON)
-        wstorage = function (is_session, key, value) {
-            try {
-                var s = is_session ? window.sessionStorage : window.localStorage;
-                if (typeof key === "undefined")
-                    return !!s;
-                else if (typeof value === "undefined")
-                    return s.getItem(key);
-                else if (value === null)
-                    return s.removeItem(key);
-                else if (typeof value === "object")
-                    return s.setItem(key, JSON.stringify(value));
-                else
-                    return s.setItem(key, value);
-            } catch (err) {
-                return false;
+hotcrp.wstorage = (function () {
+let needgc = true, ws = function () { return false; };
+function site_key(key) {
+    return siteinfo.base + key;
+}
+function pjson(x) {
+    try {
+        return x ? JSON.parse(x) : false;
+    } catch (err) {
+        return false;
+    }
+}
+function wsgc(s) {
+    needgc = false;
+    if (s.length < 10) {
+        return;
+    }
+    const pfx = siteinfo.base || "", gck = pfx + "hotcrp-gc",
+        now = now_sec();
+    if (+(s.getItem(gck) || 0) > now) {
+        return;
+    }
+    let remk = [];
+    for (let i = 0; i < s.length; ++i) {
+        const k = s.key(i);
+        if (k === pfx + "hotcrp-trevent") {
+            remk.push(k);
+        } else if (k.startsWith(pfx + "hotcrp-trevent:")) {
+            let x = pjson(s.getItem(k));
+            if (!x || typeof x !== "object" || !x.expiry || x.expiry < now - 432000) {
+                remk.push(k);
             }
-        };
+        }
+    }
+    for (const x of remk) {
+        s.removeItem(x);
+    }
+    if (s.length >= 10) {
+        s.setItem(gck, Math.floor(now) + 86400);
+    } else {
+        s.removeItem(gck);
+    }
+}
+function realws(is_session, key, value) {
+    try {
+        var s = is_session ? window.sessionStorage : window.localStorage;
+        if (!s) {
+            return false;
+        }
+        needgc && !is_session && wsgc(s);
+        if (typeof value === "undefined") {
+            return s.getItem(key);
+        } else if (value === null) {
+            return s.removeItem(key);
+        } else if (typeof value === "object") {
+            return s.setItem(key, JSON.stringify(value));
+        } else {
+            return s.setItem(key, value);
+        }
+    } catch (err) {
+        return false;
+    }
+}
+try {
+    if (window.localStorage && window.JSON) {
+        ws = realws;
+    }
 } catch (err) {
 }
-wstorage.json = function (is_session, key) {
-    var x = wstorage(is_session, key);
-    return x ? JSON.parse(x) : false;
+ws.site_key = site_key;
+ws.site = function (is_session, key, value) {
+    return ws(is_session, site_key(key), value);
 };
-wstorage.site_key = function (key) {
-    return siteinfo.base + key;
+ws.json = function (is_session, key) {
+    return pjson(ws(is_session, key));
 };
-wstorage.site = function (is_session, key, value) {
-    return wstorage(is_session, wstorage.site_key(key), value);
+ws.site_json = function (is_session, key) {
+    return pjson(ws(is_session, site_key(key)));
 };
-wstorage.site_json = function (is_session, key) {
-    return wstorage.json(is_session, wstorage.site_key(key));
-};
+return ws;
+})();
 
 
 // dragging
@@ -1141,9 +1200,9 @@ hotcrp.drag_block_reorder = function (draghandle, draggable, callback) {
                 td = td.nextElementSibling;
             }
         }
-        td = classe("td", null, sep);
+        td = $e("td", null, sep);
         td.colSpan = ncol;
-        sep = classe("tr", "dropmark", td);
+        sep = $e("tr", "dropmark", td);
     }
     function dragover(evt) {
         evt.preventDefault();
@@ -1266,29 +1325,37 @@ function hoturl_add(url, component) {
     return url + (url.indexOf("?") < 0 ? "?" : "&") + component;
 }
 
-function hoturl_set(url, component, value) {
-    var hash = url.indexOf("#"), question = url.indexOf("?"), pos = question;
+function hoturl_search(url, key, value) {
+    var hash = url.indexOf("#"), question = url.indexOf("?"), pos;
     hash = hash < 0 ? url.length : hash;
-    component += "=";
-    while (pos >= 0 && (pos = url.indexOf(component, pos)) > 0 && pos < hash) {
-        var ch = url.charAt(pos - 1);
-        if (ch === "?" || ch === ";" || ch === "&") {
-            var amp = url.indexOf("&", pos),
-                semi = url.indexOf(";", pos),
-                stop = Math.min(hash,
-                                amp < 0 ? url.length : amp,
-                                semi < 0 ? url.length : semi);
-            if (value != null)
-                url = url.substring(0, pos + component.length).concat(urlencode(value), url.substring(stop));
+    if (question < 0 && url.indexOf("/") < 0)
+        question = 0;
+    if (arguments.length === 1)
+        return question >= 0 && question < hash ? url.substring(question, hash) : "";
+    pos = question >= 0 && question < hash ? question : url.length;
+    while (pos >= 0 && (pos = url.indexOf(key, pos)) > 0 && pos < hash) {
+        var pch = url.charCodeAt(pos - 1), nch = url.charCodeAt(pos + key.length);
+        if ((pch === 63 || pch === 59 || pch === 38)
+            && (nch !== nch || nch === 61 || nch === 35 || nch === 59 || nch === 38)) {
+            var vpos = pos + key.length + (nch === 61),
+                amp = url.indexOf("&", vpos),
+                semi = url.indexOf(";", vpos),
+                stop = Math.min(hash, amp < 0 ? hash : amp, semi < 0 ? hash : semi);
+            if (arguments.length === 2)
+                return urldecode(url.substring(vpos, stop));
+            else if (value == null)
+                return url.substring(0, pos - (stop === hash)) + url.substring(stop + (stop < hash));
             else
-                url = url.substring(0, pos - (stop === hash)) + url.substring(stop + (stop < hash));
-            return url;
-        } else
-            ++pos;
+                return url.substring(0, vpos).concat(nch === 61 ? "" : "=", urlencode(value), url.substring(stop));
+        }
+        pos += key.length;
     }
-    if (value != null)
-        url = url.substring(0, hash).concat(question < 0 ? "?" : "&", component, urlencode(value), url.substring(hash));
-    return url;
+    if (arguments.length === 2)
+        return null;
+    else if (value == null)
+        return url;
+    else
+        return url.substring(0, hash).concat(question < 0 || question > hash ? "?" : "&", key, "=", urlencode(value), url.substring(hash));
 }
 
 function hoturl_find(xv, page_component) {
@@ -1653,25 +1720,31 @@ function append_feedback_to(ul, mi) {
 }
 
 function append_feedback_near(elt, mi) {
-    if (mi.status === 1 && !hasClass(elt, "has-error"))
+    if (mi.status === 1 && !hasClass(elt, "has-error")) {
         addClass(elt, "has-warning");
-    else if (mi.status >= 2) {
+    } else if (mi.status >= 2) {
         removeClass(elt, "has-warning");
         addClass(elt, "has-error");
     }
-    if (mi.message != null && mi.message !== "") {
-        var c, owner = hasClass(elt, "entryi") ? elt.querySelector(".entry") : elt;
-        if (!owner)
-            return false;
-        c = owner.firstChild;
-        while (c && c.nodeType === 1 && (c.tagName === "LABEL" || hasClass(c, "feedback"))) {
-            c = c.nextSibling;
-        }
-        if (c && hasClass(c, "feedback-list")) {
-            append_feedback_to(c, mi);
-        } else {
-            owner.insertBefore(render_feedback_list([mi]), c);
-        }
+    if (mi.message == null || mi.message === "") {
+        return true;
+    }
+    var ctr = elt.closest(".entry, .entryi, fieldset"), fl, owner;
+    if (ctr && hasClass(ctr, "entryi")) {
+        ctr = ctr.querySelector(".entry");
+    }
+    if (!ctr) {
+        return false;
+    }
+    owner = ctr;
+    fl = owner.firstElementChild;
+    while (fl && (fl.tagName === "LABEL" || fl.tagName === "LEGEND" || hasClass(fl, "feedback"))) {
+        fl = fl.nextElementSibling;
+    }
+    if (fl && hasClass(fl, "feedback-list")) {
+        append_feedback_to(fl, mi);
+    } else {
+        owner.insertBefore(render_feedback_list([mi]), fl);
     }
     return true;
 }
@@ -1896,14 +1969,16 @@ function form_differs(form) {
     return null;
 }
 
-function form_highlight(form, elt) {
+function check_form_differs(form, elt) {
     (form instanceof HTMLElement) || (form = $(form)[0]);
-    var alerting = (elt && form_differs(elt)) || form_differs(form);
-    toggleClass(form, "alert", !!alerting);
-    if (form.hasAttribute("data-alert-toggle")) {
-        $("." + form.getAttribute("data-alert-toggle")).toggleClass("hidden", !alerting);
+    var differs = (elt && form_differs(elt)) || form_differs(form);
+    toggleClass(form, "differs", !!differs);
+    if (form.hasAttribute("data-differs-toggle")) {
+        $("." + form.getAttribute("data-differs-toggle")).toggleClass("hidden", !differs);
     }
 }
+
+window.form_highlight = check_form_differs; /* XXX */
 
 function hidden_input(name, value, attr) {
     var input = document.createElement("input");
@@ -1917,14 +1992,15 @@ function hidden_input(name, value, attr) {
     return input;
 }
 
-function hiliter_children(form) {
+hotcrp.add_diff_check = function (form) {
     form = $(form)[0];
-    form_highlight(form);
+    check_form_differs(form);
     $(form).on("change input", "input, select, textarea", function () {
         if (!hasClass(this, "ignore-diff") && !hasClass(form, "ignore-diff"))
-            form_highlight(form, this);
+            check_form_differs(form, this);
     });
-}
+    removeClass(form, "need-diff-check");
+};
 
 $(function () {
     $("form.need-unload-protection").each(function () {
@@ -1932,10 +2008,16 @@ $(function () {
         removeClass(form, "need-unload-protection");
         $(form).on("submit", function () { addClass(this, "submitting"); });
         $(window).on("beforeunload", function () {
-            if (hasClass(form, "alert") && !hasClass(form, "submitting"))
+            if (hasClass(form, "differs") && !hasClass(form, "submitting"))
                 return "If you leave this page now, your edits may be lost.";
         });
     });
+});
+
+handle_ui.on("js-ignore-unload-protection", function (evt) {
+    if (event_key.is_default_a(evt)) {
+        $("form").addClass("submitting");
+    }
 });
 
 var focus_at = (function () {
@@ -1968,7 +2050,7 @@ function focus_within(elt, subfocus_selector, always) {
         $wf = [];
         $(elt).find("a, input, select, textarea, button").each(function () {
             if ((this.tagName === "A" || !this.disabled)
-                && (!subfocus_selector || this.matches(subfocus_selector))) {
+                && (!subfocus_selector || $(this).is(subfocus_selector))) {
                 $wf.push(this);
                 return false;
             }
@@ -1981,6 +2063,30 @@ function focus_within(elt, subfocus_selector, always) {
 
 
 // rangeclick
+function prevent_immediate_focusout(self) {
+    if (document.activeElement === self
+        || document.activeElement === document.body) {
+        setTimeout(function () {
+            if (document.activeElement === document.body)
+                self.focus({preventScroll: true});
+        }, 80);
+    }
+}
+
+function focus_and_scroll_into_view(e, down) {
+    e.focus();
+    var ve = e.closest("tr") || e, ne;
+    // special case for paper lists with expansion rows
+    if (down
+        && ve.nodeName === "TR"
+        && hasClass(ve, "pl")) {
+        while ((ne = ve.nextElementSibling) && hasClass(ne, "plx")) {
+            ve = ne;
+        }
+    }
+    $(ve).scrollIntoView();
+}
+
 handle_ui.on("js-range-click", function (evt) {
     var f = this.form,
         rangeclick_state = f.jsRangeClick || {},
@@ -1988,11 +2094,12 @@ handle_ui.on("js-range-click", function (evt) {
     f.jsRangeClick = rangeclick_state;
 
     var key = false;
-    if (evt.type === "keydown" && !event_modkey(evt))
+    if (evt.type === "keydown" && !event_modkey(evt)) {
         key = event_key(evt);
+    }
     if (rangeclick_state.__clicking__
-        || (evt.type === "updaterange" && rangeclick_state["__update__" + kind])
-        || (evt.type === "keydown" && key !== "ArrowDown" && key !== "ArrowUp"))
+        || (evt.type === "keydown" && key !== "ArrowDown" && key !== "ArrowUp")
+        || (evt.type === "updaterange" && rangeclick_state["__update_" + kind] === evt.detail))
         return;
 
     // find checkboxes and groups of this type
@@ -2020,20 +2127,33 @@ handle_ui.on("js-range-click", function (evt) {
             --thispos;
         else if (thispos < cbs.length - 1 && key === "ArrowDown")
             ++thispos;
-        $(cbs[thispos]).focus().scrollIntoView();
+        focus_and_scroll_into_view(cbs[thispos], key === "ArrowDown");
         evt.preventDefault();
         return;
     }
 
-    function range_group_match(e, g) {
-        var eg;
-        return !g
-            || (eg = e.getAttribute("data-range-group")) === g
-            || (eg && eg.length > g.length && eg.split(" ").includes(g));
+    var lastgidx = 0;
+    function range_group_match(e, g, gelt) {
+        var i, eg;
+        if (g === "auto") {
+            if (cbs[lastgidx] !== gelt) {
+                for (lastgidx = 0; cbs[lastgidx] && cbs[lastgidx] !== gelt; ++lastgidx) {
+                }
+            }
+            for (i = lastgidx + 1; cbs[i] && !cbisg[i]; ++i) {
+                if (cbs[i] === e)
+                    return true;
+            }
+            return false;
+        } else {
+            return !g
+                || (eg = e.getAttribute("data-range-group")) === g
+                || (eg && eg.length > g.length && eg.split(" ").includes(g));
+        }
     }
 
     // handle click
-    var group = false, single_clicked = false, j;
+    var group = null, gelt = null, single_clicked = false, j;
     if (evt.type === "click") {
         rangeclick_state.__clicking__ = true;
 
@@ -2041,6 +2161,7 @@ handle_ui.on("js-range-click", function (evt) {
             i = 0;
             j = cbs.length - 1;
             group = this.getAttribute("data-range-group");
+            gelt = this;
         } else {
             rangeclick_state[kind] = this;
             if (evt.shiftKey && lastelt) {
@@ -2061,24 +2182,25 @@ handle_ui.on("js-range-click", function (evt) {
         for (; i <= j; ++i) {
             if (!cbisg[i]
                 && cbs[i].checked !== this.checked
-                && range_group_match(cbs[i], group))
+                && range_group_match(cbs[i], group, gelt))
                 $(cbs[i]).trigger("click");
         }
 
         delete rangeclick_state.__clicking__;
+        prevent_immediate_focusout(this);
     } else if (evt.type === "updaterange") {
-        rangeclick_state["__updated__" + kind] = true;
+        rangeclick_state["__update_" + kind] = evt.detail;
     }
 
     // update groups
     for (j = 0; j !== cbgs.length; ++j) {
         group = cbgs[j].getAttribute("data-range-group");
-        if (single_clicked && !range_group_match(single_clicked, group))
+        if (single_clicked && !range_group_match(single_clicked, group, cbgs[j]))
             continue;
 
         var state = null;
         for (i = 0; i !== cbs.length; ++i) {
-            if (!cbisg[i] && range_group_match(cbs[i], group)) {
+            if (!cbisg[i] && range_group_match(cbs[i], group, cbgs[j])) {
                 if (state === null)
                     state = cbs[i].checked;
                 else if (state !== cbs[i].checked) {
@@ -2099,8 +2221,9 @@ handle_ui.on("js-range-click", function (evt) {
 });
 
 $(function () {
+    const time = now_msec();
     $(".is-range-group").each(function () {
-        handle_ui.trigger.call(this, "js-range-click", new Event("updaterange"));
+        handle_ui.trigger.call(this, "js-range-click", new CustomEvent("updaterange", {detail: time}));
     });
 });
 
@@ -2155,27 +2278,33 @@ return function (content, bubopt) {
         bubopt = {};
     else if (typeof bubopt === "string")
         bubopt = {color: bubopt};
+    const container = bubopt.container || document.body;
 
     var nearpos = null, dirspec = bubopt.anchor, dir = null,
         color = bubopt.color ? " " + bubopt.color : "";
 
-    var bubdiv = classe("div", "bubble" + color,
-        classe("div", "bubtail bubtail0" + color),
-        classe("div", "bubcontent"),
-        classe("div", "bubtail bubtail1" + color));
+    var bubdiv = $e("div", "bubble" + color,
+        $e("div", "bubtail bubtail0"),
+        $e("div", "bubcontent"),
+        $e("div", "bubtail bubtail1"));
     bubdiv.setAttribute("style", "margin:0");
     bubdiv.firstChild.setAttribute("style", "width:0;height:0");
     bubdiv.lastChild.setAttribute("style", "width:0;height:0");
-    document.body.appendChild(bubdiv);
-    if (bubopt["pointer-events"])
+    container.appendChild(bubdiv);
+    if (bubopt["pointer-events"]) {
         $(bubdiv).css({"pointer-events": bubopt["pointer-events"]});
+    }
+    if (container !== document.body) {
+        bubdiv.style.position = "absolute";
+    }
     var bubch = bubdiv.childNodes;
     var sizes = null;
     var divbw = null;
 
     function change_tail_direction() {
-        var bw = [0, 0, 0, 0], trw = sizes[1], trh = sizes[0] / 2;
-        divbw = parseFloat($(bubdiv).css(cssborder(dir, "Width")));
+        const bw = [0, 0, 0, 0], trw = sizes[1], trh = sizes[0] / 2,
+            divsty = window.getComputedStyle(bubdiv);
+        divbw = parseFloat(divsty[cssborder(dir, "Width")]);
         divbw !== divbw && (divbw = 0); // eliminate NaN
         bw[dir^1] = bw[dir^3] = trh + "px";
         bw[dir^2] = trw + "px";
@@ -2184,22 +2313,24 @@ return function (content, bubopt) {
         bw[dir^2] = trw + "px";
         bubch[2].style.borderWidth = bw.join(" ");
 
-        for (var i = 1; i <= 3; ++i)
+        for (var i = 1; i <= 3; ++i) {
             bubch[0].style[lcdir[dir^i]] = bubch[2].style[lcdir[dir^i]] = "";
+        }
         bubch[0].style[lcdir[dir]] = (-trw - divbw) + "px";
         // Offset the inner triangle so that the border width in the diagonal
         // part of the tail, is visually similar to the border width
         var trdelta = (divbw / trh) * Math.sqrt(trw * trw + trh * trh);
         bubch[2].style[lcdir[dir]] = (-trw - divbw + trdelta) + "px";
 
-        for (i = 0; i < 3; i += 2)
+        for (i = 0; i < 3; i += 2) {
             bubch[i].style.borderLeftColor = bubch[i].style.borderRightColor =
             bubch[i].style.borderTopColor = bubch[i].style.borderBottomColor = "transparent";
+        }
 
-        var yc = to_rgba($(bubdiv).css("backgroundColor")).replace(/([\d.]+)\)/, function (s, p1) {
+        var yc = to_rgba(divsty.backgroundColor).replace(/([\d.]+)\)/, function (s, p1) {
             return (0.75 * p1 + 0.25) + ")";
         });
-        bubch[0].style[cssbc(dir^2)] = $(bubdiv).css(cssbc(dir));
+        bubch[0].style[cssbc(dir^2)] = divsty[cssbc(dir)];
         bubch[2].style[cssbc(dir^2)] = yc;
     }
 
@@ -2348,8 +2479,8 @@ return function (content, bubopt) {
             change_tail_direction();
         }
 
-        var x, y, xa, ya, d;
-        var divbw = parseFloat($(bubdiv).css(cssborder(ds & 1 ? 0 : 3, "Width")));
+        var x, y, xa, ya, d, bubsty = window.getComputedStyle(bubdiv);
+        var divbw = parseFloat(bubsty[cssborder(ds & 1 ? 0 : 3, "Width")]);
         if (ds & 1) {
             ya = constrainmid(nearpos, wpos, 0, ds2);
             y = constrain(ya, wpos, bpos, 0, ds2, noconstrain);
@@ -2372,8 +2503,17 @@ return function (content, bubopt) {
                 y = nearpos.top - sizes.bottom - bpos.height - sizes[1] - 1;
         }
 
-        bubdiv.style.left = roundpixel(x - window.scrollX) + "px";
-        bubdiv.style.top = roundpixel(y - window.scrollY) + "px";
+        if (bubsty.position === "fixed" || container !== document.body) {
+            x -= window.scrollX;
+            y -= window.scrollY;
+        }
+        if (container !== document.body) {
+            const cg = $(container).geometry();
+            x += container.scrollLeft - cg.x;
+            y += container.scrollTop - cg.y;
+        }
+        bubdiv.style.left = roundpixel(x) + "px";
+        bubdiv.style.top = roundpixel(y) + "px";
         bubdiv.style.visibility = "visible";
     }
 
@@ -2384,19 +2524,23 @@ return function (content, bubopt) {
 
     var bubble = {
         near: function (epos, reference) {
-            var i;
             if (typeof epos === "string" || epos.tagName || epos.jquery) {
                 epos = $(epos);
-                if (dirspec == null && epos[0])
+                if (dirspec == null && epos[0]) {
                     dirspec = epos[0].getAttribute("data-tooltip-anchor");
+                }
                 epos = epos.geometry(true);
             }
-            for (i = 0; i < 4; ++i)
+            for (let i = 0; i < 4; ++i) {
                 if (!(lcdir[i] in epos) && (lcdir[i ^ 2] in epos))
                     epos[lcdir[i]] = epos[lcdir[i ^ 2]];
-            if (reference && (reference = $(reference)) && reference.length
-                && reference[0] != window)
+            }
+            if (reference
+                && (reference = $(reference))
+                && reference.length
+                && reference[0] != window) {
                 epos = geometry_translate(epos, reference.geometry());
+            }
             nearpos = epos;
             show();
             return bubble;
@@ -2432,13 +2576,11 @@ return function (content, bubopt) {
             nearpos && $(bubdiv).css({maxWidth: "", left: "", top: ""});
             if (typeof content === "string")
                 n.innerHTML = content;
-            else {
+            else if (content && content.jquery) {
                 n.replaceChildren();
-                if (content && content.jquery)
-                    content.appendTo(n);
-                else
-                    n.appendChild(content);
-            }
+                content.appendTo(n);
+            } else
+                n.replaceChildren(content);
             nearpos && show();
             return bubble;
         },
@@ -2529,7 +2671,7 @@ function show_tooltip(info) {
 
     function show_bub() {
         if (content && !bub) {
-            bub = make_bubble(content, {color: "tooltip " + info.className, anchor: info.anchor});
+            bub = make_bubble(content, {color: "tooltip ".concat(info.className, info.type === "focus" ? " position-absolute" : ""), anchor: info.anchor});
             near = info.near || info.element;
             bub.near(near).hover(tt.enter, tt.exit);
         } else if (content) {
@@ -2667,18 +2809,6 @@ HtmlCollector.prototype.pop_push = function (open, close) {
     this.pop();
     return this.push(open, close);
 };
-HtmlCollector.prototype.pop_collapse = function (pos) {
-    if (pos == null)
-        pos = this.open.length ? this.open.length - 1 : 0;
-    while (this.open.length > pos) {
-        if (this.html !== "")
-            this.html = this.open[this.open.length - 1] + this.html +
-                this.close[this.open.length - 1];
-        this.open.pop();
-        this.close.pop();
-    }
-    return this;
-};
 HtmlCollector.prototype.render = function () {
     this.pop(0);
     return this.html;
@@ -2689,7 +2819,7 @@ HtmlCollector.prototype.clear = function () {
     this.html = "";
     return this;
 };
-HtmlCollector.prototype.next_input_id = (function () {
+HtmlCollector.next_input_id = (function () {
 var id = 1;
 return function () {
     var s;
@@ -2705,6 +2835,7 @@ return function () {
 function popup_skeleton(options) {
     var hc = new HtmlCollector,
         $d = null,
+        form = null,
         prior_focus = null;
     options = options || {};
     var near = options.near || options.anchor;
@@ -2722,15 +2853,13 @@ function popup_skeleton(options) {
         return hc;
     };
     function show_errors(data) {
-        var form = $d.find("form")[0],
-            dbody = $d.find(".popup-body"),
+        var dbody = $d.find(".popup-body"),
             i, mlist = data.message_list, gmlist = [], mx, e, x;
         $d.find(".msg-error, .feedback, .feedback-list").remove();
         for (i in mlist || []) {
             mx = mlist[i];
-            if (mx.field && (e = form[mx.field])) {
-                x = e.closest(".entryi, .f-i");
-                if (append_feedback_near(x || e, mx)) {
+            if (mx.field && (e = form.elements[mx.field])) {
+                if (append_feedback_near(e, mx)) {
                     continue;
                 }
             }
@@ -2744,6 +2873,7 @@ function popup_skeleton(options) {
     }
     function close() {
         removeClass(document.body, "modal-open");
+        document.body.removeEventListener("keydown", dialog_keydown);
         if (document.activeElement
             && $d[0].contains(document.activeElement)) {
             document.activeElement.blur();
@@ -2756,29 +2886,39 @@ function popup_skeleton(options) {
             prior_focus.focus({preventScroll: true});
         }
     }
+    function dialog_click(evt) {
+        if (evt.target === $d[0]
+            && evt.button === 0
+            && (!form || !form_differs(form))) {
+            close();
+        }
+    }
+    function dialog_keydown(evt) {
+        if (event_key(evt) === "Escape"
+            && event_modkey(evt) === 0
+            && (!form || !form_differs(form))) {
+            close();
+            evt.preventDefault();
+        }
+    }
     function show() {
-        $d = $(hc.render()).appendTo(document.body).awaken();
-        $d.on("click", function (evt) {
-            evt.target === $d[0] && close();
-        });
+        $d = $(hc.render()).appendTo(document.body);
+        form = $d[0].querySelector("form");
+        $d.on("click", dialog_click);
         $d.find("button[name=cancel]").on("click", close);
-        $d.on("keydown", function (evt) {
-            if (event_modkey(evt) === 0 && event_key(evt) === "Escape") {
-                close();
-                evt.preventDefault();
-            }
-        });
-        if (options.action) {
-            var f = $d.find("form")[0];
+        document.body.addEventListener("keydown", dialog_keydown);
+        if (options.action && form) {
             if (options.action instanceof HTMLFormElement) {
-                $(f).attr({action: options.action.action, method: options.action.method});
+                form.setAttribute("action", options.action.action);
+                form.setAttribute("method", options.action.method);
             } else {
-                $(f).attr({action: options.action, method: options.method || "post"});
+                form.setAttribute("action", options.action);
+                form.setAttribute("method", options.method || "post");
             }
-            if (f.getAttribute("method") === "post"
-                && !/post=/.test(f.getAttribute("action"))
-                && !/^(?:[a-z][-a-z0-9+.]*:|\/\/)/i.test(f.getAttribute("action"))) {
-                $(f).prepend(hidden_input("post", siteinfo.postvalue));
+            if (form.getAttribute("method") === "post"
+                && !/post=/.test(form.getAttribute("action"))
+                && !/^(?:[a-z][-a-z0-9+.]*:|\/\/)/i.test(form.getAttribute("action"))) {
+                form.prepend(hidden_input("post", siteinfo.postvalue));
             }
         }
         for (var k in {minWidth: 1, maxWidth: 1, width: 1}) {
@@ -2794,6 +2934,7 @@ function popup_skeleton(options) {
         }
         if (visible !== false) {
             var e = document.activeElement;
+            $d.awaken();
             popup_near($d, near || window);
             if (e && document.activeElement !== e) {
                 prior_focus = e;
@@ -2842,7 +2983,22 @@ function popup_near(elt, near) {
 }
 
 function override_deadlines(callback) {
-    var self = this, hc;
+    let self = this, hc;
+    function default_callback() {
+        self.form.hotcrpSubmitter = null;
+        for (let v of (self.getAttribute("data-override-submit") || "").split("&")) {
+            if (v !== "") {
+                const eq = v.indexOf("="),
+                    key = eq < 0 ? v : v.substring(0, eq),
+                    value = eq < 0 ? "1" : v.substring(eq + 1);
+                self.form.append(hidden_input(key, value));
+                self.form.hotcrpSubmitter = self.form.hotcrpSubmitter || [key, (new Date).getTime()];
+            }
+        }
+        self.form.append(hidden_input("override", "1"));
+        addClass(self.form, "submitting");
+        $(self.form).submit(); // call other handlers
+    }
     if (typeof callback === "object" && "sidebarTarget" in callback) {
         hc = popup_skeleton({near: callback.sidebarTarget});
     } else {
@@ -2853,7 +3009,7 @@ function override_deadlines(callback) {
         '<button type="button" name="bsubmit" class="btn-primary"></button>',
         '<button type="button" name="cancel">Cancel</button>'
     ]);
-    var $d = hc.show(false);
+    let $d = hc.show(false);
     $d.find("button[name=bsubmit]")
         .html(this.getAttribute("aria-label")
               || $(this).html()
@@ -2863,14 +3019,7 @@ function override_deadlines(callback) {
             if (callback && $.isFunction(callback)) {
                 callback();
             } else {
-                var submitter = self.getAttribute("data-override-submit");
-                if (submitter) {
-                    self.form.append(hidden_input(submitter, "1"));
-                    self.form.hotcrpSubmitter = [submitter, (new Date).getTime()];
-                }
-                self.form.append(hidden_input("override", "1"));
-                addClass(self.form, "submitting");
-                $(self.form).submit(); // call other handlers
+                default_callback();
             }
             $d.close();
         });
@@ -2913,7 +3062,10 @@ handle_ui.on("js-mark-submit", function () {
 // initialization
 (function ($) {
 var dl, dlname, dltime, redisplay_timeout,
-    reload_outstanding = 0, reload_nerrors = 0, reload_count = 0;
+    reload_outstanding = 0, reload_nerrors = 0, reload_count = 0,
+    reload_token_max = 250, reload_token_rate = 500,
+    reload_tokens = reload_token_max, reload_refill_at = 0, reload_refill_timeout = null,
+    wstor = hotcrp.wstorage;
 
 // deadline display
 function checkdl(now, endtime, ingrace) {
@@ -2997,7 +3149,7 @@ function display_main(is_initial) {
     if (!redisplay_timeout && dlname) {
         if (!dltime || dltime - now < 180.5)
             redisplay_timeout = setTimeout(redisplay_main, 250);
-        else if (dltime - now <= 3600)
+        else if (dltime - now <= 5400)
             redisplay_timeout = setTimeout(redisplay_main, (Math.min(now + 15, dltime - 180.25) - now) * 1000);
     }
 }
@@ -3028,13 +3180,13 @@ function tracker_find(trackerid) {
 }
 
 function tracker_status() {
-    var ts = wstorage.site_json(true, "hotcrp-tracking"), tr;
+    var ts = wstor.site_json(true, "hotcrp-tracking"), tr;
     if (ts && (tr = tracker_find(ts[1]))) {
         dl.tracker_here = ts[1];
         tr.tracker_here = true;
         if (!ts[2] && tr.start_at) {
             ts[2] = tr.start_at;
-            wstorage.site(true, "hotcrp-tracking", ts);
+            wstor.site(true, "hotcrp-tracking", ts);
         }
     }
 }
@@ -3097,7 +3249,7 @@ function tracker_paper_columns(tr, idx, wwidth) {
 
 function tracker_html(tr) {
     var t;
-    if (wstorage.site(true, "hotcrp-tracking-hide-" + tr.trackerid))
+    if (wstor.site(true, "hotcrp-tracking-hide-" + tr.trackerid))
         return "";
     t = '<div class="has-tracker tracker-holder';
     if (tr.papers && tr.papers[tr.paper_offset].pid == siteinfo.paperid)
@@ -3161,7 +3313,7 @@ function display_tracker() {
 
     // tracker display management
     if (!dl.tracker) {
-        wstorage.site(true, "hotcrp-tracking", null);
+        wstor.site(true, "hotcrp-tracking", null);
     }
     if (!dl.tracker
         || (dl.tracker.ts && dl.tracker.ts.length === 0)
@@ -3226,7 +3378,7 @@ function display_tracker() {
 
 function tracker_refresh() {
     if (dl.tracker_here) {
-        var ts = wstorage.site_json(true, "hotcrp-tracking"),
+        var ts = wstor.site_json(true, "hotcrp-tracking"),
             param = {track: ts[1]};
         if (siteinfo.paperid) {
             param.track += " " + siteinfo.paperid;
@@ -3234,9 +3386,9 @@ function tracker_refresh() {
         }
         if (ts[2])
             param.tracker_start_at = ts[2];
-        streload(param, ts[3] ? {"hotlist-info": ts[3]} : {});
+        streload_track(param, ts[3] ? {"hotlist-info": ts[3]} : {});
         tracker_refresher = tracker_refresher || setInterval(tracker_refresh, 25000);
-        wstorage.site(true, "hotcrp-tracking", ts);
+        wstor.site(true, "hotcrp-tracking", ts);
     } else if (tracker_refresher) {
         clearInterval(tracker_refresher);
         tracker_refresher = null;
@@ -3304,7 +3456,7 @@ handle_ui.on("js-tracker", function (evt) {
         }
         if (tr.start_at) {
             hc.push('<div class="entryi"><label></label><div class="entry">', '</div></div>');
-            hc.push('<label><input name="tr' + trno + '-hide" value="1" type="checkbox"' + (wstorage.site(true, "hotcrp-tracking-hide-" + tr.trackerid) ? " checked" : "") + '> Hide on this tab</label>');
+            hc.push('<label><input name="tr' + trno + '-hide" value="1" type="checkbox"' + (wstor.site(true, "hotcrp-tracking-hide-" + tr.trackerid) ? " checked" : "") + '> Hide on this tab</label>');
             hc.push('<label class="padl"><input name="tr' + trno + '-stop" value="1" type="checkbox"> Stop</label>');
             hc.pop();
         }
@@ -3323,7 +3475,7 @@ handle_ui.on("js-tracker", function (evt) {
     function new_tracker() {
         var tr = {
             is_new: true, trackerid: "new",
-            visibility: wstorage.site(false, "hotcrp-tracking-visibility"),
+            visibility: wstor.site(false, "hotcrp-tracking-visibility"),
             hide_conflicts: true,
             listinfo: document.body.getAttribute("data-hotlist")
         }, $myg = $(this).closest("div.lg"), hc = new HtmlCollector;
@@ -3339,13 +3491,13 @@ handle_ui.on("js-tracker", function (evt) {
             if (data.ok) {
                 $d && $d.close();
                 if (data.new_trackerid) {
-                    wstorage.site(true, "hotcrp-tracking", [null, +data.new_trackerid, null, document.body.getAttribute("data-hotlist") || null]);
+                    wstor.site(true, "hotcrp-tracking", [null, +data.new_trackerid, null, document.body.getAttribute("data-hotlist") || null]);
                     if ("new" in hiding)
                         hiding[data.new_trackerid] = hiding["new"];
                 }
                 for (var i in hiding)
                     if (i !== "new")
-                        wstorage.site(true, "hotcrp-tracking-hide-" + i, hiding[i] ? 1 : null);
+                        wstor.site(true, "hotcrp-tracking-hide-" + i, hiding[i] ? 1 : null);
                 tracker_configured = true;
                 streload();
             } else {
@@ -3391,7 +3543,7 @@ handle_ui.on("js-tracker", function (evt) {
         $d.find("form").submit();
     }
     function start() {
-        var hc = popup_skeleton({className: "modal-dialog-w40"});
+        var hc = popup_skeleton({className: "modal-dialog-w40", form_class: "need-diff-check"});
         hc.push('<h2>Meeting tracker</h2>');
         var trackers, nshown = 0;
         if (!dl.tracker) {
@@ -3440,7 +3592,7 @@ handle_ui.on("js-tracker", function (evt) {
         start();
     } else {
         $.post(hoturl("=api/trackerconfig"),
-               {"tr1-id": "new", "tr1-listinfo": document.body.getAttribute("data-hotlist"), "tr1-p": siteinfo.paperid, "tr1-vis": wstorage.site(false, "hotcrp-tracking-visibility")},
+               {"tr1-id": "new", "tr1-listinfo": document.body.getAttribute("data-hotlist"), "tr1-p": siteinfo.paperid, "tr1-vis": wstor.site(false, "hotcrp-tracking-visibility")},
                make_submit_success({}, "new"));
     }
 });
@@ -3448,7 +3600,7 @@ handle_ui.on("js-tracker", function (evt) {
 function tracker_configure_success() {
     if (dl.tracker_here) {
         var visibility = tracker_find(dl.tracker_here).visibility || null;
-        wstorage.site(false, "hotcrp-tracking-visibility", visibility);
+        wstor.site(false, "hotcrp-tracking-visibility", visibility);
     }
     tracker_configured = false;
 }
@@ -3458,7 +3610,7 @@ handle_ui.on("js-tracker-stop", function (evt) {
     if (e && e.hasAttribute("data-trackerid"))
         $.post(hoturl("=api/trackerconfig"),
             {"tr1-id": e.getAttribute("data-trackerid"), "tr1-stop": 1},
-            function () { streload(); });
+            streload);
 });
 
 
@@ -3471,18 +3623,18 @@ var trevent, trevent$;
 function trevent_key() {
     var u = siteinfo && siteinfo.user,
         e = (u && u.email) || (u && u.tracker_kiosk ? "kiosk" : "none");
-    return wstorage.site_key("hotcrp-trevent:" + e);
+    return wstor.site_key("hotcrp-trevent:" + e);
 }
-if (wstorage()) {
+if (wstor()) {
     trevent = function (store) {
         if (store === undefined) {
-            var x = wstorage.json(false, trevent_key());
+            var x = wstor.json(false, trevent_key());
             if (!x || typeof x !== "object" || typeof x.eventid !== "number")
                 x = {eventid: 0};
             return x;
         } else {
             trevent$ = store;
-            wstorage(false, trevent_key(), store);
+            wstor(false, trevent_key(), store);
         }
     };
 } else {
@@ -3512,19 +3664,20 @@ function trlog() {
 
 function trevent_store(new_eventid, prev_eventid, expiry, why) {
     var tre = trevent(), now = now_sec(), x,
-        match = why === "unload" || why === "cdone" || why === "cfail";
+        must_match = why === "unload" || why === "cdone" || why === "cfail";
+    // Do nothing and return false, which means do not try comet
+    // server, if (1) the desired request is already out of date, or
+    // (2) a different tab has registered a state that's either a
+    // long poll or that expires later than the desired request would
     if ((tre.eventid > new_eventid
          && tre.eventid !== prev_eventid
          && tre.expiry > now)
         || (tre.eventid === new_eventid
-            && tre.expiry > expiry
-            && tre.uuid !== my_uuid)
-        || (tre.eventid === new_eventid
-            && tre.why === "cstart"
-            && (!match || tre.uuid !== my_uuid))) {
+            && tre.uuid !== my_uuid
+            && (tre.expiry > expiry || tre.why === "cstart"))) {
         return false;
     }
-    if (!match || tre.uuid === my_uuid) {
+    if (!must_match || tre.uuid === my_uuid) {
         x = {eventid: new_eventid, expiry: expiry, why: why, uuid: my_uuid};
         trevent(x);
         //trlog(x);
@@ -3567,33 +3720,31 @@ function trevent_react() {
     trexpire = null;
     var tre = trevent(), now = now_sec();
 
-    // no information or out-of-date information: reload now
+    // known-out-of-date or absent status: reload ASAP
     if (!dl || (dl.tracker_eventid || 0) !== tre.eventid) {
         streload();
         return;
     }
 
-    // expires in future: reload then
-    if (tre.expiry > now
-        && (!dl.tracker_site || tre.long || now < comet_stop_until)) {
-        trexpire = setTimeout(trevent_react, (tre.expiry - now) * 1000);
-        return;
-    }
+    // otherwise, cache eventid equals status eventid, but might need
+    // to refresh comet connection
 
-    // at this point, we have supposedly up-to-date events + expired cache
-
-    // no comet: reload now
-    if (!dl.tracker_site) {
-        // reserve next 0.5sec in local storage, but don’t reschedule µtask
-        ++trmicrotask;
-        trevent_store(dl.tracker_eventid || 0, tre.eventid, now + 0.5, "reserve");
-        --trmicrotask;
-        streload();
+    // if no comet, reload once cache expires
+    if (!dl.tracker_site || now < comet_stop_until) {
+        if (tre.expiry > now) {
+            trexpire = setTimeout(trevent_react, (tre.expiry - now) * 1000);
+        } else {
+            // reserve next 0.5sec in local storage, then reload
+            ++trmicrotask; // prevent recursive trevent_react scheduling
+            trevent_store(dl.tracker_eventid || 0, tre.eventid, now + 0.5, "reserve");
+            --trmicrotask;
+            streload();
+        }
         return;
     }
 
     // comet active or quiescent: don’t reload
-    if (comet_outstanding || now < comet_stop_until || !dl.tracker_recent)
+    if (comet_outstanding || !dl.tracker_recent)
         return;
 
     // localStorage is inherently racy -- no locking or compare-and-swap --
@@ -3633,7 +3784,7 @@ function trevent_comet(prev_eventid, start_at) {
         var done_at = now_sec();
         comet_outstanding = 0;
         clearTimeout(reserve_to);
-        if (status == "success" && xhr.status == 200 && data && data.ok) {
+        if (status === "success" && xhr.status === 200 && data && data.ok) {
             // successful status
             comet_nerrors = comet_stop_until = 0;
             ++comet_nsuccess;
@@ -3670,7 +3821,6 @@ function trevent_comet(prev_eventid, start_at) {
         param += "&uuid=" + my_uuid;
 
     // make request
-    //console.log(start_at + ": poll " + JSON.stringify(trevent()));
     xhr = $.ajax(hoturl_add(dl.tracker_site + "poll", param), {
         method: "GET", timeout: timeout + 2000, cache: false,
         success: success, complete: complete
@@ -3680,15 +3830,16 @@ function trevent_comet(prev_eventid, start_at) {
 
 // deadline loading
 function load(dlx, prev_eventid, is_initial) {
+    siteinfo.snouns = siteinfo.snouns || ["submission", "submissions", "Submission", "Submissions"];
     if (dl && dl.tracker_recent && dlx)
-        dlx.tracker_recent = true;
+        dlx.tracker_recent = dl.tracker_recent;
     if (dlx)
         window.hotcrp_status = window.hotcrp.status = dl = dlx;
     dl.load = dl.load || now_sec();
     dl.perm = dl.perm || {};
     dl.myperm = dl.perm[siteinfo.paperid] || {};
     dl.rev = dl.rev || {};
-    if (is_initial && wstorage())
+    if (is_initial && wstor())
         trevent_initialize_wstorage();
     if (dl.tracker_recent)
         tracker_status();
@@ -3710,9 +3861,15 @@ function load(dlx, prev_eventid, is_initial) {
         var t;
         if (is_initial && ($$("p-clock-drift") || dl.tracker_recent))
             t = 0.01;
-        else if (dl.tracker_recent)
-            t = 7 + Math.random() * 1.5;
-        else if (!dlname)
+        else if (dl.tracker_recent) {
+            if (dl.tracker_recent >= dl.load - 3600)
+                t = 7;
+            else if (dl.tracker_recent >= dl.load - 10800)
+                t = 15;
+            else
+                t = 30;
+            t += Math.random() * t / 4;
+        } else if (!dlname)
             t = 1800;
         else if (Math.abs(dltime - dl.load) >= 900)
             t = 300;
@@ -3725,9 +3882,7 @@ function load(dlx, prev_eventid, is_initial) {
     }
 }
 
-function streload(trackparam, trackdata) {
-    if (!trackparam && reload_outstanding > 0)
-        return;
+function streload_track(trackparam, trackdata) {
     ++reload_outstanding;
     ++reload_count;
     var prev_eventid = trevent().eventid;
@@ -3752,6 +3907,28 @@ function streload(trackparam, trackdata) {
     }
 }
 
+function streload() {
+    if (reload_outstanding > 0)
+        return;
+    // token bucket rate limiter: at most one call to back end every 500ms on average
+    clearTimeout(reload_refill_timeout);
+    reload_refill_timeout = null;
+    let now = now_msec();
+    if (reload_refill_at === 0) {
+        reload_refill_at = now + reload_token_rate;
+    } else if (reload_refill_at < now) {
+        const add_tokens = Math.min(reload_token_max - reload_tokens, Math.ceil((now - reload_refill_at) / reload_token_rate));
+        reload_tokens += add_tokens;
+        reload_refill_at = reload_tokens === reload_token_max ? now + reload_token_rate : reload_refill_at + add_tokens * reload_token_rate;
+    }
+    if (reload_tokens > 0) {
+        --reload_tokens;
+        streload_track(null, null);
+    } else {
+        setTimeout(streload, reload_refill_at - now);
+    }
+}
+
 hotcrp.init_deadlines = function (dl) {
     load(dl, null, true);
 };
@@ -3763,19 +3940,25 @@ hotcrp.tracker_show_elapsed = tracker_show_elapsed;
 
 hotcrp.onload = (function ($) {
     function append_span(e, fmt, d) {
-        var span = document.createElement("span");
-        span.textContent = strftime(fmt, d);
-        span.className = "usertime";
-        e.append(" ", span);
+        e.append(" ", $e("span", "usertime", strftime(fmt, d)));
     }
     function show_usertimes() {
         $(".need-usertime").each(function () {
-            var d = new Date(+this.getAttribute("data-time") * 1000), m;
-            if ((m = this.textContent.match(/(\d+) (\S+) (\d{4})/))) {
-                if (+m[3] !== d.getFullYear())
-                    append_span(this, " (%#e %b %Y %#q your time)", d);
+            const ts = this.getAttribute(this.hasAttribute("data-ts") ? "data-ts" : "data-time"), /* XXX */
+                d = new Date(+ts * 1000), t = this.textContent;
+            let m;
+            if ((m = t.match(/(\d+) \w+ (\d{4})/))) {
+                if (+m[2] !== d.getFullYear())
+                    append_span(this, " (%b %#e, %Y, %#q your time)", d);
                 else if (+m[1] !== d.getDate())
-                    append_span(this, " (%#e %b %#q your time)", d);
+                    append_span(this, " (%b %#e %#q your time)", d);
+                else
+                    append_span(this, " (%#q your time)", d);
+            } else if ((m = t.match(/\w+ (\d+), (\d{4})/))) {
+                if (+m[2] !== d.getFullYear())
+                    append_span(this, " (%b %#e, %Y, %#q your time)", d);
+                else if (+m[1] !== d.getDate())
+                    append_span(this, " (%b %#e %#q your time)", d);
                 else
                     append_span(this, " (%#q your time)", d);
             } else if ((m = this.textContent.match(/(\d{4}-\d+-\d+)/))) {
@@ -3819,7 +4002,7 @@ function fold_storage() {
             smap = {};
             smap[n] = sn;
         }
-        sn = wstorage.json(true, "fold") || wstorage.json(false, "fold") || {};
+        sn = hotcrp.wstorage.json(true, "fold") || hotcrp.wstorage.json(false, "fold") || {};
         for (k in smap) {
             if (sn[smap[k]]) {
                 foldup.call(this, null, {open: true, n: +k});
@@ -3875,12 +4058,13 @@ function fold(elt, dofold, foldnum) {
 
         // check for session
         if ((s = fold_session_for.call(elt, foldnum, "storage"))) {
-            var sj = wstorage.json(true, "fold") || {};
+            const wstor = hotcrp.wstorage;
+            let sj = wstor.json(true, "fold") || {};
             wasopen === !s[1] ? delete sj[s[0]] : sj[s[0]] = wasopen ? 0 : 1;
-            wstorage(true, "fold", $.isEmptyObject(sj) ? null : sj);
-            sj = wstorage.json(false, "fold") || {};
+            wstor(true, "fold", $.isEmptyObject(sj) ? null : sj);
+            sj = wstor.json(false, "fold") || {};
             wasopen === !s[1] ? delete sj[s[0]] : sj[s[0]] = wasopen ? 0 : 1;
-            wstorage(false, "fold", $.isEmptyObject(sj) ? null : sj);
+            wstor(false, "fold", $.isEmptyObject(sj) ? null : sj);
         } else if ((s = fold_session_for.call(elt, foldnum, "session"))) {
             $.post(hoturl("=api/session", {v: s[0] + (wasopen ? "=1" : "=0")}));
         }
@@ -3897,6 +4081,7 @@ function foldup(evt, opts) {
         opts = {};
     }
     if (!("open" in opts) && "f" in opts) {
+        log_jserror("opts.f provided, not opts.open");
         opts.open = !opts.f;
     }
     if (this.tagName === "DIV"
@@ -3959,7 +4144,6 @@ function foldup(evt, opts) {
     }
     wantopen = hasClass(e, foldname + "c");
     if (!("open" in opts) || !!opts.open === wantopen) {
-        opts.f = !wantopen; // XXX backward compat
         opts.open = wantopen;
         fold(e, !wantopen, opts.n || 0);
         $(e).trigger($.Event("foldtoggle", {which: opts}));
@@ -4019,34 +4203,45 @@ function svge() {
     return e;
 }
 
-function classe() {
-    var e = document.createElement(arguments[0]), i;
-    if (arguments[1]) {
-        e.className = arguments[1];
-    }
-    for (i = 2; i < arguments.length; ++i) {
-        e.append(arguments[i]);
-    }
+function svge_use_licon(name) {
+    var e = svge("svg", "class", "licon", "width", "1em", "height", "1em",
+                 "viewBox", "0 0 64 64", "preserveAspectRatio", "none");
+    e.appendChild(svge("use", "href", "#i-def-" + name));
     return e;
 }
 
-function attre() {
-    var e = document.createElement(arguments[0]), attr, i;
-    if ((attr = arguments[1])) {
+function $e(tag, attr) {
+    var e = document.createElement(tag), i;
+    if (!attr) {
+        // nothing
+    } else if (typeof attr === "string") {
+        e.className = attr;
+    } else {
         for (i in attr) {
-            if (i === "disabled") {
-                e.disabled = attr[i];
-            } else if (i === "class") {
-                e.className = attr[i];
+            if (attr[i] == null) {
+                // skip
+            } else if (typeof attr[i] === "boolean") {
+                e[i] = attr[i];
             } else {
                 e.setAttribute(i, attr[i]);
             }
         }
     }
     for (i = 2; i < arguments.length; ++i) {
-        e.append(arguments[i]);
+        if (arguments[i] != null) {
+            e.append(arguments[i]);
+        }
     }
     return e;
+}
+
+function $frag() {
+    var f = document.createDocumentFragment(), i;
+    for (i = 0; i < arguments.length; ++i) {
+        if (arguments[i] != null)
+            f.append(arguments[i]);
+    }
+    return f;
 }
 
 
@@ -4057,9 +4252,9 @@ function make_expander_element(foldnum) {
         sv.appendChild(p);
         return sv;
     }
-    return classe("span", "expander",
-        classe("span", "in0 fx" + foldnum, mksvgp("M1 1L8 15L15 1z")),
-        classe("span", "in1 fn" + foldnum, mksvgp("M1 1L15 8L1 15z")));
+    return $e("span", "expander",
+        $e("span", "in0 fx" + foldnum, mksvgp("M1 1L8 15L15 1z")),
+        $e("span", "in1 fn" + foldnum, mksvgp("M1 1L15 8L1 15z")));
 }
 
 
@@ -4254,24 +4449,16 @@ $(function () {
 // dropdown menus
 
 (function ($) {
-var is_ie = document.documentMode || window.attachEvent, /* XXX remove support */
-    builders = {};
-
-if (is_ie) {
-    $(function () {
-        $("details .dropmenu-container").addClass("hidden");
-        $("details").attr("open", "");
-    });
-}
+var builders = {};
 
 function dropmenu_close() {
-    $$("dropmenu-modal").remove();
-    if (!is_ie)
-        $("details.dropmenu-details").removeAttr("open");
+    var modal = $$("dropmenu-modal");
+    modal && modal.remove();
+    $("details.dropmenu-details").each(function () { this.open = false; });
 }
 
 handle_ui.on("click.js-dropmenu-open", function (evt) {
-    var modal = $$("dropmenu-modal"), esummary = this, edetails, was_open;
+    var modal = $$("dropmenu-modal"), esummary = this, edetails;
     if (hasClass(esummary, "need-dropmenu")) {
         $.each(classList(esummary), function (i, c) {
             if (builders[c])
@@ -4282,22 +4469,20 @@ handle_ui.on("click.js-dropmenu-open", function (evt) {
         esummary = esummary.closest("summary");
     edetails = esummary.parentElement;
     hotcrp.tooltip.close();
-    was_open = is_ie ? hasClass(edetails.lastChild, "hidden") : edetails.open;
-    if (!was_open && !modal) {
-        modal = classe("div", "modal transparent");
-        modal.id = "dropmenu-modal";
-        edetails.parentElement.insertBefore(modal, edetails.nextsibling);
-        modal.addEventListener("click", dropmenu_close, false);
-    } else if (modal)
-        dropmenu_close();
-    if (is_ie || this.tagName === "BUTTON") {
-        if (is_ie)
-            toggleClass(edetails.lastChild, "hidden", !was_open);
-        else
-            edetails.open = !was_open;
-        evt.preventDefault();
-        handle_ui.stopPropagation(evt);
+    if (!edetails.open) {
+        if (!modal) {
+            modal = $e("div", "modal transparent");
+            modal.id = "dropmenu-modal";
+            edetails.parentElement.insertBefore(modal, edetails.nextsibling);
+            modal.addEventListener("click", dropmenu_close, false);
+        }
+        edetails.open = true;
+    } else if (this.tagName === "BUTTON") {
+        modal && modal.remove();
+        edetails.open = false;
     }
+    evt.preventDefault();
+    handle_ui.stopPropagation(evt);
 });
 
 handle_ui.on("click.dropmenu", function (evt) {
@@ -4439,9 +4624,9 @@ return {
         if (t <= 1) {
             return null;
         }
-        var span_rti = classe("span", "rti", icon_texts[t]);
+        var span_rti = $e("span", "rti", icon_texts[t]);
         span_rti.title = tooltips[t];
-        return classe("span", "rto rt".concat(canon[t], xc || ""), span_rti);
+        return $e("span", "rto rt".concat(canon[t], xc || ""), span_rti);
     }
 };
 })();
@@ -4452,8 +4637,8 @@ return {
 (function ($) {
 function make_radio(name, value, text, revtype) {
     var rname = "assrev" + name, id = rname + "_" + value,
-        input = classe("input"),
-        label = classe("label", "", classe("span", "checkc", input));
+        input = $e("input"),
+        label = $e("label", null, $e("span", "checkc", input));
     input.type = "radio";
     input.name = rname;
     input.value = value;
@@ -4461,7 +4646,7 @@ function make_radio(name, value, text, revtype) {
     if (value == revtype) {
         input.className = "assignment-ui-radio want-focus";
         input.checked = input.defaultChecked = true;
-        text = classe("u", "", text);
+        text = $e("u", "", text);
     } else {
         input.className = "assignment-ui-radio";
     }
@@ -4469,7 +4654,7 @@ function make_radio(name, value, text, revtype) {
         label.append(review_types.make_icon(value), " ");
     }
     label.append(text);
-    return classe("div", "assignment-ui-choice checki", label);
+    return $e("div", "assignment-ui-choice checki", label);
 }
 function append_round_selector(name, revtype, $a, ctr) {
     var $as = $a.closest(".has-assignment-set"), rounds;
@@ -4559,7 +4744,7 @@ handle_ui.on("js-assignment-fold", function (evt) {
         focus_within($x[0]);
     } else if (!form_differs($a)) {
         $x.remove();
-        form_highlight($a.closest("form")[0]);
+        check_form_differs($a.closest("form")[0]);
         $a.addClass("foldc").removeClass("foldo");
     }
     handle_ui.stopPropagation(evt);
@@ -4568,9 +4753,16 @@ handle_ui.on("js-assignment-autosave", function () {
     var f = this.form;
     toggleClass(f, "ignore-diff", this.checked);
     $(f).find(".autosave-hidden").toggleClass("hidden", this.checked);
-    form_highlight(f);
+    check_form_differs(f);
 });
 })($);
+
+handle_ui.on("js-bulkassign-action", function () {
+    foldup.call(this, null, {open: this.value === "review"});
+    foldup.call(this, null, {open: /^(?:primary|secondary|(?:optional|meta)?review)$/.test(this.value), n:2});
+    let selopt = this.selectedOptions[0] || this.options[0];
+    $("#k-bulkassign-entry").attr("placeholder", selopt.getAttribute("data-csv-header"));
+});
 
 (function () {
 var email_info = [], email_info_at = 0;
@@ -4594,7 +4786,7 @@ function populate(e, v, placeholder) {
 handle_ui.on("input.js-email-populate", function () {
     var self = this,
         v = self.value.toLowerCase().trim(),
-        f = this.form,
+        f = this.form || this.closest("form"),
         fn = null, ln = null, nn = null, af = null,
         country = null, orcid = null, placeholder = false,
         idx;
@@ -4751,6 +4943,57 @@ handle_ui.on("js-request-review-preview-email", function (evt) {
     });
     handle_ui.stopPropagation(evt);
 });
+
+hotcrp.monitor_autoassignment = function (jobid) {
+    let start = now_sec(), tries = 0;
+    function success(data) {
+        const e = $$("propass"),
+            dead = data.update_at && data.update_at < now_sec() - 40;
+        if (data.message_list) {
+            let ex = e.firstElementChild;
+            while (ex && ex.nodeName === "H3") {
+                ex = ex.nextElementSibling;
+            }
+            if (!ex || ex.nodeName === "P") {
+                const ee = $e("div", "msg msg-warning");
+                e.insertBefore(ee, ex);
+                ex = ee;
+            }
+            ex.replaceChildren(render_feedback_list(data.message_list));
+        }
+        if (data.progress) {
+            let ex = e.firstElementChild;
+            while (ex && ex.nodeName !== "P") {
+                ex = ex.nextElementSibling;
+            }
+            if (!ex) {
+                ex = $e("p");
+                e.appendChild(ex);
+            }
+            if (ex.previousElementSibling.tagName !== "PROGRESS") {
+                ex.before($e("progress"));
+            }
+            if (data.status === "done" && !dead) {
+                ex.previousElementSibling.value = 1;
+            }
+            ex.replaceChildren($e("strong", null, "Status:"), " " + data.progress.replace(/\.*$/, "..."));
+        }
+        if (data.status === "done" || dead) {
+            document.location.reload();
+        } else if (tries < 20) {
+            setTimeout(retry, 250);
+        } else {
+            setTimeout(retry, 500);
+        }
+    }
+    function retry() {
+        ++tries;
+        $.ajax(hoturl("api/job", {job: jobid}), {
+            method: "GET", cache: false, success: success
+        });
+    }
+    retry();
+};
 
 
 // mail
@@ -4982,15 +5225,15 @@ function row_fill(row, i, defaults, changes) {
 }
 
 function is_row_interesting(row) {
-    var ipts = row.querySelectorAll("input, select, textarea"), e;
-    for (e of ipts) {
+    const ipts = row.querySelectorAll("input, select, textarea");
+    for (let e of ipts) {
         if (e.name
             && ((e.value !== ""
                  && e.value !== e.getAttribute("placeholder"))
                 || input_default_value(e) !== ""))
             return true;
     }
-    return false;
+    return row.clientHeight <= 0 || hasClass(row, "dropmark");
 }
 
 function row_add(group, before, button) {
@@ -5030,21 +5273,19 @@ function row_order_drag_confirm(group, defaults) {
 }
 
 function row_order_count(group) {
-    var nr = 0, row;
-    for (row = group.firstElementChild; row; row = row.nextElementSibling) {
-        if (row.clientHeight > 0)
+    let nr = 0;
+    for (let row = group.firstElementChild; row; row = row.nextElementSibling) {
+        if (row.clientHeight > 0 && !hasClass(row, "dropmark")) {
             ++nr;
+        }
     }
     return nr;
 }
 
 function row_order_autogrow(group, defaults) {
-    var min_rows = Math.max(+group.getAttribute("data-min-rows") || 0, 0),
-        max_rows = +group.getAttribute("data-max-rows") || 0,
-        nr, row, prev_row;
-    for (row = group.firstElementChild, nr = 0;
-         row; row = row.nextElementSibling, ++nr) {
-    }
+    const min_rows = Math.max(+group.getAttribute("data-min-rows") || 0, 0),
+        max_rows = +group.getAttribute("data-max-rows") || 0;
+    let nr = row_order_count(group), row;
     while (nr < min_rows && (row = row_add(group))) {
         row_fill(row, nr, defaults);
         ++nr;
@@ -5058,8 +5299,8 @@ function row_order_autogrow(group, defaults) {
                 ++nr;
             }
         } else {
-            while (nr > min_rows && nr > 1) {
-                prev_row = row.previousElementSibling;
+            while (nr > min_rows && nr > 1 && !hasClass(row, "row-order-inserted")) {
+                let prev_row = row.previousElementSibling;
                 if (is_row_interesting(prev_row)) {
                     break;
                 }
@@ -5075,6 +5316,13 @@ function row_order_autogrow(group, defaults) {
     }
 }
 
+function row_order_allow_remove(group) {
+    const min_rows = Math.max(+group.getAttribute("data-min-rows") || 0, 0);
+    return min_rows === 0
+        || hasClass(group, "row-order-autogrow")
+        || row_order_count(group) > min_rows;
+}
+
 handle_ui.on("dragstart.row-order-draghandle", function (evt) {
     var row = this.closest(".draggable");
     hotcrp.drag_block_reorder(this, row, function (draggable, group, changed) {
@@ -5082,37 +5330,36 @@ handle_ui.on("dragstart.row-order-draghandle", function (evt) {
     }).start(evt);
 });
 hotcrp.dropmenu.add_builder("row-order-draghandle", function () {
-    var details = this.closest("details"), menu,
-        row = this.closest(".draggable"), group = row.parentElement;
+    const row = this.closest(".draggable"), group = row.parentElement;
+    let details = this.closest("details"), menu;
     if (details) {
         menu = details.lastElementChild.firstChild;
         menu.replaceChildren();
     } else {
-        menu = classe("ul", "uic dropmenu");
-        details = classe("details", "dropmenu-details",
-            classe("summary"),
-            classe("div", "dropmenu-container dropmenu-draghandle", menu));
+        menu = $e("ul", "uic dropmenu");
+        details = $e("details", "dropmenu-details",
+            $e("summary"),
+            $e("div", "dropmenu-container dropmenu-draghandle", menu));
         details.setAttribute("role", "menu");
         this.replaceWith(details);
         details.firstChild.append(this);
     }
-    menu.append(classe("li", "disabled", "(Drag to reorder)"));
+    menu.append($e("li", "disabled", "(Drag to reorder)"));
     function buttonli(className, attr, text) {
         attr["class"] = className;
         attr["type"] = "button";
-        return classe("li", attr.disabled ? "disabled" : "has-link", attre("button", attr, text));
+        return $e("li", attr.disabled ? "disabled" : "has-link", $e("button", attr, text));
     }
     menu.append(buttonli("link ui row-order-dragmenu move-up", {disabled: !row.previousElementSibling}, "Move up"));
     menu.append(buttonli("link ui row-order-dragmenu move-down", {disabled: !row.nextElementSibling}, "Move down"));
     if (group.hasAttribute("data-row-template")) {
-        var max_rows = +group.getAttribute("data-max-rows") || 0;
-        if (max_rows <= 0 || group.children.length < max_rows) {
+        const max_rows = +group.getAttribute("data-max-rows") || 0;
+        if (max_rows <= 0 || row_order_count(group) < max_rows) {
             menu.append(buttonli("link ui row-order-dragmenu insert-above", {}, "Insert row above"));
             menu.append(buttonli("link ui row-order-dragmenu insert-below", {}, "Insert row below"));
         }
     }
-    var min_rows = Math.max(+group.getAttribute("data-min-rows") || 0, 0);
-    menu.append(buttonli("link ui row-order-dragmenu remove", {disabled: min_rows > 0 && row_order_count(group) <= min_rows}, "Remove"));
+    menu.append(buttonli("link ui row-order-dragmenu remove", {disabled: !row_order_allow_remove(group)}, "Remove"));
 });
 handle_ui.on("row-order-dragmenu", function () {
     hotcrp.dropmenu.close(this);
@@ -5122,12 +5369,12 @@ handle_ui.on("row-order-dragmenu", function () {
         sib.before(row);
     } else if (hasClass(this, "move-down") && (sib = row.nextElementSibling)) {
         sib.after(row);
-    } else if (hasClass(this, "remove")) {
+    } else if (hasClass(this, "remove") && row_order_allow_remove(group)) {
         row.remove();
     } else if (hasClass(this, "insert-above")) {
-        row_add(group, row);
+        addClass(row_add(group, row), "row-order-inserted");
     } else if (hasClass(this, "insert-below")) {
-        row_add(group, row.nextElementSibling);
+        addClass(row_add(group, row.nextElementSibling), "row-order-inserted");
     }
     row_order_drag_confirm(group, defaults);
 });
@@ -5139,6 +5386,7 @@ handle_ui.on("row-order-append", function () {
     }
     row = row_add(group, null, this);
     row_fill(row, nr);
+    focus_within(row);
 });
 
 $(function () {
@@ -5366,10 +5614,96 @@ $(function () {
 });
 
 
+// times
+(function () {
+var update_to, updatets, scheduled_updatets = null;
+
+function check_time_point(e, ts, tsdate, nowts, nowdate) {
+    if (ts <= nowts - 950400) { // 11 days
+        if (e.hasAttribute("data-ts-text")) {
+            e.textContent = e.getAttribute("data-ts-text");
+            e.removeAttribute("data-ts-text");
+        }
+        const nowy = nowdate.getFullYear(), tsy = tsdate.getFullYear();
+        if (nowy === tsy
+            || (nowy === tsy + 1 && nowdate.getMonth() <= tsdate.getMonth())) {
+            const sfx = ", " + tsy, ttext = e.textContent;
+            if (ttext.endsWith(sfx)) {
+                e.textContent = ttext.substr(0, ttext.length - sfx.length);
+            }
+        }
+        return;
+    }
+    if (!e.hasAttribute("data-ts-text")) {
+        e.setAttribute("data-ts-text", e.textContent);
+    }
+    let uts, ttext;
+    if (ts <= nowts - 86400) {
+        const d = Math.floor((nowts - ts) / 86400);
+        ttext = d + "d";
+        uts = ts + (d + 1) * 86400;
+    } else if (ts <= nowts - 3600) {
+        const h = Math.floor((nowts - ts) / 3600);
+        ttext = h + "h";
+        uts = ts + (h + 1) * 3600;
+    } else if (ts <= nowts - 60) {
+        const m = Math.floor((nowts - ts) / 60);
+        ttext = m + "m";
+        uts = ts + (m + 1) * 60;
+    } else {
+        ttext = "just now";
+        uts = ts + 60;
+    }
+    if (ttext !== e.textContent) {
+        e.textContent = ttext;
+    }
+    e.setAttribute("data-ts-update", uts);
+    if (uts > nowts && (updatets === null || uts < updatets)) {
+        updatets = uts;
+    }
+}
+
+function update_time_points() {
+    const nowdate = new Date, nowts = nowdate.getTime() / 1000;
+    scheduled_updatets = updatets = update_to = null;
+    for (let e of document.querySelectorAll("time[data-ts-update]")) {
+        const uts = +e.getAttribute("data-ts-update");
+        if (uts <= nowts) {
+            const ts = +e.getAttribute("data-ts"), tsdate = new Date(ts);
+            check_time_point(e, ts, tsdate, nowts, nowdate);
+        } else if (updatets === null || uts < updatets) {
+            updatets = uts;
+        }
+    }
+    if (updatets) {
+        scheduled_updatets = updatets;
+        update_to = setTimeout(update_time_points, (updatets - nowts) * 1000);
+    }
+}
+
+hotcrp.make_time_point = function (ts, ttext, className) {
+    const tsdate = new Date(ts * 1000), nowdate = new Date, nowts = nowdate.getTime() / 1000,
+        e = $e("time", {
+            "class": className, datetime: tsdate.toISOString(),
+            "data-ts": ts,
+            title: strftime("%b %#e, %Y " + (strftime.is24 ? "%H:%M" : "%#l:%M %p"), tsdate)
+        }, ttext);
+    updatets = null;
+    check_time_point(e, ts, tsdate, nowts, nowdate);
+    if (updatets && (scheduled_updatets === null || updatets < scheduled_updatets)) {
+        scheduled_updatets && clearTimeout(update_to);
+        scheduled_updatets = updatets;
+        update_to = setTimeout(update_time_points, (updatets - nowts) * 1000);
+    }
+    return e;
+};
+
+})(jQuery);
+
+
 // reviews
 handle_ui.on("js-review-tokens", function () {
     var $d, hc = popup_skeleton();
-    hc = popup_skeleton();
     hc.push('<h2>Review tokens</h2>');
     hc.push('<p>Review tokens implement fully anonymous reviewing. If you have been given review tokens, enter them here to view the corresponding papers and edit the reviews.</p>');
     hc.push('<input type="text" size="60" name="token" value="' + escape_html(this.getAttribute("data-review-tokens") || "") + '" placeholder="Review tokens">');
@@ -5637,17 +5971,11 @@ function revrating_key(evt) {
 }
 
 function make_review_h2(rrow, rlink, rdesc) {
-    var h2 = document.createElement("h2"),
-        ma = document.createElement("a"),
-        rd = document.createElement("span"), ed;
+    let h2 = $e("h2"), ma, rd = $e("span");
     if (rrow.folded) {
-        ma.className = "qo ui js-foldup";
-        ma.setAttribute("href", "");
-        ma.setAttribute("data-fold-target", 20);
-        ma.appendChild(make_expander_element(20));
+        ma = $e("button", {type: "button", "class": "qo ui js-foldup", "data-fold-target": 20}, make_expander_element(20));
     } else {
-        ma.className = "qo";
-        ma.setAttribute("href", hoturl("review", rlink));
+        ma = $e("a", {href: hoturl("review", rlink), "class": "qo"});
     }
     rd.className = "revcard-header-name";
     rd.append(rdesc);
@@ -5655,17 +5983,12 @@ function make_review_h2(rrow, rlink, rdesc) {
     h2.append(ma);
     if (rrow.editable) {
         if (rrow.folded) {
-            ma = document.createElement("a");
-            ma.className = "qo";
-            ma.setAttribute("href", hoturl("review", rlink));
+            ma = $e("a", {href: hoturl("review", rlink), "class": "qo"});
             h2.append(" ", ma);
         } else {
             ma.append(" ");
         }
-        ed = document.createElement("span");
-        ed.className = "t-editor";
-        ed.append("✎");
-        ma.append(ed);
+        ma.append($e("span", "t-editor", "✎"));
     }
     return h2;
 }
@@ -5674,17 +5997,15 @@ function append_review_id(rrow, eheader) {
     var rth = null, ad = null, e, xc;
     function add_rth(e) {
         if (!rth) {
-            rth = document.createElement("div")
-            rth.className = "revthead";
+            rth = $e("div", "revthead");
             eheader.appendChild(rth);
         }
+        rth.firstChild && rth.append($e("span", "barsep", "·"));
         rth.append(e);
     }
     function add_ad(s) {
         if (!ad) {
-            ad = document.createElement("address");
-            ad.className = "revname";
-            ad.setAttribute("itemprop", "author");
+            ad = $e("address", {"class": "revname", itemprop: "author"});
             add_rth(ad);
         }
         ad.append(s);
@@ -5692,10 +6013,8 @@ function append_review_id(rrow, eheader) {
     if (rrow.review_token) {
         add_ad("Review token " + rrow.review_token);
     } else if (rrow.reviewer) {
-        e = document.createElement("span");
+        add_ad((e = $e("span", {title: rrow.reviewer_email})));
         e.innerHTML = rrow.blind ? "[" + rrow.reviewer + "]" : rrow.reviewer;
-        rrow.reviewer_email && (e.title = rrow.reviewer_email);
-        add_ad(e);
     }
     if (rrow.rtype) {
         xc = (rrow.submitted || rrow.approved ? "" : " rtinc") +
@@ -5703,19 +6022,11 @@ function append_review_id(rrow, eheader) {
         ad && ad.append(" ");
         add_ad(review_types.make_icon(rrow.rtype, xc));
         if (rrow.round) {
-            e = document.createElement("span");
-            e.className = "revround";
-            e.title = "Review round";
-            e.append(rrow.round);
-            ad.append(e);
+            ad.append($e("span", {"class": "revround", title: "Review round"}, rrow.round));
         }
     }
     if (rrow.modified_at) {
-        e = document.createElement("time");
-        e.className = "revtime";
-        e.dateTime = (new Date(rrow.modified_at * 1000)).toISOString();
-        e.append(rrow.modified_at_text);
-        add_rth(e);
+        add_rth(hotcrp.make_time_point(rrow.modified_at, rrow.modified_at_text, "revtime"));
     }
 }
 
@@ -5743,26 +6054,18 @@ hotcrp.add_review = function (rrow) {
     $(".pcontainer")[0].appendChild(earticle);
 
     // header
-    eheader = document.createElement("header");
-    eheader.className = "revcard-head";
-    eheader.appendChild(make_review_h2(rrow, rlink, rdesc));
+    eheader = $e("header", "revcard-head", make_review_h2(rrow, rlink, rdesc));
     append_review_id(rrow, eheader);
-    e = document.createElement("hr");
-    e.className = "c";
-    eheader.appendChild(e);
+    eheader.appendChild($e("hr", "c"));
     earticle.appendChild(eheader);
 
     // messages
     if (rrow.message_list) {
-        e = document.createElement("div");
-        e.className = "revcard-feedback fx20";
-        e.appendChild(render_feedback_list(rrow.message_list));
-        earticle.appendChild(e);
+        earticle.appendChild($e("div", "revcard-feedback fx20", render_feedback_list(rrow.message_list)));
     }
 
     // body
-    e = document.createElement("div");
-    e.className = "revcard-render fx20";
+    e = $e("div", "revcard-render fx20");
     earticle.appendChild(e);
     render_review_body_in(rrow, e);
 
@@ -5789,22 +6092,22 @@ hotcrp.add_review = function (rrow) {
 };
 
 function render_review_hidden_fields(hidden_fields) {
-    var e, i, n = [], link;
+    var i, n = [], link;
     for (i = 0; i !== hidden_fields.length; ++i) {
         var f = formj[hidden_fields[i]];
         n.push(f.name);
     }
-    link = classe("a");
+    link = $e("a");
     link.href = hoturl("settings", {group: "reviewform", "#": "rf/" + formj[hidden_fields[0]].order});
     if (!hotcrp.status.is_admin) {
         link.className = "q";
     }
     if (n.length === 1) {
         link.textContent = "field condition";
-        return classe("p", "feedback is-warning mt-3", "This review’s ".concat(n[0], " field has been hidden by a "), link, ".");
+        return $e("p", "feedback is-warning mt-3", "This review’s ".concat(n[0], " field has been hidden by a "), link, ".");
     } else {
         link.textContent = "field conditions";
-        return classe("p", "feedback is-warning mt-3", "This review’s ".concat(commajoin(n), " fields have been hidden by "), link, ".");
+        return $e("p", "feedback is-warning mt-3", "This review’s ".concat(commajoin(n), " fields have been hidden by "), link, ".");
     }
 }
 
@@ -5812,7 +6115,6 @@ function render_review_hidden_fields(hidden_fields) {
 function ReviewField(fj) {
     this.uid = fj.uid;
     this.name = fj.name;
-    this.name_html = escape_html(this.name);
     this.type = fj.type;
     if (fj.description != null)
         this.description = fj.description;
@@ -5836,7 +6138,7 @@ ReviewField.prototype.render_in = function (fv, rrow, fe) {
 function DiscreteValues_ReviewField(fj) {
     var i, n, step, sym, ch;
     ReviewField.call(this, fj);
-    this.values = fj.values;
+    this.values = fj.values || [];
     this.symbols = fj.symbols;
     this.start = fj.start || null;
     this.scheme = fj.scheme || "sv";
@@ -5896,8 +6198,8 @@ DiscreteValues_ReviewField.prototype.parse_value = function (txt) {
     return si >= 0 ? this.value_info(si + 1) : null;
 };
 
-DiscreteValues_ReviewField.prototype.rgb = function (val) {
-    return this.scheme_info.rgb(val);
+DiscreteValues_ReviewField.prototype.color = function (val) {
+    return this.scheme_info.color(val);
 };
 
 DiscreteValues_ReviewField.prototype.className = function (val) {
@@ -5986,8 +6288,8 @@ Checkbox_ReviewField.prototype.parse_value = function (txt) {
     return null;
 };
 
-Checkbox_ReviewField.prototype.rgb = function (val) {
-    return this.scheme_info.rgb(val ? 2 : 1);
+Checkbox_ReviewField.prototype.color = function (val) {
+    return this.scheme_info.color(val ? 2 : 1);
 };
 
 Checkbox_ReviewField.prototype.className = function (val) {
@@ -6128,31 +6430,50 @@ function cj_name(cj) {
     }
 }
 
-function cmt_identity_time(cj, editing) {
-    var t = [], x, i;
-    if (cj.response || cj.is_new) {
-    } else if (cj.editable) {
-        t.push('<div class="cmtnumid"><a href="#' + cj_cid(cj) +
-               '" class="qo ui hover-child cmteditor">');
-        if (cj.ordinal) {
-            t.push('<div class="cmtnum"><span class="cmtnumat">@</span><span class="cmtnumnum">' +
-               cj.ordinal + '</span></div> ');
-        } else {
-            t.push('Edit ');
+function cmt_header_dotsep(hdre) {
+    if (hdre.lastChild
+        && hdre.lastChild.nodeName !== "H2"
+        && !hasClass(hdre.lastChild, "cmtnumid")) {
+        hdre.append($e("span", "barsep", "·"));
+    }
+}
+
+function cmt_identity_time(frag, cj, editing) {
+    if (cj.response) {
+        if (cj.text === false) {
+            frag.appendChild($e("div", "cmtnumid cmtnum", cj_name(cj)));
         }
-        t.push('<span class="t-editor">✎</span></a></div>');
+    } else if (cj.is_new) {
+        // no identity
+    } else if (cj.editable) {
+        const ae = $e("a", {href: "#" + cj_cid(cj), "class": "qo ui hover-child cmteditor"});
+        if (cj.ordinal) {
+            ae.append($e("div", "cmtnum", $e("span", "cmtnumat", "@"),
+                $e("span", "cmtnumnum", cj.ordinal)), " ");
+        } else {
+            ae.append("Edit ");
+        }
+        ae.append($e("span", "t-editor", "✎"));
+        frag.appendChild($e("div", "cmtnumid", ae));
     } else if (cj.ordinal) {
-        t.push('<div class="cmtnumid cmtnum"><a class="q" href="#' + cj_cid(cj)
-               + '"><span class="cmtnumat">@</span><span class="cmtnumnum">'
-               + cj.ordinal + '</span></a></div>');
+        frag.appendChild($e("div", "cmtnumid cmtnum",
+            $e("a", {href: "#" + cj_cid(cj), "class": "q"},
+                $e("span", "cmtnumat", "@"), $e("span", "cmtnumnum", cj.ordinal))));
     }
     if (cj.author && cj.author_hidden) {
-        t.push('<address class="has-fold cmtname fold9c" itemprop="author"><span class="fx9' +
-               (cj.author_email ? '" title="' + cj.author_email : '') +
-               '">' + cj.author + ' </span><button type="button" class="q ui js-foldup" data-fold-target="9" title="Toggle author"><span class="fn9"><span class="expander"><svg class="licon" width="0.75em" height="0.75em" viewBox="0 0 16 16" preserveAspectRatio="none"><path d="M1 1L15 8L1 15z" /></svg></span>' +
-               (cj.author_pseudonym || "<i>Hidden</i>") + '</span><span class="fx9">(deanonymized)</span></button></address>');
+        const aue = $e("span", {"class": "fx9", title: cj.author_email});
+        aue.innerHTML = cj.author + " (deanonymized)";
+        const ane = $e("span", "fn9");
+        if (cj.author_pseudonym) {
+            ane.append("+ ", cj.author_pseudonym, " (", $e("i", null, "hidden"), ")");
+        } else {
+            ane.append("+ ", $e("i", null, "Hidden"));
+        }
+        frag.appendChild($e("address", {"class": "has-fold cmtname fold9c", itemprop: "author"},
+            $e("button", {type: "button", "class": "q ui js-foldup", "data-fold-target": 9, "title": "Toggle author"},
+                ane, aue)));
     } else if (cj.author) {
-        x = cj.author;
+        let x = cj.author;
         if (cj.author_pseudonym && cj.author_pseudonymous) {
             x = cj.author_pseudonym.concat(" [", x, "]");
         } else if (cj.author_pseudonym) {
@@ -6160,27 +6481,33 @@ function cmt_identity_time(cj, editing) {
         } else if (cj.author_pseudonymous) {
             x = "[".concat(cj.author, "]");
         }
-        t.push('<address class="cmtname' +
-               (cj.author_email ? '" title="' + cj.author_email : "") +
-               '" itemprop="author">' + x + '</address>');
+        const aue = $e("address", {"class": "cmtname", itemprop: "author", title: cj.author_email});
+        aue.innerHTML = x;
+        frag.appendChild(aue);
     } else if (cj.author_pseudonym
-               && (!cj.response || cj.author_pseudonym !== "Author")) {
-        t.push('<address class="cmtname" itemprop="author">' + cj.author_pseudonym + '</address>');
+               && (!cj.response || cj.text === false || cj.author_pseudonym !== "Author")) {
+        frag.appendChild($e("address", {"class": "cmtname", itemprop: "author"}, cj.author_pseudonym));
     }
     if (cj.modified_at) {
-        t.push('<time class="cmttime" datetime="' + (new Date(cj.modified_at * 1000)).toISOString() + '">' + cj.modified_at_text + '</time>');
+        cmt_header_dotsep(frag);
+        frag.append(hotcrp.make_time_point(cj.modified_at, cj.modified_at_text, "cmttime"));
     }
-    if (!cj.response && !editing && cj.tags) {
-        x = [];
-        for (i in cj.tags) {
-            x.push('<a class="q" href="' + hoturl_html("search", {q: "cmt:#" + unparse_tag(cj.tags[i], true)}) + '">#' + unparse_tag(cj.tags[i]) + '</a>');
+    if (!cj.response && !editing) {
+        const v = vismap[cj.visibility];
+        if (v) {
+            cmt_header_dotsep(frag);
+            frag.appendChild($e("div", "cmtvis", v));
         }
-        t.push('<div class="cmttags">' + x.join(" ") + '</div>');
+        if (cj.tags) {
+            const tage = $e("div", "cmttags");
+            for (let t of cj.tags) {
+                tage.firstChild && tage.append(" ");
+                tage.appendChild($e("a", {href: hoturl("search", {q: "cmt:#" + unparse_tag(t, true)}), "class": "q"}, "#" + unparse_tag(t)));
+            }
+            cmt_header_dotsep(frag);
+            frag.appendChild(tage);
+        }
     }
-    if (!cj.response && !editing && (i = vismap[cj.visibility])) {
-        t.push('<div class="cmtvis">(' + i + ')</div>');
-    }
-    return t.join("");
 }
 
 function cmt_is_editable(cj, override) {
@@ -6193,8 +6520,8 @@ function cmt_is_editable(cj, override) {
 }
 
 
-function cmt_render_form(hc, cj) {
-    var x, btnbox = [], cid = cj_cid(cj), bnote;
+function cmt_render_form(cj) {
+    var x, btnbox = [], cid = cj_cid(cj), bnote, hc = new HtmlCollector;
 
     hc.push('<form class="cmtform">', '</form>');
     if (cj.review_token) {
@@ -6232,7 +6559,7 @@ function cmt_render_form(hc, cj) {
         }
         hc.push('<span class="visibility-topic"><span class="d-inline-block ml-2 mr-2">about</span>');
         hc.push('<span class="select"><select id="' + cid + '-topic" name="topic">', '</select></span></span>');
-        hc.push('<option value="paper">submission</option>');
+        hc.push('<option value="paper">' + siteinfo.snouns[0] + '</option>');
         hc.push_pop('<option value="rev" selected>reviews</option>');
         hc.push('<p class="visibility-hint f-h text-break-line"></p>');
         if (!cj.by_author && hotcrp.status.rev.blind && hotcrp.status.rev.blind !== true) {
@@ -6274,7 +6601,7 @@ function cmt_render_form(hc, cj) {
     bnote = cmt_is_editable(cj) ? "" : '<div class="hint">(admin only)</div>';
     if (btnbox.length)
         hc.push('<div class="aabut"><div class="btnbox">' + btnbox.join("") + '</div></div>');
-    if (cj.response && resp_rounds[cj.response].words > 0)
+    if (cj.response && resp_rounds[cj.response].wl > 0)
         hc.push('<div class="aabut"><div class="words"></div></div>');
     hc.push('<div class="aabr">', '</div>');
     hc.push('<div class="aabut"><button type="button" name="cancel">Cancel</button></div>');
@@ -6284,7 +6611,7 @@ function cmt_render_form(hc, cj) {
     } else {
         hc.push('<div class="aabut"><button type="button" name="bsubmit" class="btn-primary">Save</button>' + bnote + "</div>");
     }
-    hc.pop_n(2);
+    return $(hc.render())[0];
 }
 
 function cmt_visibility_change() {
@@ -6303,14 +6630,11 @@ function cmt_visibility_change() {
         vis.firstChild.textContent = "Future author discussion";
     }
     if (hint) {
-        var m = [], elt;
+        var m = [];
         if (vis.value === "au" && !form.elements.by_author) {
             if (would_auvis) {
                 m.length && m.push("\n");
-                elt = document.createElement("span");
-                elt.className = "is-diagnostic is-warning";
-                elt.textContent = "Authors will be notified immediately.";
-                m.push(elt);
+                m.push($e("span", "is-diagnostic is-warning", "Authors will be notified immediately."));
             } else {
                 m.length && m.push("\n");
                 m.push('Authors cannot currently view reviews or comments about reviews.');
@@ -6324,10 +6648,7 @@ function cmt_visibility_change() {
             m.push('The comment will be hidden from authors and external reviewers.');
         } else if (vis.value === "rev" && hotcrp.status.myperm.default_comment_visibility === "pc") {
             m.length && m.push("\n");
-            elt = document.createElement("span");
-            elt.className = "is-diagnostic is-warning";
-            elt.textContent = "External reviewers cannot view comments at this time.";
-            m.push(elt);
+            m.push($e("span", "is-diagnostic is-warning", "External reviewers cannot view comments at this time."));
         }
         if (is_paper) {
             m.length && m.push("\n");
@@ -6444,8 +6765,9 @@ function cmt_start_edit(celt, cj) {
     }
 
     if (cj.response) {
-        if (resp_rounds[cj.response].words > 0)
-            make_update_words(celt, resp_rounds[cj.response].words);
+        if (resp_rounds[cj.response].wl > 0) {
+            make_update_words(celt, resp_rounds[cj.response].wl);
+        }
         var $ready = $(form.elements.ready).on("click", cmt_ready_change);
         cmt_ready_change.call($ready[0]);
     }
@@ -6457,32 +6779,29 @@ function cmt_start_edit(celt, cj) {
     }
 
     $(form).on("submit", cmt_submit).on("click", "button", cmt_button_click);
-    hiliter_children(form);
     $(celt).awaken();
 }
 
 function cmt_render_attachment_input(ctr, doc) {
-    var hc = new HtmlCollector;
-    hc.push('<div class="has-document compact" data-dtype="-2" data-document-name="attachment:'.concat(ctr, '">'), '</div>');
-    hc.push('<div class="document-file">', '</div>');
-    cmt_render_attachment(hc, doc);
-    hc.pop();
-    hc.push('<div class="document-actions"><button type="button" class="link ui js-remove-document">Delete</button><input type="hidden" name="attachment:'.concat(ctr, '" value="', doc.docid, '"></div>'));
-    return hc.render();
+    return $e("div", {"class": "has-document compact", "data-dtype": "-2", "data-document-name": "attachment:" + ctr},
+        $e("div", "document-file", cmt_render_attachment(doc)),
+        $e("div", "document-actions",
+            $e("button", {type: "button", "class": "link ui js-remove-document"}, "Delete"),
+            hidden_input("attachment:" + ctr, doc.docid)));
 }
 
-function cmt_render_attachment(hc, doc) {
-    hc.push('<a href="' + escape_html(siteinfo.site_relative + doc.siteurl) + '" class="qo">', '</a>');
+function cmt_render_attachment(doc) {
+    const a = $e("a", {href: siteinfo.site_relative + doc.siteurl, "class": "qo"});
     if (doc.mimetype === "application/pdf") {
-        hc.push('<img src="' + siteinfo.assets + 'images/pdf.png" alt="[PDF]" class="sdlimg"> ');
+        a.append($e("img", {src: siteinfo.assets + "images/pdf.png", alt: "[PDF]", "class": "sdlimg"}));
     } else {
-        hc.push('<img src="' + siteinfo.assets + 'images/generic.png" alt="[Attachment]" class="sdlimg"> ');
+        a.append($e("img", {src: siteinfo.assets + "images/generic.png", alt: "[Attachment]", "class": "sdlimg"}));
     }
-    hc.push('<u class="x">' + escape_html(doc.unique_filename || doc.filename || "Attachment") + '</u>');
+    a.append(" ", $e("u", "x", doc.unique_filename || doc.filename || "Attachment"));
     if (doc.size != null) {
-        hc.push(' <span class="dlsize">(' + unparse_byte_size(doc.size) + ')</span>');
+        a.append(" ", $e("span", "dlsize", "(" + unparse_byte_size(doc.size) + ")"));
     }
-    hc.pop();
+    return a;
 }
 
 function cmt_beforeunload() {
@@ -6513,7 +6832,7 @@ function cmt_focus(e) {
 }
 
 function cmt_edit_observer(entries) {
-    var i, e, want, have;
+    let i, e, want, have;
     for (i = 0; i !== entries.length; ++i) {
         e = entries[i];
         if (e.isIntersecting) {
@@ -6522,10 +6841,11 @@ function cmt_edit_observer(entries) {
             e.target.removeAttribute("data-intersecting");
         }
     }
+    const focus = document.activeElement && document.activeElement.closest(".cmtcard");
     for (i = 0; i !== editing_list.length; ++i) {
         e = editing_list[i];
         want = have = hasClass(e, "popout");
-        if (i !== editing_list.length - 1
+        if ((focus ? focus !== e : i !== editing_list.length - 1)
             || !e.previousSibling
             || e.previousSibling.hasAttribute("data-intersecting")) {
             want = false;
@@ -6544,7 +6864,7 @@ function cmt_edit_observer(entries) {
     }
 }
 
-function cmt_unavoid_popout(evt) {
+function cmt_unavoid_popout() {
     removeClass(this, "avoid-popout");
     this.removeEventListener("focusin", cmt_unavoid_popout);
 }
@@ -6560,7 +6880,7 @@ function cmt_toggle_editing(celt, editing) {
     if (editing && (!celt.previousSibling || celt.previousSibling.className !== "cmtcard-placeholder")
         && window.IntersectionObserver) {
         editor_observer = editor_observer || new IntersectionObserver(cmt_edit_observer, {rootMargin: "16px 0px"});
-        var e = classe("div", "cmtcard-placeholder");
+        var e = $e("div", "cmtcard-placeholder");
         celt.before(e);
         editing_list = editing_list || [];
         editing_list.push(celt);
@@ -6691,6 +7011,7 @@ function cmt_button_click(evt) {
         evt.preventDefault();
         cmt_save(this, "submit");
     } else if (this.name === "cancel") {
+        cj.folded && fold(this.closest(".cmtcard"), true, 20);
         cmt_render(cj, false);
     } else if (this.name === "delete") {
         override_deadlines.call(this, function () {
@@ -6708,159 +7029,152 @@ function cmt_submit(evt) {
 }
 
 function cmt_render(cj, editing) {
-    var hc = new HtmlCollector, t, chead, i,
-        cid = cj_cid(cj), celt = $$(cid);
+    let i, cid = cj_cid(cj), article = $$(cid), existed = !!article.firstChild;
 
     // clear current comment
-    if (document.activeElement && celt.contains(document.activeElement)) {
+    if (document.activeElement && article.contains(document.activeElement)) {
         document.activeElement.blur();
     }
-    $(celt).find("textarea, input[type=text]").unautogrow();
-    while (celt.lastChild && !hasClass(celt.lastChild, "cmtcard-head")) {
-        celt.removeChild(celt.lastChild);
-    }
+    $(article).find("textarea, input[type=text]").unautogrow();
+    article.replaceChildren();
 
     if (cj.is_new && !editing) {
-        cmt_toggle_editing(celt, false);
-        var ide = celt.closest(".cmtid");
+        cmt_toggle_editing(article, false);
+        var ide = article.closest(".cmtid");
         navsidebar.remove(ide);
         $("#k-comment-actions a[href='#" + ide.id + "']").closest(".aabut").removeClass("hidden");
         $(ide).remove();
         return;
     }
-    if (cj.response) {
-        chead = $(celt.closest(".cmtcard")).find(".cmtcard-head");
-        chead.find(".cmtinfo").remove();
-    }
 
     // opener
-    t = [];
-    if (cj.visibility && !cj.response) {
-        t.push("cmt" + cj.visibility + "vis");
-    }
-    if (cj.color_classes) {
-        ensure_pattern(cj.color_classes);
-        t.push("cmtcolor " + cj.color_classes);
-    }
-    if (t.length && !editing) {
-        hc.push('<div class="' + t.join(" ") + '">', '</div>');
+    let cctre = article;
+    if (!editing) {
+        const ks = [];
+        if (cj.visibility && !cj.response) {
+            ks.push("cmt" + cj.visibility + "vis");
+        }
+        if (cj.color_classes) {
+            ensure_pattern(cj.color_classes);
+            ks.push("cmtcolor " + cj.color_classes);
+        }
+        if (ks.length) {
+            cctre = $e("div", ks.join(" "));
+            article.appendChild(cctre);
+        }
     }
 
     // header
-    t = cj.is_new ? '>' : ' id="cid' + cj.cid + '">';
-    if (cj.editable) {
-        hc.push('<header class="cmtt ui js-click-child"' + t, '</header>');
-    } else {
-        hc.push('<header class="cmtt"' + t, '</header>');
-    }
-    if (cj.is_new && !cj.response) {
-        hc.push('<h2><span class="cmtcard-header-name">Add comment</span></h2>');
-    } else if (editing && !cj.response) {
-        hc.push('<h2><span class="cmtcard-header-name">Edit comment</span></h2>');
-    } else if (cj.editable && !editing && cj.response) {
-        var $h2 = $(chead).find("h2");
-        if (!$h2.find("button").length) {
-            $h2.html('<button type="button" class="qo ui cmteditor">' + $h2.html() + ' <span class="t-editor">✎</span></button>');
+    const hdre = $e("header", cj.editable ? "cmtt ui js-click-child" : "cmtt");
+    cj.is_new || (hdre.id = cj.cid);
+    if (cj.response && cj.text !== false) {
+        const h2 = $e("h2");
+        let cnc = h2;
+        if (cj.folded && !editing) {
+            cnc = $e("button", {type: "button", "class": "qo ui js-foldup", "data-fold-target": 20}, make_expander_element(20));
+        } else if (cj.editable && !editing) {
+            cnc = $e("button", {type: "button", "class": "qo ui cmteditor"});
         }
+        h2 === cnc || h2.append(cnc);
+        cnc.append($e("span", "cmtcard-header-name", cj_name(cj)));
+        if (cj.editable && !editing) {
+            if (cj.folded) {
+                cnc = $e("button", {type: "button", "class": "qo ui cmteditor"});
+                h2.append(" ", cnc);
+            }
+            cnc.append(" ", $e("span", "t-editor", "✎"));
+        }
+        hdre.append(h2);
+    } else if (editing) {
+        hdre.append($e("h2", null, $e("span", "cmtcard-header-name", cj.is_new ? "Add comment" : "Edit comment")));
     }
-    t = cmt_identity_time(cj, editing);
-    if (cj.response) {
-        chead.find(".cmtthead").remove();
-        chead.append('<div class="cmtthead">' + t + '</div>');
-    } else {
-        hc.push(t);
-    }
-    hc.pop_collapse();
+    cmt_identity_time(hdre, cj, editing);
+    hdre.firstChild && cctre.appendChild(hdre);
 
     // text
-    hc.push('<div class="cmtmsg"></div>');
+    cctre.append($e("div", "cmtmsg fx20"));
     if (cj.response && cj.draft && cj.text) {
-        hc.push('<p class="feedback is-warning">Reviewers can’t see this draft response.</p>');
+        cctre.append($e("p", "feedback is-warning fx20", "Reviewers can’t see this draft response"));
     }
     if (editing) {
-        cmt_render_form(hc, cj);
+        cctre.append(cmt_render_form(cj));
     } else {
-        hc.push('<div class="cmttext"></div>');
+        cctre.append($e("div", "cmttext fx20"));
         if (cj.docs && cj.docs.length) {
-            hc.push('<div class="cmtattachments">', '</div>');
-            for (i = 0; i !== cj.docs.length; ++i)
-                cmt_render_attachment(hc, cj.docs[i]);
-            hc.pop();
+            const ats = $e("div", "cmtattachments fx20");
+            cctre.append(ats);
+            for (i = 0; i !== cj.docs.length; ++i) {
+                ats.append(cmt_render_attachment(cj.docs[i]));
+            }
         }
     }
 
     // render
-    $(celt).append(hc.render());
-    cmt_toggle_editing(celt, editing);
-    if (cj.response) {
-        t = cj_name(cj);
-        var $chead_name = chead.find(".cmtcard-header-name");
-        if ($chead_name.html() !== t) {
-            $chead_name.html(t);
-            navsidebar.redisplay(cid);
-        }
+    cmt_toggle_editing(article, editing);
+
+    // draft responses <-> real responses
+    if (cj.response && hasClass(article, "response") !== (cj.text !== false)) {
+        toggleClass(article, "comment", cj.text === false);
+        toggleClass(article, "response", cj.text !== false);
+    }
+    if (cj.response && hasClass(article, "draft") !== !!cj.draft) {
+        toggleClass(article, "draft", !!cj.draft);
+        existed && navsidebar.redisplay(cid);
     }
 
     // fill body
     if (editing) {
-        cmt_start_edit(celt, cj);
+        cmt_start_edit(article, cj);
     } else {
         if (cj.text !== false) {
             cmt_render_text(cj.format, cj.text || "", cj.response,
-                            $(celt).find(".cmttext")[0], chead);
+                            article.querySelector(".cmttext"), article);
         } else if (cj.response) {
-            t = '<p class="feedback is-warning">';
-            if (cj.word_count)
-                t += cj.word_count + "-word draft";
-            else
-                t += "Draft";
-            t += " " + (cj.response == "1" ? "" : cj.response + " ") +
-                "response not shown</p>";
-            $(celt).find(".cmttext").html(t);
+            const t = (cj.word_count ? cj.word_count + "-word draft " : "Draft ") +
+                (cj.response == "1" ? "" : cj.response + " ");
+            article.querySelector(".cmttext").replaceChildren($e("p", "feedback is-warning", t + "response not shown"));
         }
-        (cj.response ? chead.parent() : $(celt)).find(".cmteditor").click(edit_this);
+        $(article).find(".cmteditor").click(edit_this);
     }
 
-    return $(celt);
+    return $(article);
 }
 
-function cmt_render_text(format, value, response, texte, chead) {
-    var wc, rrd = response && resp_rounds[response],
-        aftertexte = null, buttone;
-    if (rrd && rrd.words > 0) {
-        wc = count_words(value);
-        var wordse = null;
-        if (wc > 0 && chead) {
-            wordse = document.createElement("div");
-            wordse.className = "cmtthead words";
-            wordse.textContent = plural(wc, "word");
-            chead[0].appendChild(wordse);
+function cmt_render_text(format, value, response, texte, article) {
+    const rrd = response && resp_rounds[response];
+    let aftertexte = null;
+    if (rrd && rrd.wl > 0) {
+        const wc = count_words(value);
+        if (wc > 0 && article) {
+            let cth = article.querySelector("header");
+            cmt_header_dotsep(cth);
+            cth.append($e("div", "cmtwords words" + (wc > rrd.wl ? " wordsover" : ""), plural(wc, "word")));
         }
-        if (wc > rrd.words) {
-            wordse && addClass(wordse, "wordsover");
-            wc = count_words_split(value, rrd.words);
-            if (rrd.truncate && !hotcrp.status.myperm.allow_administer) {
-                buttone = classe("button", "ui js-overlong-expand", "Truncated for length");
-                buttone.type = "button";
-                buttone.disabled = true;
-                aftertexte = classe("div", "overlong-expander", buttone);
-                value = wc[0].trimEnd() + "…";
-            } else {
-                buttone = classe("button", "ui js-overlong-expand", "Show full-length response");
-                buttone.type = "button";
-                buttone.ariaExpanded = "false";
-                var allowede = classe("div", "overlong-allowed"),
-                    dividere = classe("div", "overlong-divider",
-                        allowede,
-                        classe("div", "overlong-mark",
-                            classe("div", "overlong-expander", buttone))),
-                    contente = classe("div", "overlong-content");
-                addClass(texte, "has-overlong");
-                addClass(texte, "overlong-collapsed");
-                texte.prepend(dividere, contente);
-                texte = contente;
-                render_text.onto(allowede, format, wc[0]);
-            }
+        if ((rrd.hwl || 0) > 0
+            && wc > rrd.hwl
+            && !hotcrp.status.myperm.allow_administer) {
+            const wcx = count_words_split(value, rrd.hwl);
+            value = wcx[0].trimEnd() + "…";
+            aftertexte = $e("div", "overlong-expander",
+                $e("button", {type: "button", "class": "ui js-overlong-expand", disabled: true}, "Truncated for length"));
+        }
+        if (wc > rrd.wl
+            && ((rrd.hwl || 0) <= 0
+                || rrd.wl < rrd.hwl
+                || hotcrp.status.myperm.allow_administer)) {
+            const wcx = count_words_split(value, rrd.wl),
+                allowede = $e("div", "overlong-allowed"),
+                dividere = $e("div", "overlong-divider",
+                    allowede,
+                    $e("div", "overlong-mark",
+                        $e("div", "overlong-expander",
+                            $e("button", {type: "button", "class": "ui js-overlong-expand", "aria-expanded": "false"}, "Show more")))),
+                contente = $e("div", "overlong-content");
+            addClass(texte, "has-overlong");
+            addClass(texte, "overlong-collapsed");
+            texte.prepend(dividere, contente);
+            texte = contente;
+            render_text.onto(allowede, format, wcx[0]);
         }
     }
     render_text.onto(texte, format, value);
@@ -6869,7 +7183,7 @@ function cmt_render_text(format, value, response, texte, chead) {
 }
 
 function cmt_render_preview(evt, format, value, dest) {
-    var cj = cj_find(evt.target);
+    const cj = cj_find(evt.target);
     cmt_render_text(format, value, cj ? cj.response : 0, dest, null);
     return false;
 }
@@ -6884,6 +7198,10 @@ function add_comment(cj, editing) {
         && hotcrp.status.myperm
         && hotcrp.status.myperm.is_author) {
         editing = 2;
+    }
+    if (cj.folded
+        && cj.text === false) {
+        cj.folded = false;
     }
     if (celt) {
         cmt_render(cj, editing);
@@ -6902,7 +7220,7 @@ function add_comment(cj, editing) {
 function add_new_comment_button(cj, cid) {
     var actions = $$("k-comment-actions");
     if (!actions) {
-        actions = classe("div", "pcard cmtcard", classe("div", "aab aabig"));
+        actions = $e("div", "pcard cmtcard", $e("div", "aab aabig"));
         actions.id = "k-comment-actions";
         $(".pcontainer").append(actions);
     }
@@ -6920,13 +7238,9 @@ function add_new_comment_button(cj, cid) {
 }
 
 function add_new_comment(cj, cid) {
-    var article = classe("article", "pcard cmtcard cmtid".concat(cj.editable ? " editable" : "", cj.response ? " response" : " comment"));
-    article.id = cid;
-    if (cj.response && cj.text !== false) {
-        article.appendChild(classe("header", "cmtcard-head",
-            classe("h2", "", classe("span", "cmtcard-header-name", cj_name(cj)))));
-    }
-    document.querySelector(".pcontainer").insertBefore(article, $$("k-comment-actions"));
+    document.querySelector(".pcontainer").insertBefore($e("article", {
+        id: cid, "class": "pcard cmtcard cmtid comment need-anchor-unfold has-fold ".concat(cj.folded ? "fold20c" : "fold20o", cj.editable ? " editable" : "")
+    }), $$("k-comment-actions"));
 }
 
 function cmt_sidebar_content(item) {
@@ -6987,6 +7301,7 @@ hotcrp.edit_comment = function (cj) {
     if (!elt && /\beditcomment\b/.test(window.location.search)) {
         return;
     }
+    fold(elt, false, 20);
     if (!elt.querySelector("form")) {
         cmt_render(cj, true);
     }
@@ -7241,7 +7556,7 @@ demand_load.search_completion = demand_load.make(function (resolve) {
             $.isArray(item.i) || (item.i = [item.i]);
             item.nosort || item.i.sort(function (a, b) {
                 var ai = completion_item(a), bi = completion_item(b);
-                return strnatcmp(ai.s, bi.s);
+                return strnatcasecmp(ai.s, bi.s);
             });
             Array.prototype.push.apply(result, item.i);
         });
@@ -7298,7 +7613,7 @@ demand_load.mentions = demand_load.make(function (resolve) {
     if (siteinfo.user.is_pclike)
         $.get(hoturl("api/mentioncompletion", {p: siteinfo.paperid}), null, function (v) {
             var tlist = ((v && v.mentioncompletion) || []).map(completion_item);
-            tlist.sort(function (a, b) { return strnatcmp(a.s, b.s); });
+            tlist.sort(function (a, b) { return strnatcasecmp(a.s, b.s); });
             resolve(tlist);
         });
     else
@@ -7615,30 +7930,25 @@ function suggest() {
         node.className = titem.no_space ? "suggestion s9nsp" : "suggestion";
         if (titem.r)
             node.setAttribute("data-replacement", titem.r);
-        if (titem.sh)
+        if (titem.sh) {
             node.innerHTML = titem.sh;
-        else if (titem.d || titem.dh || prepend) {
+        } else if (titem.d || titem.dh || prepend) {
             if (prepend) {
-                var s9p = document.createElement("span");
-                s9p.className = "s9p";
-                s9p.appendChild(document.createTextNode(prepend));
-                node.appendChild(s9p);
+                node.appendChild($e("span", "s9p", prepend));
             }
-            var s9t = document.createElement("span");
-            s9t.className = "s9t";
-            s9t.appendChild(document.createTextNode(titem.s));
-            node.appendChild(s9t);
+            node.appendChild($e("span", "s9t", titem.s));
             if (titem.d || titem.dh) {
                 var s9d = document.createElement("span");
                 s9d.className = "s9d";
                 if (titem.dh)
                     s9d.innerHTML = titem.dh;
                 else
-                    s9d.appendChild(document.createTextNode(titem.d))
+                    s9d.append(titem.d)
                 node.appendChild(s9d);
             }
-        } else
-            node.appendChild(document.createTextNode(titem.s));
+        } else {
+            node.append(titem.s);
+        }
         return node;
     }
 
@@ -7658,7 +7968,7 @@ function suggest() {
             hintdiv.self().on("mousedown", function (evt) { evt.preventDefault(); })
                 .on("click", ".suggestion", click)
                 .on("mousemove", ".suggestion", hover);
-            wasmouse = 0;
+            wasmouse = null;
         }
 
         var i, clist = cinfo.items, same_list = false;
@@ -7672,8 +7982,8 @@ function suggest() {
             }
         }
         cinfo.editlength = cinfo.lengths[1];
-        if (hintinfo && hintinfo.startpos === cinfo.startpos && hintinfo.editlength < cinfo.editlength) {
-            cinfo.editlength = hintinfo.editlength;
+        if (hintinfo && hintinfo.startpos === cinfo.startpos) {
+            cinfo.editlength = Math.min(cinfo.editlength, hintinfo.editlength);
         }
         hintinfo = cinfo;
 
@@ -7688,8 +7998,9 @@ function suggest() {
                 i = clist.length - 1;
             div = document.createElement("div");
             div.className = "suggesttable suggesttable" + (i + 1);
-            for (i = 0; i !== clist.length; ++i)
+            for (i = 0; i !== clist.length; ++i) {
                 div.appendChild(render_item(clist[i], cinfo.prefix));
+            }
             hintdiv.html(div);
         } else {
             div = hintdiv.content_node().firstChild;
@@ -7745,8 +8056,9 @@ function suggest() {
             repl = complete_elt.textContent;
         else {
             var n = complete_elt.firstChild;
-            while (n.className !== "s9t")
+            while (n.className !== "s9t") {
                 n = n.nextSibling;
+            }
             repl = n.textContent;
         }
 
@@ -7771,6 +8083,11 @@ function suggest() {
             ++outPos;
             repl += " ";
             spacestate = hintinfo.smart_punctuation ? outPos : -1;
+        }
+        if (startPos < 0 || endPos < 0 || startPos > endPos || endPos > val.length) {
+            let x = Object.assign({}, hintinfo);
+            delete x.items;
+            log_jserror(JSON.stringify({value:val,hint:x,repl:repl,startPos:startPos,endPos:endPos}));
         }
         elt.setRangeText(repl, startPos, endPos, "end");
         if (hintinfo.postreplace)
@@ -7979,7 +8296,7 @@ hotcrp.suggest.add_builder("suggest-emoji", function (elt) {
 });
 
 hotcrp.suggest.add_builder("mentions", function (elt, hintinfo) {
-    var x = completion_split(elt), precaret, m;
+    var x = completion_split(elt), precaret, m, prom;
     if (!x) {
         return null;
     }
@@ -7994,11 +8311,88 @@ hotcrp.suggest.add_builder("mentions", function (elt, hintinfo) {
         return null;
     }
     m = x[1].match(/^(?:[\p{L}\p{M}\p{N}]|[-.](?=\p{L}))*/u);
-    return demand_load.mentions().then(make_suggestions(precaret, m[0], {prefix: "@", ml: Math.min(2, precaret.length), smart_punctuation: true, limit_replacement: true}));
+    prom = demand_load.mentions();
+    if (elt.form.elements.visibility
+        && elt.form.elements.visibility.value !== "au") {
+        prom = prom.then(function (l) {
+            return l.filter(function (x) { return !x.au; });
+        });
+    }
+    return prom.then(make_suggestions(precaret, m[0], {prefix: "@", ml: Math.min(2, precaret.length), smart_punctuation: true, limit_replacement: true}));
 });
 
 
 // list management, conflict management
+function encode_session_list_ids(ids) {
+    // see SessionList::encode_ids
+    if (ids.length === 0) {
+        return "";
+    }
+    const n = ids.length, a = ["Q", ids[0]];
+    let sign = 1, next = ids[0] + 1, i, want_sign;
+    for (i = 1; i !== n; ) {
+        // maybe switch direction
+        if (ids[i] < next
+            && (sign === -1 || (i + 1 !== n && ids[i + 1] < ids[i]))) {
+            want_sign = -1;
+        } else {
+            want_sign = 1;
+        }
+        if ((sign > 0) !== (want_sign > 0)) {
+            sign = -sign;
+            a.push("z");
+        }
+
+        const skip = (ids[i] - next) * sign;
+        let include = 1;
+        while (i + 1 !== n && ids[i + 1] == ids[i] + sign) {
+            ++i;
+            ++include;
+        }
+        const last = a[a.length - 1];
+        if (skip < 0) {
+            if (sign === 1 && skip <= -100) {
+                a.push("s", next + skip);
+            } else {
+                a.push("t", -skip);
+            }
+            --include;
+        } else if (skip === 2 && last === "z") {
+            a[a.length - 1] = "Z";
+            --include;
+        } else if (skip === 1 && last >= "a" && last <= "h") {
+            a[a.length - 1] = String.fromCharCode(last.charCodeAt(0) - 32);
+            --include;
+        } else if (skip === 2 && last >= "a" && last <= "h") {
+            a[a.length - 1] = String.fromCharCode(last.charCodeAt(0) - 32 + 8);
+            --include;
+        } else if (skip >= 1 && skip <= 8) {
+            a.push(String.fromCharCode(104 + skip));
+            --include;
+        } else if (skip >= 9 && skip <= 40) {
+            a.push(String.fromCharCode(116 + ((skip - 1) >> 3)),
+                   String.fromCharCode(105 + ((skip - 1) & 7)));
+            --include;
+        } else if (skip >= 41) {
+            a.push("r", skip);
+            --include;
+        }
+        if (include !== 0) {
+            if (include <= 8) {
+                a.push(String.fromCharCode(96 + include));
+            } else if (include <= 16) {
+                a.push("h", String.fromCharCode(88 + include));
+            } else {
+                a.push("q", include);
+            }
+        }
+
+        next = ids[i] + sign;
+        ++i;
+    }
+    return a.join("");
+}
+
 function decode_session_list_ids(str) {
     if ($.isArray(str))
         return str;
@@ -8090,30 +8484,41 @@ var Hotlist;
 (function ($) {
 var cookie_set_at;
 function update_digest(info) {
-    var add = typeof info === "string" ? 1 : 0,
-        digests = wstorage.site_json(false, "list_digests") || [],
+    var add, search,
+        digests = hotcrp.wstorage.site_json(false, "list_digests") || [],
         found = -1, now = now_msec();
+    if (typeof info === "number") {
+        add = 0;
+        search = info;
+    } else {
+        add = 1;
+        search = info.ids;
+    }
     for (var i = 0; i < digests.length; ++i) {
         var digest = digests[i];
-        if (digest[add] === info)
+        if (digest[add] === search) {
             found = i;
-        else if (digest[2] < now - 30000) {
+        } else if (digest[2] < now - 30000) {
             digests.splice(i, 1);
             --i;
-        } else if (now <= digest[0])
+        } else if (now <= digest[0]) {
             now = digest[0] + 1;
+        }
     }
-    if (found >= 0)
+    if (found >= 0) {
         digests[found][2] = now;
-    else if (add) {
-        digests.push([now, info, now]);
+    } else if (add) {
+        digests.push([now, search, now, info.sorted_ids || null]);
         found = digests.length - 1;
     }
-    wstorage.site(false, "list_digests", digests);
-    if (found >= 0)
-        return digests[found][1 - add];
-    else
+    hotcrp.wstorage.site(false, "list_digests", digests);
+    if (found < 0) {
         return false;
+    } else if (add) {
+        return digests[found][0];
+    } else {
+        return {ids: digests[found][1], sorted_ids: digests[found][3] || null};
+    }
 }
 Hotlist = function (s) {
     this.str = s || "";
@@ -8132,14 +8537,17 @@ Hotlist.prototype.ids = function () {
     return this.obj && this.obj.ids ? decode_session_list_ids(this.obj.ids) : null;
 };
 Hotlist.prototype.resolve = function () {
-    var ids;
+    var obj;
     if (this.obj
         && !this.obj.ids
         && this.obj.digest
         && /^listdigest[0-9]+$/.test(this.obj.digest)
-        && (ids = update_digest(+this.obj.digest.substring(10)))) {
+        && (obj = update_digest(+this.obj.digest.substring(10)))) {
         delete this.obj.digest;
-        this.obj.ids = ids;
+        this.obj.ids = obj.ids;
+        if (obj.sorted_ids) {
+            this.obj.sorted_ids = obj.sorted_ids;
+        }
         this.str = JSON.stringify(this.obj);
     }
     return this;
@@ -8150,10 +8558,11 @@ Hotlist.prototype.cookie_at = function (pid) {
     if (this.str.length > 1500
         && this.obj
         && this.obj.ids
-        && wstorage()
-        && (digest = update_digest(this.obj.ids))) {
+        && hotcrp.wstorage()
+        && (digest = update_digest(this.obj))) {
         var x = Object.assign({digest: "listdigest" + digest}, this.obj);
         delete x.ids;
+        delete x.sorted_ids;
         if (pid
             && (ids = this.ids())
             && (pos = $.inArray(pid, ids)) >= 0) {
@@ -8219,33 +8628,51 @@ function unload_list() {
     if (hl.str && (!cookie_set_at || cookie_set_at + 3 < now_msec()))
         set_cookie(hl);
 }
+
+var row_click_sel = null;
 function row_click(evt) {
     if (!hasClass(this.parentElement, "pltable-tbody")
-        || evt.target.closest("a, input, textarea, select, button"))
+        || evt.target.closest("a, input, textarea, select, button, .ui, .uic")
+        || evt.button !== 0) {
+        row_click_sel = null;
         return;
-    var td = evt.target.closest("td");
-    if (!td || (!hasClass(td, "pl_id") && !hasClass(td, "pl_title") && !hasClass(td, "pl_rowclick")))
+    }
+    let current_sel = window.getSelection().toString();
+    if (evt.type === "mousedown") {
+        row_click_sel = current_sel;
         return;
-    var pl = this;
-    while (pl.nodeType !== 1 || /^plx/.test(pl.className))
-        pl = pl.previousSibling;
-    var $inputs = $(pl).find("input, textarea, select, button")
-        .not("input[type=hidden], .pl_sel > input");
-    if ($inputs.length) {
-        $inputs.first().focus().scrollIntoView();
-    } else {
-        var $a = $(pl).find("a.pnum").first(),
-            href = $a[0].getAttribute("href");
-        handle_list($a[0], href);
+    } else if (row_click_sel === null
+               || (current_sel !== row_click_sel && current_sel !== "")) {
+        row_click_sel = null;
+        return;
+    }
+
+    let pl = this, td = evt.target.closest("td");
+    if (pl.className.startsWith("plx")) {
+        pl = pl.previousElementSibling;
+    }
+    let $i = $(pl).find("input, textarea, select, button")
+        .not("input[type=hidden], .pl_sel *");
+    if ($i.length) {
+        $i.first().focus().scrollIntoView();
+    } else if (td && (hasClass(td, "pl_id")
+                      || hasClass(td, "pl_title")
+                      || hasClass(td, "pl_rowclick"))) {
+        let a = pl.querySelector("a.pnum"), href = a.getAttribute("href");
+        handle_list(a, href);
         if (event_key.is_default_a(evt)) {
             window.location = href;
         } else {
             window.open(href, "_blank", "noopener");
             window.focus();
         }
+    } else {
+        return;
     }
     evt.preventDefault();
 }
+$(document).on("mousedown click", "tr.pl, tr.plx", row_click);
+
 handle_ui.on("js-edit-comment", function (evt) {
     if (this.tagName !== "A" || event_key.is_default_a(evt)) {
         evt.preventDefault();
@@ -8291,7 +8718,6 @@ $(document).on("submit", "form", function (evt) {
     }
 });
 
-$(document).on("click", "tr.pl", row_click);
 $(window).on("beforeunload", unload_list);
 
 $(function () {
@@ -8363,7 +8789,7 @@ var blurred_at = 0;
 hotcrp.add_preference_ajax = function (selector, on_unload) {
     var $e = $(selector);
     if ($e.is("input")) {
-        var rpf = wstorage.site(true, "revpref_focus");
+        var rpf = hotcrp.wstorage.site(true, "revpref_focus");
         if (rpf && now_msec() - rpf < 3000)
             focus_at($e[0]);
         $e = $e.parent();
@@ -8405,7 +8831,7 @@ function rp_change() {
 function rp_unload() {
     if ((blurred_at && now_msec() - blurred_at < 1000)
         || $(":focus").is("input.revpref"))
-        wstorage.site(true, "revpref_focus", blurred_at || now_msec());
+        hotcrp.wstorage.site(true, "revpref_focus", blurred_at || now_msec());
 }
 
 handle_ui.on("revpref", function (evt) {
@@ -8421,10 +8847,56 @@ handle_ui.on("revpref", function (evt) {
 })();
 
 
+
+function mainlist() {
+    return $$("pl") || $$("foldpl") /* XXX backward compat */;
+}
+
+function tablelist(elt) {
+    return elt ? elt.closest(".pltable") : null;
+}
+
+function tablelist_each_facet(tbl, f) {
+    if (hasClass(tbl, "pltable-facets")) {
+        for (tbl = tbl.firstChild; tbl; tbl = tbl.nextSibling) {
+            if (tbl.nodeName === "TABLE")
+                f(tbl);
+        }
+    } else {
+        f(tbl);
+    }
+}
+
+function tablelist_search(tbl) {
+    var x = tbl.getAttribute("data-search-params");
+    if (x === "" && tbl === mainlist()) { /* XXX backward compat */
+        x = hoturl_search(window.location.href);
+        if (hoturl_search(x, "q") === null)
+            x = hoturl_search(x, "q", "");
+        if (hoturl_search(x, "sort") === null)
+            x = hoturl_search(x, "sort", "none");
+        tbl.setAttribute("data-search-params", x);
+    }
+    return x;
+}
+
+
 var paperlist_tag_ui = (function () {
 
 function tag_canonicalize(tag) {
-    return tag && /^~[^~]/.test(tag) ? siteinfo.user.uid + tag : tag;
+    if (tag && tag.charCodeAt(0) === 126 && tag.charCodeAt(1) !== 126) {
+        return siteinfo.user.uid + tag;
+    } else {
+        return tag;
+    }
+}
+
+function tag_simplify(tag) {
+    if (tag && tag.startsWith(siteinfo.user.uid + "~")) {
+        return tag.substring(("" + siteinfo.user.uid).length);
+    } else {
+        return tag;
+    }
 }
 
 function tagvalue_parse(s) {
@@ -8440,7 +8912,7 @@ function tagvalue_parse(s) {
 }
 
 function tagvalue_unparse(tv) {
-    if (tv === false || tv === null)
+    if (tv === false || tv == null)
         return "";
     else
         return sprintf("%.2f", tv).replace(/\.0+$|0+$/, "");
@@ -8462,89 +8934,75 @@ function tagannorow_fill(row, anno) {
         } else {
             row.removeAttribute("data-tags");
         }
-        var legend = anno.legend === null ? "" : anno.legend;
-        var $g = $(row).find(".plheading-group").attr({"data-format": anno.format || 0, "data-title": legend});
-        $g.text(legend === "" ? legend : legend + " ");
+        var legend = anno.legend === null ? "" : anno.legend,
+            $g = $(row).find(".plheading-group").attr({"data-format": anno.format || 0, "data-title": legend});
+        $g.text(legend).toggleClass("pr-2", legend !== "");
         anno.format && render_text.into($g[0]);
-        // `plheading-count` is taken care of in `searchbody_postreorder`
+        // `plheading-count` is taken care of in `tablelist_postreorder`
     }
 }
 
 function tagannorow_add(tbl, tbody, before, anno) {
-    tbl = tbl || tbody.parentElement;
-    var $r = $(tbl).find("thead > tr.pl_headrow:first-child > th");
-    var titlecol = 0, ncol = $r.length;
-    for (var i = 0; i != ncol; ++i)
-        if (hasClass($r[i], "pl_title"))
+    tbl = tbl || tablelist(tbody);
+    var $r = $(tbl).find("thead > tr.pl_headrow:first-child > th"),
+        selcol = -1, titlecol = -1, ncol = $r.length, i, x, tr;
+    for (i = 0; i !== ncol; ++i) {
+        if (hasClass($r[i], "pl_sel"))
+            selcol = i;
+        else if (hasClass($r[i], "pl_title"))
             titlecol = i;
-
-    var h;
-    if (anno.blank)
-        h = '<tr class="plheading-blank"><td class="plheading" colspan="' + ncol + '"></td></tr>';
-    else {
-        h = '<tr class="plheading"';
-        if (anno.tag)
-            h += ' data-anno-tag="' + anno.tag + '"';
-        if (anno.annoid)
-            h += ' data-anno-id="' + anno.annoid + '"';
-        if (anno.tag && anno.annoid)
-            h += ' data-tags="' + anno.tag + "#" + anno.tagval + '"';
-        h += '>';
-        if (titlecol)
-            h += '<td class="plheading-spacer" colspan="' + titlecol + '"></td>';
-        h += '<td class="plheading" colspan="' + (ncol - titlecol) + '">' +
-            '<span class="plheading-group"></span>' +
-            '<span class="plheading-count"></span></td></tr>';
     }
 
-    var row = $(h)[0];
-    if (anno.tag
-        && anno.tag === tag_canonicalize(tbl.getAttribute("data-drag-tag"))
-        && anno.annoid)
-        add_draghandle.call($(row).find("td.plheading")[0]);
-    tbody.insertBefore(row, before);
-    tagannorow_fill(row, anno)
-    return row;
-}
-
-
-function searchbody_postreorder(tbody) {
-    for (var cur = tbody.firstChild, e = 1, n = 0; cur; cur = cur.nextSibling)
-        if (cur.nodeName == "TR") {
-            if (hasClass(cur, "pl")) {
-                e = 1 - e;
-                ++n;
-                $(cur.firstChild).find(".pl_rownum").text(n + ". ");
-            }
-            if (hasClass(cur, "plheading")) {
-                e = 1;
-                var np = 0;
-                for (var sub = cur.nextSibling; sub; sub = sub.nextSibling)
-                    if (sub.nodeName == "TR") {
-                        if (hasClass(sub, "plheading"))
-                            break;
-                        else if (hasClass(sub, "pl"))
-                            ++np;
-                    }
-                var np_html = plural(np, "submission");
-                var $np = $(cur).find(".plheading-count");
-                if ($np.html() !== np_html)
-                    $np.html(np_html);
-            } else if (hasClass(cur, e ? "k0" : "k1")) {
-                toggleClass(cur, "k0", e === 0);
-                toggleClass(cur, "k1", e === 1);
-            }
+    if (anno.blank) {
+        tr = $e("tr", "plheading-blank",
+            $e("td", {"class": "plheading", colspan: ncol}));
+    } else {
+        tr = $e("tr", {
+            "class": "plheading",
+            "data-anno-tag": anno.tag || null,
+            "data-anno-id": anno.annoid || null,
+            "data-tags": anno.tag && anno.annoid ? anno.tag + "#" + anno.tagval : null
+        });
+        if (selcol > 0) {
+            tr.appendChild($e("td", {"class": "plheading-spacer", colspan: selcol}));
         }
-    tbody.parentElement.setAttribute("data-reordered", "");
+        if (selcol >= 0) {
+            tr.appendChild($e("td", "pl plheading pl_sel",
+                $e("input", {
+                    type: "checkbox",
+                    "class": "uic uikd js-range-click ignore-diff is-range-group",
+                    "data-range-type": "pap[]",
+                    "data-range-group": "auto",
+                    "aria-label": "Select group"
+                })));
+        }
+        if (titlecol > 0 && titlecol > selcol + 1) {
+            tr.appendChild($e("td", {"class": "plheading-spacer", colspan: titlecol - selcol - 1}));
+        }
+        tr.appendChild($e("td", {"class": "plheading", colspan: ncol - Math.max(0, titlecol)},
+            $e("span", "plheading-group"),
+            $e("span", "plheading-count")));
+    }
+
+    if (anno.tag
+        && anno.annoid
+        && (x = tbl.getAttribute("data-drag-action")).startsWith("tagval:")
+        && strnatcasecmp(x, "#" + tag_canonicalize(anno.tag)) === 0) {
+        add_draghandle(tr);
+    }
+    tbody.insertBefore(tr, before);
+    tagannorow_fill(tr, anno)
+    return tr;
 }
 
-function reorder(tbl, pids, groups, remove_all) {
+
+function tablelist_reorder(tbl, pids, groups, remove_all) {
     var tbody = tbl.tBodies[0], pida = "data-pid";
     remove_all && $(tbody).detach();
 
     var rowmap = [], xpid = 0, cur = tbody.firstChild, next;
     while (cur) {
-        if (cur.nodeType == 1 && (xpid = cur.getAttribute(pida)))
+        if (cur.nodeType === 1 && (xpid = cur.getAttribute(pida)))
             rowmap[xpid] = rowmap[xpid] || [];
         next = cur.nextSibling;
         if (xpid)
@@ -8562,7 +9020,9 @@ function reorder(tbl, pids, groups, remove_all) {
     while (pid_index < pids.length || grp_index < groups.length) {
         // handle headings
         if (grp_index < groups.length && groups[grp_index].pos == pid_index) {
-            tagannorow_add(tbl, tbody, cur, groups[grp_index]);
+            if (grp_index > 0 || !groups[grp_index].blank) {
+                tagannorow_add(tbl, tbody, cur, groups[grp_index]);
+            }
             ++grp_index;
         } else {
             var npid = pids[pid_index];
@@ -8582,55 +9042,43 @@ function reorder(tbl, pids, groups, remove_all) {
     }
 
     remove_all && $(tbody).appendTo(tbl);
-    searchbody_postreorder(tbody);
+    tablelist_postreorder(tbl);
 }
 
-function table_ids(tbl) {
-    var tbody = tbl.tBodies[0], tbl_ids = [], xpid;
-    for (var cur = tbody.firstChild; cur; cur = cur.nextSibling)
-        if (cur.nodeType === 1
-            && /^pl\b/.test(cur.className)
-            && (xpid = cur.getAttribute("data-pid")))
-            tbl_ids.push(+xpid);
-    return tbl_ids;
-}
-
-function same_ids(tbl, ids) {
-    var tbl_ids = table_ids(tbl);
-    tbl_ids.sort();
-    ids = [].concat(ids);
-    ids.sort();
-    return tbl_ids.join(" ") === ids.join(" ");
-}
-
-function foldpl_active_sorter() {
-    var s = "";
-    $("#foldpl").children("thead").find("th[aria-sort]").each(function () {
-        s = this.getAttribute("data-pc");
-        if (this.ariaSort !== this.getAttribute("data-pc-sort"))
-            s += this.ariaSort === "ascending" ? " asc" : " desc";
-    });
-    return s;
-}
-
-function current_sort_location() {
-    var h = hoturl_set(window.location.href, "sort", foldpl_active_sorter()), e;
-    if ((e = document.getElementById("scoresort")))
-        h = hoturl_set(h, "scoresort", e.value);
-    if ((e = document.getElementById("showforce")))
-        h = hoturl_set(h, "forceShow", e.checked ? 1 : null);
-    return h;
-}
-
-function href_sorter(href, newval) {
-    if (newval == null) {
-        var re = /^([^#]*[?&;]sort=)([^=&;#]*)(.*)$/,
-            m = re.exec(href);
-        return m ? urldecode(m[2]) : null;
-    } else {
-        return hoturl_set(href, "sort", newval);
+function tablelist_postreorder(tbl) {
+    let e = true, n = 0, nh = 0, lasthead = null;
+    function change_heading(head) {
+        const counte = lasthead ? lasthead.querySelector(".plheading-count") : null;
+        if (counte) {
+            const txt = nh + " " + siteinfo.snouns[nh === 1 ? 0 : 1];
+            if (counte.textContent !== txt) {
+                counte.textContent = txt;
+            }
+        }
+        e = true;
+        nh = 0;
+        lasthead = head;
     }
+    for (let cur = tbl.tBodies[0].firstChild; cur; cur = cur.nextSibling) {
+        if (cur.nodeName !== "TR") {
+            continue;
+        } else if (hasClass(cur, "plheading")) {
+            change_heading(cur);
+        } else if (hasClass(cur, "pl")) {
+            e = !e;
+            ++n;
+            ++nh;
+            $(cur.firstChild).find(".pl_rownum").text(n + ". ");
+        }
+        if (hasClass(cur, e ? "k0" : "k1")) {
+            toggleClass(cur, "k0", !e);
+            toggleClass(cur, "k1", e);
+        }
+    }
+    lasthead && change_heading(null);
+    tbl.setAttribute("data-reordered", "");
 }
+
 
 function sorter_analyze(sorter) {
     var m = sorter.match(/^(.*)[ +]+(asc(?:ending|)|desc(?:ending|)|up|down|reverse|forward)\b(.*)$/), dir = null;
@@ -8647,212 +9095,223 @@ function sorter_analyze(sorter) {
     return {s: sorter, d: dir};
 }
 
-function search_sort_success(tbl, data_href, data) {
+function tablelist_ids(tbl) {
+    var tbody = tbl.tBodies[0], tbl_ids = [], xpid;
+    for (var cur = tbody.firstChild; cur; cur = cur.nextSibling)
+        if (cur.nodeType === 1
+            && /^pl\b/.test(cur.className)
+            && (xpid = cur.getAttribute("data-pid")))
+            tbl_ids.push(+xpid);
+    return tbl_ids;
+}
+
+function tablelist_ids_equal(tbl, ids) {
+    var tbl_ids = tablelist_ids(tbl);
+    tbl_ids.sort();
+    ids = [].concat(ids);
+    ids.sort();
+    return tbl_ids.join(" ") === ids.join(" ");
+}
+
+function tablelist_header_sorter(th) {
+    var pc = th.getAttribute("data-pc"),
+        pcsort = th.getAttribute("data-pc-sort"),
+        as = th.getAttribute("aria-sort");
+    if (as && as === pcsort)
+        pc += (pcsort === "ascending" ? " desc" : " asc");
+    return pc;
+}
+
+function tablelist_apply(tbl, data, searchparam) {
     var ids = data.ids;
     if (!ids && data.hotlist)
         ids = new Hotlist(data.hotlist).ids();
     if (!ids)
         return;
-    reorder(tbl, ids, data.groups, true);
-    if (data.groups)
+    tbl.setAttribute("data-search-params", searchparam);
+    tablelist_reorder(tbl, ids, data.groups, true);
+    if (data.groups) {
         tbl.setAttribute("data-groups", JSON.stringify(data.groups));
-    else
+    } else {
         tbl.removeAttribute("data-groups");
+    }
     tbl.setAttribute("data-hotlist", data.hotlist || "");
-    var want_sorter = data.fwd_sorter || href_sorter(data_href) || "id",
-        sortanal = sorter_analyze(want_sorter);
+    var sortanal = sorter_analyze(hoturl_search(searchparam, "sort"));
     $(tbl).children("thead").find("th.sortable").each(function () {
-        var defdir, a, pc = this.getAttribute("data-pc");
-        if (this.hasAttribute("aria-sort")) {
-            this.removeAttribute("aria-sort");
-            removeClass(this, "sort-ascending");
-            removeClass(this, "sort-descending");
-            a = this.querySelector("a.pl_sort");
-        }
-        if (this.getAttribute("data-pc") === sortanal.s) {
-            defdir = this.getAttribute("data-pc-sort");
+        var pc = this.getAttribute("data-pc"),
+            pcsort = this.getAttribute("data-pc-sort"),
+            want = "", a, h, x;
+        if (pc === sortanal.s) {
             if (sortanal.d === "reverse") {
-                sortanal.d = defdir === "ascending" ? "descending" : "ascending";
+                sortanal.d = pcsort === "ascending" ? "descending" : "ascending";
             }
-            sortanal.d = sortanal.d || defdir;
-            this.setAttribute("aria-sort", sortanal.d);
-            addClass(this, "sort-" + sortanal.d);
-            a = a || this.querySelector("a.pl_sort");
+            want = sortanal.d || pcsort;
         }
-        if (a) {
-            var pcx = pc;
-            if (defdir && defdir === sortanal.d) {
-                pcx += sortanal.d === "ascending" ? " desc" : " asc";
+        if (this.getAttribute("aria-sort") !== want) {
+            want ? this.setAttribute("aria-sort", want) : this.removeAttribute("aria-sort");
+            toggleClass(this, "sort-ascending", want === "ascending");
+            toggleClass(this, "sort-descending", want === "descending");
+            if (want && want === pcsort) {
+                x = pc + (want === "ascending" ? " desc" : " asc");
+            } else {
+                x = pc;
             }
-            a.setAttribute("href", href_sorter(a.getAttribute("href"), pcx));
+            if ((a = this.querySelector("a.pl_sort"))
+                && (h = a.getAttribute("href"))
+                && hoturl_search(h, "sort") !== x) {
+                a.setAttribute("href", hoturl_search(h, "sort", x));
+            }
         }
     });
     var form = tbl.closest("form");
     if (form) {
-        var action;
-        if (form.hasAttribute("data-original-action")) {
-            action = form.getAttribute("data-original-action", action);
-            form.removeAttribute("data-original-action");
-        } else {
-            action = form.action;
-        }
-        form.action = href_sorter(action, want_sorter);
+        var a = hoturl_search(form.action, "sort", hoturl_search(searchparam, "sort"));
+        a = hoturl_search(a, "forceShow", hoturl_search(searchparam, "forceShow") || null);
+        form.action = a;
     }
 }
 
-$(document).on("collectState", function (evt, state) {
-    var tbl = document.getElementById("foldpl");
-    if (!tbl || !tbl.hasAttribute("data-sort-url-template"))
-        return;
-    var data = state.sortpl = {hotlist: tbl.getAttribute("data-hotlist")};
-    var groups = tbl.getAttribute("data-groups");
-    if (groups && (groups = JSON.parse(groups)) && groups.length)
-        data.groups = groups;
-    if (!href_sorter(state.href))
-        data.fwd_sorter = foldpl_active_sorter();
-});
-
-function search_sort_url(self, href) {
-    var hrefm = /^([^?#]*(?:search|reviewprefs|manualassign)(?:\.php)?)(\?[^#]*)/.exec(href),
-        api = hrefm[2], e;
-    if ((e = document.getElementById("showforce"))) {
-        var v = e.type === "checkbox" ? (e.checked ? 1 : 0) : e.value;
-        api = api.replace(/&forceShow=[^&#;]*/, "") + "&forceShow=" + v;
+function tablelist_load(tbl, k, v) {
+    var searchparam = tablelist_search(tbl);
+    if (k) {
+        searchparam = hoturl_search(searchparam, k, v != null ? v : "");
     }
-    if ((e = document.getElementById("scoresort"))) {
-        api = api.replace(/&scoresort=[^&#;]*/, "") + "&scoresort=" + e.value;
-    }
-    if (!/[&?]q=/.test(api)) {
-        api += "&q=";
-    }
-    $.ajax(hoturl("api/search", api), {
-        method: "GET", cache: false,
-        success: function (data) {
-            var tbl = $(self).closest("table")[0];
-            if (data.ok && data.ids && same_ids(tbl, data.ids)) {
-                push_history_state();
-                search_sort_success(tbl, href, data);
-                push_history_state(hrefm[1] + hrefm[2] + location.hash);
-            } else {
-                window.location = href;
-            }
+    function success(data) {
+        var use_history = tbl === mainlist() && k;
+        if (data.ok && data.ids && tablelist_ids_equal(tbl, data.ids)) {
+            use_history && push_history_state();
+            tablelist_apply(tbl, data, searchparam);
+            use_history && push_history_state(hoturl_search(window.location.href, k, v));
+        } else if (use_history) {
+            window.location = hoturl_search(window.location.href, k, v);
         }
+    }
+    $.ajax(hoturl("api/search", searchparam), {
+        method: "GET", cache: false, success: success
     });
 }
 
 function search_sort_click(evt) {
-    var href;
-    if (event_key.is_default_a(evt)
-        && (href = this.getAttribute("href"))
-        && /(?:search|reviewprefs|manualassign)(?:\.php)?\?/.test(href)) {
-        search_sort_url(this, href);
-        return false;
+    if (event_key.is_default_a(evt)) {
+        var tbl = tablelist(this);
+        if (tbl && tablelist_search(tbl) != null) {
+            tablelist_load(tbl, "sort", tablelist_header_sorter(this.closest("th")));
+            evt.preventDefault();
+        }
     }
 }
 
-function search_scoresort_change() {
+function scoresort_change() {
+    var tbl = mainlist();
     $.post(hoturl("=api/session"), {v: "scoresort=" + this.value});
-    search_sort_url($("#foldpl"), current_sort_location());
-    return false;
+    if (tbl) {
+        tablelist_load(tbl, "scoresort", this.value);
+    }
 }
 
-function search_showforce_click() {
-    var forced = this.checked;
-    function apply_force(href) {
-        href = href.replace(/&forceShow=[^&#]*/, "");
-        if (forced)
-            href = href.replace(/^([^#]*?)(#.*|)$/, "$1&forceShow=1$2");
-        return href;
+function showforce_click() {
+    var tbl = mainlist(), v = this.checked ? 1 : null;
+    if (tbl) {
+        siteinfo.want_override_conflict = !!v;
+        $(tbl.tHead.rows[0]).find("th.sortable a.pl_sort").each(function () {
+            this.setAttribute("href", hoturl_search(this.getAttribute("href"), "forceShow", v));
+        });
+        tablelist_load(tbl, "forceShow", v);
     }
-    $("#foldpl > thead").find("th.sortable").each(function () {
-        var a = this.querySelector("a.pl_sort");
-        a && a.setAttribute("href", apply_force(a.getAttribute("href")));
-    });
-    search_sort_url($("#foldpl"), current_sort_location());
 }
 
 if ("pushState" in window.history) {
     $(document).on("click", "a.pl_sort", search_sort_click);
     $(window).on("popstate", function (evt) {
-        var state = (evt.originalEvent || evt).state, tbl;
-        if (state && state.sortpl && (tbl = document.getElementById("foldpl")))
-            search_sort_success(tbl, state.href, state.sortpl);
+        var tbl = mainlist(), state = (evt.originalEvent || evt).state;
+        if (tbl && state && state.mainlist && state.mainlist.search)
+            tablelist_apply(tbl, state.mainlist, state.mainlist.search);
     });
     $(function () {
-        $("#scoresort").on("change", search_scoresort_change);
-        $("#showforce").on("click", search_showforce_click);
+        $("#scoresort").on("change", scoresort_change);
+        $("#showforce").on("click", showforce_click);
+    });
+    $(document).on("collectState", function (evt, state) {
+        var tbl = mainlist();
+        if (!tbl || !tbl.hasAttribute("data-sort-url-template"))
+            return;
+        var j = {search: tablelist_search(tbl), hotlist: tbl.getAttribute("data-hotlist")},
+            groups = tbl.getAttribute("data-groups");
+        if (groups && (groups = JSON.parse(groups)) && groups.length)
+            j.groups = groups;
+        state.mainlist = j;
     });
 }
 
 
-function add_draghandle() {
-    removeClass(this, "need-draghandle");
-    var x = document.createElement("span");
-    x.className = "draghandle js-drag-tag";
-    x.title = "Drag to change order";
-    if (this.tagName === "TD") {
-        x.style.float = "right";
-        x.style.position = "static";
-        x.style.marginRight = "8px";
-        this.insertBefore(x, null);
-    } else
-        this.parentElement.insertBefore(x, this);
+function add_draghandle(tr) {
+    var td = tr.cells[0], e;
+    if (!td.firstChild || !hasClass(td.firstChild, "draghandle")) {
+        addClass(tr, "has-draghandle");
+        e = $e("button", {"type": "button", "class": "uimd draghandle js-drag-tag mr-1", title: "Drag to change order"});
+        td.insertBefore(e, td.firstElementChild);
+    }
 }
 
-function PaperRow(tbody, l, r, index, full_ordertag, dragtag) {
-    this.tbody = tbody;
-    this.l = l;
-    this.r = r;
+function DraggableRow(tr, index, groupindex, tag) {
+    this.front = this.back = tr;
     this.index = index;
-    var row = tbody.childNodes[l];
-    this.tagvalue = row_tagvalue(row, full_ordertag);
+    this.groupindex = groupindex;
+    this.tagval = row_tagvalue(tr, tag);
+    this.newtagval = this.tagval;
     this.isgroup = false;
     this.id = 0;
-    if (row.getAttribute("data-anno-tag")) {
+    if (hasClass(tr, "plheading")) {
         this.isgroup = true;
-        if (row.hasAttribute("data-anno-id"))
-            this.annoid = +row.getAttribute("data-anno-id");
+        ++this.groupindex;
+        if (tr.hasAttribute("data-anno-id")) {
+            this.annoid = +tr.getAttribute("data-anno-id");
+        }
     } else {
-        this.id = +row.getAttribute("data-pid");
-        if (dragtag)
-            this.entry = $(row).find("input[name='tag:" + dragtag + " " + this.id + "']")[0];
+        this.id = +tr.getAttribute("data-pid");
     }
 }
-PaperRow.prototype.top = function () {
-    return $(this.tbody.childNodes[this.l]).offset().top;
+DraggableRow.prototype.top = function () {
+    return $(this.front).offset().top;
 };
-PaperRow.prototype.bottom = function () {
-    return $(this.tbody.childNodes[this.r]).geometry().bottom;
+DraggableRow.prototype.bottom = function () {
+    return $(this.back).geometry().bottom;
 };
-PaperRow.prototype.middle = function () {
-    return (this.top() + this.bottom()) / 2;
+DraggableRow.prototype.front_middle = function () {
+    var g = $(this.front).geometry();
+    return g.top + (g.bottom - g.top) / 2;
 };
-PaperRow.prototype.right = function () {
-    return $(this.tbody.childNodes[this.l]).geometry().right;
+DraggableRow.prototype.left = function () {
+    return $(this.front).offset().left;
 };
-PaperRow.prototype.titlehint = function () {
-    var tg = $(this.tbody.childNodes[this.l]).find("a.ptitle, span.plheading-group"),
-        titletext = null, m;
+DraggableRow.prototype.right = function () {
+    return $(this.front).geometry().right;
+};
+DraggableRow.prototype.legend = function () {
+    var tg = $(this.front).find("a.ptitle, span.plheading-group"),
+        t = "", m;
     if (tg.length) {
-        titletext = tg[0].getAttribute("data-title");
-        if (!titletext)
-            titletext = tg.text();
-        if (titletext && titletext.length > 60 && (m = /^.{0,60}(?=\s)/.exec(titletext)))
-            titletext = m[0] + "…";
-        else if (titletext && titletext.length > 60)
-            titletext = titletext.substr(0, 60) + "…";
+        t = tg[0].getAttribute("data-title") || tg[0].textContent;
+        if (t && t.length > 60 && (m = /^.{0,60}(?=\s)/.exec(t)))
+            t = m[0] + "…";
+        else if (t && t.length > 60)
+            t = t.substr(0, 60) + "…";
     }
-    return titletext;
+    if (this.id)
+        t = t ? "#".concat(this.id, "  ", t) : "#" + this.id;
+    return t;
 };
 
 function make_gapf() {
     var gaps = [], gappos = 0;
-    while (gaps.length < 4)
-        gaps.push([1, 1, 1, 1, 1, 2, 2, 2, 3, 4][Math.floor(Math.random() * 10)]);
     return function (reset) {
-        reset && (gappos = 3);
-        ++gappos;
-        return gaps[gappos & 3];
+        if (reset) {
+            gappos = 0;
+        }
+        if (gappos === gaps.length) {
+            gaps.push([1, 1, 1, 1, 1, 2, 2, 2, 3, 4][Math.floor(Math.random() * 10)]);
+        }
+        return gaps[gappos++];
     };
 }
 
@@ -8860,8 +9319,10 @@ function taganno_success(rv) {
     if (!rv.ok)
         return;
     $(".pltable").each(function () {
-        if (this.getAttribute("data-order-tag") !== rv.tag)
+        var tblsort = hoturl_search(tablelist_search(this), "sort");
+        if (!tblsort || strnatcasecmp(tblsort, "#" + rv.tag) !== 0) {
             return;
+        }
         var groups = [], cur = this.tBodies[0].firstChild, pos = 0, annoi = 0;
         function handle_tagval(tagval) {
             while (annoi < rv.anno.length
@@ -8883,103 +9344,187 @@ function taganno_success(rv) {
         }
         handle_tagval(false);
         this.setAttribute("data-groups", JSON.stringify(groups));
-        reorder(this, table_ids(this), groups);
+        tablelist_reorder(this, tablelist_ids(this), groups);
     });
 }
 
 handle_ui.on("js-annotate-order", function () {
-    var $d, annos, last_newannoid = 0, mytag = this.getAttribute("data-anno-tag");
+    var $d, form, etagannos, annos, need_session = false,
+        mytag = this.getAttribute("data-anno-tag"),
+        dtag = mytag;
+    if (mytag.startsWith(siteinfo.user.uid + "~")) {
+        dtag = dtag.replace(/^\d+/, "");
+    }
     function clickh(evt) {
         if (this.name === "add") {
-            var hc = new HtmlCollector;
-            add_anno(hc, {});
-            var $row = $(hc.render()).awaken();
-            $row.appendTo($d.find(".tagannos"));
+            add_anno({});
+            awaken_anno();
             $d.find(".modal-dialog").scrollIntoView({atBottom: true, marginBottom: "auto"});
-            $row.find("input[name='legend_n" + last_newannoid + "']").focus();
-        } else if (hasClass(this, "delete-link")) {
+            etagannos.lastChild.querySelector("legend > input").focus();
+        } else if (hasClass(this, "js-delete-ta")) {
             ondeleteclick.call(this, evt);
         } else {
-            var anno = [];
-            for (var i = 0; i < annos.length; ++i) {
-                var legend = $d.find("input[name='legend_" + annos[i].annoid + "']").val();
-                var tagval = $d.find("input[name='tagval_" + annos[i].annoid + "']").val();
-                var deleted = $d.find("input[name='deleted_" + annos[i].annoid + "']").val();
-                if (legend != annos[i].legend || tagval != annos[i].tagval || deleted)
-                    anno.push({annoid: annos[i].annoid, legend: legend, tagval: tagval, deleted: !!deleted});
-            }
-            for (i = 1; i <= last_newannoid; ++i) {
-                legend = $d.find("input[name='legend_n" + i + "']").val();
-                tagval = $d.find("input[name='tagval_n" + i + "']").val();
-                if (legend != "" || tagval != 0)
-                    anno.push({annoid: "n" + i, legend: legend, tagval: tagval});
-            }
-            $.post(hoturl("=api/taganno", {tag: mytag}),
-                   {anno: JSON.stringify(anno)}, make_onsave($d));
+            onsubmit.call(evt);
         }
         evt.preventDefault();
         handle_ui.stopPropagation(evt);
     }
     function ondeleteclick() {
-        var $div = $(this).closest(".form-g"), annoid = $div.attr("data-anno-id");
-        $div.find("input[name='tagval_" + annoid + "']").after("[deleted]").remove();
-        $div.append(hidden_input("deleted_" + annoid, "1"));
-        $div.find("input[name='legend_" + annoid + "']").prop("disabled", true);
+        var fs = this.closest("fieldset"),
+            n = fs.getAttribute("data-ta-key"),
+            content = fs.querySelector(".taganno-content");
+        addClass(content, "hidden");
+        fs.appendChild(hidden_input("ta/" + n + "/delete", "1"));
+        fs.appendChild(render_feedback_list([{message: "<0>This annotation will be deleted.", status: 1}]));
+        addClass(fs.querySelector("legend > input"), "text-decoration-line-through");
+        this.disabled = true;
         hotcrp.tooltip.close(this);
-        $(this).remove();
     }
-    function make_onsave($d) {
-        return function (rv) {
-            if (rv.ok) {
-                taganno_success(rv);
-                $d.close($d);
-            } else
-                $d.show_errors(rv);
-        };
+    function onsubmit() {
+        var newa = [], numannos = etagannos.children.length;
+        for (var i = 0; i !== numannos; ++i) {
+            var pfx = "ta/" + (i + 1) + "/",
+                tagval = form.elements[pfx + "tagval"].value,
+                legend = form.elements[pfx + "legend"].value,
+                id = form.elements[pfx + "id"].value,
+                deleted = form.elements[pfx + "delete"];
+            if (id === "new" && (deleted || (tagval == "" && legend == ""))) {
+                continue;
+            }
+            var anno = {
+                annoid: id === "new" ? id : +id,
+                key: i + 1,
+                tagval: tagval,
+                legend: legend
+            };
+            if (deleted) {
+                anno.deleted = true;
+            } else if (need_session) {
+                anno.session_title = form.elements[pfx + "session_title"].value;
+                anno.time = form.elements[pfx + "time"].value;
+                anno.session_chair = form.elements[pfx + "session_chair"].value;
+            } else {
+                anno.session_title = anno.time = anno.session_chair = null;
+            }
+            newa.push(anno);
+        }
+        $.post(hoturl("=api/taganno", {tag: mytag}),
+            {anno: JSON.stringify(newa)},
+            function (rv) {
+                if (rv.ok) {
+                    taganno_success(rv);
+                    $d.close();
+                } else {
+                    $d.show_errors(rv);
+                }
+           });
     }
-    function add_anno(hc, anno) {
-        var annoid = anno.annoid;
-        if (annoid == null)
-            annoid = "n" + (last_newannoid += 1);
-        hc.push('<div class="form-g" data-anno-id="' + annoid + '">', '</div>');
-        hc.push('<div class="entryi"><label for="k-taganno-' + annoid + '-d">Legend</label><input id="k-taganno-' + annoid + '-d" name="legend_' + annoid + '" type="text" placeholder="none" size="32" class="need-autogrow"></div>');
-        hc.push('<div class="entryi"><label for="k-taganno-' + annoid + '-tagval">Tag value</label><div class="entry"><input id="k-taganno-' + annoid + '-tagval" name="tagval_' + annoid + '" type="text" size="5">', '</div></div>');
-        if (anno.annoid)
-            hc.push(' <button type="button" class="ui closebtn delete-link need-tooltip" aria-label="Delete group">x</button>');
-        hc.pop_n(2);
+    function on_change_type() {
+        need_session = this.value === "session";
+        $(etagannos).find(".if-session").toggleClass("hidden ignore-diff", !need_session);
+    }
+    function entryi(label, entry) {
+        let ide = entry;
+        if (!ide.matches("input, select")) {
+            ide = ide.querySelector("input, select");
+        }
+        if (ide && !ide.id) {
+            ide.id = HtmlCollector.next_input_id();
+        }
+        return $e("div", ide && hasClass(ide, "if-session") ? "entryi if-session hidden" : "entryi",
+            $e("label", {"for": ide ? ide.id : null}, label),
+            $e("div", "entry", entry));
+    }
+    function add_anno(anno) {
+        var n = etagannos.children.length + 1,
+            idpfx = "k-taganno-" + n + "-",
+            namepfx = "ta/" + n + "/";
+        function inpute(sfx, attr, xtype) {
+            let tag = "input";
+            attr = attr || {};
+            attr.id = attr.id || idpfx + sfx;
+            attr.name = attr.name || namepfx + sfx;
+            if (attr.type === "select") {
+                tag = "select";
+                delete attr.type;
+            } else {
+                attr.type = attr.type || "text";
+            }
+            if (attr.type === "text" && attr.size == null) {
+                attr.size = 40;
+            }
+            if (attr.value == null && tag !== "select") {
+                attr.value = anno[sfx];
+            }
+            const e = $e(tag, attr);
+            if (xtype === "session") {
+                if (!need_session
+                    && attr.value != null
+                    && attr.value !== "") {
+                    need_session = true;
+                }
+                addClass(e, "if-session");
+                need_session || addClass(e, "hidden");
+                need_session || addClass(e, "ignore-diff");
+            }
+            return e;
+        }
+        let tagval = inpute("tagval", {size: 5, placeholder: "(value)", "class": "ml-1", value: tagvalue_unparse(anno.tagval)}),
+            legend = inpute("legend", {placeholder: "none"}),
+            session_title = inpute("session_title", null, "session"),
+            time = inpute("time", null, "session"),
+            session_chair = $e("span", "select", inpute("session_chair", {type: "select", "class": "need-pcselector", "data-pcselector-options": "0 *", "data-default-value": anno.session_chair || "none"}, "session")),
+            deleter = $e("button", {
+                type: "button",
+                "class": "ml-2 need-tooltip js-delete-ta",
+                "aria-label": "Delete annotation"
+            }, svge_use_licon("trash")),
+            fieldset = $e("fieldset", "mt-3 mb-2",
+                $e("legend", null,
+                    "#" + dtag + "#",
+                    tagval,
+                    deleter),
+                hidden_input(namepfx + "id", anno.annoid == null ? "new" : anno.annoid),
+                $e("div", "taganno-content",
+                    entryi("Legend", legend),
+                    entryi("Session title", session_title),
+                    entryi("Time", time),
+                    entryi("Session chair", session_chair)));
+        fieldset.setAttribute("data-ta-key", n);
+        etagannos.appendChild(fieldset);
+    }
+    function awaken_anno() {
+        $d.find(".need-pcselector").each(populate_pcselector);
     }
     function show_dialog(rv) {
         if (!rv.ok || !rv.editable)
             return;
-        var hc = popup_skeleton({className: "modal-dialog-w40"}),
-            dtag = mytag.replace(/^\d+~/, "~"), i;
+        let hc = popup_skeleton({className: "modal-dialog-w40", form_class: "need-diff-check"}), i;
         hc.push('<h2>Annotate #' + dtag + ' order</h2>');
         hc.push('<p>These annotations will appear in searches such as “order:' + dtag + '”.</p>');
-        hc.push('<div class="tagannos">', '</div>');
+        hc.push('<p><span class="select"><select name="ta/type"><option value="generic" selected>Generic order</option><option value="session">Session order</option></select></span></p>');
+        hc.push('<div class="tagannos"></div>');
+        hc.push('<div class="mt-3"><button type="button" name="add">Add group</button></div>');
+        hc.push_actions(['<button type="submit" name="save" class="btn-primary">Save changes</button>', '<button type="button" name="cancel">Cancel</button>']);
+        $d = hc.show(false);
+        form = $d[0].querySelector("form");
+        etagannos = $d[0].querySelector(".tagannos");
         annos = rv.anno;
         for (i = 0; i < annos.length; ++i) {
-            add_anno(hc, annos[i]);
-        }
-        hc.pop();
-        hc.push('<div class="g"><button type="button" name="add">Add group</button></div>');
-        hc.push_actions(['<button type="submit" name="save" class="btn-primary">Save changes</button>', '<button type="button" name="cancel">Cancel</button>']);
-        $d = hc.show();
-        for (i = 0; i < annos.length; ++i) {
-            $d.find("input[name='legend_" + annos[i].annoid + "']").val(annos[i].legend);
-            $d.find("input[name='tagval_" + annos[i].annoid + "']").val(tagvalue_unparse(annos[i].tagval));
+            add_anno(annos[i]);
         }
         $d.on("click", "button", clickh);
+        const etype = form.elements["ta/type"],
+            etypeval = need_session ? "session" : "generic";
+        etype.setAttribute("data-default-value", etypeval);
+        etype.value = etypeval;
+        $(etype).on("change", on_change_type).change();
+        awaken_anno();
+        hc.show();
+        demand_load.pc().then(function () { check_form_differs(form); }); // :(
     }
     $.get(hoturl("=api/taganno", {tag: mytag}), show_dialog);
 });
-
-
-
-function paperlist_tag_ui() {
-
-var plt_tbody, full_ordertag, dragtag,
-    rowanal, dragging, srcindex, dragindex, dragger,
-    scroller, mousepos, scrolldelta;
 
 function make_tag_save_callback(elt) {
     return function (rv) {
@@ -8987,398 +9532,505 @@ function make_tag_save_callback(elt) {
             minifeedback(elt, rv);
         if (rv.ok) {
             var focus = document.activeElement;
-            if (rv.p) {
-                for (var i in rv.p) {
-                    rv.p[i].pid = +i;
-                    $(window).trigger("hotcrptags", [rv.p[i]]);
-                }
-            } else
-                $(window).trigger("hotcrptags", [rv]);
-            if (focus)
-                focus.focus();
+            $(window).trigger("hotcrptags", [rv]);
+            focus && focus.focus();
         }
     };
 }
 
-function tag_save() {
-    var m = this.name.match(/^tag:(\S+) (\d+)$/), ch = null, newval;
-    if (this.type.toLowerCase() == "checkbox")
-        ch = this.checked ? m[1] : m[1] + "#clear";
-    else if ((newval = tagvalue_parse(this.value)) !== null)
-        ch = m[1] + "#" + (newval !== false ? newval : "clear");
-    else {
-        minifeedback(this, {ok: false, message_list: [{message: "Value must be a number (or empty to remove the tag).", status: 2}]});
+handle_ui.on("edittag", function (evt) {
+    var key = null, m, ch, newval;
+    if (evt.type === "keydown" && event_modkey(evt) === 0) {
+        key = event_key(evt);
+    }
+    if (evt.type === "click"
+        || evt.type === "change"
+        || key === "Enter") {
+        m = this.name.match(/^tag:(\S+) (\d+)$/);
+        if (this.type === "checkbox") {
+            ch = this.checked ? m[1] : m[1] + "#clear";
+        } else if ((newval = tagvalue_parse(this.value)) !== null) {
+            ch = m[1].concat("#", newval !== false ? newval : "clear");
+        } else {
+            minifeedback(this, {ok: false, message_list: [{message: "Value must be a number (or empty to remove the tag)", status: 2}]});
+            return;
+        }
+        $.post(hoturl("=api/tags", {p: m[2], forceShow: 1}),
+            {addtags: ch, search: tablelist_search(tablelist(this))},
+            make_tag_save_callback(this));
+    } else if (key === "ArrowDown" || key === "ArrowUp") {
+        var tr = this.closest("tr"), td = this.closest("td"), prop, e;
+        if (tr && hasClass(tr, "pl")) {
+            prop = key === "ArrowUp" ? "previousElementSibling" : "nextElementSibling";
+            for (tr = tr[prop]; tr && !hasClass(tr, "pl"); tr = tr[prop]) {
+            }
+            if (tr
+                && (td = tr.cells[td.cellIndex])
+                && (e = td.querySelector("input.edittag"))) {
+                focus_and_scroll_into_view(e, key === "ArrowDown");
+            }
+        }
+    } else {
         return;
     }
-    $.post(hoturl("=api/tags", {p: m[2], forceShow: 1}),
-           {addtags: ch}, make_tag_save_callback(this));
-}
-
-function analyze_rows(e) {
-    var rows = plt_tbody.childNodes, i, l, r, eindex = null;
-    while (e && typeof e !== "number" && e.nodeName != "TR") {
-        e = e.parentElement;
+    if (key) {
+        evt.preventDefault();
+        handle_ui.stopImmediatePropagation(evt);
     }
+});
 
-    // create analysis
-    rowanal = [];
-    for (i = 0, l = null; i < rows.length; ++i)
-        if (rows[i].nodeName == "TR") {
-            if (/^plx/.test(rows[i].className))
-                r = i;
-            else {
-                if (l !== null)
-                    rowanal.push(new PaperRow(plt_tbody, l, r, rowanal.length, full_ordertag, dragtag));
-                l = r = i;
+
+function DraggableTable(srctr, dragtag) {
+    this.tablelist = tablelist(srctr);
+    this.rs = [];
+    this.grouprs = [];
+    this.srcindex = null;
+    this.dragindex = null;
+
+    var tr, tranal = null, groupindex = -1;
+    for (tr = this.tablelist.tBodies[0].firstChild; tr; tr = tr.nextSibling) {
+        if (tr.nodeName === "TR") {
+            if (hasClass(tr, "plx")) {
+                tranal.back = tr;
+            } else {
+                tranal = new DraggableRow(tr, this.rs.length, groupindex, dragtag);
+                this.rs.push(tranal);
+                if (tranal.isgroup) {
+                    ++groupindex;
+                    this.grouprs.push(tranal);
+                }
             }
-            if (e == rows[i])
-                eindex = rowanal.length;
+            if (tr === srctr) {
+                this.srcindex = tranal.index;
+            }
         }
-    if (l !== null)
-        rowanal.push(new PaperRow(plt_tbody, l, r, rowanal.length, full_ordertag, dragtag));
+    }
+}
+DraggableTable.prototype.group_back_index = function (i) {
+    if (i < this.rs.length && this.rs[i].isgroup) {
+        while (i + 1 < this.rs.length && !this.rs[i + 1].isgroup) {
+            ++i;
+        }
+    }
+    return i;
+};
+DraggableTable.prototype.content = function () {
+    if (this.srcindex !== null) {
+        return this.rs[this.srcindex].legend();
+    } else {
+        return "None";
+    }
+};
 
-    // search for paper
-    if (typeof e === "number")
-        for (i = 0; i < rowanal.length; ++i)
-            if (rowanal[i].id == e) {
-                eindex = i;
+function Tagval_DraggableTable(srctr, dragtag) {
+    DraggableTable.call(this, srctr, dragtag);
+    this.dragtag = dragtag;
+    this.gapf = function () { return 1; };
+    // annotated groups are assumed to be gapless
+    if (this.grouprs.length > 0) {
+        var sd = 0, nd = 0, s2d = 0, lv = null, d, i;
+        for (i = 0; i < this.rs.length; ++i) {
+            if (this.rs[i].id && this.rs[i].tagval !== false) {
+                if (lv !== null) {
+                    ++nd;
+                    d = this.rs[i].tagval - lv;
+                    sd += d;
+                    s2d += d * d;
+                }
+                lv = this.rs[i].tagval;
+            }
+        }
+        if (nd < 4 || sd < 0.9 * nd || sd > 1.1 * nd || s2d < 0.9 * nd || s2d > 1.1 * nd) {
+            this.gapf = make_gapf();
+        }
+    }
+}
+Object.setPrototypeOf(Tagval_DraggableTable.prototype, DraggableTable.prototype);
+Tagval_DraggableTable.prototype.content = function () {
+    var frag = document.createDocumentFragment(), newval,
+        unchanged = this.srcindex === this.dragindex,
+        srcra = this.rs[this.srcindex];
+    frag.append(srcra.legend());
+    if (unchanged) {
+        newval = srcra.tagval;
+    } else {
+        this.compute();
+        newval = srcra.newtagval;
+    }
+    if (newval !== false) {
+        frag.append($e("span", {style: "padding-left:2em" + (unchanged ? "" : ";font-weight:bold")},
+            "#".concat(tag_simplify(this.dragtag), "#", tagvalue_unparse(newval))));
+    } else {
+        frag.append($e("div", "hint", "Untagged · Drag up to set order"));
+    }
+    return frag;
+};
+Tagval_DraggableTable.prototype.compute = function () {
+    var i, j, len = this.rs.length, d, tv,
+        si = this.srcindex, di = this.dragindex,
+        sigroup = this.rs[si].isgroup, nsi = this.group_back_index(si) - si + 1;
+    // initialize to unchanged, reset gap
+    for (i = 0; i !== len; ++i) {
+        this.rs[i].newtagval = this.rs[i].tagval;
+    }
+    this.gapf(true);
+    // forward: [init] [si:SRC:si+nsi) [si+nsi:shift:di) <DST> [di:rest:len)
+    // reverse: [init] <DST> [di:shift:si) [si:SRC:si+nsi) [si+nsi:rest:len)
+    // return if no shift region (which means no change)
+    if (si === di
+        || si + nsi === di
+        || (this.rs[si].tagval === false
+            && di > 0
+            && this.rs[di-1].tagval === false)) {
+        return;
+    }
+    // forward: handle shift region
+    if (si < di && this.rs[si+nsi].tagval !== false) {
+        d = this.rs[si].tagval - this.rs[si+nsi].tagval;
+        i = si + nsi;
+        while (i !== di
+               && this.rs[i].tagval !== false
+               && (sigroup || !this.rs[i].isgroup)) {
+            this.rs[i].newtagval += d;
+            ++i;
+        }
+    }
+    // handle move region
+    if (len === 0 || (di === 0 && this.rs[di].newtagval === false)) {
+        tv = 1;
+    } else if (di === 0) {
+        tv = this.rs[di].newtagval;
+    } else {
+        tv = this.rs[di-1].newtagval;
+        if (tv !== false && (sigroup || !this.rs[di-1].isgroup)) {
+            tv += this.gapf();
+        }
+        if (tv !== false && sigroup) {
+            j = si < di ? si + nsi : di;
+            if (j !== len && this.rs[j].tagval !== false) {
+                tv = Math.max(tv, this.rs[j].tagval);
+            }
+        }
+    }
+    if (tv === false || this.rs[si].tagval === false) {
+        for (i = si; i !== si + nsi; ++i) {
+            this.rs[i].newtagval = tv;
+        }
+    } else {
+        d = tv - this.rs[si].tagval;
+        for (i = si; i !== si + nsi; ++i) {
+            this.rs[i].newtagval += d;
+        }
+    }
+    // reverse: handle shift region
+    if (si > di
+        && (nsi === 1 || this.rs[si+nsi-1].newtagval >= this.rs[di].tagval)) {
+        tv = this.rs[si+nsi-1].newtagval + this.gapf();
+        if (sigroup) {
+            tv = Math.max(tv, this.rs[si].tagval);
+        }
+        d = tv - this.rs[di].tagval;
+        i = di;
+        while (i !== si
+               && this.rs[i].tagval !== false
+               && (i === di || this.rs[i].tagval <= this.rs[i-1].newtagval)) {
+            this.rs[i].newtagval += d;
+            ++i;
+        }
+    }
+    // handle rest
+    i = Math.max(si + nsi, di);
+    if (i !== len && this.rs[i].tagval !== false) {
+        if (si < di) { // forward
+            tv = this.rs[si + nsi - 1].newtagval + this.gapf();
+        } else { // reverse
+            tv = this.rs[si - 1].newtagval;
+            if (this.rs[i].tagval !== this.rs[si-1].tagval) {
+                tv += this.gapf();
+            }
+        }
+        while (this.rs[i].tagval < tv) {
+            this.rs[i].newtagval = tv;
+            ++i;
+            if (i === len || this.rs[i].tagval === false) {
                 break;
             }
-
-    // analyze whether this is a gapless order
-    var sd = 0, nd = 0, s2d = 0, lv = null;
-    for (i = 0; i < rowanal.length; ++i)
-        if (rowanal[i].id && rowanal[i].tagvalue !== false) {
-            if (lv !== null) {
-                var delta = rowanal[i].tagvalue - lv;
-                ++nd;
-                sd += delta;
-                s2d += delta * delta;
+            tv += Math.min(this.rs[i].tagval - this.rs[i-1].tagval, this.gapf());
+        }
+    }
+};
+Tagval_DraggableTable.prototype.commit = function () {
+    var saves = [], annosaves = [], i, e, row, nv,
+        srcra = this.rs[this.srcindex];
+    this.compute();
+    for (i = 0; i !== this.rs.length; ++i) {
+        row = this.rs[i];
+        if (row.newtagval !== row.tagval) {
+            nv = tagvalue_unparse(row.newtagval);
+            if (row.id) {
+                saves.push("".concat(row.id, " ", this.dragtag, "#", nv === "" ? "clear" : nv));
+            } else if (row.annoid) {
+                annosaves.push({annoid: row.annoid, tagval: nv});
             }
-            lv = rowanal[i].tagvalue;
-        }
-    if (nd >= 4 && sd >= 0.9 * nd && sd <= 1.1 * nd && s2d >= 0.9 * nd && s2d <= 1.1 * nd)
-        rowanal.gapf = function () { return 1; };
-    else
-        rowanal.gapf = make_gapf();
-
-    return eindex;
-}
-
-function tag_scroll() {
-    var geometry = $(window).geometry(), delta = 0,
-        y = mousepos.clientY + geometry.top;
-    if (y < geometry.top - 5)
-        delta = Math.max((y - (geometry.top - 5)) / 10, -10);
-    else if (y > geometry.bottom)
-        delta = Math.min((y - (geometry.bottom + 5)) / 10, 10);
-    else if (y >= geometry.top && y <= geometry.bottom)
-        scroller = (clearInterval(scroller), null);
-    if (delta) {
-        scrolldelta += delta;
-        if ((delta = Math.round(scrolldelta))) {
-            window.scroll(geometry.left, geometry.top + delta);
-            scrolldelta -= delta;
         }
     }
-}
-
-function endgroup_index(i) {
-    if (i < rowanal.length && rowanal[i].isgroup)
-        while (i + 1 < rowanal.length && !rowanal[i + 1].isgroup)
-            ++i;
-    return i;
-}
-
-function tag_mousemove(evt) {
-    if (evt.clientX == null)
-        evt = mousepos;
-    mousepos = {clientX: evt.clientX, clientY: evt.clientY};
-    var geometry = $(window).geometry(),
-        x = evt.clientX + geometry.left, y = evt.clientY + geometry.top;
-
-    // binary search to find containing rows
-    var l = 0, r = rowanal.length, m;
-    while (l < r) {
-        m = Math.floor((l + r) / 2);
-        if (y < rowanal[m].top())
-            r = m;
-        else if (y < rowanal[m].bottom()) {
-            l = m;
-            break;
-        } else
-            l = m + 1;
-    }
-
-    // if dragging a group, restrict to groups
-    if (rowanal[srcindex].isgroup
-        && rowanal[srcindex + 1]
-        && !rowanal[srcindex + 1].isgroup) {
-        while (l > 0 && l < rowanal.length && !rowanal[l].isgroup)
-            --l;
-    }
-    r = endgroup_index(l);
-
-    // if below middle, insert at next location
-    if (l < rowanal.length && y > (rowanal[l].top() + rowanal[r].bottom()) / 2)
-        l = r + 1;
-
-    // if user drags far away, snap back
-    var plt_geometry = $(plt_tbody).geometry();
-    if (x < Math.min(geometry.left, plt_geometry.left) - 30
-        || x > Math.max(geometry.right, plt_geometry.right) + 30
-        || y < plt_geometry.top - 40 || y > plt_geometry.bottom + 40)
-        l = srcindex;
-
-    // scroll
-    if (!scroller && (y < geometry.top || y > geometry.bottom)) {
-        scroller = setInterval(tag_scroll, 13);
-        scrolldelta = 0;
-    }
-
-    // calculate new dragger position
-    if (l == srcindex || l == endgroup_index(srcindex) + 1)
-        l = srcindex;
-    if (l !== dragindex) {
-        tag_dragto(l);
-        if (evt.type === "mousemove")
-            handle_ui.stopPropagation(evt);
-    }
-}
-
-function tag_dragto(l) {
-    dragindex = l;
-
-    // create dragger
-    if (!dragger) {
-        dragger = make_bubble({color: "edittagbubble dark", anchor: "e!*"});
-        window.disable_tooltip = true;
-    }
-
-    // calculate new value
-    var newval;
-    if (dragindex == srcindex)
-        newval = rowanal[dragindex].tagvalue;
-    else {
-        calculate_shift(srcindex, dragindex);
-        newval = rowanal[srcindex].newvalue;
-    }
-
-    // set dragger content and show it
-    var m = "", x, y;
-    if (rowanal[srcindex].id)
-        m += "#" + rowanal[srcindex].id;
-    if ((x = rowanal[srcindex].titlehint()))
-        m += (m ? " &nbsp;" : "") + x;
-    if (newval !== false) {
-        m += '<span style="padding-left:2em';
-        if (srcindex !== dragindex)
-            m += ';font-weight:bold';
-        m += '">#' + dragtag + '#' + tagvalue_unparse(newval) + '</span>';
-    } else
-        m += '<div class="hint">Untagged · Drag up to set order</div>';
-    if (dragindex == srcindex)
-        y = rowanal[srcindex].middle();
-    else if (dragindex < rowanal.length)
-        y = rowanal[dragindex].top();
-    else
-        y = rowanal[rowanal.length - 1].bottom();
-    if (rowanal[srcindex].entry)
-        x = $(rowanal[srcindex].entry).offset().left - 6;
-    else
-        x = rowanal[srcindex].right() - 20;
-    dragger.html(m).at(x, y).color("edittagbubble dark" + (srcindex == dragindex ? " sametag" : ""));
-}
-
-function calculate_shift(si, di) {
-    var simax = endgroup_index(si);
-    var i, j, sdelta = rowanal.gapf(true);
-    if (rowanal[si].tagvalue !== false
-        && simax + 1 < rowanal.length
-        && rowanal[simax + 1].tagvalue !== false) {
-        i = rowanal[simax + 1].tagvalue - rowanal[simax].tagvalue;
-        if (i >= 1)
-            sdelta = i;
-    }
-    if (simax != si && rowanal[simax].tagvalue)
-        sdelta += rowanal[simax].tagvalue - rowanal[si].tagvalue;
-
-    for (i = 0; i < rowanal.length; ++i)
-        rowanal[i].newvalue = rowanal[i].tagvalue;
-
-    var newval = -Infinity, delta = 0, si_moved = false;
-    function adjust_newval(j) {
-        return newval === false ? newval : newval + (rowanal[j].tagvalue - rowanal[si].tagvalue);
-    }
-
-    for (i = 0; i < rowanal.length; ++i) {
-        if (rowanal[i].tagvalue === false) {
-            // In untagged territory
-            if (i == 0)
-                newval = 1;
-            else if (rowanal[i - 1].tagvalue === false)
-                newval = false;
-            else if (i == 1
-                     || (j = rowanal[i-1].tagvalue - rowanal[i-2].tagvalue) <= 4)
-                newval += rowanal.gapf();
-            else
-                newval += j;
-        } else {
-            if (i > 0
-                && rowanal[i].tagvalue > rowanal[i - 1].tagvalue + rowanal.gapf()
-                && rowanal[i].tagvalue > newval)
-                delta = 0;
-            if (i == di && !si_moved && !rowanal[si].isgroup && i > 0) {
-                if (rowanal[i - 1].isgroup)
-                    delta = rowanal[i - 1].newvalue - rowanal[i].tagvalue;
-                else if (rowanal[i].isgroup)
-                    delta = rowanal[i - 1].newvalue + rowanal.gapf() - rowanal[i].tagvalue;
-            }
-            newval = rowanal[i].tagvalue + delta;
-        }
-        if (i == si && si < di) {
-            if (rowanal[i + 1].tagvalue !== false)
-                delta = -(rowanal[i + 1].tagvalue - rowanal[i].tagvalue);
-            continue;
-        } else if (i == si) {
-            delta -= sdelta;
-            continue;
-        } else if (i >= si && i <= simax) {
-            continue;
-        } else if (i == di && !si_moved) {
-            for (j = si; j <= simax; ++j)
-                rowanal[j].newvalue = adjust_newval(j);
-            if (i == 0 || rowanal[i].tagvalue - rowanal[i - 1].tagvalue > 0.0001)
-                delta += sdelta;
-            newval = rowanal[simax].newvalue;
-            --i;
-            si_moved = true;
-            continue;
-        }
-        if ((i >= di && rowanal[i].tagvalue === false)
-            || (i >= si && i >= di && rowanal[i].tagvalue >= newval))
-            break;
-        if (rowanal[i].tagvalue !== false)
-            rowanal[i].newvalue = newval;
-    }
-    if (rowanal.length == di) {
-        if (newval !== false)
-            newval += rowanal.gapf();
-        for (j = si; j <= simax; ++j)
-            rowanal[j].newvalue = adjust_newval(j);
-    }
-}
-
-function rowcompar(a, b) {
-    var av = rowanal[a].tagvalue, bv = rowanal[b].tagvalue;
-    if ((av === false) !== (bv === false))
-        return av === false ? 1 : -1;
-    if (av != bv)
-        return av < bv ? -1 : 1;
-    var aid = rowanal[a].id, bid = rowanal[b].id;
-    if (!aid !== !bid)
-        return aid ? 1 : -1;
-    if (aid !== bid)
-        return aid < bid ? -1 : 1;
-    var rows = plt_tbody.childNodes;
-    var at = $(rows[rowanal[a].l]).find(".plheading-group").attr("data-title"),
-        bt = $(rows[rowanal[b].l]).find(".plheading-group").attr("data-title"),
-        cmp = strnatcmp(at, bt);
-    if (cmp)
-        return cmp;
-    else
-        return rowanal[a].annoid - rowanal[b].annoid;
-}
-
-function row_move(srcindex) {
-    // find new position
-    var rows = plt_tbody.childNodes, dstindex;
-    for (dstindex = 0; dstindex < rowanal.length; ++dstindex)
-        if (dstindex !== srcindex && rowcompar(srcindex, dstindex) < 0)
-            break;
-    if (dstindex !== srcindex + 1) {
-        // shift row groups
-        var range = [rowanal[srcindex].l, rowanal[srcindex].r],
-            sibling, e;
-        sibling = dstindex < rowanal.length ? rows[rowanal[dstindex].l] : null;
-        while (range[0] <= range[1]) {
-            e = plt_tbody.removeChild(rows[range[0]]);
-            plt_tbody.insertBefore(e, sibling);
-            srcindex > dstindex ? ++range[0] : --range[1];
-        }
-        searchbody_postreorder(plt_tbody);
-    }
-}
-
-function commit_drag(si, di) {
-    var saves = [], annosaves = [];
-    calculate_shift(si, di);
-    for (var i = 0; i < rowanal.length; ++i)
-        if (rowanal[i].newvalue === rowanal[i].tagvalue)
-            /* do nothing */;
-        else if (rowanal[i].id) {
-            var x = tagvalue_unparse(rowanal[i].newvalue);
-            saves.push(rowanal[i].id + " " + dragtag + "#" + (x === "" ? "clear" : x));
-        } else if (rowanal[i].annoid)
-            annosaves.push({annoid: rowanal[i].annoid, tagval: tagvalue_unparse(rowanal[i].newvalue)});
-    if (saves.length)
+    if (saves.length) {
+        e = srcra.front.querySelector("input[name='tag:".concat(this.dragtag, " ", srcra.id, "']"));
         $.post(hoturl("=api/tags", {forceShow: 1}),
-               {tagassignment: saves.join(",")},
-               make_tag_save_callback(rowanal[si].entry));
-    if (annosaves.length)
-        $.post(hoturl("=api/taganno", {tag: dragtag, forceShow: 1}),
-               {anno: JSON.stringify(annosaves)}, taganno_success);
-}
-
-function tag_mousedown(evt) {
-    if (dragging)
-        tag_mouseup();
-    dragging = this;
-    dragindex = null;
-    srcindex = analyze_rows(this);
-    document.addEventListener("mousemove", tag_mousemove, true);
-    document.addEventListener("mouseup", tag_mouseup, true);
-    document.addEventListener("scroll", tag_mousemove, true);
-    addClass(document.body, "grabbing");
-    tag_mousemove(evt);
-    evt.preventDefault();
-    handle_ui.stopPropagation(evt);
-}
-
-function tag_mouseup() {
-    document.removeEventListener("mousemove", tag_mousemove, true);
-    document.removeEventListener("mouseup", tag_mouseup, true);
-    document.removeEventListener("scroll", tag_mousemove, true);
-    removeClass(document.body, "grabbing");
-    if (dragger) {
-        dragger = dragger.remove();
-        delete window.disable_tooltip;
+            {tagassignment: saves.join(","), search: tablelist_search(this.tablelist)},
+            make_tag_save_callback(e));
     }
-    if (scroller)
-        scroller = (clearInterval(scroller), null);
-    if (srcindex !== null && (dragindex === null || srcindex != dragindex))
-        commit_drag(srcindex, dragindex);
-    dragging = srcindex = dragindex = null;
-}
+    if (annosaves.length) {
+        $.post(hoturl("=api/taganno", {tag: this.dragtag, forceShow: 1}),
+               {anno: JSON.stringify(annosaves)}, taganno_success);
+    }
+};
 
-removeClass(this, "need-editable-tags");
-plt_tbody = this.tagName === "TABLE" ? this.tBodies[0] : this;
+
+function Assign_DraggableTable(srctr, assignj) {
+    DraggableTable.call(this, srctr, null);
+    this.assigninfo = JSON.parse(assignj);
+    this.groupinfo = JSON.parse(this.tablelist.getAttribute("data-groups"));
+}
+Object.setPrototypeOf(Assign_DraggableTable.prototype, DraggableTable.prototype);
+Assign_DraggableTable.prototype.drag_groupindex = function () {
+    if (this.dragindex >= this.rs.length) {
+        return this.grouprs.length - 1;
+    } else if (this.rs[this.dragindex].isgroup) {
+        return Math.max(this.rs[this.dragindex].groupindex - 1, 0);
+    } else {
+        return this.rs[this.dragindex].groupindex;
+    }
+};
+Assign_DraggableTable.prototype.content = function () {
+    var frag = document.createDocumentFragment(),
+        srcra = this.rs[this.srcindex],
+        oldidx = srcra.groupindex,
+        newidx = this.drag_groupindex(),
+        legend;
+    frag.append(srcra.legend());
+    if (newidx < this.assigninfo.length) {
+        legend = this.groupinfo[newidx].legend;
+    } else {
+        legend = newidx === oldidx ? "" : "other";
+    }
+    if (legend !== "") {
+        frag.append($e("span", {style: "padding-left:2em" + (newidx === oldidx ? "" : ";font-weight:bold")},
+            legend));
+    } else {
+        frag.append($e("div", "hint", "Drag up to change"));
+    }
+    return frag;
+};
+Assign_DraggableTable.prototype.commit = function () {
+    var as = [], i,
+        srcra = this.rs[this.srcindex],
+        oldidx = srcra.groupindex,
+        newidx = this.drag_groupindex();
+    function doassignlist(as, assignlist, id, ondrag) {
+        var i, len = (assignlist || []).length, x;
+        for (i = 0; i !== len; ++i) {
+            x = assignlist[i];
+            if (x.ondrag === ondrag) {
+                x = Object.assign({pid: id}, x);
+                delete x.ondrag;
+                as.push(x);
+            }
+        }
+    }
+    if (oldidx !== newidx) {
+        for (i = 0; i !== this.assigninfo.length; ++i) {
+            i !== newidx && doassignlist(as, this.assigninfo[i], srcra.id, "leave");
+        }
+        doassignlist(as, this.assigninfo[newidx], srcra.id, "enter");
+    }
+    if (!as.empty) {
+        $.post(hoturl("=api/assign", {}),
+            {assignments: JSON.stringify(as), search: tablelist_search(this.tablelist)},
+            function (rv) {
+                rv.ok && $(window).trigger("hotcrptags", [rv]);
+            });
+    }
+};
+
 (function () {
-    $(this).off(".edittag_ajax")
-        .on("click.edittag_ajax", "input.edittag", tag_save)
-        .on("change.edittag_ajax", "input.edittagval", tag_save)
-        .on("keydown.edittag_ajax", "input.edittagval", make_onkey("Enter", tag_save));
-    if ((full_ordertag = this.getAttribute("data-order-tag")))
-        $(window).on("hotcrptags", function (evt, data) {
-            row_move(analyze_rows(data.pid));
-        });
-    if ((dragtag = this.getAttribute("data-drag-tag")))
-        $(this).on("mousedown.edittag_ajax", "span.js-drag-tag", tag_mousedown);
-}).call(plt_tbody.parentNode);
-}
+    var rowanal, dragging, dragger,
+        scroller, mousepos, scrolldelta;
 
-paperlist_tag_ui.add_draghandle = add_draghandle;
-return paperlist_tag_ui;
+    function prowdrag_scroll() {
+        var geometry = $(window).geometry(), delta = 0,
+            y = mousepos.clientY + geometry.top;
+        if (y < geometry.top - 5)
+            delta = Math.max((y - (geometry.top - 5)) / 10, -10);
+        else if (y > geometry.bottom)
+            delta = Math.min((y - (geometry.bottom + 5)) / 10, 10);
+        else if (y >= geometry.top && y <= geometry.bottom)
+            scroller = (clearInterval(scroller), null);
+        if (delta) {
+            scrolldelta += delta;
+            if ((delta = Math.round(scrolldelta))) {
+                window.scroll(geometry.left, geometry.top + delta);
+                scrolldelta -= delta;
+            }
+        }
+    }
+
+    function prowdrag_mousemove(evt) {
+        if (evt.clientX == null) {
+            evt = mousepos;
+        }
+        mousepos = {clientX: evt.clientX, clientY: evt.clientY};
+        var geometry = $(window).geometry(),
+            x = evt.clientX + geometry.left, y = evt.clientY + geometry.top;
+
+        // binary search to find containing rows
+        var l = 0, r = rowanal.rs.length, m;
+        while (l < r) {
+            m = l + ((r - l) >> 1);
+            if (y < rowanal.rs[m].top()) {
+                r = m;
+            } else if (y < rowanal.rs[m].bottom()) {
+                l = m;
+                break;
+            } else {
+                l = m + 1;
+            }
+        }
+
+        // if dragging a group, restrict to groups
+        var srcra = rowanal.rs[rowanal.srcindex];
+        if (srcra.isgroup
+            && rowanal.rs[rowanal.srcindex + 1]
+            && !rowanal.rs[rowanal.srcindex + 1].isgroup) {
+            while (l > 0 && l < rowanal.rs.length && !rowanal.rs[l].isgroup) {
+                --l;
+            }
+        }
+        r = rowanal.group_back_index(l);
+
+        // if below middle, insert at next location
+        if (l < rowanal.rs.length
+            && y > (rowanal.rs[l].top() + rowanal.rs[r].bottom()) / 2) {
+            l = r + 1;
+        }
+
+        // if user drags far away, snap back
+        var tbody = srcra.front.parentElement,
+            plt_geometry = $(tbody).geometry();
+        if (x < Math.min(geometry.left, plt_geometry.left) - 30
+            || x > Math.max(geometry.right, plt_geometry.right) + 30
+            || y < plt_geometry.top - 40 || y > plt_geometry.bottom + 40) {
+            l = rowanal.srcindex;
+        }
+
+        // scroll
+        if (!scroller && (y < geometry.top || y > geometry.bottom)) {
+            scroller = setInterval(prowdrag_scroll, 13);
+            scrolldelta = 0;
+        }
+
+        // calculate new dragger position
+        if (l === rowanal.srcindex
+            || l === rowanal.group_back_index(rowanal.srcindex) + 1) {
+            l = rowanal.srcindex;
+        }
+        if (l !== rowanal.dragindex) {
+            prowdrag_dragto(l);
+            if (evt.type === "mousemove")
+                handle_ui.stopPropagation(evt);
+        }
+    }
+
+    function prowdrag_dragto(di) {
+        rowanal.dragindex = di;
+
+        // create dragger
+        if (!dragger) {
+            dragger = make_bubble({color: "prowdrag dark", anchor: "w!*"});
+            window.disable_tooltip = true;
+        }
+
+        // set dragger content and show it
+        var y;
+        if (rowanal.dragindex === rowanal.srcindex)
+            y = rowanal.rs[rowanal.dragindex].front_middle();
+        else if (rowanal.dragindex < rowanal.rs.length)
+            y = rowanal.rs[rowanal.dragindex].top();
+        else
+            y = rowanal.rs[rowanal.rs.length - 1].bottom();
+        dragger.html(rowanal.content())
+            .at(rowanal.rs[rowanal.srcindex].left() + 36, y)
+            .color("prowdrag dark" + (rowanal.srcindex === rowanal.dragindex ? " unchanged" : ""));
+    }
+
+    function prowdrag_mousedown(evt) {
+        if (dragging) {
+            prowdrag_mouseup();
+        }
+        var tbl = tablelist(this),
+            da = tbl ? tbl.getAttribute("data-drag-action") : "";
+        if (da.startsWith("tagval:")) {
+            rowanal = new Tagval_DraggableTable(this.closest("tr"), da.substring(7));
+        } else if (da.startsWith("assign:")) {
+            rowanal = new Assign_DraggableTable(this.closest("tr"), da.substring(7));
+        }
+        if (rowanal) {
+            dragging = this;
+            document.addEventListener("mousemove", prowdrag_mousemove, true);
+            document.addEventListener("mouseup", prowdrag_mouseup, true);
+            document.addEventListener("scroll", prowdrag_mousemove, true);
+            addClass(document.body, "grabbing");
+            prowdrag_mousemove(evt);
+            evt.preventDefault();
+            handle_ui.stopPropagation(evt);
+        }
+    }
+
+    function prowdrag_mouseup() {
+        document.removeEventListener("mousemove", prowdrag_mousemove, true);
+        document.removeEventListener("mouseup", prowdrag_mouseup, true);
+        document.removeEventListener("scroll", prowdrag_mousemove, true);
+        removeClass(document.body, "grabbing");
+        if (dragger) {
+            dragger = dragger.remove();
+            delete window.disable_tooltip;
+        }
+        if (scroller) {
+            scroller = (clearInterval(scroller), null);
+        }
+        if (rowanal
+            && rowanal.srcindex !== null
+            && rowanal.dragindex !== null
+            && rowanal.srcindex !== rowanal.dragindex) {
+            rowanal.commit();
+        }
+        dragging = rowanal = null;
+    }
+
+    handle_ui.on("mousedown.js-drag-tag", prowdrag_mousedown);
+})();
+
+return {
+    try_reorder: function (tbl, data) {
+        if (data.search_params === tbl.getAttribute("data-search-params")
+            && tablelist_ids_equal(tbl, data.ids)) {
+            tablelist_reorder(tbl, data.ids, data.groups);
+        }
+    },
+    prepare_draggable: function () {
+        tablelist_each_facet(this, function (tbl) {
+            var tr;
+            for (tr = tbl.tBodies[0].firstChild; tr; tr = tr.nextSibling) {
+                if (tr.nodeName === "TR"
+                    && (hasClass(tr, "pl")
+                        || (hasClass(tr, "plheading") && tr.hasAttribute("data-anno-id")))
+                    && !hasClass(tr, "has-draghandle")) {
+                    add_draghandle(tr);
+                }
+            }
+        });
+    }
+};
 })();
 
 
@@ -9414,10 +10066,10 @@ function check_version(url, versionstr) {
             jQuery.get(siteinfo.site_relative + "checkupdates.php",
                        {data: JSON.stringify(json)}, updateverifycb);
         else if (json && json.status)
-            wstorage.site(false, "hotcrp_version_check", {at: now_msec(), version: versionstr});
+            hotcrp.wstorage.site(false, "hotcrp_version_check", {at: now_msec(), version: versionstr});
     }
     try {
-        if ((x = wstorage.site_json(false, "hotcrp_version_check"))
+        if ((x = hotcrp.wstorage.site_json(false, "hotcrp_version_check"))
             && x.at >= now_msec() - 600000 /* 10 minutes */
             && x.version == versionstr)
             return;
@@ -9436,26 +10088,180 @@ function check_version(url, versionstr) {
 
 
 // user rendering
-function render_user(u) {
-    if (!u.name_html)
-        u.name_html = escape_html(u.name);
-    if (u.color_classes && !u.user_html)
-        u.user_html = '<span class="' + u.color_classes + ' taghh">' + u.name_html + '</span>';
-    return u.user_html || u.name_html;
+function usere(u) {
+    if (!u.$e) {
+        var e = document.createTextNode(u.name);
+        if (u.color_classes)
+            e = $e("span", u.color_classes + " taghh", e);
+        u.$e = e;
+    }
+    return u.$e.cloneNode(true);
 }
 
 
 // ajax loading of paper information
+
 (function () {
+
+function Plist(tbl) {
+    this.pltable = tbl;
+    this.fields = {};
+    this.field_order = [];
+    this.aufull = {};
+    this.tagmap = false;
+    this.taghighlighter = false;
+    this.next_foldnum = 8;
+    this._bypid = {};
+    var fs = JSON.parse(tbl.getAttribute("data-fields") || tbl.getAttribute("data-columns") /* XXX backward compat */), i;
+    for (i = 0; i !== fs.length; ++i) {
+        this.add_field(fs[i], true);
+    }
+}
+function vcolumn_order_compare(f1, f2) {
+    if (!f1.as_row !== !f2.as_row) {
+        return f1.as_row ? 1 : -1;
+    }
+    var o1 = f1.order == null ? Infinity : f1.order,
+        o2 = f2.order == null ? Infinity : f2.order;
+    if (o1 != o2) {
+        return o1 < o2 ? -1 : 1;
+    }
+    return strnatcasecmp(f1.name, f2.name);
+}
+Plist.prototype.add_field = function (f, append) {
+    var j;
+    if (append) {
+        this.field_order.push(f);
+    } else {
+        j = this.field_order.length;
+        while (j > 0 && vcolumn_order_compare(f, this.field_order[j-1]) < 0) {
+            --j;
+        }
+        this.field_order.splice(j, 0, f);
+    }
+    this.fields[f.name] = f;
+    if (/^(?:#|tag:|tagval:)\S+$/.test(f.name)) {
+        $(window).on("hotcrptags", make_tag_column_callback(this, f));
+    }
+    if (f.foldnum === true) {
+        do {
+            ++this.next_foldnum;
+        } while (hasClass(this.pltable, "fold" + this.next_foldnum + "c")
+                 || hasClass(this.pltable, "fold" + this.next_foldnum + "o"));
+        f.foldnum = this.next_foldnum;
+    }
+};
+Plist.prototype.foldnum = function (type) {
+    var fn = ({anonau:2, aufull:4, force:5, rownum:6, statistics:7})[type];
+    return fn || this.fields[type].foldnum;
+};
+Plist.prototype.field_index = function (f) {
+    var i, index = 0;
+    for (i = 0; i !== this.field_order.length && this.field_order[i] !== f; ++i) {
+        if (!this.field_order[i].as_row === !f.as_row
+            && !this.field_order[i].missing)
+            ++index;
+    }
+    return index;
+};
+function populate_pidrows(tbl, bypid) {
+    var tr = tbl.tBodies[0].firstChild, xpid;
+    while (tr) {
+        if (tr.nodeName === "TR"
+            && hasClass(tr, "pl")
+            && (xpid = tr.getAttribute("data-pid"))) {
+            bypid[+xpid] = tr;
+        }
+        tr = tr.nextSibling;
+    }
+}
+Plist.prototype.pidrow = function (pid) {
+    if (!(pid in this._bypid)) {
+        var bypid = this._bypid;
+        tablelist_each_facet(this.pltable, function (tbl) {
+            populate_pidrows(tbl, bypid);
+        });
+    }
+    return this._bypid[pid];
+};
+Plist.prototype.pidxrow = function (pid) {
+    var tr = this.pidrow(pid);
+    if (!tr) {
+        return null;
+    }
+    for (tr = tr.nextSibling; tr.nodeName !== "TR"; tr = tr.nextSibling) {
+    }
+    return hasClass(tr, "plx") ? tr.lastElementChild : null;
+};
+Plist.prototype.pidfield = function (pid, f, index) {
+    var row = f.as_row ? this.pidxrow(pid) : this.pidrow(pid);
+    if (!row) {
+        return null;
+    }
+    if (index == null) {
+        index = this.field_index(f);
+    }
+    return row.childNodes[index];
+};
+Plist.prototype.ensure_tagmap = function () {
+    if (this.tagmap !== false) {
+        return;
+    }
+    var i, tl, x, t, p;
+    tl = this.fields.tags.highlight_tags || [];
+    x = [];
+    for (i = 0; i !== tl.length; ++i) {
+        t = tl[i].toLowerCase();
+        if (t.charAt(0) === "~" && t.charAt(1) !== "~")
+            t = siteinfo.user.uid + t;
+        p = t.indexOf("*");
+        t = t.replace(/([^-A-Za-z_0-9])/g, "\\$1");
+        if (p === 0)
+            x.push('(?!.*~)' + t.replace('\\*', '.*'));
+        else if (p > 0)
+            x.push(t.replace('\\*', '.*'));
+        else if (t === "any")
+            x.push('(?:' + (siteinfo.user.uid || 0) + '~.*|~~.*|(?!\\d+~).*)');
+        else
+            x.push(t);
+    }
+    this.taghighlighter = x.length ? new RegExp('^(' + x.join("|") + ')$', 'i') : null;
+
+    this.tagmap = {};
+    tl = this.fields.tags.votish_tags || [];
+    for (i = 0; i !== tl.length; ++i) {
+        t = tl[i].toLowerCase();
+        this.tagmap[t] = (this.tagmap[t] || 0) | 2;
+        t = siteinfo.user.uid + "~" + t;
+        this.tagmap[t] = (this.tagmap[t] || 0) | 2;
+    }
+    if ($.isEmptyObject(this.tagmap)) {
+        this.tagmap = null;
+    }
+};
+
+var all_plists = [];
+
+function make_plist() {
+    if (!this.hotcrpPlist) {
+        if (hasClass(this, "pltable-facet")) {
+            this.hotcrpPlist = make_plist.call(this.parentElement);
+        } else {
+            this.hotcrpPlist = new Plist(this);
+            removeClass(this, "need-plist");
+            all_plists.push(this.hotcrpPlist);
+        }
+    }
+    return this.hotcrpPlist;
+}
+
 
 function prownear(e) {
     while (e && e.nodeName !== "TR") {
         e = e.parentNode;
     }
     while (e && hasClass(e, "plx")) {
-        do {
-            e = e.previousSibling;
-        } while (e && (e.nodeName !== "TR" || hasClass(e, "plx")));
+        e = e.previousElementSibling; /* XXX could be previousSibling */
     }
     return e && hasClass(e, "pl") ? e : null;
 }
@@ -9466,36 +10272,40 @@ function pattrnear(e, attr) {
 }
 
 function render_allpref() {
-    var self = this;
+    var pctr = this;
     demand_load.pc().then(function (pcs) {
-        var t = [], m, allpref = pattrnear(self, "data-allpref") || "",
-            atomre = /(\d+)([PT])(\S+)/g;
+        var allpref = pattrnear(pctr, "data-allpref") || "",
+            atomre = /(\d+)([PT])(\S+)/g, t = [], m, pref, ul, i, e, u;
         while ((m = atomre.exec(allpref)) !== null) {
-            var pc = pcs[m[1]];
-            var pref = parseInt(m[3]);
-            var x = render_user(pc) +
-                ' <span class="asspref' + (pref < 0 ? "-1" : "1") +
-                '">' + m[2] +
-                (pref < 0 ? "−" /* minus */ + m[3].substring(1) : "+" + m[3]) +
-                '</span>';
-            t.push([m[2] === "P" ? pref : 0, pref, t.length, x]);
+            pref = parseInt(m[3]);
+            t.push([m[2] === "P" ? pref : 0, pref, t.length, pcs[m[1]], m[2]]);
         }
-        if (t.length) {
-            t.sort(function (a, b) {
-                if (a[0] !== b[0])
-                    return a[0] < b[0] ? 1 : -1;
-                else if (a[1] !== b[1])
-                    return a[1] < b[1] ? 1 : -1;
-                else
-                    return a[2] < b[2] ? -1 : 1;
-            });
-            t = t.map(function (x) { return x[3]; });
-            x = '<span class="nb">' + t.join(',</span> <span class="nb">') + '</span>';
-            $(self).html(x).removeClass("need-allpref");
-        } else
-            $(self).closest("div").empty();
+        if (t.length === 0) {
+            pctr.closest(".ple, .pl").replaceChildren();
+            return;
+        }
+        t.sort(function (a, b) {
+            if (a[0] !== b[0])
+                return a[0] < b[0] ? 1 : -1;
+            else if (a[1] !== b[1])
+                return a[1] < b[1] ? 1 : -1;
+            else
+                return a[2] < b[2] ? -1 : 1;
+        });
+        ul = $e("ul", "comma");
+        for (i = 0; i !== t.length; ++i) {
+            u = t[i];
+            pref = u[1];
+            if (pref < 0) {
+                e = $e("span", "asspref-1", u[4].concat("−" /* minus */, -pref));
+            } else {
+                e = $e("span", "asspref1", u[4].concat("+", pref));
+            }
+            ul.append($e("li", null, usere(u[3]), " ", e));
+        }
+        pctr.parentElement.replaceChild(ul, pctr);
     }, function () {
-        $(self).closest("div").empty();
+        pctr.closest(".ple, .pl").replaceChildren();
     });
 }
 
@@ -9527,223 +10337,170 @@ function render_assignment_selector() {
     this.appendChild(sel);
 }
 
-function set(f, elt, text) {
-    var m;
-    if (!elt)
-        /* skip */;
-    else if (text == null || text === "")
-        elt.replaceChildren();
-    else {
-        if (elt.className == "")
-            elt.className = "fx" + f.foldnum;
-        if (f.title && (f.as_row || text == "Loading")) {
-            if (text.charAt(0) == "<" && (m = /^((?:<(?:div|p|ul|ol|li)[^>]*>)+)([\s\S]*)$/.exec(text)))
-                text = m[1] + '<em class="plx">' + f.title + ':</em> ' + m[2];
-            else
-                text = '<em class="plx">' + f.title + ':</em> ' + text;
+function add_tokens() {
+    let x = "";
+    for (let c of arguments) {
+        if (c == null || c === "") {
+            continue;
         }
+        x = x === "" ? c : x.concat(" ", c);
+    }
+    return x;
+}
+
+function set_pidfield(f, elt, text, classes) {
+    if (!elt) {
+        return;
+    }
+    if (text == null || text === "") {
+        elt.className = add_tokens(f.as_row ? "ple" : "pl", "fx" + f.foldnum);
+        elt.replaceChildren();
+        return;
+    }
+    if (f.as_row) {
+        elt.className = add_tokens("ple", f.className || "pl_" + f.name, "fx" + f.foldnum, classes);
+        if (!elt.firstChild) {
+            elt.append($e("em", "plet", f.title ? f.title + ":" : null), $e("div", "pled"));
+        }
+        elt = elt.lastChild;
+    } else if (classes) {
+        const div = $e("div", classes);
+        elt.replaceChildren(div);
+        elt = div;
+    }
+    if (typeof text === "string") {
         elt.innerHTML = text;
+    } else {
+        elt.replaceChildren(text);
     }
 }
 
 handle_ui.on("js-plinfo-edittags", function () {
-    var div = $(this).closest("div.pl_tags")[0], ta,
-        prow = prownear(div), pid = +prow.getAttribute("data-pid");
+    const pidfe = this.closest(".pl_tags"),
+        plistui = make_plist.call(tablelist(pidfe)),
+        prow = prownear(pidfe), pid = +prow.getAttribute("data-pid");
+    let ta = null;
     function start(rv) {
         if (!rv.ok || !rv.pid || rv.pid != pid)
             return;
-        $(div).html('<div class="d-inline-flex"><em class="plx mr-2"><label for="tags ' + rv.pid + '">Tags</label>:</em>'
-            + '<div class="mf mf-text w-text"><textarea name="tags ' + rv.pid + '" cols="120" rows="1" class="want-focus need-suggest tags w-text" style="vertical-align:-0.5rem" data-tooltip-anchor="v" id="tags ' + rv.pid + '" spellcheck="false"></textarea></div>'
-            + '<button type="button" name="tagsave ' + rv.pid + '" class="btn-primary ml-2">Save</button>'
-            + '<button type="button" name="tagcancel ' + rv.pid + '" class="ml-2">Cancel</button></div>');
-        ta = $(div).find("textarea")[0];
+        const elt = $e("div", "d-inline-flex",
+            $e("div", "mf mf-text w-text",
+                $e("textarea", {name: "tags " + rv.pid, cols: 120, rows: 1, "class": "want-focus need-suggest tags w-text", style: "vertical-align:-0.5rem", "data-tooltip-anchor": "v", "id": "tags " + rv.pid, "spellcheck": "false"})),
+            $e("button", {type: "button", name: "tagsave " + rv.pid, "class": "btn-primary ml-2"}, "Save"),
+            $e("button", {type: "button", name: "tagcancel " + rv.pid, "class": "ml-2"}, "Cancel"));
+        set_pidfield(plistui.fields.tags, pidfe, elt);
+        ta = pidfe.querySelector("textarea");
         hotcrp.suggest.call(ta);
         $(ta).val(rv.tags_edit_text).autogrow()
             .on("keydown", make_onkey("Enter", do_submit))
             .on("keydown", make_onkey("Escape", do_cancel));
-        $(div).find("button[name^=tagsave]").click(do_submit);
-        $(div).find("button[name^=tagcancel]").click(do_cancel);
-        focus_within(div);
+        $(pidfe).find("button[name^=tagsave]").click(do_submit);
+        $(pidfe).find("button[name^=tagcancel]").click(do_cancel);
+        focus_within(pidfe);
     }
     function do_submit() {
+        var tbl = tablelist(pidfe);
         $.post(hoturl("=api/tags", {p: pid, forceShow: 1}),
-            {tags: $(ta).val()},
+            {tags: $(ta).val(), search: tbl ? tablelist_search(tbl) : null},
             function (rv) {
                 minifeedback(ta, rv);
-                if (rv.ok)
-                    $(window).trigger("hotcrptags", [rv]);
+                rv.ok && $(window).trigger("hotcrptags", [rv]);
             });
     }
     function do_cancel() {
         var focused = document.activeElement
-            && document.activeElement.closest("div.pl_tags") === div;
+            && document.activeElement.closest(".pl_tags") === pidfe;
         $(ta).trigger("hide");
-        render_row_tags(div);
+        render_row_tags(pidfe);
         if (focused)
-            focus_within(div.closest("tr"));
+            focus_within(pidfe.closest("tr"));
     }
     $.post(hoturl("=api/tags", {p: pid, forceShow: 1}), start); // XXX should be GET
 });
 
 
-var self = false, fields = {}, field_order = [], aufull = {},
-    tagmap = false, taghighlighter = false, _bypid = {}, _bypidx = {};
-
-function add_field(f) {
-    var j = field_order.length;
-    while (j > 0 && f.order < field_order[j-1].order)
-        --j;
-    field_order.splice(j, 0, f);
-    fields[f.name] = f;
-    if (/^(?:#|tag:|tagval:)\S+$/.test(f.name))
-        $(window).on("hotcrptags", make_tag_column_callback(f));
-    if (f.foldnum === true) {
-        f.foldnum = 9;
-        while (hasClass(self, "fold" + f.foldnum + "c")
-               || hasClass(self, "fold" + f.foldnum + "o"))
-            ++f.foldnum;
-    }
-}
-
-function foldmap(type) {
-    var fn = ({anonau:2, aufull:4, force:5, rownum:6, statistics:7})[type];
-    return fn || fields[type].foldnum;
-}
-
-function field_index(f) {
-    var i, index = 0;
-    for (i = 0; i !== field_order.length && field_order[i] !== f; ++i)
-        if (!field_order[i].as_row === !f.as_row && !field_order[i].missing)
-            ++index;
-    return index;
-}
-
-function populate_bypid(table, selector) {
-    $(selector).each(function () {
-        var tr = this.tagName === "TR" ? this : this.parentNode;
-        if (tr.hasAttribute("data-pid"))
-            table[+tr.getAttribute("data-pid")] = this;
-    });
-}
-
-function pidrow(pid) {
-    if (!(pid in _bypid))
-        populate_bypid(_bypid, "tr.pl");
-    return _bypid[pid];
-}
-
-function pidxrow(pid) {
-    if (!(pid in _bypidx))
-        populate_bypid(_bypidx, "tr.plx > td.plx");
-    return _bypidx[pid];
-}
-
-function pidfield(pid, f, index) {
-    var row = f.as_row ? pidxrow(pid) : pidrow(pid);
-    if (row && index == null)
-        index = field_index(f);
-    return row ? row.childNodes[index] : null;
-}
-
-
-function make_tagmap() {
-    if (tagmap === false) {
-        var i, tl, x, t, p;
-        tl = fields.tags.highlight_tags || [];
-        x = [];
-        for (i = 0; i !== tl.length; ++i) {
-            t = tl[i].toLowerCase();
-            if (t.charAt(0) === "~" && t.charAt(1) !== "~")
-                t = siteinfo.user.uid + t;
-            p = t.indexOf("*");
-            t = t.replace(/([^-A-Za-z_0-9])/g, "\\$1");
-            if (p === 0)
-                x.push('(?!.*~)' + t.replace('\\*', '.*'));
-            else if (p > 0)
-                x.push(t.replace('\\*', '.*'));
-            else if (t === "any")
-                x.push('(?:' + (siteinfo.user.uid || 0) + '~.*|~~.*|(?!\\d+~).*)');
-            else
-                x.push(t);
-        }
-        taghighlighter = x.length ? new RegExp('^(' + x.join("|") + ')$', 'i') : null;
-
-        tagmap = {};
-        tl = fields.tags.votish_tags || [];
-        for (i = 0; i !== tl.length; ++i) {
-            t = tl[i].toLowerCase();
-            tagmap[t] = (tagmap[t] || 0) | 2;
-            t = siteinfo.user.uid + "~" + t;
-            tagmap[t] = (tagmap[t] || 0) | 2;
-        }
-        if ($.isEmptyObject(tagmap))
-            tagmap = null;
-    }
-    return tagmap;
-}
-
-function compute_row_tagset(tagstr, editable) {
-    make_tagmap();
-    var t = [], tags = (tagstr || "").split(/ /);
-    for (var i = 0; i !== tags.length; ++i) {
+function render_tagset(plistui, tagstr, editable) {
+    plistui.ensure_tagmap();
+    var t = [], tags = (tagstr || "").split(/ /),
+        tagmap = plistui.tagmap, taghighlighter = plistui.taghighlighter,
+        h, q, i;
+    for (i = 0; i !== tags.length; ++i) {
         var text = tags[i], twiddle = text.indexOf("~"), hash = text.indexOf("#");
         if (text !== "" && (twiddle <= 0 || text.substr(0, twiddle) == siteinfo.user.uid)) {
             twiddle = Math.max(twiddle, 0);
             var tbase = text.substring(0, hash), tindex = text.substr(hash + 1),
-                tagx = tagmap ? tagmap[tbase.toLowerCase()] || 0 : 0, h, q;
+                tagx = tagmap ? tagmap[tbase.toLowerCase()] || 0 : 0;
             tbase = tbase.substring(twiddle, hash);
+            if ((tagx & 2) || tindex != "0")
+                h = $e("a", "qo nw", $e("u", "x", "#" + tbase), "#" + tindex);
+            else
+                h = $e("a", "q nw", "#" + tbase);
             if (tagx & 2)
-                q = "#" + tbase + " showsort:-#" + tbase;
+                q = "#".concat(tbase, " showsort:-#", tbase);
             else if (tindex != "0")
                 q = "order:#" + tbase;
             else
                 q = "#" + tbase;
-            if ((tagx & 2) || tindex != "0")
-                h = '<a class="qo nw" href="' + hoturl("search", {q: q}) + '"><u class="x">#' + tbase + '</u>#' + tindex + '</a>';
-            else
-                h = '<a class="q nw" href="' + hoturl("search", {q: q}) + '">#' + tbase + '</a>';
+            h.setAttribute("href", hoturl("search", {q: q}));
             if (taghighlighter && taghighlighter.test(tbase))
-                h = '<strong>' + h + '</strong>';
-            t.push([h, text.substring(twiddle, hash), text.substring(hash + 1), tagx]);
+                h = $e("strong", null, h);
+            t.push([h, text.substring(twiddle, hash)]);
         }
     }
     t.sort(function (a, b) {
-        return strnatcmp(a[1], b[1]);
+        return strnatcasecmp(a[1], b[1]);
     });
-    if (!t.length && editable)
-        t.push(["none"]);
-    return $.map(t, function (x) { return x[0]; });
+    if (t.length === 0) {
+        return editable ? document.createTextNode("none") : null;
+    } else if (t.length === 1) {
+        return t[0][0];
+    } else {
+        h = $frag();
+        h.append(t[0][0]);
+        for (i = 1; i !== t.length; ++i) {
+            h.append(" ", t[i][0]);
+        }
+        return h;
+    }
 }
 
-function render_row_tags(div) {
-    var ptr = prownear(div), editable = ptr.hasAttribute("data-tags-editable"),
-        t = compute_row_tagset(ptr.getAttribute("data-tags"), editable);
-    t = t.length ? '<em class="plx">Tags:</em> ' + t.join(" ") : "";
-    if (t != "" && ptr.hasAttribute("data-tags-conflicted")) {
-        t = '<span class="fx5">' + t + '</span>';
-        var ct = compute_row_tagset(ptr.getAttribute("data-tags-conflicted"), editable);
-        if (ct.length)
-            t = '<span class="fn5"><em class="plx">Tags:</em> ' + ct.join(" ") + '</span>' + t;
+function render_row_tags(pidfe) {
+    let plistui = make_plist.call(tablelist(pidfe)),
+        ptr = prownear(pidfe), editable = ptr.hasAttribute("data-tags-editable"),
+        t = render_tagset(plistui, ptr.getAttribute("data-tags"), editable),
+        ct = true;
+    if (t && ptr.hasAttribute("data-tags-conflicted")) {
+        t = $frag($e("span", "fx5", t));
+        if ((ct = render_tagset(plistui, ptr.getAttribute("data-tags-conflicted"), editable))) {
+            t.prepend($e("span", "fn5", ct));
+        }
     }
-    if (t != "" && ptr.getAttribute("data-tags-editable") != null) {
-        t += ' <span class="hoveronly"><span class="barsep">·</span> <button type="button" class="link ui js-plinfo-edittags">Edit</button></span>';
+    if (t && ptr.getAttribute("data-tags-editable") != null) {
+        if (t.nodeType !== 11) {
+            t = $frag(t);
+        }
+        t.append(" ", $e("span", "hoveronly",
+            $e("span", "barsep", "·"), " ",
+            $e("button", {type: "button", "class": "link ui js-plinfo-edittags"}, "Edit")));
     }
-    $(div).find("textarea").unautogrow();
-    t == "" ? $(div).empty() : $(div).html(t);
+    $(pidfe).find("textarea").unautogrow();
+    set_pidfield(plistui.fields.tags, pidfe, t, t && !ct ? "fx5" : null);
 }
 
-function make_tag_column_callback(f) {
+function make_tag_column_callback(plistui, f) {
     var tag = /^(?:#|tag:|tagval:)(\S+)/.exec(f.name)[1];
-    if (/^~[^~]/.test(tag))
+    if (/^~[^~]/.test(tag)) {
         tag = siteinfo.user.uid + tag;
+    }
     return function (evt, rv) {
-        var e = pidfield(rv.pid, f);
-        if (!e || f.missing)
+        var e, tv, tvs, input, oldval;
+        if (!rv.pid || f.missing || !(e = plistui.pidfield(rv.pid, f))) {
             return;
-        var tv = tag_value(rv.tags, tag), input = e.querySelector("input");
-        if (input) {
-            var oldval = input_default_value(input),
-                tvs = tv === null ? "" : String(tv);
+        }
+        tv = tag_value(rv.tags, tag);
+        tvs = tv === null ? "" : String(tv);
+        if ((input = e.querySelector("input"))) {
+            oldval = input_default_value(input);
             if (oldval !== (input.type === "checkbox" ? tvs !== "" : tvs)) {
                 if (input.type === "checkbox") {
                     input.checked = tv !== null;
@@ -9754,33 +10511,33 @@ function make_tag_column_callback(f) {
                 input_set_default_value(input, tv);
                 minifeedback(input, {ok: true});
             }
-        } else
-            e.html(tvs === "0" && !/tagval/.test(f.className) ? "✓" : tvs);
+        } else {
+            e.textContent = tvs === "0" && !/tagval/.test(f.className) ? "✓" : tvs;
+        }
     };
 }
 
 hotcrp.render_list = function () {
-    self || initialize();
+    $(".need-plist").each(make_plist);
     scorechart();
     $(".need-allpref").each(render_allpref);
     $(".need-assignment-selector").each(render_assignment_selector);
     $(".need-tags").each(function () {
-        render_row_tags(this.parentNode);
+        render_row_tags(this.closest(".pl_tags"));
     });
-    $(".need-editable-tags").each(paperlist_tag_ui);
-    $(".need-draghandle").each(paperlist_tag_ui.add_draghandle);
+    $(".pltable-draggable").each(paperlist_tag_ui.prepare_draggable);
     render_text.on_page();
 }
 
-function add_column(f) {
-    var index = field_index(f), $j = $(self);
+function add_column(plistui, f) {
+    var pctr = plistui.pltable, index = plistui.field_index(f), $j = $(pctr);
     $j.find("tr.plx > td.plx, td.pl-footer, tr.plheading > td:last-child, " +
             "thead > tr.pl_headrow.pl_annorow > td:last-child, " +
             "tfoot > tr.pl_statheadrow > td:last-child").each(function () {
         this.setAttribute("colspan", +this.getAttribute("colspan") + 1);
     });
     var classes = (f.className || 'pl_' + f.name) + ' fx' + f.foldnum,
-        stmpl = f.sort && self.getAttribute("data-sort-url-template");
+        stmpl = f.sort && pctr.getAttribute("data-sort-url-template");
     $j.find("thead > tr.pl_headrow:first-child").each(function () {
         var th = document.createElement("th"), x = th;
         th.className = "pl plh ".concat(classes, f.sort ? " sortable" : "");
@@ -9811,10 +10568,10 @@ function add_column(f) {
     f.missing = false;
 }
 
-function add_row(f) {
-    var index = field_index(f),
+function add_row(plistui, f) {
+    var index = plistui.field_index(f),
         classes = (f.className || "pl_" + f.name).concat(" fx", f.foldnum);
-    $(self).find("tr.plx > td.plx").each(function () {
+    $(plistui.pltable).find("td.plx").each(function () {
         var div = document.createElement("div");
         div.className = classes;
         this.insertBefore(div, this.childNodes[index] || null);
@@ -9822,36 +10579,37 @@ function add_row(f) {
     f.missing = false;
 }
 
-function ensure_field(f) {
+function ensure_field(plistui, f) {
     if (f.missing)
-        f.as_row ? add_row(f) : add_column(f);
+        f.as_row ? add_row(plistui, f) : add_column(plistui, f);
 }
 
-function make_callback(dofold, type) {
-    var f = fields[type], values, tr;
+function make_callback(plistui, dofold, type) {
+    var f = plistui.fields[type], values, tr;
     function render_some() {
-        var index = field_index(f), htmlk = f.name, n = 0, table = tr.closest("table");
+        var index = plistui.field_index(f), htmlk = f.name, n = 0,
+            table = tr.closest("table");
         while (n < 64 && tr) {
             if (tr.nodeName === "TR"
                 && tr.hasAttribute("data-pid")
                 && hasClass(tr, "pl")) {
-                var p = +tr.getAttribute("data-pid");
-                if (values.attr && p in values.attr) {
-                    for (var k in values.attr[p])
-                        tr.setAttribute(k, values.attr[p][k]);
+                let p = +tr.getAttribute("data-pid"),
+                    data = values.data[p],
+                    attr = values.attr && values.attr[p],
+                    classes = values.classes && values.classes[p];
+                if (attr) {
+                    for (let k in attr) {
+                        tr.setAttribute(k, attr[k]);
+                    }
                 }
-                if (p in values.data) {
-                    var elt = pidfield(p, f, index);
-                    if (!elt)
-                        log_jserror("bad pidfield " + JSON.stringify([p, f.name, index]));
-                    set(f, elt, values.data[p][htmlk]);
+                if (data) {
+                    let e = plistui.pidfield(p, f, index);
+                    set_pidfield(f, e, data[htmlk], classes && classes[htmlk]);
                 }
                 ++n;
             }
-            do {
-                tr = tr.nextSibling;
-            } while (tr && tr.nodeType !== 1);
-            while (!tr && (table = table.nextSibling)) {
+            tr = tr.nextElementSibling;
+            while (!tr && (table = table.nextElementSibling)) {
                 tr = table.querySelector("tr.pl");
             }
         }
@@ -9859,8 +10617,8 @@ function make_callback(dofold, type) {
         tr && setTimeout(render_some, 8);
     }
     function render_statistics(statvalues) {
-        var tr = self.querySelector("tfoot > tr.pl_statrow"),
-            index = field_index(f);
+        var tr = plistui.pltable.querySelector("tfoot > tr.pl_statrow"),
+            index = plistui.field_index(f);
         for (; tr; tr = tr.nextSibling)
             if (tr.nodeName === "TR" && tr.hasAttribute("data-statistic")) {
                 var stat = tr.getAttribute("data-statistic"),
@@ -9870,26 +10628,26 @@ function make_callback(dofold, type) {
             }
     }
     function render_start() {
-        ensure_field(f);
-        tr = self.querySelector("tr.pl");
+        ensure_field(plistui, f);
+        tr = plistui.pltable.querySelector("tr.pl");
         tr && render_some();
         if (values.stat && f.name in values.stat) {
             render_statistics(values.stat[f.name]);
         }
         if (dofold !== null) {
-            fold(self, dofold, f.foldnum);
+            fold(plistui.pltable, dofold, f.foldnum);
         }
-        check_statistics();
+        check_statistics(plistui);
     }
     return function (rv) {
         if (!f && rv.ok && rv.fields && rv.fields[type]) {
             f = rv.fields[type];
             f.foldnum = f.missing = true;
-            add_field(f);
-            addClass(self, "fold" + f.foldnum + "c");
+            plistui.add_field(f);
+            addClass(plistui.pltable, "fold" + f.foldnum + "c");
         }
         if (type === "authors") {
-            aufull[rv.fields[type].aufull] = rv;
+            plistui.aufull[rv.fields[type].aufull] = rv;
         }
         if (rv.ok) {
             values = rv;
@@ -9898,20 +10656,20 @@ function make_callback(dofold, type) {
     };
 }
 
-function check_statistics() {
-    var statistics = false;
-    for (var t in fields) {
-        if (fields[t].has_statistics
-            && hasClass(self, "fold" + fields[t].foldnum + "o")) {
+function check_statistics(plistui) {
+    var statistics = false, t, f;
+    for (t in plistui.fields) {
+        f = plistui.fields[t];
+        if (f.has_statistics
+            && hasClass(plistui.pltable, "fold" + f.foldnum + "o")) {
             statistics = true;
             break;
         }
     }
-    fold(self, !statistics, 8);
+    fold(plistui.pltable, !statistics, 8);
 }
 
-function plinfo(type, dofold) {
-    self || initialize();
+function plinfo(plistui, type, dofold) {
     var xtype;
     if (type === "au")
         type = xtype = "authors"; // special case
@@ -9919,9 +10677,9 @@ function plinfo(type, dofold) {
         xtype = "authors";
     else
         xtype = type;
-    var f = fields[xtype];
+    var f = plistui.fields[xtype], pctr = plistui.pltable;
 
-    var ses = self.getAttribute("data-fold-session-prefix"), sesv;
+    var ses = pctr.getAttribute("data-fold-session-prefix"), sesv;
     if (ses) {
         if (type === "anonau" && !dofold)
             sesv = ses + "authors=0 " + ses + "anonau=0";
@@ -9929,32 +10687,34 @@ function plinfo(type, dofold) {
             sesv = ses + type + (dofold ? "=1" : "=0");
     }
 
-    if (!f || (type === "aufull" && !aufull[!dofold])) {
+    if (!f || (type === "aufull" && !plistui.aufull[!dofold])) {
         // initiate load
         var loadargs = {fn: "fieldhtml", f: xtype};
         if (type === "aufull")
             loadargs.aufull = dofold ? 0 : 1;
         else if (xtype === "authors")
-            loadargs.aufull = hasClass(self, "fold" + foldmap("aufull") + "o") ? 1 : 0;
+            loadargs.aufull = hasClass(pctr, "fold" + plistui.foldnum("aufull") + "o") ? 1 : 0;
         if (ses) {
             loadargs.session = sesv;
             ses = null;
         }
-        $.get(hoturl("=api", $.extend(loadargs, hotlist_search_params(self, true))),
-              make_callback(type === "aufull" ? null : dofold, xtype));
-        if (type === "anonau" || type === "aufull")
-            fold(self, dofold, foldmap(type));
+        $.get(hoturl("=api", $.extend(loadargs, hotlist_search_params(pctr, true))),
+              make_callback(plistui, type === "aufull" ? null : dofold, xtype));
+        if (type === "anonau" || type === "aufull") {
+            fold(pctr, dofold, plistui.foldnum(type));
+        }
     } else {
         // display
-        if (type === "aufull")
-            make_callback(null, xtype)(aufull[!dofold]);
-        else {
-            if (type === "anonau" && !dofold)
-                fold(self, dofold, foldmap(xtype));
-            fold(self, dofold, foldmap(type));
+        if (type === "aufull") {
+            make_callback(plistui, null, xtype)(plistui.aufull[!dofold]);
+        } else {
+            if (type === "anonau" && !dofold) {
+                fold(pctr, dofold, plistui.foldnum(xtype));
+            }
+            fold(pctr, dofold, plistui.foldnum(type));
         }
         // update statistics
-        check_statistics();
+        check_statistics(plistui);
     }
     // update session
     if (ses)
@@ -9962,57 +10722,49 @@ function plinfo(type, dofold) {
     return false;
 }
 
-function initialize() {
-    self = $(".pltable")[0];
-    if (!self)
-        return false;
-    var fs = JSON.parse(self.getAttribute("data-columns"));
-    for (var i = 0; i !== fs.length; ++i)
-        add_field(fs[i]);
-}
-
-hotcrp.update_tag_decoration = function ($title, html) {
-    $title.find(".tagdecoration").remove();
-    if (html) {
-        $title.append(html);
-        $title.find(".badge").each(ensure_pattern_here);
+function plist_hotcrptags(plistui, rv) {
+    var pr = plistui.pidrow(rv.pid);
+    if (!pr) {
+        return;
     }
-};
+    var prx = pr.nextElementSibling;
+    if (prx && !hasClass(prx, "plx")) {
+        prx = null;
+    }
+    var $ptr = prx ? $([pr, prx]) : $(pr);
 
-$(window).on("hotcrptags", function (evt, rv) {
-    if (!self && (self === false || initialize() === false))
-        return;
-    var pr = pidrow(rv.pid);
-    if (!pr)
-        return;
-    var $ptr = $("tr.pl, tr.plx").filter("[data-pid='" + rv.pid + "']");
-
-    // set attributes
-    $(pr).removeAttr("data-tags data-tags-conflicted data-color-classes data-color-classes-conflicted")
-        .attr("data-tags", $.isArray(rv.tags) ? rv.tags.join(" ") : rv.tags);
+    pr.setAttribute("data-tags", $.isArray(rv.tags) ? rv.tags.join(" ") : rv.tags);
     if ("tags_conflicted" in rv) {
         pr.setAttribute("data-tags-conflicted", rv.tags_conflicted);
+    } else {
+        pr.removeAttribute("data-tags-conflicted");
     }
-    if (rv.color_classes) {
-        ensure_pattern(rv.color_classes);
+
+    // set color classes
+    var cc = rv.color_classes, f;
+    if (cc) {
+        ensure_pattern(cc);
+    }
+    if (/tagbg$/.test(cc || ""))  {
+        $ptr.removeClass("k0 k1");
+        addClass(pr.parentElement, "pltable-colored");
     }
     if ("color_classes_conflicted" in rv) {
         pr.setAttribute("data-color-classes", rv.color_classes);
         pr.setAttribute("data-color-classes-conflicted", rv.color_classes_conflicted);
-        $ptr.addClass("colorconflict");
+        addClass(pr, "colorconflict");
+        prx && addClass(prx, "colorconflict");
         ensure_pattern(rv.color_classes_conflicted);
+        if (hasClass(pr.parentElement.parentElement, "fold5c")
+            && !hasClass(pr, "fold5oo")) {
+            cc = rv.color_classes_conflicted;
+        }
     } else {
-        $ptr.removeClass("colorconflict");
+        pr.removeAttribute("data-color-classes");
+        pr.removeAttribute("data-color-classes-conflicted");
+        removeClass(pr, "colorconflict");
+        prx && removeClass(prx, "colorconflict");
     }
-
-    // set color classes
-    var cc = rv.color_classes;
-    if (/tagbg$/.test(rv.color_classes || ""))
-        $ptr.removeClass("k0 k1").closest("tbody").addClass("pltable-colored");
-    if (hasClass(pr.closest("table"), "fold5c")
-        && "color_classes_conflicted" in rv
-        && !hasClass(pr, "fold5o"))
-        cc = rv.color_classes_conflicted;
     $ptr.removeClass(function (i, klass) {
         return (klass.match(/(?:^| )tag(?:bg|-\S+)(?= |$)/g) || []).join(" ");
     }).addClass(cc);
@@ -10021,42 +10773,82 @@ $(window).on("hotcrptags", function (evt, rv) {
     hotcrp.update_tag_decoration($ptr.find(".pl_title"), rv.tag_decoration_html);
 
     // set actual tags
-    if (fields.tags && !fields.tags.missing)
-        render_row_tags(pidfield(rv.pid, fields.tags));
+    if ((f = plistui.fields.tags) && !f.missing) {
+        render_row_tags(plistui.pidfield(rv.pid, f));
+    }
+    if (rv.status_html != null && (f = plistui.fields.status) && !f.missing) {
+        plistui.pidfield(rv.pid, f).innerHTML = rv.status_html;
+    }
+}
+
+$(window).on("hotcrptags", function (evt, rv) {
+    var i;
+    $(".need-plist").each(make_plist);
+    if (rv.ids) {
+        for (i = 0; i !== all_plists.length; ++i) {
+            paperlist_tag_ui.try_reorder(all_plists[i].pltable, rv);
+        }
+    }
+    if (rv.pid) {
+        for (i = 0; i !== all_plists.length; ++i) {
+            plist_hotcrptags(all_plists[i], rv);
+        }
+    } else if (rv.p) {
+        for (i in rv.p) {
+            rv.p[i].pid = +i;
+            $(window).trigger("hotcrptags", [rv.p[i]]);
+        }
+    }
 });
 
 function change_color_classes(isconflicted) {
     return function () {
-        var a = pattrnear(this, isconflicted ? "data-color-classes-conflicted" : "data-color-classes");
+        const c = isconflicted && !hasClass(this, "fold5oo"),
+            a = pattrnear(this, c ? "data-color-classes-conflicted" : "data-color-classes");
         this.className = this.className.replace(/(?:^|\s+)(?:k[01]|tagbg|dark|tag-\S+)(?= |$)/g, "").trim() + (a ? " " + a : "");
     };
 }
 
-function fold_override(dofold) {
+function fold_override(tbl, dofold) {
     $(function () {
-        $(self).find(".fold5c, .fold5o").removeClass("fold5c fold5o");
-        fold(self, dofold, 5);
+        fold(tbl, dofold, 5);
         $("#forceShow").val(dofold ? 0 : 1);
+        // remove local hoverrides
+        if (hasClass(tbl, "has-local-override")) {
+            removeClass(tbl, "has-local-override");
+            $(tbl).find(".fold5oo").removeClass("fold5oo");
+            $(tbl).find(".fxx5").removeClass("fxx5").addClass("fx5");
+        }
         // show the color classes appropriate to this conflict state
-        $(self).find(".colorconflict").each(change_color_classes(dofold));
+        $(tbl).find(".colorconflict").each(change_color_classes(dofold));
     });
 }
 
 handle_ui.on("js-override-conflict", function () {
-    var pid = this.closest("tr").getAttribute("data-pid"),
-        pr = pidrow(pid), pxr = pidxrow(pid).closest("tr");
-    addClass(pr, "fold5o");
-    addClass(pxr, "fold5o");
+    var pr = this.closest("tr"), prb;
+    if (hasClass(pr, "plx")) {
+        prb = pr.previousElementSibling; /* XXX could be previousSibling */
+    } else {
+        prb = pr.nextElementSibling;
+        if (prb && !hasClass(prb, "plx")) {
+            prb = null;
+        }
+    }
+    addClass(pr.parentElement.parentElement, "has-local-override");
+    addClass(pr, "fold5oo");
+    prb && addClass(prb, "fold5oo");
     if (hasClass(pr, "colorconflict")) {
         var f = change_color_classes(false);
         f.call(pr);
-        f.call(pxr);
+        prb && f.call(prb);
     }
+    $(pr, prb).find(".fx5").removeClass("fx5").addClass("fxx5");
 });
 
 handle_ui.on("js-plinfo", function (evt) {
-    if (this.type !== "checkbox" || this.name.substring(0, 4) !== "show")
+    if (this.type !== "checkbox" || this.name.substring(0, 4) !== "show") {
         throw new Error("bad plinfo");
+    }
     var types = [this.name.substring(4)], dofold = !this.checked;
     if (types[0] === "anonau") {
         var form = this.form, showau = form && form.elements.showau;
@@ -10065,19 +10857,28 @@ handle_ui.on("js-plinfo", function (evt) {
         else if (!showau && dofold)
             types.push("authors");
     }
-    self || initialize();
+    var plistui = make_plist.call(mainlist());
     for (var i = 0; i != types.length; ++i) {
         if (types[i] === "force")
-            fold_override(dofold);
+            fold_override(plistui.pltable, dofold);
         else if (types[i] === "rownum")
-            fold(self, dofold, 6);
+            fold(plistui.pltable, dofold, 6);
         else
-            plinfo(types[i], dofold);
+            plinfo(plistui, types[i], dofold);
     }
     evt.preventDefault();
 });
 
 })();
+
+
+hotcrp.update_tag_decoration = function ($title, html) {
+    $title.find(".tagdecoration").remove();
+    if (html) {
+        $title.append(html);
+        $title.find(".badge").each(ensure_pattern_here);
+    }
+};
 
 
 /* pattern fill functions */
@@ -10368,10 +11169,22 @@ function transfer_form_values($dst, $src, names) {
 
 // login UI
 handle_ui.on("js-signin", function (evt) {
-    var form = this, signin = document.getElementById("signin_signin");
-    signin && (signin.disabled = true);
-    evt.preventDefault();
-    $.get(hoturl("api/session"), function () { form.submit() });
+    const oevt = (evt && evt.originalEvent) || evt, submitter = oevt.submitter;
+    if (!submitter || !submitter.formNoValidate) {
+        const form = this, signin = document.getElementById("k-signin");
+        $(form).find("button").prop("disabled", true);
+        evt.preventDefault();
+        $.get(hoturl("api/session"), function () {
+            if (submitter) {
+                submitter.disabled = false;
+                submitter.formNoValidate = true;
+                submitter.click();
+                submitter.disabled = true;
+            } else {
+                form.submit();
+            }
+        });
+    }
 });
 
 handle_ui.on("js-no-signin", function () {
@@ -10498,12 +11311,12 @@ handle_ui.on("js-add-attachment", function () {
     filee.name = name + ":file";
     filee.size = 15;
     filee.className = "uich document-uploader";
-    var cancele = classe("button", "link ui js-cancel-document", "Cancel"),
-        actionse = classe("div", "document-actions", cancele);
+    var cancele = $e("button", "link ui js-cancel-document", "Cancel"),
+        actionse = $e("div", "document-actions", cancele);
     cancele.type = "button";
     var max_size = attache.getAttribute("data-document-max-size"),
-        doce = classe("div", "has-document document-new-instance hidden",
-            classe("div", "document-upload", filee), actionse);
+        doce = $e("div", "has-document document-new-instance hidden",
+            $e("div", "document-upload", filee), actionse);
     doce.setAttribute("data-dtype", attache.getAttribute("data-dtype"));
     doce.setAttribute("data-document-name", name);
     if (max_size != null)
@@ -10511,7 +11324,9 @@ handle_ui.on("js-add-attachment", function () {
     ee.appendChild(doce);
     // this hidden_input cannot be in the document-uploader: the uploader
     // might be removed later, but we need to hold the place
-    f.appendChild(hidden_input(name, "new", {"class": "ignore-diff"}));
+    if (!f.elements[name]) {
+        f.appendChild(hidden_input(name, "new", {"class": "ignore-diff"}));
+    }
     filee.click();
 });
 
@@ -10519,27 +11334,24 @@ handle_ui.on("js-replace-document", function () {
     var doce = this.closest(".has-document"),
         actions = doce.querySelector(".document-actions"),
         u = doce.querySelector(".document-uploader");
+    if (!actions) {
+        actions = $e("div", "document-actions hidden");
+        doce.querySelector(".document-replacer").before(actions);
+    }
     if (!u) {
         var dname = doce.getAttribute("data-document-name") || ("opt" + doce.getAttribute("data-dtype"));
-        u = classe("input", "uich document-uploader");
+        u = $e("input", "uich document-uploader");
         u.id = u.name = dname + ":file";
         u.type = "file";
         if (doce.hasAttribute("data-document-accept")) {
             u.setAttribute("accept", doce.getAttribute("data-document-accept"));
         }
-        doce.querySelector(".document-replacer").before(classe("div", "document-upload hidden", u));
+        actions.before($e("div", "document-upload hidden", u));
     } else {
         $(u).trigger("hotcrp-change-document");
     }
-    if (!actions) {
-        actions = classe("div", "document-actions hidden");
-        doce.querySelector(".document-replacer").before(actions);
-    }
     if (!actions.querySelector(".js-cancel-document")) {
-        var cancel = classe("button", "link ui js-cancel-document hidden");
-        cancel.type = "button";
-        cancel.textContent = "Cancel";
-        actions.appendChild(cancel);
+        actions.append($e("button", {type: "button", "class": "link ui js-cancel-document hidden"}, "Cancel"));
     }
     u.click();
 });
@@ -10554,9 +11366,163 @@ handle_ui.on("document-uploader", function () {
         $doc.find(".document-file, .document-stamps, .js-check-format, .document-format, .js-remove-document").addClass("hidden");
         $doc.find(".document-upload, .document-actions, .js-cancel-document").removeClass("hidden");
         $doc.find(".document-remover").remove();
-        $doc.find(".js-replace-document").html("Replace");
-        $doc.find(".js-remove-document").removeClass("undelete").html("Delete");
+        $doc.find(".js-replace-document").text("Replace");
+        $doc.find(".js-remove-document").removeClass("undelete").text("Delete");
     }
+});
+
+handle_ui.on("document-uploader", function (event) {
+    var that = this,
+        file = (that.files || [])[0],
+        doce = that.closest(".has-document"),
+        blob_limit,
+        escape_html = window.escape_html;
+
+    if (that.hotcrpUploader) {
+        that.hotcrpUploader.cancel();
+    }
+
+    function find_first_attr(name, elements, defval) {
+        for (var i = 0; i !== elements.length; ++i) {
+            if (elements[i].hasAttribute(name))
+                return +elements[i].getAttribute(name);
+        }
+        return defval;
+    }
+
+    function remove_feedback() {
+        while (that.nextSibling) {
+            that.nextSibling.remove();
+        }
+        if (doce.lastChild.nodeName === "DIV" && hasClass(doce.lastChild, "msg")) {
+            doce.lastChild.remove();
+        }
+    }
+
+    function check(event) {
+        var form = that.form,
+            upload_limit = find_first_attr("data-upload-limit", [doce, form, document.body], Infinity),
+            max_size = find_first_attr("data-document-max-size", [doce, form, document.body], upload_limit);
+        blob_limit = Math.min(find_first_attr("data-blob-limit", [form, document.body], 5 << 20), upload_limit);
+        if (file && max_size > 0 && file.size > max_size) {
+            alert("File too big.");
+            that.value = "";
+            handle_ui.stopImmediatePropagation ? handle_ui.stopImmediatePropagation(event) : event.stopImmediatePropagation();
+            return false;
+        } else {
+            return file
+                && window.FormData
+                && file.size >= Math.min(0.45 * upload_limit, 4 << 20);
+        }
+    }
+    if (!check(event)) {
+        remove_feedback();
+        return;
+    }
+
+    function cancel() {
+        if (that.hotcrpUploader !== self) {
+            return false;
+        }
+        remove_feedback();
+        removeClass(that, "hidden");
+        removeClass(that, "prevent-submit");
+        delete that.hotcrpUploader;
+        cancelled = true;
+        $(that).off("hotcrp-change-document", cancel);
+        return true;
+    }
+    var self = {cancel: cancel},
+        token = false, cancelled = false, size = file.size,
+        pos = 0, uploading = 0, sprogress0 = 0, sprogress1 = size,
+        progresselt = $e("progress", {"class": "mr-2", max: size + sprogress1, value: "0"});
+    that.hotcrpUploader = self;
+    that.after(progresselt, $e("span", null, "Uploading" + (file.name ? " " + escape_html(file.name) : "") + "…"));
+
+    function upload_progress(evt) {
+        var p = pos - uploading;
+        if (evt.lengthComputable) {
+            p += uploading * (evt.loaded / evt.total);
+        }
+        progresselt.value = p + sprogress0;
+    }
+    function progress() {
+        progresselt.value = pos + sprogress0;
+        progresselt.max = size + sprogress1;
+    }
+
+    function ajax(r) {
+        if (!r.ok) {
+            if (cancel() && r.message_list) {
+                doce.appendChild(render_message_list(r.message_list));
+            }
+            return;
+        }
+        if (r.ranges && r.ranges.length === 2) {
+            pos = r.ranges[1];
+        }
+        if (r.token) {
+            token = r.token;
+        }
+        if (r.server_progress_max) {
+            sprogress0 = r.server_progress_loaded;
+            sprogress1 = r.server_progress_max;
+            progress();
+        }
+        var args = {p: siteinfo.paperid};
+        if (token)
+            args.token = token;
+        else {
+            args.dtype = doce.getAttribute("data-dtype");
+            args.start = 1;
+        }
+        if (cancelled) {
+            if (token) {
+                args.cancel = 1;
+                $.ajax(hoturl("=api/upload", args), {method: "POST"});
+            }
+        } else if (!r.hash) {
+            var fd = new FormData, myxhr;
+            fd.append("size", size);
+            fd.append("mimetype", file.type);
+            fd.append("filename", file.name);
+            var endpos = Math.min(size, pos + blob_limit);
+            uploading = endpos - pos;
+            if (uploading !== 0) {
+                args.offset = pos;
+                fd.append("blob", file.slice(pos, endpos), "blob");
+            }
+            if (endpos === size)
+                args.finish = 1;
+            pos = endpos;
+            $.ajax(hoturl("=api/upload", args), {
+                method: "POST", data: fd, processData: false,
+                contentType: false, success: ajax, timeout: 300000,
+                xhr: function () {
+                    myxhr = new window.XMLHttpRequest();
+                    myxhr.upload.addEventListener("progress", upload_progress);
+                    myxhr.addEventListener("load", progress);
+                    return myxhr;
+                }
+            });
+            myxhr.upload.addEventListener("progress", upload_progress);
+        } else {
+            that.disabled = true;
+            while (that.nextSibling)
+                that.parentElement.removeChild(that.nextSibling);
+            removeClass(that, "prevent-submit");
+            var e = document.createElement("span"),
+                fn = that.name.replace(/:file$/, "");
+            e.className = "is-success";
+            e.textContent = "NEW ";
+            that.after(hidden_input(fn + ":upload", token, {"data-default-value": "", "class": "document-upload-helper"}), e, file.name);
+        }
+    }
+
+    addClass(that, "hidden");
+    addClass(that, "prevent-submit");
+    $(that).on("hotcrp-change-document", cancel);
+    ajax({ok: true});
 });
 
 handle_ui.on("js-cancel-document", function () {
@@ -10574,12 +11540,12 @@ handle_ui.on("js-cancel-document", function () {
         $doc.find(".document-upload").remove();
         $doc.find(".document-file, .document-stamps, .js-check-format, .document-format, .js-remove-document").removeClass("hidden");
         $doc.find(".document-file > del > *").unwrap();
-        $doc.find(".js-replace-document").html("Upload");
+        $doc.find(".js-replace-document").text(doce.hasAttribute("data-docid") ? "Replace" : "Upload");
         $doc.find(".js-cancel-document").remove();
         if ($actions[0] && !$actions[0].firstChild)
             $actions.remove();
     }
-    form_highlight(f);
+    check_form_differs(f);
 });
 
 handle_ui.on("js-remove-document", function () {
@@ -10603,7 +11569,7 @@ handle_ui.on("js-remove-document", function () {
 handle_ui.on("js-withdraw", function () {
     var f = this.form,
         hc = popup_skeleton({near: this, action: f});
-    hc.push('<p>Are you sure you want to withdraw this submission from consideration and/or publication?');
+    hc.push('<p>Are you sure you want to withdraw this ' + siteinfo.snouns[0] + ' from consideration and/or publication?');
     if (!this.hasAttribute("data-revivable"))
         hc.push(' Only administrators can undo this step.');
     hc.push('</p>');
@@ -10621,7 +11587,7 @@ handle_ui.on("js-withdraw", function () {
 handle_ui.on("js-delete-paper", function () {
     var f = this.form,
         hc = popup_skeleton({near: this, action: f});
-    hc.push('<p>Be careful: This will permanently delete all information about this submission from the database and <strong>cannot be undone</strong>.</p>');
+    hc.push('<p>Be careful: This will permanently delete all information about this ' + siteinfo.snouns[0] + ' from the database and <strong>cannot be undone</strong>.</p>');
     hc.push_actions(['<button type="submit" name="delete" value="1" class="btn-danger">Delete</button>',
         '<button type="button" name="cancel">Cancel</button>']);
     var $d = hc.show();
@@ -10667,7 +11633,7 @@ handle_ui.on("pspcard-fold", function (evt) {
 });
 
 (function ($) {
-var edit_conditions = {};
+var edit_conditions = {}, edit_conditions_scheduled = false;
 
 function prepare_paper_select() {
     var self = this,
@@ -10782,21 +11748,22 @@ function prepare_pstags() {
         focus_within($f[0]);
     });
     $(window).on("hotcrptags", function (evt, data) {
-        if (data.pid == $f.attr("data-pid")) {
-            var h = data.tags_view_html == "" ? "None" : data.tags_view_html,
-                $p = $(self).find(".js-tag-result").first();
-            if ($p.html() !== h)
-                $p.html(h);
-            if ($ta.length
-                && $ta.val() !== data.tags_edit_text
-                && !$ta.is(":visible")
-                && (!$f.data("everOpened")
-                    || ($.trim($ta.val()).split(/\s+/).sort().join(" ")
-                        !== data.tags_edit_text.split(/\s+/).sort().join(" ")))) {
-                $ta.val(data.tags_edit_text);
-            }
-            handle_tag_report(data);
+        if (!data.pid || data.pid != $f.attr("data-pid")) {
+            return;
         }
+        var h = data.tags_view_html == "" ? "None" : data.tags_view_html,
+            $p = $(self).find(".js-tag-result").first();
+        if ($p.html() !== h)
+            $p.html(h);
+        if ($ta.length
+            && $ta.val() !== data.tags_edit_text
+            && !$ta.is(":visible")
+            && (!$f.data("everOpened")
+                || ($.trim($ta.val()).split(/\s+/).sort().join(" ")
+                    !== data.tags_edit_text.split(/\s+/).sort().join(" ")))) {
+            $ta.val(data.tags_edit_text);
+        }
+        handle_tag_report(data);
     });
 }
 
@@ -10828,38 +11795,27 @@ function save_pstags(evt) {
     });
 }
 
-function save_pstagindex(evt) {
-    var self = this, $f = $(self).closest("form"),
-        assignments = [], inputs = [];
-    if (evt.type === "submit")
-        evt.preventDefault();
-    if (hasClass($f[0], "submitting"))
-        return;
-    $f.addClass("submitting");
-    $f.find("input").each(function () {
-        var t = $(this).data("tagBase"), v;
-        if (t) {
-            inputs.push(this);
-            if (this.type === "checkbox")
-                v = this.checked ? this.value : "";
-            else
-                v = $.trim(this.value);
-            assignments.push(t + "#" + (v === "" ? "clear" : v));
-        }
-    });
-    function done(data) {
-        $f.removeClass("submitting");
-        minifeedback($f.find("input")[0], data);
-        if (data.ok && (data.message_list || []).length === 0) {
-            foldup.call($f[0], null, {open: false});
-        } else {
-            focus_within($f);
-        }
-        data.ok && $(window).trigger("hotcrptags", [data]);
+handle_ui.on("is-tag-index", function () {
+    const self = this;
+    let m = self.id.match(/^tag:(\S+) (\d+)$/), value;
+    if (this.type === "checkbox")
+        value = this.checked ? this.value : "";
+    else
+        value = this.value.trim();
+    if (value === "")
+        value = "clear";
+    if (/^(?:\d+\.?\d*|\.\d+|clear)$/.test(value))
+        $.post(hoturl("=api/tags", {p: m[2]}), {addtags: m[1] + "#" + value}, done);
+    else
+        minifeedback(this, {ok: false, message_list: [{status: 2, message: "<0>Bad tag value"}]});
+    function done(rv) {
+        minifeedback(self, rv);
+        if (rv.ok && (rv.message_list || []).length === 0)
+            foldup.call(self, null, {open: false});
+        if (rv.ok)
+            $(window).trigger("hotcrptags", [rv]);
     }
-    $.post(hoturl("=api/tags", {p: $f.attr("data-pid")}),
-           {"addtags": assignments.join(" ")}, done);
-}
+});
 
 function evaluate_compar(x, compar, y) {
     if ($.isArray(y)) {
@@ -10961,24 +11917,37 @@ edit_conditions.compar = function (ec, form) {
                            evaluate_edit_condition(ec.child[1], form));
 };
 edit_conditions["in"] = function (ec, form) {
-    var v = evaluate_edit_condition(ec.child[0], form);
+    const v = evaluate_edit_condition(ec.child[0], form);
     return ec.values.indexOf(v) >= 0;
 }
 edit_conditions.title = function (ec, form) {
-    var e = form.elements.title;
+    const e = form.elements.title;
     return ec.match === ($.trim(e ? e.value : "") !== "");
 };
 edit_conditions.abstract = function (ec, form) {
-    var e = form.elements.abstract;
+    const e = form.elements.abstract;
     return ec.match === ($.trim(e ? e.value : "") !== "");
 };
+edit_conditions.author_count = function (ec, form) {
+    let n = 0, pfx;
+    function nonempty(sfx) {
+        const e = form.elements[pfx + sfx];
+        return e && e.value.trim() !== "";
+    }
+    for (let i = 1; form.elements["authors:" + i + ":email"]; ++i) {
+        pfx = "authors:" + i;
+        if (nonempty(":email") || nonempty(":name") || nonempty(":first") || nonempty(":last"))
+            ++n;
+    }
+    return n;
+};
 edit_conditions.collaborators = function (ec, form) {
-    var e = form.elements.collaborators;
+    const e = form.elements.collaborators;
     return ec.match === ($.trim(e ? e.value : "") !== "");
 };
 edit_conditions.pc_conflict = function (ec, form) {
-    var n = 0, elt;
-    for (var i = 0; i !== ec.uids.length; ++i)
+    let n = 0, elt;
+    for (let i = 0; i !== ec.uids.length; ++i)
         if ((elt = form.elements["pcconf:" + ec.uids[i]])
             && (elt.type === "checkbox" ? elt.checked : +elt.value > 1)) {
             ++n;
@@ -10988,13 +11957,25 @@ edit_conditions.pc_conflict = function (ec, form) {
     return evaluate_compar(n, ec.compar, ec.value);
 };
 
-function run_edit_conditions() {
-    var f = this.closest("form"),
+function run_edit_condition() {
+    const f = this.closest("form"),
         ec = JSON.parse(this.getAttribute("data-edit-condition")),
         off = !evaluate_edit_condition(ec, f),
         link = navsidebar.get(this);
     toggleClass(this, "hidden", off);
     link && toggleClass(link.element, "hidden", off);
+}
+
+function run_all_edit_conditions() {
+    $("#f-paper").find(".has-edit-condition").each(run_edit_condition);
+    edit_conditions_scheduled = false;
+}
+
+function schedule_all_edit_conditions() {
+    if (!edit_conditions_scheduled) {
+        edit_conditions_scheduled = true;
+        setTimeout(run_all_edit_conditions, 0);
+    }
 }
 
 function header_text(hdr) {
@@ -11056,11 +12037,11 @@ handle_ui.on("submit.js-submit-paper", function (evt) {
     this.elements["status:unchanged"] && this.elements["status:unchanged"].remove();
     this.elements["status:changed"] && this.elements["status:changed"].remove();
     if (is_submit) {
-        var unch = [], ch = [], i, e, type, name;
-        for (i = 0; i !== this.elements.length; ++i) {
-            e = this.elements[i];
-            type = e.type;
-            name = type ? e.name : e[0].name;
+        const unch = [], ch = [];
+        for (let i = 0; i !== this.elements.length; ++i) {
+            const e = this.elements[i],
+                type = e.type,
+                name = type ? e.name : e[0].name;
             if (name
                 && !name.startsWith("has_")
                 && (!type
@@ -11070,7 +12051,7 @@ handle_ui.on("submit.js-submit-paper", function (evt) {
                 (input_differs(e) ? ch : unch).push(name);
             }
         }
-        e = hidden_input("status:unchanged", unch.join(" "));
+        let e = hidden_input("status:unchanged", unch.join(" "));
         e.className = "ignore-diff";
         this.appendChild(e);
         e = hidden_input("status:changed", ch.join(" "));
@@ -11080,6 +12061,7 @@ handle_ui.on("submit.js-submit-paper", function (evt) {
 });
 
 function fieldchange(evt) {
+    $(this.form).trigger({type: "fieldchange", changeTarget: evt.target});
     $(this.form).find(".want-fieldchange")
         .trigger({type: "fieldchange", changeTarget: evt.target});
 }
@@ -11094,13 +12076,13 @@ function prepare_autoready_condition(f) {
         condition = JSON.parse(f.getAttribute("data-autoready-condition"));
     }
     function chf() {
-        var was, iscond, e, readychecked;
-        iscond = !condition || hotcrp.evaluate_edit_condition(condition, f);
+        const iscond = !condition || hotcrp.evaluate_edit_condition(condition, f);
         readye.disabled = !iscond;
         if (iscond && readye.hasAttribute("data-autoready")) {
             readye.checked = true;
             readye.removeAttribute("data-autoready");
         }
+        let readychecked, e;
         if (readye.type === "checkbox") {
             readychecked = readye.checked;
         } else {
@@ -11118,17 +12100,19 @@ function prepare_autoready_condition(f) {
                 toggleClass(e, "hidden", !iscond || !readychecked);
             }
         }
-        var t;
+        let t;
         if (f.hasAttribute("data-contacts-only")) {
             t = "Save contacts";
         } else if (!iscond || !readychecked) {
             t = "Save draft";
-        } else if (was) {
+        } else if (f.hasAttribute("data-submitted")) {
             t = "Save and resubmit";
         } else {
             t = "Save and submit";
         }
-        $("button.btn-savepaper").text(t);
+        $("button.btn-savepaper").each(function () {
+            this.firstChild.data = t;
+        });
     }
     if (condition) {
         $(f).on("change", chf); // jQuery required because we `trigger` later
@@ -11139,12 +12123,12 @@ function prepare_autoready_condition(f) {
 }
 
 hotcrp.load_editable_paper = function () {
-    var f = $$("f-paper") || /* XXX */ $$("form-paper");
-    hiliter_children(f);
+    var f = $$("f-paper");
+    hotcrp.add_diff_check(f);
     prepare_autoready_condition(f);
     $(".pfe").each(add_pslitem_pfe);
     var h = $(".btn-savepaper").first(),
-        k = hasClass(f, "alert") ? "" : " hidden";
+        k = hasClass(f, "differs") ? "" : " hidden";
     $(".pslcard-nav").append('<div class="paper-alert mt-5'.concat(k,
         '"><button class="ui btn-highlight btn-savepaper">', h.html(),
         '</button></div>'))
@@ -11152,6 +12136,20 @@ hotcrp.load_editable_paper = function () {
             $("#f-paper .btn-savepaper").first().trigger({type: "click", sidebarTarget: this});
         });
     $(f).on("change", "input, select, textarea", fieldchange);
+    if (f.querySelector(".has-edit-condition")) {
+        run_all_edit_conditions();
+        $(f).on("fieldchange", schedule_all_edit_conditions);
+    }
+    if (hasClass(f, "need-highlight-differences")) {
+        removeClass(f, "need-highlight-differences");
+        for (let i = 0; i !== f.elements.length; ++i) {
+            const e = f.elements[i];
+            if ((!e.type || e.type !== "hidden")
+                && input_differs(e)) {
+                addClass(e, "has-vchange");
+            }
+        }
+    }
 };
 
 hotcrp.load_editable_review = function () {
@@ -11160,8 +12158,8 @@ hotcrp.load_editable_review = function () {
     if (rfehead.length) {
         $(".pslcard > .pslitem:last-child").addClass("mb-3");
     }
-    hiliter_children("#f-review");
-    var k = $("#f-review").hasClass("alert") ? "" : " hidden",
+    hotcrp.add_diff_check("#f-review");
+    var k = $("#f-review").hasClass("differs") ? "" : " hidden",
         h = $(".btn-savereview").first();
     $(".pslcard-nav").append('<div class="review-alert mt-5'.concat(k,
         '"><button class="ui btn-highlight btn-savereview">', h.html(),
@@ -11173,10 +12171,10 @@ hotcrp.load_editable_review = function () {
 
 hotcrp.load_editable_pc_assignments = function () {
     $("h2").each(add_pslitem_header);
-    var f = $$("f-pc-assignments") || /* XXX */ $$("form-pc-assignments");
+    var f = $$("f-pc-assignments");
     if (f) {
-        hiliter_children(f);
-        var k = hasClass(f, "alert") ? "" : " hidden";
+        hotcrp.add_diff_check(f);
+        var k = hasClass(f, "differs") ? "" : " hidden";
         $(".pslcard-nav").append('<div class="paper-alert mt-5'.concat(k,
             '"><button class="ui btn-highlight btn-savepaper">Save PC assignments</button></div>'))
             .find(".btn-savepaper").click(function () {
@@ -11186,10 +12184,6 @@ hotcrp.load_editable_pc_assignments = function () {
 };
 
 hotcrp.load_paper_sidebar = function () {
-    $(".need-tag-index-form").each(function () {
-        $(this).removeClass("need-tag-index-form").on("submit", save_pstagindex)
-            .find("input").on("change", save_pstagindex);
-    });
     $(".need-tag-form").each(prepare_pstags);
     $(".need-paper-select-api").each(function () {
         removeClass(this, "need-paper-select-api");
@@ -11207,11 +12201,6 @@ hotcrp.replace_editable_field = function (field, elt) {
     while (elt.firstChild)
         pfe.appendChild(elt.firstChild);
     add_pslitem_pfe.call(pfe);
-};
-
-hotcrp.paper_edit_conditions = function () {
-    $("#f-paper").on("fieldchange", ".has-edit-condition", run_edit_conditions)
-        .find(".has-edit-condition").each(run_edit_conditions);
 };
 
 hotcrp.evaluate_edit_condition = function (ec, form) {
@@ -11237,25 +12226,67 @@ function tag_value(taglist, t) {
 }
 
 function set_tag_index(e, taglist) {
-    var res = tag_value(taglist, e.getAttribute("data-tag-base"));
-    res = res === null ? "" : String(res);
-    if (e.tagName === "SPAN") {
-        e.textContent = res;
-        toggleClass(e.closest(".is-nonempty-tags"), "hidden", res === "");
-    } else {
+    const val = tag_value(taglist, e.getAttribute("data-tag"));
+    let vtext = val === null ? "" : String(val);
+
+    // inputs: set value
+    if (e.nodeName === "INPUT") {
         if (e.type === "checkbox") {
-            e.checked = res !== "";
+            e.checked = vtext !== "";
         } else if (document.activeElement !== e) {
-            e.value = res;
+            e.value = vtext;
         }
-        input_set_default_value(e, res);
+        input_set_default_value(e, vtext);
+        return;
     }
+
+    // one index: set text, maybe hide
+    if (!hasClass(e, "is-tag-votish")) {
+        e.textContent = e.getAttribute("data-prefix") + vtext;
+        toggleClass(e, "hidden", vtext === "");
+        return;
+    }
+
+    // votish report: extract base value
+    const vtype = e.getAttribute("data-vote-type"),
+        btag = e.getAttribute("data-tag").replace(/^\d+~/, ""),
+        bval = tag_value(taglist, btag);
+    if (vtype === "approval") {
+        vtext = "";
+    }
+
+    // no base value: set text, maybe hide
+    if (bval === null) {
+        e.textContent = vtext === "" ? "" : ": " + vtext;
+        toggleClass(e, "hidden", vtext === "");
+        return;
+    }
+
+    // otherwise, votish report with base value
+    // ensure link, show
+    const prefix = vtext === "" ? ": " : ": " + vtext + ", ";
+    e.firstChild ? e.firstChild.data = prefix : e.append(prefix);
+    let a = e.lastChild;
+    if (!a || a.nodeName !== "A") {
+        const sort = vtype === "rank" ? "#" : "-#";
+        a = $e("a", {"class": "q", href: hoturl("search", {q: "show:#".concat(btag, " sort:", sort, btag)})});
+        e.appendChild(a);
+        if (hasClass(e, "is-tag-report")) {
+            e.setAttribute("data-tooltip-anchor", "h");
+            e.setAttribute("data-tooltip-info", "votereport");
+            e.setAttribute("data-tag", btag);
+            hotcrp.tooltip.call(e);
+        }
+    }
+    a.textContent = bval + (vtype === "rank" ? " overall" : " total");
+    removeClass(e, "hidden");
 }
 
 if (siteinfo.paperid) {
     $(window).on("hotcrptags", function (evt, data) {
-        if (data.pid != siteinfo.paperid)
+        if (!data.pid || data.pid != siteinfo.paperid) {
             return;
+        }
         data.color_classes && ensure_pattern(data.color_classes, "", true);
         $(".has-tag-classes").each(function () {
             var t = $.trim(this.className.replace(/(?: |^)(?:tagbg|dark|tag-\S+)(?= |$)/g, " "));
@@ -11278,7 +12309,7 @@ handle_ui.on("js-users-selection", function () {
 
 handle_ui.on("js-cannot-delete-user", function () {
     var hc = popup_skeleton({near: this});
-    hc.push('<p><strong>This account cannot be deleted</strong> because they are the sole contact for ' + $(this).data("soleAuthor") + '. To delete the account, first remove those submissions from the database or give them more contacts.</p>');
+    hc.push('<p><strong>This account cannot be deleted</strong> because they are the sole contact for ' + $(this).data("soleAuthor") + '. To delete the account, first remove those ' + siteinfo.snouns[1] + ' from the database or give them more contacts.</p>');
     hc.push_actions(['<button type="button" name="cancel">Cancel</button>']);
     hc.show();
 });
@@ -11312,7 +12343,16 @@ handle_ui.on("js-disable-user", function () {
                     removeClass(self, "btn-success");
                     addClass(self, "btn-danger");
                 }
-                $(self.form).find(".js-send-user-accountinfo").prop("disabled", data.disabled);
+                const h2 = document.querySelector("h2.leftmenu");
+                if (h2) {
+                    if (h2.lastChild.nodeType === 1
+                        && h2.lastChild.className === "n dim user-disabled-marker") {
+                        data.disabled || h2.lastChild.remove();
+                    } else {
+                        data.disabled && h2.appendChild($e("span", "n dim user-disabled-marker", "(disabled)"));
+                    }
+                }
+                $(self.form).find(".js-send-user-accountinfo").prop("disabled", data.disabled || data.placeholder);
             }
             minifeedback(self, data);
         });
@@ -11350,7 +12390,7 @@ handle_ui.on("js-profile-token-add", function () {
     focus_within(nbt);
     var enabler = this.form.elements["bearer_token/new/enable"];
     enabler.value = "1";
-    form_highlight(this.form, enabler);
+    check_form_differs(this.form, enabler);
 });
 
 handle_ui.on("js-profile-token-delete", function () {
@@ -11360,7 +12400,7 @@ handle_ui.on("js-profile-token-delete", function () {
     deleter.value = "1";
     $j.find("label, code").addClass("text-decoration-line-through");
     $j.append('<div class="feedback is-warning mt-1">This API token will be deleted. <strong>This operation cannot be undone.</strong></div>');
-    hiliter_children(this.form, deleter);
+    check_form_differs(this.form, deleter);
 });
 
 
@@ -11405,7 +12445,7 @@ handle_ui.on("js-delete-review", function () {
 
 handle_ui.on("js-approve-review", function (evt) {
     var self = this, hc = popup_skeleton({near: evt.sidebarTarget || self});
-    hc.push('<div class="btngrid">', '</div>');
+    hc.push('<div class="grid-btn-explanation">', '</div>');
     var subreviewClass = "";
     if (hasClass(self, "can-adopt")) {
         hc.push('<button type="button" name="adoptsubmit" class="btn-primary big">Adopt and submit</button><p>Submit a copy of this review under your name. You can make changes afterwards.</p>');
@@ -11443,17 +12483,17 @@ handle_ui.on("js-edit-formulas", function () {
     function push1(hc, f) {
         ++count;
         hc.push('<div class="editformulas-formula" data-formula-number="' + count + '">', '</div>');
-        hc.push('<div class="entryi"><label for="k-formulaname_' + count + '">Name</label><div class="entry nw">', '</div></div>');
+        hc.push('<div class="entryi"><label for="k-formula/' + count + '/name">Name</label><div class="entry nw">', '</div></div>');
         if (f.editable) {
-            hc.push('<input type="text" id="k-formulaname_' + count + '" class="editformulas-name need-autogrow" name="formulaname_' + count + '" size="30" value="' + escape_html(f.name) + '" placeholder="Formula name">');
+            hc.push('<input type="text" id="k-formula/' + count + '/name" class="editformulas-name need-autogrow" name="formula/' + count + '/name" size="30" value="' + escape_html(f.name) + '" placeholder="Formula name">');
             hc.push('<button type="button" class="ui closebtn delete-link need-tooltip" aria-label="Delete formula">x</button>');
         } else
             hc.push(escape_html(f.name));
         hc.pop();
-        hc.push('<div class="entryi"><label for="k-formulaexpression_' + count + '">Expression</label><div class="entry">', '</div></div>');
+        hc.push('<div class="entryi"><label for="k-formula/' + count + '/expression">Expression</label><div class="entry">', '</div></div>');
         if (f.editable)
-            hc.push('<textarea class="editformulas-expression need-autogrow w-99" id="k-formulaexpression_' + count + '" name="formulaexpression_' + count + '" rows="1" cols="64" placeholder="Formula definition">' + escape_html(f.expression) + '</textarea>')
-                .push('<input type="hidden" name="formulaid_' + count + '" value="' + f.id + '">');
+            hc.push('<textarea class="editformulas-expression need-autogrow w-99" id="k-formula/' + count + '/expression" name="formula/' + count + '/expression" rows="1" cols="64" placeholder="Formula definition">' + escape_html(f.expression) + '</textarea>')
+                .push('<input type="hidden" name="formula/' + count + '/id" value="' + f.id + '">');
         else
             hc.push(escape_html(f.expression));
         hc.pop();
@@ -11483,7 +12523,7 @@ handle_ui.on("js-edit-formulas", function () {
             $x.find(".editformulas-name").prop("disabled", true).css("text-decoration", "line-through");
             $x.append('<em>(Formula deleted)</em>');
         }
-        $x.append('<input type="hidden" name="formuladeleted_' + $x.data("formulaNumber") + '" value="1">');
+        $x.append('<input type="hidden" name="formula/' + $x.data("formulaNumber") + '/delete" value="1">');
     }
     function submit(evt) {
         evt.preventDefault();
@@ -11497,7 +12537,7 @@ handle_ui.on("js-edit-formulas", function () {
             });
     }
     function create(formulas) {
-        var hc = popup_skeleton({className: "modal-dialog-w40"}), i;
+        var hc = popup_skeleton({className: "modal-dialog-w40", form_class: "need-diff-check"}), i;
         hc.push('<h2>Named formulas</h2>');
         hc.push('<p><a href="' + hoturl("help", "t=formulas") + '" target="_blank" rel="noopener">Formulas</a>, such as “sum(OveMer)”, are calculated from review statistics and paper information. Named formulas are shared with the PC and can be used in other formulas. To view an unnamed formula, use a search term like “show:(sum(OveMer))”.</p>');
         hc.push('<div class="editformulas">', '</div>');
@@ -11542,7 +12582,7 @@ handle_ui.on("js-edit-view-options", function () {
         evt.preventDefault();
     }
     function create(display_default, display_current) {
-        var hc = popup_skeleton({className: "modal-dialog-w40"});
+        var hc = popup_skeleton({className: "modal-dialog-w40", form_class: "need-diff-check"});
         hc.push('<h2>View options</h2>');
         hc.push('<div class="f-i"><div class="f-c">Default view options</div>', '</div>');
         hc.push('<div class="reportdisplay-default">' + escape_html(display_default || "(none)") + '</div>');
@@ -11554,47 +12594,69 @@ handle_ui.on("js-edit-view-options", function () {
         $d = hc.show();
         $d.on("submit", "form", submit);
     }
-    $.ajax(hoturl("=api/viewoptions", {q: $("#f-search input[name=q]").val()}), {
-        success: function (data) {
-            if (data.ok)
-                create(data.display_default, data.display_current);
-        }
+    $.get(hoturl("=api/viewoptions", {q: $$("f-search").getAttribute("data-lquery")}), function (data) {
+        if (data.ok)
+            create(data.display_default, data.display_current);
     });
 });
 
 handle_ui.on("js-edit-namedsearches", function () {
     var $d, count = 0;
-    function push1(hc, f) {
+    function render1(f) {
         ++count;
-        hc.push('<div class="editsearches-search" data-search-number="' + count + '">', '</div>');
-        hc.push('<div class="entryi"><label for="k-searchname_' + count + '">Name</label><div class="entry nw">', '</div></div>');
+        const nentry = $e("div", "entry nw"), qentry = $e("div", "entry");
         if (f.editable) {
-            hc.push('<input type="text" id="k-searchname_' + count + '" class="editsearches-name need-autogrow" name="searchname_' + count + '" size="30" value="' + escape_html(f.name) + '" placeholder="Search name">');
-            hc.push('<button type="button" class="ui closebtn delete-link need-tooltip" aria-label="Delete search">x</button>');
-        } else
-            hc.push(escape_html(f.name));
-        hc.pop();
-        hc.push('<div class="entryi"><label for="k-searchquery_' + count + '">Search</label><div class="entry">', '</div></div>');
-        if (f.editable)
-            hc.push('<textarea class="editsearches-query need-autogrow w-99" id="k-searchquery_' + count + '" name="searchq_' + count + '" rows="1" cols="64" placeholder="(All)">' + escape_html(f.q) + '</textarea>');
-        else
-            hc.push(escape_html(f.q));
-        hc.push('<input type="hidden" name="searchid_' + count + '" value="' + (f.id || f.name) + '">');
-        hc.pop();
-        if (f.error_html) {
-            hc.push('<div class="entryi"><label class="is-error">Error</label><div class="entry">' + f.error_html + '</div></div>');
+            nentry.append($e("input", {
+                    id: "k-named_search/" + count + "/name",
+                    type: "text", name: "named_search/" + count + "/name",
+                    "class": "editsearches-name need-autogrow",
+                    size: 30, value: f.name, placeholder: "Name of search"
+                }), $e("button", {
+                    type: "button", "class": "ui delete-link ml-2 need-tooltip",
+                    "aria-label": "Delete search"
+                }, svge_use_licon("trash")));
+            qentry.append($e("textarea", {
+                    id: "k-named_search/" + count + "/q",
+                    "name": "named_search/" + count + "/q",
+                    "class": "editsearches-query need-autogrow w-99",
+                    rows: 1, cols: 64, placeholder: "(All)"
+                }, f.q))
+        } else {
+            nentry.append(f.name);
+            qentry.append(f.q);
         }
-        hc.pop();
+        const div = $e("div", {"class": "editsearches-search", "data-search-number": count},
+            $e("div", "entryi",
+                $e("label", {"for": "k-named_search/" + count + "/name"}, "Name"),
+                nentry),
+            $e("div", "entryi",
+                $e("label", {"for": "k-named_search/" + count + "/q"}, "Search"),
+                qentry),
+            hidden_input("named_search/" + count + "/id", f.id || f.name));
+        if (f.error_html) {
+            const e = $e("div", "entry");
+            e.innerHTML = f.error_html;
+            div.append($e("div", "entryi", $e("label", "is-error", "Error"), e));
+        }
+        return div;
     }
     function click() {
         if (this.name === "add") {
-            var hc = new HtmlCollector,
-                q = document.getElementById("f-search");
-            push1(hc, {name: "", q: q ? q.getAttribute("data-lquery") : "", editable: true, id: "new"});
-            var $f = $(hc.render()).appendTo($d.find(".editsearches")).awaken();
-            $f[0].setAttribute("data-search-new", "");
-            focus_at($f.find(".editsearches-name"));
-            $d.find(".modal-dialog").scrollIntoView({atBottom: true, marginBottom: "auto"});
+            const q = $$("f-search");
+            $.get(hoturl("=api/viewoptions", {q: q ? q.getAttribute("data-lquery") : ""}), function (data) {
+                const a = [];
+                if (q && q.getAttribute("data-lquery")) {
+                    a.push(q.getAttribute("data-lquery"));
+                }
+                if (data && data.ok && data.display_difference) {
+                    a.push(data.display_difference);
+                }
+                const div = render1({name: "", q: a.join(" "), editable: true, id: "new"});
+                $(div).appendTo($d.find(".editsearches")).awaken();
+                div.setAttribute("data-search-new", "");
+                focus_at($(div).find(".editsearches-name"));
+                $d.find(".modal-dialog").scrollIntoView({atBottom: true, marginBottom: "auto"});
+            });
         } else if (hasClass(this, "delete-link")) {
             ondelete.call(this);
         }
@@ -11608,41 +12670,45 @@ handle_ui.on("js-edit-namedsearches", function () {
             $x.find(".editsearches-name").prop("disabled", true).css("text-decoration", "line-through");
             $x.append('<em>(Search deleted)</em>');
         }
-        $x.append('<input type="hidden" name="searchdeleted_' + $x.data("searchNumber") + '" value="1">');
+        $x.append('<input type="hidden" name="search:' + $x.data("searchNumber") + ':delete" value="1">');
     }
     function submit(evt) {
         evt.preventDefault();
         $.post(hoturl("=api/namedsearch"),
             $d.find("form").serialize(),
             function (data) {
-                if (data.ok)
-                    location.reload(true);
-                else
-                    $d.show_errors(data);
+                data.ok ? location.reload(true) : $d.show_errors(data);
             });
     }
-    function create(searches) {
-        var hc = popup_skeleton({className: "modal-dialog-w40"}), i;
-        hc.push('<h2>Saved searches</h2>');
-        hc.push('<p>Invoke a saved search with “ss:NAME”. Saved searches are shared with the PC.</p>');
-        hc.push('<div class="editsearches">', '</div>');
-        for (i in searches || []) {
-            push1(hc, searches[i]);
-        }
-        hc.pop_push('<button type="button" name="add">Add named search</button>');
+    function create(data) {
+        var hc = popup_skeleton({className: "modal-dialog-w40", form_class: "need-diff-check"}), i;
+        hc.push('<h2>Named searches</h2>');
+        hc.push('<p>Invoke a named search with “ss:NAME”. Named searches are shared with the PC.</p>');
+        hc.push('<div class="editsearches"></div>');
+        hc.push('<button type="button" name="add">Add named search</button>');
         hc.push_actions(['<button type="submit" name="savesearches" value="1" class="btn-primary">Save</button>', '<button type="button" name="cancel">Cancel</button>']);
-        $d = hc.show();
+        $d = hc.show(false);
+        const ns = $d.find(".editsearches")[0];
+        for (i in data.searches || []) {
+            ns.append(render1(data.searches[i]));
+        }
+        hc.show();
         $d.on("click", "button", click);
         $d.on("submit", "form", submit);
+        $d.show_errors(data);
     }
     $.get(hoturl("=api/namedsearch"), function (data) {
         if (data.ok)
-            create(data.searches);
+            create(data);
     });
 });
 
 handle_ui.on("js-select-all", function () {
-    $(this).closest(".pltable").find("input.js-selector").prop("checked", true);
+    const tbl = this.closest(".pltable"), time = now_msec();
+    $(tbl).find("input.js-selector").prop("checked", true);
+    $(tbl).find(".is-range-group").each(function () {
+        handle_ui.trigger.call(this, "js-range-click", new CustomEvent("updaterange", {detail: time}));
+    });
 });
 
 
@@ -11666,10 +12732,8 @@ handle_ui.on("js-assign-list-action", function (evt) {
         return;
     var self = this;
     removeClass(self, "js-assign-list-action");
-    demand_load.pc().then(function (pcs) {
-        $(self).find("select[name=markpc]").each(function () {
-            populate_pcselector.call(this, pcs);
-        });
+    $(self).find("select[name=markpc]").each(populate_pcselector);
+    demand_load.pc().then(function () {
         $(".js-submit-action-info-assign").on("change", function () {
             var $mpc = $(self).find("select[name=markpc]"),
                 afn = $(this).val();
@@ -11686,7 +12750,7 @@ handle_ui.on("js-assign-list-action", function (evt) {
     });
 });
 
-function handle_submit_list_bulkwarn(table, chkval, bgform, evt) {
+function handle_list_submit_bulkwarn(table, chkval, bgform, evt) {
     var chki = table.querySelectorAll("tr.pl[data-bulkwarn]"), i, n = 0;
     for (i = 0; i !== chki.length && n < 4; ++i) {
         if (chkval.indexOf(chki[i].getAttribute("data-pid")) >= 0)
@@ -11701,7 +12765,7 @@ function handle_submit_list_bulkwarn(table, chkval, bgform, evt) {
         ]);
         var $d = hc.show(false), m = table.getAttribute("data-bulkwarn-ftext");
         if (m === null || m === "") {
-            m = "<5><p>Some program committees discourage reviewers from downloading submissions in bulk. Are you sure you want to continue?</p>";
+            m = "<5><p>Some program committees discourage reviewers from downloading " + siteinfo.snouns[1] + " in bulk. Are you sure you want to continue?</p>";
         }
         render_text.onto($d.find(".container")[0], "f", m);
         $d.on("closedialog", function () {
@@ -11718,7 +12782,28 @@ function handle_submit_list_bulkwarn(table, chkval, bgform, evt) {
         return true;
 }
 
+function handle_list_submit_get(bgform) {
+    if (bgform.action.indexOf("?") >= 0)
+        return false;
+    const vs = [];
+    for (let e = bgform.firstChild; e; e = e.nextSibling) {
+        if (e.type === "file")
+            return false;
+        vs.push(urlencode(e.name) + "=" + urlencode(e.value));
+    }
+    const url = bgform.action + "?" + vs.join("&");
+    if (url.length >= 2800)
+        return false;
+    if (bgform.target === "_blank")
+        window.open(url, "_blank", "noopener");
+    else
+        window.location = url;
+    return true;
+}
+
 handle_ui.on("js-submit-list", function (evt) {
+    evt.preventDefault();
+
     // choose action
     var form = this, fn, fnbutton, e, ne, i, es;
     if (this instanceof HTMLButtonElement) {
@@ -11748,61 +12833,75 @@ handle_ui.on("js-submit-list", function (evt) {
     }
 
     // find selected
-    var table = (fnbutton && fnbutton.closest(".pltable")) || form;
+    const table = (fnbutton && fnbutton.closest(".pltable")) || form;
     es = table.querySelectorAll("input.js-selector");
-    var allval = [], chkval = [], isdefault;
+    const allval = [];
+    let chkval = [], isdefault = false, allnum = true;
     for (i = 0; i !== es.length; ++i) {
-        allval.push(es[i].value);
-        es[i].checked && chkval.push(es[i].value);
+        let v = es[i].value;
+        if (allnum && (v | 0) == v && !v.startsWith("0"))
+            v = v | 0;
+        else
+            allnum = false;
+        allval.push(v);
+        es[i].checked && chkval.push(v);
     }
     if (!chkval.length) {
         if (fnbutton && hasClass(fnbutton, "can-submit-all")) {
             chkval = allval;
             isdefault = true;
-        } else if (!chkval.length) {
+        } else {
             alert("Select one or more rows first.");
-            evt.preventDefault();
             return;
         }
     }
+    if (!chkval.length) {
+        alert("Nothing selected.");
+        return;
+    }
+    const chktxt = allnum && chkval.length > 30
+        ? encode_session_list_ids(chkval)
+        : chkval.join(" ");
 
-    // create a new form
+    // remove old background forms
     for (e = document.body.firstChild; e; e = ne) {
         ne = e.nextSibling;
         if (e.className === "is-background-form")
             document.body.removeChild(e);
     }
-    var bgform, action = form.action, need_bulkwarn = false;
+
+    // create background form
+    let bgform, action = form.action, need_bulkwarn = false;
     if (fnbutton && fnbutton.hasAttribute("formaction")) {
         action = fnbutton.getAttribute("formaction");
     }
-    if (fnbutton && fnbutton.getAttribute("formmethod") === "get" && chkval.length < 20) {
+    if (fnbutton && fnbutton.getAttribute("formmethod") === "get") {
         bgform = hoturl_get_form(action);
-        if (!bgform.elements.fn)
-            bgform.appendChild(hidden_input("fn", ""));
-        bgform.elements.fn.value = fn;
     } else {
         bgform = document.createElement("form");
-        bgform.setAttribute("method", "post");
-        bgform.setAttribute("enctype", "multipart/form-data");
-        bgform.setAttribute("accept-charset", "UTF-8");
-        if (chkval.length < 20) {
-            action = hoturl_set(action, "p", chkval.join(" "));
-            chkval = null;
-        }
-        bgform.action = hoturl_set(action, "fn", fn);
+        bgform.method = "post";
+        bgform.action = action;
     }
     bgform.className = "is-background-form";
     if (fnbutton && fnbutton.hasAttribute("formtarget")) {
-        bgform.setAttribute("target", fnbutton.getAttribute("formtarget"));
+        bgform.target = fnbutton.getAttribute("formtarget");
     }
     document.body.appendChild(bgform);
-    if (chkval)
-        bgform.appendChild(hidden_input("p", chkval.join(" ")));
+
+    // set list function (`fn`)
+    if (!bgform.elements.fn)
+        bgform.appendChild(hidden_input("fn", ""));
+    bgform.elements.fn.value = fn;
+
+    // set papers
+    if (chktxt)
+        bgform.appendChild(hidden_input("p", chktxt));
     if (isdefault)
         bgform.appendChild(hidden_input("pdefault", "yes"));
     if (form.elements.forceShow && form.elements.forceShow.value !== "")
         bgform.appendChild(hidden_input("forceShow", form.elements.forceShow.value));
+
+    // transfer other form elements
     if (fnbutton && (e = fnbutton.closest(".pl-footer-part"))) {
         es = e.querySelectorAll("input, select, textarea");
         for (i = 0; i !== es.length; ++i) {
@@ -11824,20 +12923,43 @@ handle_ui.on("js-submit-list", function (evt) {
             }
         }
     }
-    if (!need_bulkwarn || handle_submit_list_bulkwarn(table, chkval, bgform, evt))
+
+    // maybe remove subfunction (e.g. `getfn`)
+    if ((i = fn.indexOf("/")) > 0) {
+        const supfn = fn.substring(0, i),
+            subfne = bgform.elements[supfn + "fn"];
+        if (subfne && subfne.value === fn.substring(i + 1))
+            subfne.remove();
+    }
+
+    // check bulk-download warning
+    if (need_bulkwarn && !handle_list_submit_bulkwarn(table, chkval, bgform, evt))
+        return;
+
+    // either set location or submit form
+    if (bgform.method !== "get" || !handle_list_submit_get(bgform)) {
+        bgform.method = "post";
+        bgform.enctype = "multipart/form-data";
+        bgform.acceptCharset = "UTF-8";
+        action = bgform.action;
+        if (bgform.elements.fn) {
+            action = hoturl_search(action, "fn", bgform.elements.fn.value);
+            bgform.elements.fn.remove();
+        }
+        if (bgform.elements.p && bgform.elements.p.value.length < 100) {
+            action = hoturl_search(action, "p", bgform.elements.p.value);
+            bgform.elements.p.remove();
+        }
+        bgform.action = action;
         bgform.submit();
-    evt.preventDefault();
+    }
 });
 
 
 handle_ui.on("foldtoggle.js-unfold-pcselector", function (evt) {
     if (evt.which.open) {
         removeClass(this, "js-unfold-pcselector");
-        var $pc = $(this).find("select[data-pcselector-options]");
-        if ($pc.length)
-            demand_load.pc().then(function (pcs) {
-                $pc.each(function () { populate_pcselector.call(this, pcs); });
-            });
+        $(this).find("select[data-pcselector-options]").each(populate_pcselector);
     }
 });
 
@@ -11848,9 +12970,8 @@ handle_ui.on("js-assign-review", function (evt) {
         || !(m = /^assrev(\d+)u(\d+)$/.exec(this.name))
         || (form && form.autosave && !form.autosave.checked))
         return;
-    var self = this, ass = [], value = self.value;
+    var self = this, ass = [], value = self.value, rt = "clear", ct = false;
     if (self.tagName === "SELECT") {
-        var rt = "clear", ct = false;
         if (value.indexOf("conflict") >= 0) {
             ct = value;
         } else if (value !== "none") {
@@ -11864,14 +12985,19 @@ handle_ui.on("js-assign-review", function (evt) {
             ass[0].round = form.rev_round.value;
         }
     } else {
+        if (self.checked) {
+            ct = value !== "1" ? value : true;
+        } else if (self.hasAttribute("data-unconflicted-value")) {
+            ct = self.getAttribute("data-unconflicted-value");
+        }
         ass.push(
-            {pid: +m[1], uid: +m[2], action: "conflict", conflict: self.checked}
+            {pid: +m[1], uid: +m[2], action: "conflict", conflict: ct}
         );
     }
     function success(rv) {
         input_set_default_value(self, value);
         minifeedback(self, rv);
-        form_highlight(form, self);
+        check_form_differs(form, self);
     }
     $ajax.condition(function () {
         $.ajax(hoturl("=api/assign", {p: m[1]}), {
@@ -11893,90 +13019,91 @@ $(".js-radio-focus").on("click keypress", "input, select", function () {
 
 
 // PC selectors
-function populate_pcselector(pcs) {
-    removeClass(this, "need-pcselector");
-    var optids = this.getAttribute("data-pcselector-options") || "*";
-    if (optids.charAt(0) === "[")
-        optids = JSON.parse(optids);
-    else
-        optids = optids.split(/[\s,]+/);
-    var selected = this.getAttribute("data-pcselector-selected"), selindex = -1;
-    var last_first = pcs.__sort__ === "last", used = {}, opt, curgroup = this;
+function populate_pcselector() {
+    const self = this;
+    removeClass(self, "need-pcselector");
+    let optids = self.getAttribute("data-pcselector-options") || "*";
+    optids = optids.startsWith("[") ? JSON.parse(optids) : optids.split(/[\s,]+/);
+    let selected, selindex = -1;
+    if (self.hasAttribute("data-pcselector-selected")) {
+        selected = self.getAttribute("data-pcselector-selected");
+    } else {
+        selected = self.getAttribute("data-default-value");
+    }
 
-    for (var i = 0; i < optids.length; ++i) {
-        var cid = optids[i], email, name, p;
-        if (cid === "" || cid === "*") {
-            optids.splice.apply(optids, [i + 1, 0].concat(pcs.__order__));
-        } else if (cid === "assignable") {
-            optids.splice.apply(optids, [i + 1, 0].concat(pcs.__assignable__[siteinfo.paperid] || []));
-        } else if (cid === "selected") {
-            if (selected != null)
-                optids.splice.apply(optids, [i + 1, 0, selected]);
-        } else if (cid === "extrev") {
-            var extrevs = pcs.__extrev__ ? pcs.__extrev__[siteinfo.paperid] : null;
-            if (extrevs && extrevs.length) {
-                optids.splice.apply(optids, [i + 1, 0].concat(extrevs));
-                optids.splice(i + 1 + extrevs.length, 0, "endgroup");
-                curgroup = document.createElement("optgroup");
-                curgroup.setAttribute("label", "External reviewers");
-                this.appendChild(curgroup);
-            }
-        } else if (cid === "endgroup") {
-            curgroup = this;
-        } else {
-            cid = +optids[i];
-            if (!cid) {
-                email = "none";
-                name = optids[i];
-                if (name === "" || name === "0")
-                    name = "None";
-            } else if ((p = pcs[cid])
-                       || (pcs.__other__ && (p = pcs.__other__[cid]))) {
-                email = p.email;
-                name = p.name;
-                if (last_first && p.lastpos) {
-                    var nameend = p.emailpos ? p.emailpos - 1 : name.length;
-                    name = name.substring(p.lastpos, nameend) + ", " + name.substring(0, p.lastpos - 1) + name.substring(nameend);
+    demand_load.pc().then(function (pcs) {
+        let last_first = pcs.__sort__ === "last", used = {}, opt, p, curgroup = self;
+
+        for (let i = 0; i < optids.length; ++i) {
+            let cid = optids[i];
+            if (cid === "" || cid === "*") {
+                optids.splice.apply(optids, [i + 1, 0].concat(pcs.__order__));
+            } else if (cid === "assignable") {
+                optids.splice.apply(optids, [i + 1, 0].concat(pcs.__assignable__[siteinfo.paperid] || []));
+            } else if (cid === "selected") {
+                if (selected != null)
+                    optids.splice.apply(optids, [i + 1, 0, selected]);
+            } else if (cid === "extrev") {
+                let extrevs = pcs.__extrev__ ? pcs.__extrev__[siteinfo.paperid] : null;
+                if (extrevs && extrevs.length) {
+                    optids.splice.apply(optids, [i + 1, 0].concat(extrevs));
+                    optids.splice(i + 1 + extrevs.length, 0, "endgroup");
+                    curgroup = document.createElement("optgroup");
+                    curgroup.setAttribute("label", "External reviewers");
+                    self.appendChild(curgroup);
                 }
+            } else if (cid === "endgroup") {
+                curgroup = self;
             } else {
-                continue;
-            }
-            if (!used[email]) {
-                used[email] = true;
-                opt = document.createElement("option");
-                opt.setAttribute("value", email);
-                opt.text = name;
-                curgroup.appendChild(opt);
-                if (email === selected || (email !== "none" && cid == selected))
-                    selindex = this.options.length - 1;
+                cid = +cid;
+                let email, name;
+                if (!cid) {
+                    email = "none";
+                    name = optids[i];
+                    if (name === "" || name === 0 || name === "0")
+                        name = "None";
+                } else if ((p = pcs[cid])
+                           || (pcs.__other__ && (p = pcs.__other__[cid]))) {
+                    email = p.email;
+                    name = p.name;
+                    if (last_first && p.lastpos) {
+                        var nameend = p.emailpos ? p.emailpos - 1 : name.length;
+                        name = name.substring(p.lastpos, nameend) + ", " + name.substring(0, p.lastpos - 1) + name.substring(nameend);
+                    }
+                } else {
+                    continue;
+                }
+                if (!used[email]) {
+                    used[email] = true;
+                    opt = document.createElement("option");
+                    opt.setAttribute("value", email);
+                    opt.text = name;
+                    curgroup.appendChild(opt);
+                    if (email === selected || (email !== "none" && cid == selected))
+                        selindex = self.options.length - 1;
+                }
             }
         }
-    }
 
-    if (selindex < 0) {
-        if (selected == 0 || selected == null) {
-            selindex = 0;
-        } else {
-            opt = document.createElement("option");
-            if ((p = pcs[selected])) {
-                opt.setAttribute("value", p.email);
-                opt.text = p.name + " (not assignable)";
+        if (selindex < 0) {
+            if (selected == 0 || selected == null) {
+                selindex = 0;
             } else {
-                opt.setAttribute("value", selected);
-                opt.text = "[removed from PC]";
+                opt = document.createElement("option");
+                const p = pcs[selected];
+                opt.setAttribute("value", p ? p.email : selected);
+                opt.text = p ? p.name + " (not assignable)" : "[removed from PC]";
+                self.appendChild(opt);
+                selindex = self.options.length - 1;
             }
-            this.appendChild(opt);
-            selindex = this.options.length - 1;
         }
-    }
-    this.selectedIndex = selindex;
-    this.setAttribute("data-default-value", this.options[selindex].value);
+        self.selectedIndex = selindex;
+        self.setAttribute("data-default-value", self.options[selindex].value);
+    });
 }
 
 $(function () {
-    $(".need-pcselector").length && demand_load.pc().then(function (pcs) {
-        $(".need-pcselector").each(function () { populate_pcselector.call(this, pcs); });
-    });
+    $(".need-pcselector").each(populate_pcselector);
 });
 
 
@@ -12043,7 +13170,7 @@ return function (n, scheme, flip) {
         categorical: (sci[0] & 2) !== 0,
         max: sci[1],
         rgb_array: rgb_array,
-        rgb: function (val) {
+        color: function (val) {
             var x = rgb_array(val);
             return sprintf("#%02x%02x%02x", x[0], x[1], x[2]);
         },
@@ -12282,17 +13409,58 @@ function textarea_shadow($self, width) {
 }
 
 (function ($) {
-var autogrowers = null;
+var autogrowers = null, shadow = [null, null], shadow_of = [null, null];
 function computed_line_height(css) {
     var lh = css.lineHeight;
     return parseFloat(lh) * (lh.endsWith("px") ? 1 : parseFloat(css.fontSize));
 }
 function resizer() {
+    shadow_of = [null, null];
     for (var i = autogrowers.length - 1; i >= 0; --i)
         autogrowers[i]();
 }
 function autogrower_retry(f, e) {
     $(e).data("autogrower") === f && f(null);
+}
+function shadow_index(e) {
+    return e.nodeName === "TEXTAREA" ? 1 : 0;
+}
+function make_shadow(e) {
+    const idx = shadow_index(e);
+    let sh = shadow[idx];
+    if (!sh) {
+        sh = shadow[idx] = document.createElement("div");
+        sh.style.position = "absolute";
+        sh.style.visibility = "hidden";
+        sh.style.top = "-10000px";
+        sh.style.left = "-10000px";
+        document.body.appendChild(sh);
+        if (idx === 0) {
+            sh.style.width = "10px";
+            sh.style.whiteSpace = "pre";
+        }
+    }
+    if (shadow_of[idx] !== e) {
+        const curs = window.getComputedStyle(e),
+            prop = ["fontSize", "fontFamily", "lineHeight", "fontWeight",
+                    "paddingLeft", "paddingRight", "paddingTop", "paddingBottom",
+                    "borderLeftWidth", "borderRightWidth", "borderTopWidth", "borderBottomWidth",
+                    "boxSizing"];
+        if (idx === 1) {
+            prop.push("wordWrap", "wordBreak", "overflowWrap", "whiteSpace", "width");
+        }
+        for (let p of prop) {
+            if (p in curs)
+                sh.style[p] = curs[p];
+        }
+        shadow_of[idx] = e;
+    }
+    let t = e.value;
+    if (t.endsWith("\n") || t.endsWith("\r")) {
+        t += " ";
+    }
+    sh.textContent = t;
+    return sh;
 }
 function make_textarea_autogrower(e) {
     var state = 0, minHeight, lineHeight, borderPadding, timeout = 0;
@@ -12307,11 +13475,11 @@ function make_textarea_autogrower(e) {
             minHeight = parseFloat(css.height);
             lineHeight = computed_line_height(css);
             borderPadding = parseFloat(css.borderTopWidth) + parseFloat(css.borderBottomWidth);
-            state = 1;
         }
-        e.style.height = "auto"; // in case text shrank (scrollHeight always ≥clientHeight)
-        var wh = Math.max(0.8 * window.innerHeight, 4 * lineHeight);
-        e.style.height = Math.min(wh, Math.max(e.scrollHeight + borderPadding, minHeight)) + "px";
+        ++state;
+        var sh = state === 1 ? e : make_shadow(e),
+            wh = Math.max(0.8 * window.innerHeight, 4 * lineHeight);
+        e.style.height = Math.min(wh, Math.max(sh.scrollHeight + borderPadding, minHeight)) + "px";
     }
     return f;
 }
@@ -12326,16 +13494,15 @@ function make_input_autogrower(e) {
             }
             var css = window.getComputedStyle(e);
             minWidth = parseFloat(css.width);
-            borderPadding = parseFloat(css.borderLeftWidth) + parseFloat(css.borderRightWidth) + parseFloat(css.fontSize) * 0.25;
-            state = 1;
+            borderPadding = parseFloat(css.borderLeftWidth) + parseFloat(css.borderRightWidth) + parseFloat(css.fontSize) * 0.333;
         }
+        ++state;
         var parent = e.closest(".main-column, .modal-dialog"),
             ww = Math.max(0.9 * (parent ? parent.scrollWidth : window.innerWidth), 100),
-            ws = e.scrollWidth;
-        if (ws > minWidth || ws > ww) {
-            e.style.width = minWidth + "px"; // in case text shrank (scrollWidth always ≥clientWidth)
-            ws = e.scrollWidth;
-            e.style.width = Math.min(ww, ws > minWidth ? ws + borderPadding : minWidth) + "px";
+            sh = make_shadow(e),
+            ws = sh.scrollWidth + borderPadding;
+        if (Math.max(e.scrollWidth, ws) > Math.min(minWidth, ww)) {
+            e.style.width = Math.min(ww, Math.max(ws, minWidth)) + "px";
         }
     }
     return f;
@@ -12359,6 +13526,7 @@ $.fn.autogrow = function () {
             }
         }
         if (f && $self.val() !== "") {
+            shadow_of[shadow_index(this)] = null;
             f();
         }
         removeClass(this, "need-autogrow");
@@ -12382,6 +13550,8 @@ $.fn.unautogrow = function () {
 
 (function () {
 function awakenf() {
+    if (hasClass(this, "need-diff-check"))
+        hotcrp.add_diff_check(this);
     if (hasClass(this, "need-autogrow"))
         $(this).autogrow();
     if (hasClass(this, "need-suggest"))
@@ -12391,7 +13561,7 @@ function awakenf() {
 }
 $.fn.awaken = function () {
     this.each(awakenf);
-    this.find(".need-autogrow, .need-suggest, .need-tooltip").each(awakenf);
+    this.find(".need-diff-check, .need-autogrow, .need-suggest, .need-tooltip").each(awakenf);
     return this;
 };
 $(function () { $(document.body).awaken(); });
@@ -12415,28 +13585,46 @@ $(function () {
         return p.join(">");
     }
     var err = [], elt = [];
-    $(".xinfo,.xconfirm,.xwarning,.xmerror,.aa,.strong,td.textarea,button.btn-link,button.btn-qlink,button.btn-qolink,.btn-xlink,.btn-disabled,a.btn[href='']").each(function () {
+    $(".xinfo,.xconfirm,.xwarning,.xmerror,.aa,.strong,td.textarea,button.btn-link,button.btn-qlink,button.btn-qolink,.btn-xlink,.btn-disabled,a.btn[href=''],.p,.mg").each(function () {
         err.push(locator(this));
         elt.push(this);
     });
+    var example;
+    try {
+        example = (0, eval)("(function (a) { var j = 0; for (i of a) { j += i; } return j; })([1, 10, 200])");
+        example !== 211 && err.push("for..of loop produces unexpected result");
+    } catch (e) {
+        err.push("for..of loop not supported");
+    }
+    example = null;
+    try {
+        example = (0, eval)("(function (a) { let j = a.length; return j + a[0]; })([1, 10, 200])");
+        example !== 4 && err.push("let test produces unexpected result");
+    } catch (e) {
+        err.push("let not supported");
+    }
+    if (document.documentMode || window.attachEvent) {
+        var msg = $('<div class="msg msg-error"></div>').appendTo("#h-messages");
+        append_feedback_near(msg[0], {message: "<0>This site no longer supports Internet Explorer", status: 2});
+        append_feedback_near(msg[0], {message: "<5>Please use <a href=\"https://browsehappy.com/\">a modern browser</a> if you can.", status: -5 /*MessageSet::INFORM*/});
+        err.push("Internet Explorer");
+    }
     if (err.length > 0) {
         if (window.console) {
+            console.log(err.join("\n"));
             for (var i = 0; i !== elt.length; ++i) {
                 console.log(elt[i]);
             }
         }
         log_jserror(err.join("\n"));
     }
-    if (document.documentMode || window.attachEvent) {
-        var msg = $('<div class="msg msg-error"></div>').appendTo("#h-messages");
-        append_feedback_near(msg[0], {message: "<0>This site no longer supports Internet Explorer", status: 2});
-        append_feedback_near(msg[0], {message: "<5>Please use <a href=\"https://browsehappy.com/\">a modern browser</a> if you can.", status: -5 /*MessageSet::INFORM*/});
-    }
 });
 
 
 Object.assign(window.hotcrp, {
+    $e: $e,
     // add_comment
+    // add_diff_check
     // add_review
     // add_preference_ajax
     check_version: check_version,
@@ -12452,20 +13640,22 @@ Object.assign(window.hotcrp, {
     fold_storage: fold_storage,
     foldup: foldup,
     handle_ui: handle_ui,
-    highlight_form_children: hiliter_children,
     hoturl: hoturl,
     // init_deadlines
     // load_editable_paper
     // load_editable_review
     // load_paper_sidebar
     // make_review_field
+    // make_time_point
+    // monitor_autoassignment
     // onload
-    // paper_edit_conditions
+    paper_edit_conditions: function () {}, // XXX
+    popup_skeleton: popup_skeleton,
     // render_list
+    render_text: render_text,
     render_text_page: render_text.on_page,
-    render_user: render_user,
     // replace_editable_field
-    scorechart: scorechart
+    scorechart: scorechart,
     // set_response_round
     // set_review_form
     // set_scoresort
@@ -12474,4 +13664,6 @@ Object.assign(window.hotcrp, {
     // tooltip
     // tracker_show_elapsed
     // update_tag_decoration
+    usere: usere
+    // wstorage
 });

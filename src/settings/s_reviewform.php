@@ -49,7 +49,7 @@ class ReviewForm_SettingParser extends SettingParser {
             $rfs->required = false;
             $sv->set_oldv($si, $rfs);
         } else if ($si->name_matches("rf/", "*", "/title")) {
-            $n = $sv->oldv("rf/{$si->name1}/name");
+            $n = $sv->vstr("rf/{$si->name1}/name");
             $sv->set_oldv($si, $n === "" ? "[Review field]" : $n);
         } else if ($si->name_matches("rf/", "*", "/values_text")) {
             $rfs = $sv->oldv("rf/{$si->name1}");
@@ -65,8 +65,7 @@ class ReviewForm_SettingParser extends SettingParser {
         } else if ($si->name_matches("rf/", "*", "/values/", "*")) {
             $sv->set_oldv($si, new RfValue_Setting);
         } else if ($si->name_matches("rf/", "*", "/values/", "*", "/title")) {
-            $rfs = $sv->oldv($si->name_prefix(2));
-            $t0 = $rfs->name ? "‘{$rfs->name}’" : "Review field";
+            $t0 = $sv->oldv($si->name_prefix(2) . "/title");
             $rfv = $sv->oldv($si->name_prefix(4));
             $t1 = $rfv->name ? "value ‘{$rfv->name}’" : "value";
             $sv->set_oldv($si, "{$t0} {$t1}");
@@ -189,7 +188,7 @@ class ReviewForm_SettingParser extends SettingParser {
             return false;
         }
         if (($rfv->name ?? "") !== ""
-            && $sv->error_if_duplicate_member($vpfx, $ctr, "name", "Field value")) {
+            && $sv->error_if_duplicate_member($vpfx, $ctr, "name", "Field value", true)) {
             return false;
         }
         $rfv->symbol = $symbol;
@@ -586,32 +585,46 @@ Note that complex HTML will not appear on offline review forms.</p></div>', 'set
             "</div></div>";
     }
 
-    /** @return list<mixed> */
+    /** @param array<mixed,object> $tmap
+     * @return array<string,list<string>> */
+    static function make_convertible_to_map($tmap) {
+        $cvts = [];
+        foreach ($tmap as $xf) {
+            $cvts[$xf->name] = [$xf->name];
+        }
+        foreach ($tmap as $xf) {
+            foreach ((array) ($xf->convert_from_functions ?? []) as $k => $v) {
+                if ($v && isset($cvts[$k])) {
+                    $a = &$cvts[$k];
+                    $i = 0;
+                    while ($i !== count($a)
+                           && ($tmap[$a[$i]]->order ?? INF) < ($xf->order ?? INF)) {
+                        ++$i;
+                    }
+                    array_splice($a, $i, 0, [$xf->name]);
+                    unset($a);
+                }
+            }
+        }
+        return $cvts;
+    }
+
+    /** @return list<array> */
     static function make_types_json($tmap) {
+        $cvts = self::make_convertible_to_map($tmap);
         $typelist = [];
         foreach ($tmap as $rf) {
             $j = ["name" => $rf->name, "title" => $rf->title];
             foreach ($rf->properties ?? (object) [] as $k => $v) {
                 $j["properties"][$k] = !!$v;
             }
-            $j["convertible_to"] = [$rf->name];
+            $j["convertible_to"] = $cvts[$rf->name];
             if (!empty($rf->placeholders)) {
                 $j["placeholders"] = $rf->placeholders;
             }
-            $typelist[$rf->name] = $j;
+            $typelist[] = $j;
         }
-        foreach ($tmap as $rf) {
-            foreach ($rf->convert_from_functions ?? (object) [] as $k => $v) {
-                if ($v) {
-                    $a = &$typelist[$k]["convertible_to"];
-                    for ($i = 0; $i !== count($a) && $tmap[$a[$i]]->order < $rf->order; ++$i) {
-                    }
-                    array_splice($a, $i, 0, [$rf->name]);
-                    unset($a);
-                }
-            }
-        }
-        return array_values($typelist);
+        return $typelist;
     }
 
     static function print(SettingValues $sv) {
@@ -626,12 +639,12 @@ Note that complex HTML will not appear on offline review forms.</p></div>', 'set
             echo '<div class="feedback is-note">Authors cannot see reviews at the moment.</div>';
         }
         echo '</div><template id="rf_template" class="hidden">',
-            '<div id="rf/$" class="settings-rf has-fold fold2c ui-fold js-fold-focus">',
+            '<div id="rf/$" class="settings-xf settings-rf has-fold fold2c ui-fold js-fold-focus">',
             '<div class="settings-draghandle ui-drag js-settings-drag" draggable="true" title="Drag to reorder fields">',
             Icons::ui_move_handle_horizontal(),
             '</div>',
-            '<div id="rf/$/view" class="settings-rf-view fn2 ui js-foldup"></div>',
-            '<fieldset id="rf/$/edit" class="fieldset-covert settings-rf-edit fx2">',
+            '<div id="rf/$/view" class="settings-xf-viewbox fn2 ui js-foldup"></div>',
+            '<fieldset id="rf/$/edit" class="fieldset-covert settings-xf-edit fx2">',
               '<div class="entryi mb-3" data-property="name"><div class="entry">',
                 '<input name="rf/$/name" id="rf/$/name" type="text" size="50" class="font-weight-bold want-focus want-delete-marker" placeholder="Field name">',
               '</div></div>';
@@ -639,7 +652,7 @@ Note that complex HTML will not appear on offline review forms.</p></div>', 'set
                 "horizontal" => true,
                 "group_attr" => ["data-property" => "type"]
             ]);
-        $sv->print_group("reviewfield/properties");
+        $sv->print_members("reviewfield/properties");
         echo '</fieldset>', // rf/$/edit
             '</div></template>';
 
@@ -657,7 +670,6 @@ Note that complex HTML will not appear on offline review forms.</p></div>', 'set
         }
         $sj["fields"] = $rfj;
 
-        $sj["samples"] = json_decode(file_get_contents(SiteLoader::find("etc/reviewformlibrary.json")));
         $sj["message_list"] = $sv->message_list();
         $sj["types"] = self::make_types_json($sv->conf->review_field_type_map());
 

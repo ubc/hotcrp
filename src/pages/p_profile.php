@@ -72,7 +72,7 @@ class Profile_Page {
         if (isset($this->qreq->profile_contactid)
             && $this->qreq->profile_contactid !== (string) $user->contactId) {
             if (isset($this->qreq->save) || isset($this->qreq->savebulk)) {
-                $this->conf->error_msg("<0>Changes not saved; your session has changed since you last reloaded this tab");
+                $this->conf->error_msg("<0>Changes not saved; your session has changed since you last loaded this tab");
             }
             $this->conf->redirect_self($this->qreq, ["u" => $u]);
         }
@@ -115,7 +115,7 @@ class Profile_Page {
             $user = $this->viewer;
         } else if ($this->viewer->privChair
                    && ($u === "new" || $u === "bulk")) {
-            $user = Contact::make($this->conf);
+            $user = Contact::make_placeholder($this->conf);
             $this->page_type = $u === "new" ? 1 : 2;
         } else {
             $user = $this->handle_user_search($u);
@@ -167,8 +167,8 @@ class Profile_Page {
 
         // check email
         if (!$acct || strcasecmp($ustatus->jval->email, $acct->email)) {
-            if ($acct && $acct->data("locked")) {
-                $ustatus->error_at("email", "<0>This account is locked, so you can’t change its email address");
+            if ($acct && $acct->security_locked()) {
+                $ustatus->error_at("email", "<0>This account’s security settings are locked, so you can’t change its email address");
                 return null;
             } else if (($new_acct = $this->conf->fresh_user_by_email($ustatus->jval->email))) {
                 if (!$acct) {
@@ -198,8 +198,10 @@ class Profile_Page {
                 $old_preferredEmail = $acct->preferredEmail;
                 $acct->preferredEmail = $ustatus->jval->email;
                 $capability = new TokenInfo($this->conf, TokenInfo::CHANGEEMAIL);
-                $capability->set_user($acct)->set_token_pattern("hcce[20]")->set_expires_after(259200);
-                $capability->data = json_encode_db(["oldemail" => $acct->email, "uemail" => $ustatus->jval->email]);
+                $capability->set_user($acct)
+                    ->set_token_pattern("hcce[20]")
+                    ->set_expires_after(259200)
+                    ->assign_data(["oldemail" => $acct->email, "uemail" => $ustatus->jval->email]);
                 if (($token = $capability->create())) {
                     $rest = ["capability_token" => $token, "sensitive" => true];
                     $mailer = new HotCRPMailer($this->conf, $acct, $rest);
@@ -224,6 +226,25 @@ class Profile_Page {
         return $ustatus->save_user($ustatus->jval, $acct);
     }
 
+
+    /** @return \Generator<MessageItem> */
+    private function decorated_message_list(MessageSet $msx, UserStatus $us = null) {
+        $ms = new MessageSet(MessageSet::IGNORE_DUPS_FIELD);
+        foreach ($msx->message_list() as $mi) {
+            if ($us
+                && $mi->field
+                && ($l = $us->field_label($mi->field))
+                && $ms->message_index($mi) === false
+                && $mi->status !== MessageSet::INFORM) {
+                $mi = clone $mi;
+                $mi->message = "<5><a href=\"#{$mi->field}\">{$l}</a>: " . $mi->message_as(5);
+            }
+            $ms->append_item($mi);
+        }
+        foreach ($ms->message_list() as $mi) {
+            yield $mi;
+        }
+    }
 
     /** @param string $text
      * @param string $filename */
@@ -284,11 +305,11 @@ class Profile_Page {
 
         $ustatus = new UserStatus($this->viewer);
         $ustatus->no_deprivilege_self = true;
-        $ustatus->no_nonempty_profile = true;
+        $ustatus->update_profile_if_empty = !$this->qreq->bulkoverride;
         $ustatus->add_csv_synonyms($csv);
 
         while (($line = $csv->next_row())) {
-            $ustatus->set_user(Contact::make($this->conf));
+            $ustatus->set_user(Contact::make_placeholder($this->conf));
             $ustatus->clear_messages();
             $ustatus->jval = (object) ["id" => null];
             $ustatus->csvreq = $line;
@@ -319,23 +340,23 @@ class Profile_Page {
         }
 
         if (!empty($ustatus->unknown_topics)) {
-            $ms->warning_at(null, $this->conf->_("<0>Unknown topics ignored (%#s)", array_keys($ustatus->unknown_topics)));
+            $ms->warning_at(null, $this->conf->_("<0>Unknown topics ignored ({:list})", array_keys($ustatus->unknown_topics)));
         }
         $mpos = 0;
         if (!empty($success)) {
-            $ms->splice_item($mpos++, MessageItem::success($this->conf->_("<5>Saved accounts %#s", $success)));
+            $ms->splice_item($mpos++, MessageItem::success($this->conf->_("<5>Saved accounts {:list}", $success)));
         } else if ($ms->has_error()) {
             $ms->splice_item($mpos++, MessageItem::error($this->conf->_("<0>Changes not saved; please correct these errors and try again")));
         }
         if (!empty($notified)) {
-            $ms->splice_item($mpos++, MessageItem::success($this->conf->_("<5>Activated accounts with email notification %#s", $notified)));
+            $ms->splice_item($mpos++, MessageItem::success($this->conf->_("<5>Activated accounts and sent mail to {:list}", $notified)));
         }
         if (!empty($nochanges)) {
-            $ms->splice_item($mpos++, new MessageItem(null, $this->conf->_("<5>No changes to accounts %#s", $nochanges), MessageSet::WARNING_NOTE));
+            $ms->splice_item($mpos++, new MessageItem(null, $this->conf->_("<5>No changes to accounts {:list}", $nochanges), MessageSet::WARNING_NOTE));
         } else if (!$ms->has_message()) {
             $ms->splice_item($mpos++, new MessageItem(null, "<0>No changes", MessageSet::WARNING_NOTE));
         }
-        $this->conf->feedback_msg($ms->deduplicate(MessageSet::DEDUP_NO_FIELD));
+        $this->conf->feedback_msg($this->decorated_message_list($ms));
         return !$ms->has_error();
     }
 
@@ -348,8 +369,8 @@ class Profile_Page {
         $this->ustatus->jval = (object) ["id" => $this->user->has_account_here() ? $this->user->contactId : "new"];
         $this->ustatus->no_deprivilege_self = true;
         if ($this->page_type !== 0) {
-            $this->ustatus->no_nonempty_profile = true;
-            $this->ustatus->no_nonempty_pc = true;
+            $this->ustatus->update_profile_if_empty = true;
+            $this->ustatus->update_pc_if_empty = true;
             $this->ustatus->notify = true;
         }
 
@@ -366,8 +387,7 @@ class Profile_Page {
         } else if ($this->ustatus->created && $this->ustatus->notified) {
             $this->ustatus->prepend_msg("<5>Account " . Ht::link($saved_user->name_h(NAME_E), $purl) . " created and notified", MessageSet::SUCCESS);
         } else if ($this->ustatus->created) {
-            $this->ustatus->prepend_msg("<5>Account " . Ht::link($saved_user->name_h(NAME_E), $purl) . " created", MessageSet::SUCCESS);
-            $this->ustatus->splice_msg(1, "<0>The user was not notified by email.", MessageSet::INFORM);
+            $this->ustatus->prepend_msg("<5>Account " . Ht::link($saved_user->name_h(NAME_E), $purl) . " created, but not notified", MessageSet::SUCCESS);
         } else {
             $pos = 0;
             if ($this->page_type !== 0) {
@@ -388,7 +408,7 @@ class Profile_Page {
                 $this->ustatus->splice_msg($pos++, "<0>Changes saved{$diffs}", MessageSet::SUCCESS);
             }
         }
-        $this->conf->feedback_msg($this->ustatus->deduplicate(MessageSet::DEDUP_NO_FIELD));
+        $this->conf->feedback_msg($this->decorated_message_list($this->ustatus, $this->ustatus));
 
         // exit on error
         if ($this->ustatus->has_error()) {
@@ -454,7 +474,7 @@ class Profile_Page {
             $this->conf->error_msg("<0>You can’t delete your own account");
         } else if (!$this->user->has_account_here()) {
             $this->conf->feedback_msg(new MessageItem(null, "<0>This user’s account is not active on this site", MessageSet::MARKED_NOTE));
-        } else if ($this->user->data("locked")) {
+        } else if ($this->user->security_locked_here()) {
             $this->conf->error_msg("<0>This account is locked and can’t be deleted");
         } else if (($tracks = UserStatus::user_paper_info($this->conf, $this->user->contactId))
                    && !empty($tracks->soleAuthor)) {
@@ -471,7 +491,7 @@ class Profile_Page {
             }
             // delete twiddle tags
             $assigner = new AssignmentSet($this->viewer);
-            $assigner->override_conflicts();
+            $assigner->set_override_conflicts(true);
             $assigner->parse("paper,tag\nall,{$this->user->contactId}~all#clear\n");
             $assigner->execute();
             // clear caches
@@ -510,7 +530,7 @@ class Profile_Page {
     private function prepare_and_crosscheck() {
         // import properties from cdb
         if (($cdbu = $this->user->cdb_user())) {
-            $this->user->import_prop($cdbu, true);
+            $this->user->import_prop($cdbu, 1);
             if ($this->user->prop_changed()) {
                 $this->user->save_prop();
             }
@@ -613,7 +633,7 @@ class Profile_Page {
         }
         echo Ht::form($this->conf->hoturl("=profile", $form_params), [
             "id" => "f-profile",
-            "class" => "need-unload-protection",
+            "class" => "need-diff-check need-unload-protection",
             "data-user" => $this->page_type ? null : $this->user->email
         ]);
 
@@ -642,7 +662,8 @@ class Profile_Page {
 
         if ($this->page_type === 0) {
             $first = $this->viewer->privChair;
-            foreach ($this->ustatus->cs()->members("", "title") as $gj) {
+            $cs = $this->ustatus->cs();
+            foreach ($cs->members("", "title") as $gj) {
                 echo '<li class="leftmenu-item',
                     $gj->name === $this->topic ? ' active' : ' ui js-click-child',
                     $first ? ' leftmenu-item-gap4' : '', '">';
@@ -650,7 +671,12 @@ class Profile_Page {
                 if ($gj->name === $this->topic) {
                     echo $title;
                 } else {
-                    echo Ht::link($title, $this->conf->selfurl($this->qreq, ["t" => $gj->name]));
+                    $aextra = [];
+                    if (isset($gj->dim_group_if)
+                        && $cs->xtp->check($gj->dim_group_if, $gj)) {
+                        $aextra["class"] = "dim";
+                    }
+                    echo Ht::link($title, $this->conf->selfurl($this->qreq, ["t" => $gj->name]), $aextra);
                 }
                 echo '</li>';
                 $first = false;
@@ -659,9 +685,10 @@ class Profile_Page {
 
         echo '</ul>';
 
-        if ($this->page_type === 0) {
-            echo '<div class="leftmenu-if-left if-alert mt-5">',
-                Ht::submit("save", "Save changes", ["class" => "btn-primary"]), '</div>';
+        if ($this->page_type === 0 || $this->page_type === 1) {
+            $t = $this->page_type === 0 ? "Save changes" : "Create account";
+            echo '<div class="leftmenu-if-left if-differs mt-5">',
+                Ht::submit("save", $t, ["class" => "btn-primary"]), '</div>';
         }
 
         echo '</nav></div>',
@@ -693,11 +720,11 @@ class Profile_Page {
                 echo 'New account';
             } else {
                 if ($this->user !== $this->viewer) {
-                    echo $this->viewer->reviewer_html_for($this->user), ' ';
+                    echo $this->viewer->name_for("rn", $this->user), ' ';
                 }
-                echo htmlspecialchars($this->ustatus->cs()->get($this->topic)->title);
+                echo htmlspecialchars($this->ustatus->cs()->get($this->topic)->title), ' ';
                 if ($this->user->is_disabled()) {
-                    echo ' <span class="n dim">(disabled)</span>';
+                    echo '<span class="n dim user-disabled-marker">(disabled)</span>';
                 }
             }
             echo '</h2>';
@@ -705,19 +732,15 @@ class Profile_Page {
 
         if (($this->conf->report_saved_messages() < 1 || !$use_req)
             && $this->ustatus->has_message()) {
-            $this->conf->feedback_msg($this->ustatus->deduplicate(MessageSet::DEDUP_NO_FIELD));
+            $this->conf->feedback_msg($this->decorated_message_list($this->ustatus, $this->ustatus));
         }
 
         if ($this->page_type === 2) {
-            $this->ustatus->print_group("__bulk");
+            $this->ustatus->print_members("__bulk");
         } else {
-            $this->ustatus->print_group($this->topic);
-            if (false
-                && $this->ustatus->is_auth_self()
-                && $this->ustatus->cdb_user()) {
-                echo '<div class="form-g"><div class="checki"><label><span class="checkc">',
-                    Ht::checkbox("saveglobal", 1, $use_req ? !!$this->qreq->saveglobal : true, ["class" => "ignore-diff"]),
-                    '</span>Update global profile</label></div></div>';
+            $this->ustatus->cs()->print_body_members($this->topic);
+            if ($this->ustatus->inputs_printed()) {
+                $this->ustatus->print_actions();
             }
             echo "</div>"; // foldaccount
         }
@@ -725,7 +748,7 @@ class Profile_Page {
         echo "</main></form>";
 
         if ($this->page_type === 0) {
-            Ht::stash_script('hotcrp.highlight_form_children("#f-profile")');
+            Ht::stash_script('$("#f-profile").awaken()');
         }
         $this->qreq->print_footer();
     }

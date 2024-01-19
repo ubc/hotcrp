@@ -1,13 +1,19 @@
 <?php
 // fieldrender.php -- HotCRP helper class for multi-format messages
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
 
 class FieldRender {
-    /** @var ?Contact */
+    /** @var ?Contact
+     * @readonly */
     public $user;
-    /** @var ?PaperTable */
+    /** @var ?PaperTable
+     * @readonly */
     public $table;
-    /** @var int */
+    /** @var ?PaperColumn
+     * @readonly */
+    public $column;
+    /** @var int
+     * @readonly */
     public $context;
     /** @var null|false|string */
     public $title;
@@ -18,29 +24,47 @@ class FieldRender {
     /** @var ?bool */
     public $value_long;
 
-    const CFHTML = 1;
-    const CFPAGE = 2;
-    const CFLIST = 4;
-    const CFCOLUMN = 8;
-    const CFSUGGEST = 16;
-    const CFCSV = 32;
-    const CFMAIL = 64;
-    const CFFORM = 128;
-    const CFVERBOSE = 256;
+    const CFHTML = 0x1;
+    const CFTEXT = 0x2;
 
-    const CTEXT = 0;
-    const CPAGE = 3;
+    const CFPAGE = 0x10;
+    const CFFORM = 0x20;
+    const CFLIST = 0x40;
+    const CFMAIL = 0x80;
+    const CFSUGGEST = 0x100;
+
+    const CFCSV = 0x1000;
+    const CFROW = 0x2000;
+    const CFCOLUMN = 0x4000;
+    const CFVERBOSE = 0x8000;
 
     /** @param int $context */
     function __construct($context, Contact $user = null) {
+        assert(($context & 3) !== 0 && ($context & 3) !== 3);
+        assert((($context & 0xFF0) & (($context & 0xFF0) - 1)) === 0);
         $this->context = $context;
         $this->user = $user;
     }
-    /** @param ?int $context */
-    function clear($context = null) {
-        if ($context !== null) {
-            $this->context = $context;
-        }
+    /** @param PaperTable $table
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function make_table($table) {
+        assert(($this->context & self::CFHTML) === self::CFHTML);
+        assert(($this->context & (self::CFPAGE | self::CFFORM)) !== 0);
+        assert(!$this->table && (!$this->user || $this->user === $table->user));
+        $this->user = $table->user;
+        $this->table = $table;
+        return $this;
+    }
+    /** @param PaperColumn $column
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function make_column($column) {
+        $this->column = $column;
+        return $this;
+    }
+
+    function clear() {
         $this->title = null;
         $this->value = $this->value_format = $this->value_long = null;
     }
@@ -48,27 +72,43 @@ class FieldRender {
     function is_empty() {
         return (string) $this->title === "" && (string) $this->value === "";
     }
-    /** @return bool */
+    /** @param int $context
+     * @return bool */
+    function want($context) {
+        return ($this->context & $context) === $context;
+    }
+    /** @return bool
+     * @deprecated */
     function for_page() {
         return ($this->context & self::CFPAGE) !== 0;
     }
-    /** @return bool */
+    /** @return bool
+     * @deprecated */
+    function for_form() {
+        return ($this->context & self::CFFORM) !== 0;
+    }
+    /** @return bool
+     * @deprecated */
     function want_text() {
         return ($this->context & self::CFHTML) === 0;
     }
-    /** @return bool */
+    /** @return bool
+     * @deprecated */
     function want_html() {
         return ($this->context & self::CFHTML) !== 0;
     }
-    /** @return bool */
+    /** @return bool
+     * @deprecated */
     function want_list() {
         return ($this->context & self::CFLIST) !== 0;
     }
-    /** @return bool */
+    /** @return bool
+     * @deprecated */
     function want_list_row() {
         return ($this->context & (self::CFLIST | self::CFCOLUMN)) === self::CFLIST;
     }
-    /** @return bool */
+    /** @return bool
+     * @deprecated */
     function want_list_column() {
         return ($this->context & (self::CFLIST | self::CFCOLUMN)) ===
             (self::CFLIST | self::CFCOLUMN);
@@ -94,13 +134,12 @@ class FieldRender {
     /** @param bool $b
      * @return $this */
     function set_bool($b) {
-        $v = $this->verbose();
-        if ($this->context & self::CFHTML) {
-            $this->set_text($b ? "✓" : ($v ? "✗" : ""));
-        } else if ($this->context & self::CFCSV) {
-            $this->set_text($b ? "Y" : ($v ? "N" : ""));
+        if (($this->context & self::CFHTML) !== 0) {
+            $this->set_text($b ? "✓" : "✗");
+        } else if (($this->context & self::CFCSV) !== 0) {
+            $this->set_text($b ? "Y" : "N");
         } else {
-            $this->set_text($b ? "Yes" : ($v ? "No" : ""));
+            $this->set_text($b ? "Yes" : "No");
         }
         return $this;
     }
@@ -117,18 +156,18 @@ class FieldRender {
         } else if ($this->value_format === 0) {
             if ($this->value_long) {
                 $html = Ht::format0($this->value);
-                $divclass = $divclass ? "format0 " . $divclass : "format0";
+                $divclass = $divclass ? "format0 {$divclass}" : "format0";
             } else {
                 $html = htmlspecialchars($this->value);
             }
         } else {
             $html = htmlspecialchars($this->value);
-            $divclass = $divclass ? "need-format " . $divclass : "need-format";
-            $rest = ' data-format="' . $this->value_format . '"';
+            $divclass = $divclass ? "need-format {$divclass}" : "need-format";
+            $rest = " data-format=\"{$this->value_format}\"";
         }
         if ($divclass || $rest) {
-            $html = '<div' . ($divclass ? ' class="' . $divclass . '"' : "")
-                . $rest . '>' . $html . '</div>';
+            $divclass = $divclass ? " class=\"{$divclass}\"" : "";
+            $html = "<div{$divclass}{$rest}>{$html}</div>";
         }
         return $html;
     }

@@ -30,6 +30,8 @@ class Column {
     public $sort_subset;
     /** @var null|int|float */
     public $order;
+    /** @var null|int|float */
+    public $view_order;
     /** @var ?int */
     public $__source_order;
     /** @var bool */
@@ -67,8 +69,8 @@ class Column {
         if (isset($arg->completion)) {
             $this->completion = $arg->completion;
         }
-        if (isset($arg->order) || isset($arg->position) /* XXX */) {
-            $this->order = $arg->order ?? $arg->position;
+        if (isset($arg->order)) {
+            $this->order = $arg->order;
         }
         if (isset($arg->__source_order)) {
             $this->__source_order = $arg->__source_order;
@@ -78,6 +80,36 @@ class Column {
     /** @return list<string> */
     function decorations() {
         return $this->decorations ?? [];
+    }
+
+    /** @param string $decor
+     * @return int|false */
+    function decoration_index($decor) {
+        $l = strlen($decor);
+        foreach ($this->decorations ?? [] as $i => $s) {
+            if (str_starts_with($s, $decor)
+                && (strlen($s) === $l || $s[$l] === "=")) {
+                return $i;
+            }
+        }
+        return false;
+    }
+
+    /** @return bool */
+    function has_decoration($decor) {
+        return $this->decoration_index($decor) !== false;
+    }
+
+    /** @return ?string */
+    function decoration_value($decor) {
+        if (($i = $this->decoration_index($decor)) !== false) {
+            /** @phan-suppress-next-line PhanTypeArraySuspiciousNullable */
+            $s = $this->decorations[$i];
+            $l = strlen($decor);
+            return strlen($s) === $l ? "" : substr($s, $l + 1);
+        } else {
+            return null;
+        }
     }
 
     /** @param string $decor
@@ -113,6 +145,15 @@ class Column {
         }
     }
 
+    /** @param ?list<string> $decors
+     * @return $this */
+    function add_decorations($decors) {
+        foreach ($decors ?? [] as $decor) {
+            $this->add_decoration($decor);
+        }
+        return $this;
+    }
+
     /** @return bool */
     function default_sort_descending() {
         return $this->sort === 2;
@@ -127,14 +168,24 @@ class Column {
     }
 
     /** @param ?string $add
-     * @param ?list<string> $remove
+     * @param ?list<?string> $remove
      * @return true */
     protected function __add_decoration($add, $remove = []) {
-        if (!empty($remove)) {
-            $this->decorations = array_values(array_diff($this->decorations ?? [], $remove));
+        foreach ($remove as $s) {
+            if ($s !== null && ($i = $this->decoration_index($s)) !== false) {
+                array_splice($this->decorations, $i, 1);
+            }
         }
-        if ($add !== null && $add !== "" && !in_array($add, $this->decorations ?? [])) {
-            $this->decorations[] = $add;
+        if ($add !== null && $add !== "") {
+            $addx = $add;
+            if (($eq = strpos($add, "=")) !== false) {
+                $addx = substr($add, 0, $eq);
+            }
+            if (($i = $this->decoration_index($addx)) !== false) {
+                $this->decorations[$i] = $add;
+            } else {
+                $this->decorations[] = $add;
+            }
         }
         return true;
     }

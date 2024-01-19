@@ -1,8 +1,9 @@
 <?php
 // mimetype.php -- HotCRP helper file for MIME types
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
 
 class Mimetype {
+    // NB types listed here must also be present in `lib/mime.types`
     const TXT_TYPE = "text/plain";
     const BIN_TYPE = "application/octet-stream";
     const PDF_TYPE = "application/pdf";
@@ -15,12 +16,15 @@ class Mimetype {
     const TAR_TYPE = "application/x-tar";
     const ZIP_TYPE = "application/zip";
     const RAR_TYPE = "application/x-rar-compressed";
+    const KEYNOTE_TYPE = "application/vnd.apple.keynote";
 
     const FLAG_INLINE = 1;
     const FLAG_UTF8 = 2;
     const FLAG_COMPRESSIBLE = 4;
     const FLAG_INCOMPRESSIBLE = 8;
     const FLAG_TEXTUAL = 16;
+    const FLAG_REQUIRE_SNIFF = 32;
+    const FLAG_ZIPLIKE = 64;
 
     /** @var string */
     public $mimetype;
@@ -31,26 +35,33 @@ class Mimetype {
     /** @var int */
     public $flags;
 
+    /** @var associative-array<string,Mimetype> */
     private static $tmap = [];
 
-    /** @var array<string,array{0:string,1:?string,2:int,3?:string,4?:string,5?:string}> */
-    private static $tinfo = [
+    /** @var array<string,array{0:string,1:?string,2:int,3?:string,4?:string,5?:string}>
+     * @readonly */
+    public static $tinfo = [
         self::TXT_TYPE =>     [".txt", "text", self::FLAG_INLINE | self::FLAG_COMPRESSIBLE | self::FLAG_TEXTUAL],
-        self::PDF_TYPE =>     [".pdf", "PDF", self::FLAG_INLINE],
+        self::PDF_TYPE =>     [".pdf", "PDF", self::FLAG_INLINE | self::FLAG_REQUIRE_SNIFF],
         self::PS_TYPE =>      [".ps", "PostScript", self::FLAG_COMPRESSIBLE],
         self::PPT_TYPE =>     [".ppt", "PowerPoint", self::FLAG_INCOMPRESSIBLE, "application/mspowerpoint", "application/powerpoint", "application/x-mspowerpoint"],
+        self::KEYNOTE_TYPE => [".key", "Keynote", self::FLAG_INCOMPRESSIBLE | self::FLAG_ZIPLIKE, "application/x-iwork-keynote-sffkey"],
         "application/vnd.openxmlformats-officedocument.presentationml.presentation" =>
                               [".pptx", "PowerPoint", self::FLAG_INCOMPRESSIBLE],
         "video/mp4" =>        [".mp4", null, self::FLAG_INCOMPRESSIBLE],
         "video/x-msvideo" =>  [".avi", null, self::FLAG_INCOMPRESSIBLE],
         self::JSON_TYPE =>    [".json", "JSON", self::FLAG_UTF8 | self::FLAG_COMPRESSIBLE | self::FLAG_TEXTUAL],
         self::JPG_TYPE =>     [".jpg", "JPEG", self::FLAG_INLINE, ".jpeg"],
-        self::PNG_TYPE =>     [".png", "PNG", self::FLAG_INLINE],
-        self::GIF_TYPE =>     [".gif", "GIF", self::FLAG_INLINE]
+        self::PNG_TYPE =>     [".png", "PNG", self::FLAG_INLINE | self::FLAG_REQUIRE_SNIFF],
+        self::GIF_TYPE =>     [".gif", "GIF", self::FLAG_INLINE | self::FLAG_REQUIRE_SNIFF]
     ];
 
-    private static $mime_types = null;
-    private static $finfo = null;
+    /** @var bool */
+    private static $mime_types_loaded = false;
+    /** @var ?int */
+    private static $max_extension_length;
+    /** @var ?\finfo */
+    private static $finfo;
 
     /** @param string $mimetype
      * @param string $extension
@@ -64,6 +75,67 @@ class Mimetype {
         $this->flags = $flags;
     }
 
+    /** @param 0|1|2 $type */
+    static function load_mime_types($type = 0) {
+        if ($type === 2) {
+            self::$tmap = [];
+            self::$mime_types_loaded = false;
+        } else if (empty(self::$tmap)) {
+            foreach (self::$tinfo as $xtype => $data) {
+                $mt = new Mimetype($xtype, $data[0], $data[1], $data[2]);
+                self::$tmap[$xtype] = self::$tmap[$mt->extension] = $mt;
+                for ($i = 3; $i < count($data); ++$i) {
+                    self::$tmap[$data[$i]] = $mt;
+                }
+            }
+        }
+        if (!self::$mime_types_loaded && $type !== 1) {
+            self::$mime_types_loaded = true;
+            $t = (string) @file_get_contents(SiteLoader::find("lib/mime.types"));
+            $t = preg_replace('/[ \t]+/', " ", $t);
+            foreach (explode("\n", $t) as $l) {
+                $a = explode(" ", trim($l));
+                if ($a[0] === "#!!" && count($a) >= 2) {
+                    if (!isset(self::$tmap[$a[1]])) {
+                        self::$tmap[$a[1]] = self::$tmap[$a[2] ?? self::BIN_TYPE];
+                    }
+                } else if (strpos($a[0], "/") !== false && $a[0][0] !== "#") {
+                    $x = $a[1] ?? "";
+                    $mt = new Mimetype($a[0], $x !== "" ? ".{$x}" : "");
+                    if (!isset(self::$tmap[$a[0]])) {
+                        self::$tmap[$a[0]] = $mt;
+                    }
+                    for ($i = 1; $i !== count($a); ++$i) {
+                        $x = $a[$i];
+                        if ($x !== "" && !isset(self::$tmap[".{$x}"]))
+                            self::$tmap[".{$x}"] = $mt;
+                    }
+                }
+            }
+        }
+        if ($type === 2) {
+            foreach (self::$tinfo as $xtype => $data) {
+                $mt = self::$tmap[$xtype];
+                $mt->description = $data[1];
+                $mt->flags = $data[2];
+            }
+        }
+    }
+
+    /** @return int */
+    static function max_extension_length() {
+        if (self::$max_extension_length === null) {
+            self::$mime_types_loaded || self::load_mime_types();
+            $n = 0;
+            foreach (self::$tmap as $x => $mt) {
+                if (str_starts_with($x, "."))
+                    $n = max($n, strlen($x));
+            }
+            self::$max_extension_length = $n;
+        }
+        return self::$max_extension_length;
+    }
+
     /** @param string|Mimetype $type
      * @return ?Mimetype */
     static function lookup($type) {
@@ -73,15 +145,7 @@ class Mimetype {
         if (is_object($type)) {
             return $type;
         }
-        if (empty(self::$tmap)) {
-            foreach (self::$tinfo as $xtype => $data) {
-                $m = new Mimetype($xtype, $data[0], $data[1], $data[2]);
-                self::$tmap[$xtype] = self::$tmap[$m->extension] = $m;
-                for ($i = 3; $i < count($data); ++$i) {
-                    self::$tmap[$data[$i]] = $m;
-                }
-            }
-        }
+        self::$tmap || self::load_mime_types(1);
         if (array_key_exists($type, self::$tmap)) {
             return self::$tmap[$type];
         }
@@ -93,34 +157,7 @@ class Mimetype {
                 return self::$tmap[$type];
             }
         }
-        if (self::$mime_types === null) {
-            self::$mime_types = true;
-            $t = (string) @file_get_contents(SiteLoader::find("lib/mime.types"));
-            preg_match_all('/^(|#!!\s+)([-a-z0-9]+\/\S+)[ \t]*(.*)/m', $t, $ms, PREG_SET_ORDER);
-            foreach ($ms as $mm) {
-                if (isset(self::$tmap[$mm[2]])) {
-                    continue;
-                }
-                if ($mm[1] === "") {
-                    $exts = [""];
-                    if ($mm[3]) {
-                        $exts = array_map(function ($x) { return ".$x"; },
-                                          preg_split('/\s+/', $mm[3]));
-                    }
-                    $m = new Mimetype($mm[2], $exts[0]);
-                    self::$tmap[$m->mimetype] = $m;
-                    foreach ($exts as $ext) {
-                        if ($ext && !isset(self::$tmap[$ext]))
-                            self::$tmap[$ext] = $m;
-                    }
-                } else {
-                    $m = self::$tmap[trim($mm[3]) ? : self::BIN_TYPE] ?? null;
-                    if ($m) {
-                        self::$tmap[$mm[2]] = $m;
-                    }
-                }
-            }
-        }
+        self::$mime_types_loaded || self::load_mime_types();
         return self::$tmap[$type] ?? null;
     }
 
@@ -162,16 +199,6 @@ class Mimetype {
         }
     }
 
-    /** @param string|Mimetype $typea
-     * @param string|Mimetype $typeb
-     * @return bool */
-    static function type_equals($typea, $typeb) {
-        $ta = self::type($typea);
-        $tb = self::type($typeb);
-        return ($typea && $typea === $typeb)
-            || ($ta !== null && $ta === $tb);
-    }
-
     /** @param string|Mimetype $type
      * @return string */
     static function extension($type) {
@@ -195,7 +222,7 @@ class Mimetype {
         }
     }
 
-    /** @param list<string|Mimetype> $types
+    /** @param list<Mimetype> $types
      * @return string */
     static function list_description($types) {
         if (count($types) === 0) {
@@ -206,6 +233,21 @@ class Mimetype {
             $m = array_unique(array_map("Mimetype::description", $types));
             return commajoin($m, "or");
         }
+    }
+
+    /** @param list<Mimetype> $types
+     * @return ?string */
+    static function list_accept($types) {
+        $mta = [];
+        foreach ($types ?? [] as $mt) {
+            if ($mt->mimetype === self::BIN_TYPE
+                || ($mt->flags & self::FLAG_ZIPLIKE) !== 0) {
+                return null;
+            } else {
+                $mta[] = $mt->mimetype;
+            }
+        }
+        return empty($mta) ? null : join(",", $mta);
     }
 
     /** @param string|Mimetype $type
@@ -237,6 +279,15 @@ class Mimetype {
         }
     }
 
+    /** @param string|Mimetype $type
+     * @return bool */
+    function matches($type) {
+        $xt = self::type($type);
+        return $xt === $this->mimetype
+            || (($this->flags & self::FLAG_ZIPLIKE) !== 0
+                && $xt === self::ZIP_TYPE);
+    }
+
 
     /** @return list<Mimetype> */
     static function builtins() {
@@ -248,7 +299,7 @@ class Mimetype {
     /** @param ?string $content
      * @return bool */
     static function pdf_content($content) {
-        return $content && strncmp("%PDF-", $content, 5) == 0;
+        return $content && str_starts_with($content, "%PDF-");
     }
 
     /** @param ?string $content
@@ -262,7 +313,7 @@ class Mimetype {
         // reliable sniffs
         if (strlen($content) < 16) {
             // do not sniff
-        } else if (substr($content, 0, 5) === "%PDF-") {
+        } else if (str_starts_with($content, "%PDF-")) {
             return self::PDF_TYPE;
         } else if (strlen($content) > 516
                    && substr($content, 512, 4) === "\x00\x6E\x1E\xF0") {
@@ -283,11 +334,13 @@ class Mimetype {
                    || substr($content, 0, 8) === "Rar!\x1A\x07\x01\x00") {
             return self::RAR_TYPE;
         }
-        // eliminate invalid types, canonicalize
-        if ($type
-            && !isset(self::$tinfo[$type])
-            && ($tx = self::type($type))) {
-            $type = $tx;
+        // canonicalize
+        if ($type && ($mt = self::lookup($type))) {
+            if (($mt->flags & self::FLAG_REQUIRE_SNIFF) !== 0) {
+                $type = self::BIN_TYPE;
+            } else {
+                $type = $mt->mimetype;
+            }
         }
         // unreliable sniffs
         if (!$type || $type === self::BIN_TYPE) {
@@ -306,8 +359,19 @@ class Mimetype {
 
     /** @param ?string $content
      * @param ?string $type
-     * @return array{type:string,width?:int,height?:int} */
-    static function content_info($content, $type = null) {
+     * @param ?DocumentInfo $doc
+     * @return ?array{type:string,width?:int,height?:int} */
+    static function content_info($content, $type = null, $doc = null) {
+        if ($content === null && $doc) {
+            if ($doc->has_memory_content()) {
+                $content = $doc->content();
+            } else {
+                $content = $doc->content_prefix(4096);
+            }
+            if ($content === false) {
+                return null;
+            }
+        }
         $content = $content ?? "";
         $type = self::content_type($content, $type);
         if ($type === self::JPG_TYPE) {
@@ -316,9 +380,62 @@ class Mimetype {
             return self::png_content_info($content);
         } else if ($type === self::GIF_TYPE) {
             return self::gif_content_info($content);
+        } else if ($type === "video/mp4") {
+            if ($doc
+                && strlen($content) !== $doc->size()
+                && ($file = $doc->content_file())) {
+                $ivm = ISOVideoMimetype::make_file($file, $content);
+            } else {
+                $ivm = ISOVideoMimetype::make_string($content);
+            }
+            return $ivm->content_info();
         } else {
             return ["type" => $type];
         }
+    }
+
+    /** @param string $s
+     * @param int $off
+     * @return int */
+    static function be16at($s, $off) {
+        return (unpack("n", $s, $off))[1];
+    }
+
+    /** @param string $s
+     * @param int $off
+     * @return int */
+    static function le16at($s, $off) {
+        return (unpack("v", $s, $off))[1];
+    }
+
+    /** @param string $s
+     * @param int $off
+     * @return array{int,int} */
+    static function le16at_x2($s, $off) {
+        $a = unpack("v2", $s, $off);
+        return [$a[1], $a[2]];
+    }
+
+    /** @param string $s
+     * @param int $off
+     * @return int */
+    static function be32at($s, $off) {
+        return (unpack("N", $s, $off))[1];
+    }
+
+    /** @param string $s
+     * @param int $off
+     * @return array{int,int} */
+    static function be32at_x2($s, $off) {
+        $a = unpack("N2", $s, $off);
+        return [$a[1], $a[2]];
+    }
+
+    /** @param string $s
+     * @param int $off
+     * @return int */
+    static function be64at($s, $off) {
+        return (unpack("J", $s, $off))[1];
     }
 
     /** @param string $s
@@ -338,14 +455,14 @@ class Mimetype {
             } else if ($ch === 0xD9 || $pos + 4 > $len) {
                 break;
             }
-            $blen = (ord($s[$pos + 2]) << 8) + ord($s[$pos + 3]);
+            $blen = self::be16at($s, $pos + 2);
             if (($ch >= 0xC0 && $ch <= 0xCF) && $ch !== 0xC8) {
                 // SOF
                 if ($blen < 8 || $pos + 6 > $len) {
                     break;
                 }
-                $x = $pos + 8 <= $len ? (ord($s[$pos + 7]) << 8) + ord($s[$pos + 8]) : 0;
-                $y = (ord($s[$pos + 5]) << 8) + ord($s[$pos + 6]);
+                $x = $pos + 8 <= $len ? self::be16at($s, $pos + 7) : 0;
+                $y = self::be16at($s, $pos + 5);
                 if ($x !== 0) {
                     $info["width"] = $x;
                 }
@@ -360,7 +477,7 @@ class Mimetype {
                 if ($blen !== 4 || $pos + 5 > $len) {
                     break;
                 }
-                $y = (ord($s[$pos + 4]) << 8) + ord($s[$pos + 5]);
+                $y = self::be16at($s, $pos + 4);
                 if ($y !== 0) {
                     $info["height"] = $y;
                 }
@@ -380,8 +497,7 @@ class Mimetype {
         if ($pos + 3 > $len) {
             return $info;
         }
-        $lw = ord($s[$pos]) + (ord($s[$pos + 1]) << 8);
-        $lh = ord($s[$pos + 2]) + (ord($s[$pos + 3]) << 8);
+        list($lw, $lh) = self::le16at_x2($s, $pos);
         if ($lw !== 0) {
             $info["width"] = $lw;
         }
@@ -408,10 +524,8 @@ class Mimetype {
                 }
             } else if ($ch === 0x2C) {
                 // image
-                $left = ord($s[$pos + 1]) + (ord($s[$pos + 2]) << 8);
-                $top = ord($s[$pos + 3]) + (ord($s[$pos + 4]) << 8);
-                $w = ord($s[$pos + 5]) + (ord($s[$pos + 6]) << 8);
-                $h = ord($s[$pos + 7]) + (ord($s[$pos + 8]) << 8);
+                list($left, $top) = self::le16at_x2($s, $pos + 1);
+                list($w, $h) = self::le16at_x2($s, $pos + 5);
                 if ($w !== 0 && $left + $w > ($info["width"] ?? 0)) {
                     $info["width"] = $left + $w;
                 }
@@ -428,25 +542,17 @@ class Mimetype {
     }
 
     /** @param string $s
-     * @param int $off
-     * @return int */
-    static private function net4at($s, $off) {
-        return (ord($s[$off]) << 24) + (ord($s[$off + 1]) << 16)
-            + (ord($s[$off + 2]) << 8) + ord($s[$off + 3]);
-    }
-
-    /** @param string $s
      * @return array{type:string,width?:int,height?:int} */
     static private function png_content_info($s) {
         $info = ["type" => self::PNG_TYPE];
         $pos = 8;
         $len = strlen($s);
         while ($pos + 8 <= $len) {
-            $blen = self::net4at($s, $pos);
-            $chunk = self::net4at($s, $pos + 4);
+            $blen = self::be32at($s, $pos);
+            $chunk = self::be32at($s, $pos + 4);
             if ($chunk === 0x49484452 /* IHDR */) {
-                $w = $pos + 11 <= $len ? self::net4at($s, $pos + 8) : 0;
-                $h = $pos + 15 <= $len ? self::net4at($s, $pos + 12) : 0;
+                $w = $pos + 11 <= $len ? self::be32at($s, $pos + 8) : 0;
+                $h = $pos + 15 <= $len ? self::be32at($s, $pos + 12) : 0;
                 if ($w !== 0) {
                     $info["width"] = $w;
                 }

@@ -52,7 +52,7 @@ class ReviewerList_PaperColumn extends PaperColumn {
             $this->override = PaperColumn::OVERRIDE_IFEMPTY;
         }
         $st = $pl->search->main_term();
-        if ($st->about_reviews() === SearchTerm::ABOUT_SELF) {
+        if ($st->about() === SearchTerm::ABOUT_REVIEW) {
             $this->hlterm = $st;
         }
         return true;
@@ -70,17 +70,17 @@ class ReviewerList_PaperColumn extends PaperColumn {
                 $ranal = $pl->make_review_analysis($xrow, $prow);
                 $t = $pl->user->reviewer_html_for($xrow) . " " . $ranal->icon_html(false);
                 if ($pref) {
-                    $t .= unparse_preference_span($prow->preference($xrow->contactId, $this->topics), true);
+                    $pf = $prow->preference($xrow->contactId);
+                    $tv = $this->topics ? $prow->topic_interest_score($xrow->contactId) : null;
+                    $t .= " " . $pf->unparse_span($tv);
                 }
-                $k = $this->hlterm && $this->hlterm->test($prow, $xrow) ? " highlightmark taghh" : "";
-                $x[] = "<span class=\"nb{$k}\">{$t}";
+                if ($this->hlterm && $this->hlterm->test($prow, $xrow)) {
+                    $t = "<span class=\"highlightmark taghh\">{$t}</span>";
+                }
+                $x[] = "<li>{$t}</li>";
             }
         }
-        if ($x) {
-            return join(',</span> ', $x) . '</span>';
-        } else {
-            return "";
-        }
+        return $x ? "<ul class=\"comma\">" . join("", $x) . "</ul>" : "";
     }
     function text(PaperList $pl, PaperInfo $prow) {
         $x = [];
@@ -90,10 +90,12 @@ class ReviewerList_PaperColumn extends PaperColumn {
                 && (!$this->rsm || $this->rsm->test_review($pl->user, $prow, $xrow))) {
                 $t = $pl->user->reviewer_text_for($xrow);
                 if ($pref) {
-                    $pf = $prow->preference($xrow->contactId, $this->topics);
-                    $t .= " P" . unparse_number_pm_text($pf[0]) . unparse_expertise($pf[1]);
-                    if ($this->topics && $pf[2] && !$pf[0]) {
-                        $t .= " T" . unparse_number_pm_text($pf[2]);
+                    $pf = $prow->preference($xrow->contactId);
+                    $t .= " P" . unparse_number_pm_text($pf->preference) . unparse_expertise($pf->expertise);
+                    if ($this->topics
+                        && $pf->preference === 0
+                        && ($tv = $prow->topic_interest_score($xrow->contactId))) {
+                        $t .= " T" . unparse_number_pm_text($tv);
                     }
                 }
                 $x[] = $t;

@@ -19,7 +19,7 @@ class GetAbstracts_ListAction extends ListAction {
     private static function render_authors($fr, $prow, $user, $o) {
         if ($user->can_view_authors($prow)
             && ($alist = $prow->author_list())) {
-            $fr->title = $o->title(count($alist));
+            $fr->title = $o->title(new FmtArg("count", count($alist)));
             $fr->set_text("");
             foreach ($alist as $i => $au) {
                 $marker = ($i || count($alist) > 1 ? ($i + 1) . ". " : "");
@@ -33,7 +33,7 @@ class GetAbstracts_ListAction extends ListAction {
      * @param PaperOption $o */
     private static function render_topics($fr, $prow, $user, $o) {
         if (($tlist = $prow->topic_map())) {
-            $fr->title = $o->title(count($tlist));
+            $fr->title = $o->title(new FmtArg("count", count($tlist)));
             $fr->set_text("");
             foreach ($tlist as $t) {
                 $fr->value .= prefix_word_wrap("* ", $t, 2, self::WIDTH);
@@ -44,7 +44,7 @@ class GetAbstracts_ListAction extends ListAction {
         $n = prefix_word_wrap("", "Submission #{$prow->paperId}: {$prow->title}", 0, self::WIDTH);
         $text = $n . str_repeat("=", min(self::WIDTH, strlen($n) - 1)) . "\n\n";
 
-        $fr = new FieldRender(FieldRender::CTEXT, $user);
+        $fr = new FieldRender(FieldRender::CFTEXT, $user);
         foreach ($user->conf->options()->page_fields($prow) as $o) {
             if (($o->id <= 0 || $user->allow_view_option($prow, $o))
                 && $o->on_page()) {

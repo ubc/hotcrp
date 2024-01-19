@@ -27,7 +27,7 @@ class Tag_ListAction extends ListAction {
                 . Ht::checkbox("tagcr_gapless", 1, !!$qreq->tagcr_gapless, ["class" => "ml-0"])
                 . "&nbsp;" . Ht::label("Gapless order") . "</div>"
                 . '<div style="margin:2px 0">Using: &nbsp;'
-                . Ht::select("tagcr_method", PaperRank::methods(), $qreq->tagcr_method)
+                . Ht::select("tagcr_method", PaperRank::default_method_selector(), $qreq->tagcr_method)
                 . "</div>"
                 . '<div style="margin:2px 0">Source tag: &nbsp;~'
                 . Ht::entry("tagcr_source", $qreq->tagcr_source, ["size" => 15])
@@ -60,7 +60,7 @@ class Tag_ListAction extends ListAction {
         $x = ["action,paper,tag\n"];
         if ($act === "s" || $act === "so" || $act === "sos" || $act === "sor") {
             foreach ($tags as $t) {
-                $x[] = "cleartag,all," . Tagger::base($t) . "\n";
+                $x[] = "cleartag,all," . Tagger::tv_tag($t) . "\n";
             }
         }
         if ($act === "s" || $act === "a") {
@@ -92,11 +92,13 @@ class Tag_ListAction extends ListAction {
             $tagger = new Tagger($user);
             if ($tagger->check($tagreq, Tagger::NOPRIVATE | Tagger::NOVALUE)
                 && $tagger->check($source_tag, Tagger::NOPRIVATE | Tagger::NOCHAIR | Tagger::NOVALUE)) {
-                $r = new PaperRank($user->conf, $source_tag, $tagreq, $papers,
-                                   !!$qreq->tagcr_gapless, "Search", "search");
+                $r = new PaperRank($papers);
+                $r->load_user_tag_ranks($user->conf, $source_tag);
+                $r->set_gapless(!!$qreq->tagcr_gapless);
+                $r->set_printable_header($qreq, "Search", "search");
                 $r->run($qreq->tagcr_method);
                 $assignset->set_overrides(Contact::OVERRIDE_CONFLICT | Contact::OVERRIDE_TAG_CHECKS);
-                $assignset->parse($r->unparse_assignment());
+                $assignset->parse($r->unparse_tag_assignment($tagreq));
                 if ($qreq->q === "") {
                     $qreq->q = "order:{$tagreq}";
                 }
@@ -119,7 +121,7 @@ class Tag_ListAction extends ListAction {
         } else {
             $user->conf->feedback_msg($assignset->message_list());
             $args = ["atab" => "tag"] + $qreq->subset_as_array("tag", "tagfn", "tagcr_method", "tagcr_source", "tagcr_gapless");
-            return new Redirection($user->conf->site_referrer_url($qreq, $args, Conf::HOTURL_RAW));
+            return new Redirection($user->conf->selfurl($qreq, $args, Conf::HOTURL_RAW | Conf::HOTURL_REDIRECTABLE));
         }
     }
 }

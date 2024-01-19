@@ -1,6 +1,6 @@
 <?php
 // settings/s_track.php -- HotCRP settings > tracks page
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
 
 class Track_Setting {
     /** @var string */
@@ -237,7 +237,7 @@ class Track_SettingParser extends SettingParser {
         $this->ctr = $ctr;
         $this->nfolded = 0;
         $trx = $sv->oldv("track/{$ctr}");
-        echo '<div id="track/', $ctr, '" class="mg has-fold ',
+        echo '<div id="track/', $ctr, '" class="has-fold ',
             $trx->is_new ? "fold3o" : "fold3c", '">',
             Ht::hidden("track/{$ctr}/id", $trx->tag,
                 ["data-default-value" => $trx->is_new ? "" : null]),
@@ -251,14 +251,14 @@ class Track_SettingParser extends SettingParser {
         }
         echo '</div>';
 
-        $sv->print_group("tracks/permissions");
+        $sv->print_members("tracks/permissions");
 
         if ($this->nfolded) {
             echo '<div class="entryi wide fn3">',
                 '<label><button type="button" class="q ui js-foldup" data-fold-target="3">',
                 expander(true, 3), 'More…</button></label>',
                 '<div class="entry"><button type="button" class="q ui js-foldup" data-fold-target="3">',
-                $sv->conf->_("(%d more permissions have default values)", $this->nfolded),
+                $sv->conf->_("({} more permissions have default values)", $this->nfolded),
                 '</button></div></div>';
         }
         echo "</div></div>\n\n";
@@ -435,5 +435,3 @@ class Track_SettingParser extends SettingParser {
         }
     }
 }
-
-class_alias("Track_SettingParser", "Tracks_SettingParser"); // XXX

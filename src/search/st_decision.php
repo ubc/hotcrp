@@ -5,10 +5,12 @@
 class Decision_SearchTerm extends SearchTerm {
     /** @var Contact */
     private $user;
+    /** @var string|list<int> */
     private $match;
 
+    /** @param string|list<int> $match */
     function __construct(Contact $user, $match) {
-        parent::__construct("dec");
+        parent::__construct("decision");
         $this->user = $user;
         $this->match = $match;
     }
@@ -19,6 +21,10 @@ class Decision_SearchTerm extends SearchTerm {
             $dec[] = -10000000;
         }
         return new Decision_SearchTerm($srch->user, $dec);
+    }
+    /** @return string|list<int> */
+    function matchexpr() {
+        return $this->match;
     }
     function sqlexpr(SearchQueryInfo $sqi) {
         $f = ["Paper.outcome" . CountMatcher::sqlexpr_using($this->match)];
@@ -32,7 +38,17 @@ class Decision_SearchTerm extends SearchTerm {
         $d = $this->user->can_view_decision($row) ? $row->outcome : 0;
         return CountMatcher::compare_using($d, $this->match);
     }
-    function about_reviews() {
-        return self::ABOUT_NO;
+    function about() {
+        return self::ABOUT_PAPER;
+    }
+    function drag_assigners(Contact $user) {
+        $ds = $user->conf->decision_set()->filter_using($this->match);
+        if (count($ds) !== 1 || !$user->can_set_some_decision()) {
+            return null;
+        }
+        return [
+            ["action" => "decision", "decision" => $ds[0]->name, "ondrag" => "enter"],
+            ["action" => "decision", "decision" => "none", "ondrag" => "leave"]
+        ];
     }
 }

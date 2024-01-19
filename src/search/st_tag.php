@@ -37,8 +37,8 @@ class Tag_SearchTerm extends SearchTerm {
         $tsm = new TagSearchMatcher($srch->user);
         if (preg_match('/\A([^#=!<>\x80-\xFF]+)(?:#|=)(-?(?:\.\d+|\d+\.?\d*))(?:\.\.\.?|-|–|—)(-?(?:\.\d+|\d+\.?\d*))\z/s', $word, $m)) {
             $tagword = $m[1];
-            $tsm->add_value_matcher(new CountMatcher(">=$m[2]"));
-            $tsm->add_value_matcher(new CountMatcher("<=$m[3]"));
+            $tsm->add_value_matcher(new CountMatcher(">={$m[2]}"));
+            $tsm->add_value_matcher(new CountMatcher("<={$m[3]}"));
         } else if (preg_match('/\A([^#=!<>\x80-\xFF]+)(#?)([=!<>]=?|≠|≤|≥|)(-?(?:\.\d+|\d+\.?\d*))\z/s', $word, $m)
                    && $m[1] !== "any"
                    && $m[1] !== "none"
@@ -83,12 +83,8 @@ class Tag_SearchTerm extends SearchTerm {
     static function expand_automatic(TagSearchMatcher $tsm, SearchWord $sword,
                                      PaperSearch $srch) {
         $dt = $srch->conf->tags();
-        if (!$dt->has_automatic) {
-            return [];
-        }
-
         $allterms = $nomatch = [];
-        foreach ($dt->filter("automatic") as $t) {
+        foreach ($dt->entries_having(TagInfo::TF_AUTOMATIC) as $t) {
             if (!$tsm->test_ignore_value(" {$t->tag}#")) {
                 continue;
             }
@@ -102,13 +98,13 @@ class Tag_SearchTerm extends SearchTerm {
                 "q" => $t->automatic_search(), "t" => "all"
             ]);
             $asrch->set_expand_automatic($srch->expand_automatic + 1);
+            $aterm = $asrch->full_term();
             if ($asrch->has_problem_at("circular_automatic")) {
                 $srch->warning_at("circular_automatic");
                 if ($srch->expand_automatic === 1) {
                     $srch->lwarning($sword, "<0>Circular reference in automatic tag #{$t->tag}");
                 }
             }
-            $aterm = $asrch->full_term();
 
             $afe = $t->automatic_formula_expression();
             if ($afe === "0") {
@@ -180,7 +176,11 @@ class Tag_SearchTerm extends SearchTerm {
     private function _make_default_sort_column($pl, $tag, $dt) {
         $xjs = Tag_PaperColumn::expand("#{$tag}", $pl->xtp, (object) [], ["#{$tag}", "#", $tag]);
         assert(count($xjs) === 1 && $xjs[0]->function === "+Tag_PaperColumn");
-        return PaperColumn::make($pl->conf, $xjs[0], $dt && $dt->votish ? ["reverse"] : []);
+        $pc = PaperColumn::make($pl->conf, $xjs[0]);
+        if ($dt && $dt->is(TagInfo::TFM_VOTES)) {
+            $pc->add_decoration("reverse");
+        }
+        return $pc;
     }
     function default_sort_column($top, $pl) {
         if (!$top
@@ -188,8 +188,8 @@ class Tag_SearchTerm extends SearchTerm {
             || !($tag = $this->tsm->single_tag())) {
             return null;
         }
-        if (($dt = $pl->conf->tags()->check(Tagger::base($tag)))
-            && $dt->order_anno) {
+        if (($dt = $pl->conf->tags()->find(Tagger::tv_tag($tag)))
+            && $dt->has_order_anno()) {
             return $this->_make_default_sort_column($pl, $tag, $dt);
         }
         foreach ($pl->unordered_rowset() as $prow) {
@@ -202,7 +202,25 @@ class Tag_SearchTerm extends SearchTerm {
     function debug_json() {
         return ["type" => $this->type, "tag_regex" => $this->tsm->regex()];
     }
-    function about_reviews() {
-        return self::ABOUT_NO;
+    function about() {
+        return self::ABOUT_PAPER;
+    }
+    function drag_assigners(Contact $user) {
+        $t = $this->tsm->single_tag();
+        if (!$t || !$user->can_edit_tag_somewhere($t)) {
+            return null;
+        }
+        $vm = $this->tsm->value_matchers();
+        if (empty($vm)) {
+            $value = "some";
+        } else if (count($vm) === 1 && $vm[0]->op() === CountMatcher::RELEQ) {
+            $value = 0;
+        } else {
+            return null;
+        }
+        return [
+            ["action" => "tag", "tag" => "{$t}#{$value}", "ondrag" => "enter"],
+            ["action" => "tag", "tag" => "{$t}#clear", "ondrag" => "leave"]
+        ];
     }
 }

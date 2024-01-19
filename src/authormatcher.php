@@ -7,6 +7,9 @@ class AuthorMatcher extends Author {
     private $firstName_matcher;
     /** @var ?TextPregexes */
     private $lastName_matcher;
+    /** @var bool */
+    private $lastName_simple;
+    /** @var ?array{list<string>,string|false,string} */
     private $affiliation_matcher;
     /** @var ?TextPregexes|false */
     private $general_pregexes_ = false;
@@ -15,8 +18,8 @@ class AuthorMatcher extends Author {
 
     private static $wordinfo;
 
-    function __construct($x = null) {
-        parent::__construct($x);
+    function __construct($x = null, $status = null) {
+        parent::__construct($x, $status);
     }
 
     /** @param object $x
@@ -25,131 +28,201 @@ class AuthorMatcher extends Author {
         return $x instanceof AuthorMatcher ? $x : new AuthorMatcher($x);
     }
 
-    private function prepare() {
-        $any = [];
-        if ($this->firstName !== "") {
-            preg_match_all('/[a-z0-9]+/', $this->deaccent(0), $m);
-            $rr = [];
-            foreach ($m[0] as $w) {
-                $any[] = $rr[] = $w;
-                if (ctype_alpha($w[0])) {
-                    if (strlen($w) === 1) {
-                        $any[] = $rr[] = $w . "[a-z]*";
-                    } else {
-                        $any[] = $rr[] = $w[0] . "(?=\\.)";
-                    }
+    /** @return AuthorMatcher */
+    static function make_string_guess($x) {
+        $m = new AuthorMatcher;
+        $m->assign_string_guess($x);
+        return $m;
+    }
+
+    /** @return AuthorMatcher */
+    static function make_affiliation($x) {
+        $m = new AuthorMatcher;
+        $m->affiliation = (string) $x;
+        return $m;
+    }
+
+    /** @return ?AuthorMatcher */
+    static function make_collaborator_line($x) {
+        if ($x !== "" && strcasecmp($x, "none") !== 0) {
+            $m = new AuthorMatcher;
+            $m->assign_string($x);
+            $m->status = Author::STATUS_NONAUTHOR;
+            return $m;
+        } else {
+            return null;
+        }
+    }
+
+    /** @return Generator<AuthorMatcher> */
+    static function make_collaborator_generator($s) {
+        $pos = 0;
+        while (($eol = strpos($s, "\n", $pos)) !== false) {
+            if ($eol !== $pos
+                && ($m = self::make_collaborator_line(substr($s, $pos, $eol - $pos))) !== null) {
+                yield $m;
+            }
+            $pos = $eol + 1;
+        }
+        if (strlen($s) !== $pos
+            && ($m = self::make_collaborator_line(substr($s, $pos))) !== null) {
+            yield $m;
+        }
+    }
+
+
+    private function prepare_first(&$hlmatch) {
+        preg_match_all('/[a-z0-9]+/', $this->deaccent(0), $m);
+        $fws = $m[0];
+        if (empty($fws)) {
+            return;
+        }
+        $fulli = 0;
+        while ($fulli !== count($fws) && strlen($fws[$fulli]) === 1) {
+            ++$fulli;
+        }
+        $fnmatch = $imatch = [];
+        foreach ($fws as $i => $w) {
+            if (strlen($w) > 1) {
+                $fnmatch[] = $w;
+                $hlmatch[] = $w;
+                if (ctype_alpha($w[0]) && $i === $fulli) {
+                    $ix = "{$w[0]}[\\.\\s*]*";
+                    $imatch[] = $ix;
+                    $hlmatch[] = $ix;
+                }
+            } else if ($i === 0 && $fulli === count($fws)) {
+                $ix = "{$w}[a-z]*[\\.\\s]*";
+                $imatch[] = $ix;
+                $hlmatch[] = $ix;
+            } else if ($i < $fulli) {
+                $imatch[] = "(?:|{$w}[a-z]*[\\.\\s*]*)";
+            }
+        }
+        if (!empty($imatch)) {
+            $fnmatch[] = "\\A" . join("", $imatch);
+        }
+        $this->firstName_matcher = new TextPregexes(
+            '\b(?:' . join("|", $fnmatch) . ')\b',
+            Text::UTF8_INITIAL_NONLETTERDIGIT . '(?:' . join("|", $fnmatch) . ')' . Text::UTF8_FINAL_NONLETTERDIGIT
+        );
+    }
+
+    private function prepare_affiliation(&$gmatch, &$hlmatch) {
+        preg_match_all('/[a-z0-9&]+/', $this->deaccent(2), $m);
+        $aws = $m[0];
+        if (empty($aws)) {
+            return;
+        }
+
+        $wstrong = $wweak = $alts = [];
+        $any_strong_alternate = false;
+        $wordinfo = self::wordinfo();
+        foreach ($aws as $w) {
+            $aw = $wordinfo[$w] ?? null;
+            if ($aw && isset($aw->stop) && $aw->stop) {
+                continue;
+            }
+            $weak = $aw && isset($aw->weak) && $aw->weak;
+            $wweak[] = $w;
+            if (!$weak) {
+                $wstrong[] = $w;
+            }
+            if ($aw && isset($aw->alternate)) {
+                $any_strong_alternate = $any_strong_alternate || !$weak;
+                if (is_array($aw->alternate)) {
+                    $alts = array_merge($alts, $aw->alternate);
+                } else {
+                    $alts[] = $aw->alternate;
                 }
             }
-            if (!empty($rr)) {
-                $this->firstName_matcher = new TextPregexes(
-                    '\b(?:' . join("|", $rr) . ')\b',
-                    Text::UTF8_INITIAL_NONLETTERDIGIT . '(?:' . join("|", $rr) . ')' . Text::UTF8_FINAL_NONLETTERDIGIT
-                );
+            if ($aw && isset($aw->sync)) {
+                if (is_array($aw->sync)) {
+                    $alts = array_merge($alts, $aw->sync);
+                } else {
+                    $alts[] = $aw->sync;
+                }
             }
+        }
+        $directs = $wweak;
+
+        foreach ($alts as $alt) {
+            if (is_object($alt)) {
+                if ((isset($alt->if) && !self::match_if($alt->if, $wweak))
+                    || (isset($alt->if_not) && self::match_if($alt->if_not, $wweak))) {
+                    continue;
+                }
+                $alt = $alt->word;
+            }
+            $have_strong = false;
+            foreach (explode(" ", $alt) as $altw) {
+                if ($altw !== "") {
+                    if (!empty($wstrong)) {
+                        $aw = $wordinfo[$altw] ?? null;
+                        if (!$aw || !isset($aw->weak) || !$aw->weak) {
+                            $wstrong[] = $altw;
+                            $have_strong = true;
+                        }
+                    }
+                    $wweak[] = $altw;
+                }
+            }
+            if ($any_strong_alternate && !$have_strong) {
+                $wstrong = [];
+            }
+        }
+
+        if (!empty($wstrong)) {
+            $wstrong = str_replace("&", "\\&", join("|", $wstrong));
+            $wweak = str_replace("&", "\\&", join("|", $wweak));
+            $gmatch[] = $wstrong;
+            $hlmatch[] = $wweak;
+            $this->affiliation_matcher = [$directs, "{\\b(?:{$wstrong})\\b}", "{\\b(?:{$wweak})\\b}"];
+        } else if (!empty($wweak)) {
+            $wweak = str_replace("&", "\\&", join("|", $wweak));
+            $gmatch[] = $wweak;
+            $hlmatch[] = $wweak;
+            $this->affiliation_matcher = [$directs, false, "{\\b(?:{$wweak})\\b}"];
+        }
+    }
+
+    private function prepare() {
+        $gmatch = $hlmatch = [];
+        if ($this->firstName !== "") {
+            $this->prepare_first($hlmatch);
         }
         if ($this->lastName !== "") {
             preg_match_all('/[a-z0-9]+/', $this->deaccent(1), $m);
             $rr = $ur = [];
             foreach ($m[0] as $w) {
-                $any[] = $w;
+                $gmatch[] = $w;
+                $hlmatch[] = $w;
                 $rr[] = '(?=.*\b' . $w . '\b)';
                 $ur[] = '(?=.*' . Text::UTF8_INITIAL_NONLETTERDIGIT . $w . Text::UTF8_FINAL_NONLETTERDIGIT . ')';
             }
             if (!empty($rr)) {
                 $this->lastName_matcher = new TextPregexes('\A' . join("", $rr), '\A' . join("", $ur));
-                $this->lastName_matcher->simple = count($m[0]) === 1 && strlen($m[0][0]) === strlen($this->lastName) ? $m[0][0] : false;
+                $this->lastName_simple = count($m[0]) === 1 && strlen($m[0][0]) === strlen($this->lastName) ? $m[0][0] : false;
             }
         }
-        $highlight_any = false;
         if ($this->affiliation !== "") {
-            $wordinfo = self::wordinfo();
-            preg_match_all('/[a-z0-9&]+/', $this->deaccent(2), $m);
-
-            $wstrong = $wweak = $alts = [];
-            $any_strong_alternate = false;
-            foreach ($m[0] as $w) {
-                $aw = $wordinfo[$w] ?? null;
-                if ($aw && isset($aw->stop) && $aw->stop) {
-                    continue;
-                }
-                $weak = $aw && isset($aw->weak) && $aw->weak;
-                $wweak[] = $w;
-                if (!$weak) {
-                    $wstrong[] = $w;
-                }
-                if ($aw && isset($aw->alternate)) {
-                    $any_strong_alternate = $any_strong_alternate || !$weak;
-                    if (is_array($aw->alternate)) {
-                        $alts = array_merge($alts, $aw->alternate);
-                    } else {
-                        $alts[] = $aw->alternate;
-                    }
-                }
-                if ($aw && isset($aw->sync)) {
-                    if (is_array($aw->sync)) {
-                        $alts = array_merge($alts, $aw->sync);
-                    } else {
-                        $alts[] = $aw->sync;
-                    }
-                }
-            }
-
-            $directs = $wweak;
-
-            foreach ($alts as $alt) {
-                if (is_object($alt)) {
-                    if ((isset($alt->if) && !self::match_if($alt->if, $wweak))
-                        || (isset($alt->if_not) && self::match_if($alt->if_not, $wweak))) {
-                        continue;
-                    }
-                    $alt = $alt->word;
-                }
-                $have_strong = false;
-                foreach (explode(" ", $alt) as $altw) {
-                    if ($altw !== "") {
-                        if (!empty($wstrong)) {
-                            $aw = $wordinfo[$altw] ?? null;
-                            if (!$aw || !isset($aw->weak) || !$aw->weak) {
-                                $wstrong[] = $altw;
-                                $have_strong = true;
-                            }
-                        }
-                        $wweak[] = $altw;
-                    }
-                }
-                if ($any_strong_alternate && !$have_strong) {
-                    $wstrong = [];
-                }
-            }
-
-            if (!empty($wstrong)) {
-                $wstrong = str_replace("&", "\\&", join("|", $wstrong));
-                $wweak = str_replace("&", "\\&", join("|", $wweak));
-                $any[] = $wstrong;
-                $highlight_any = $wweak;
-                $this->affiliation_matcher = [$directs, "{\\b(?:{$wstrong})\\b}", "{\\b(?:{$wweak})\\b}"];
-            } else if (!empty($wweak)) {
-                $wweak = str_replace("&", "\\&", join("|", $wweak));
-                $any[] = $wweak;
-                $this->affiliation_matcher = [$directs, false, "{\\b(?:{$wweak})\\b}"];
-            }
+            $this->prepare_affiliation($gmatch, $hlmatch);
         }
 
-        $content = join("|", $any);
-        if ($content !== "" && $content !== "none") {
+        $gre = join("|", $gmatch);
+        if ($gre !== "" && $gre !== "none") {
             $this->general_pregexes_ = new TextPregexes(
-                '\b(?:' . $content . ')\b',
-                Text::UTF8_INITIAL_NONLETTER . '(?:' . $content . ')' . Text::UTF8_FINAL_NONLETTER
+                '\b(?:' . $gre . ')\b',
+                Text::UTF8_INITIAL_NONLETTER . '(?:' . $gre . ')' . Text::UTF8_FINAL_NONLETTER
             );
         } else {
             $this->general_pregexes_ = null;
         }
-        if ($highlight_any !== false && $highlight_any !== $any[count($any) - 1]) {
-            $any[count($any) - 1] = $highlight_any;
-            $content = join("|", $any);
+        $hlre = join("|", $hlmatch);
+        if ($hlre !== "" && $hlre !== "none" && $hlre !== $gre) {
             $this->highlight_pregexes_ = new TextPregexes(
-                '\b(?:' . $content . ')\b',
-                Text::UTF8_INITIAL_NONLETTER . '(?:' . $content . ')' . Text::UTF8_FINAL_NONLETTER
+                '\b(?:' . $hlre . ')\b',
+                Text::UTF8_INITIAL_NONLETTER . '(?:' . $hlre . ')' . Text::UTF8_FINAL_NONLETTER
             );
         } else {
             $this->highlight_pregexes_ = null;
@@ -172,30 +245,6 @@ class AuthorMatcher extends Author {
         return $this->highlight_pregexes_ ?? $this->general_pregexes_;
     }
 
-    /** @return AuthorMatcher */
-    static function make_string_guess($x) {
-        $m = new AuthorMatcher;
-        $m->assign_string_guess($x);
-        return $m;
-    }
-    /** @return AuthorMatcher */
-    static function make_affiliation($x) {
-        $m = new AuthorMatcher;
-        $m->affiliation = (string) $x;
-        return $m;
-    }
-    /** @return ?AuthorMatcher */
-    static function make_collaborator_line($x) {
-        if ($x !== "" && strcasecmp($x, "none") !== 0) {
-            $m = new AuthorMatcher;
-            $m->assign_string($x);
-            $m->nonauthor = true;
-            return $m;
-        } else {
-            return null;
-        }
-    }
-
     const MATCH_NAME = 1;
     const MATCH_AFFILIATION = 2;
     /** @param string|Author $au
@@ -212,8 +261,8 @@ class AuthorMatcher extends Author {
         }
         if ($this->lastName_matcher
             && $au->lastName !== ""
-            && ($this->lastName_matcher->simple
-                ? $this->lastName_matcher->simple === $au->deaccent(1)
+            && ($this->lastName_simple
+                ? $this->lastName_simple === $au->deaccent(1)
                 : Text::match_pregexes($this->lastName_matcher, $au->lastName, $au->deaccent(1)))
             && ($au->firstName === ""
                 || !$this->firstName_matcher
@@ -470,7 +519,7 @@ class AuthorMatcher extends Author {
                 }
                 $last_ch = $line[strlen($line) - 1];
                 if ($last_ch === ":") {
-                    $lines[] = "# " . $line;
+                    $lines[] = "# {$line}";
                     continue;
                 }
             }
@@ -492,7 +541,7 @@ class AuthorMatcher extends Author {
                     $rest = preg_replace('/\A[,\s]+/', "", $rest);
                 }
                 if ($aff !== "" && $aff[0] !== "(") {
-                    $aff = "($aff)";
+                    $aff = "({$aff})";
                 }
                 $line = $name;
                 if ($aff !== "") {

@@ -152,7 +152,6 @@ class Attachments_PaperOption extends PaperOption {
             echo ' data-document-max-size="', (int) $this->max_size, '"';
         }
         echo '>';
-        $readonly = !$this->test_editable($ov->prow);
         foreach ($ov->document_set() as $i => $doc) {
             $ctr = $i + 1;
             $oname = "{$this->formid}:{$ctr}";
@@ -164,35 +163,38 @@ class Attachments_PaperOption extends PaperOption {
             if (($stamps = PaperTable::pdf_stamps_html($doc))) {
                 echo $stamps;
             }
-            echo '</div>';
-            if (!$readonly) {
-                echo '<div class="document-actions">', Ht::button("Delete", ["class" => "link ui js-remove-document"]), '</div>';
-            }
-            echo '</div>';
+            echo '</div><div class="document-actions">', Ht::button("Delete", ["class" => "link ui js-remove-document"]), '</div></div>';
         }
-        echo '</div>';
-        if (!$readonly) {
-            echo Ht::button("Add attachment", ["class" => "ui js-add-attachment", "data-editable-attachments" => "{$this->formid}:attachments"]);
-        } else if ($ov->document_set()->is_empty()) {
-            echo '<p>(No uploads)</p>';
-        }
-        echo "</div>\n\n";
+        echo '</div>',
+            Ht::button("Add attachment", ["class" => "ui js-add-attachment", "data-editable-attachments" => "{$this->formid}:attachments"]),
+            "</div>\n\n";
     }
 
     function render(FieldRender $fr, PaperValue $ov) {
+        $want_mimetype = $fr->column && $fr->column->has_decoration("type");
         $ts = [];
         foreach ($ov->document_set() as $d) {
-            if ($fr->want_text()) {
-                $ts[] = $d->member_filename();
+            if ($want_mimetype) {
+                $t = $d->mimetype;
             } else {
-                $linkname = htmlspecialchars($d->member_filename());
-                if ($fr->want_list()) {
+                $t = $d->member_filename();
+            }
+            if ($fr->want(FieldRender::CFTEXT)) {
+                $ts[] = $t;
+            } else if ($want_mimetype) {
+                $ts[] = htmlspecialchars($t);
+            } else {
+                $linkname = htmlspecialchars($t);
+                $dif = 0;
+                if ($fr->want(FieldRender::CFLIST)) {
                     $dif = DocumentInfo::L_SMALL | DocumentInfo::L_NOSIZE;
-                } else if ($this->page_order() >= 2000) {
-                    $dif = DocumentInfo::L_SMALL;
-                } else {
+                } else if ($fr->want(FieldRender::CFFORM)) {
+                    $dif = 0;
+                } else if ($this->display() === PaperOption::DISP_TOP) {
                     $dif = 0;
                     $linkname = '<span class="pavfn">' . $this->title_html() . '</span>/' . $linkname;
+                } else {
+                    $dif = DocumentInfo::L_SMALL;
                 }
                 $t = $d->link_html($linkname, $dif);
                 if ($d->is_archive()) {
@@ -201,24 +203,26 @@ class Attachments_PaperOption extends PaperOption {
                 $ts[] = $t;
             }
         }
-        if (!empty($ts)) {
-            if ($fr->want_text()) {
-                $fr->set_text(join("; ", $ts));
-            } else if ($fr->want_list_row()) {
-                $fr->set_html(join("; ", $ts));
-            } else {
-                $fr->set_html('<ul class="x"><li class="od">' . join('</li><li class="od">', $ts) . '</li></ul>');
+        if (empty($ts)) {
+            if ($fr->verbose()) {
+                $fr->set_text("None");
             }
-            if ($fr->for_page() && $this->page_order() < 2000) {
-                $fr->title = false;
-                $v = '';
-                if ($fr->table && $fr->user->view_option_state($ov->prow, $this) === 1) {
-                    $v = ' fx8';
-                }
-                $fr->value = "<div class=\"pgsm{$v}\">{$fr->value}</div>";
+            return;
+        }
+        if ($fr->want(FieldRender::CFTEXT)) {
+            $fr->set_text(join("; ", $ts));
+        } else if ($fr->want(FieldRender::CFLIST | FieldRender::CFROW)) {
+            $fr->set_html('<ul class="semi"><li>' . join("</li><li>", $ts) . '</li></ul>');
+        } else {
+            $fr->set_html('<ul class="x"><li class="od">' . join('</li><li class="od">', $ts) . '</li></ul>');
+        }
+        if ($fr->want(FieldRender::CFPAGE) && $this->display() === PaperOption::DISP_TOP) {
+            $fr->title = false;
+            $v = '';
+            if ($fr->table && $fr->user->view_option_state($ov->prow, $this) === 1) {
+                $v = ' fx8';
             }
-        } else if ($fr->verbose()) {
-            $fr->set_text("None");
+            $fr->value = "<div class=\"pgsm{$v}\">{$fr->value}</div>";
         }
     }
 
@@ -228,12 +232,12 @@ class Attachments_PaperOption extends PaperOption {
             new SearchExample(
                 $this, $this->search_keyword() . ":{comparator}",
                 "<0>submission has three or more {title} attachments",
-                new FmtArg("comparator", ">2")
+                new FmtArg("comparator", ">2", 0)
             ),
             new SearchExample(
                 $this, $this->search_keyword() . ":\"{filename}\"",
-                "<0>submission has {title} attachment matching “{filename}”",
-                new FmtArg("filename", "*.gif")
+                "<0>submission has {title} attachment matching ‘{filename}’",
+                new FmtArg("filename", "*.gif", 0)
             )
         ];
     }

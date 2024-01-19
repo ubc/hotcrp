@@ -30,14 +30,16 @@
         "request_function": "Home_Page::profile_redirect_request"
     },
     {
-        "name": "home/admin", "order": 900, "allow_if": "chair",
-        "allow_request_if": ["getpost", "req.clearbug || req.clearnewpcrev"],
-        "request_function": "AdminHome_Page::check_admin",
+        "name": "home/admin_request", "order": 900,
+        "allow_if": "chair && getpost && (req.clearbug || req.clearnewpcrev)",
+        "request_function": "AdminHome_Page::check_admin"
+    },
+    {
+        "name": "home/admin", "order": 901, "allow_if": "chair",
         "print_function": "AdminHome_Page::print"
     },
     {
-        "name": "home/reviewtokenreport",
-        "allow_request_if": "req.reviewtokenreport",
+        "name": "home/reviewtokenreport", "allow_if": "req.reviewtokenreport",
         "request_function": "Home_Page::reviewtokenreport_request"
     },
 
@@ -118,14 +120,12 @@
 
     {   "name": "newaccount", "allow_disabled": true   },
     {
-        "name": "newaccount/request", "order": 100,
-        "allow_request_if": "anypost",
+        "name": "newaccount/request", "order": 100, "allow_if": "anypost",
         "request_function": "*Signin_Page::create_request"
     },
     [   "newaccount/head", 1000, "Signin_Page::print_newaccount_head"   ],
-    [   "newaccount/message", 2000, "home/message"   ],
-    [   "newaccount/welcome", 2500, "home/welcome"   ],
     [   "newaccount/body", 3000, "Signin_Page::print_newaccount_body"   ],
+    [   "newaccount/form/title", 1, "Signin_Page::print_newaccount_form_title"   ],
     [   "newaccount/form/description", 10, "Signin_Page::print_newaccount_form_description"   ],
     [   "newaccount/form/email", 20, "*Signin_Page::print_newaccount_form_email"   ],
     [   "newaccount/form/actions", 100, "Signin_Page::print_newaccount_form_actions"   ],
@@ -133,8 +133,7 @@
 
     {   "name": "signin", "allow_disabled": true   },
     {
-        "name": "signin/request", "order": 100,
-        "allow_request_if": "anypost",
+        "name": "signin/request", "order": 100, "allow_if": "anypost",
         "request_function": "*Signin_Page::signin_request"
     },
     {
@@ -146,34 +145,32 @@
         "signin_function": "Signin_Page::signin_request_success"
     },
     [   "signin/head", 1000, "Signin_Page::print_signin_head"   ],
-    [   "signin/message", 2000, "home/message"   ],
-    [   "signin/welcome", 2500, "home/welcome"   ],
     [   "signin/body", 3000, "Signin_Page::print_signin_form"   ],
+    [   "signin/form/title", 1, "Signin_Page::print_signin_form_title"   ],
     [   "signin/form/description", 10, "Signin_Page::print_signin_form_description"   ],
     [   "signin/form/email", 20, "*Signin_Page::print_signin_form_email"   ],
     [   "signin/form/password", 30, "*Signin_Page::print_signin_form_password"   ],
     [   "signin/form/actions", 100, "Signin_Page::print_signin_form_actions"   ],
     [   "signin/form/create", 150, "Signin_Page::print_signin_form_create"   ],
+    [   "signin/form/oauth", 1000, "Signin_Page::print_signin_form_oauth"   ],
 
 
     {   "name": "signout", "allow_disabled": true   },
     {
-        "name": "signout/request", "order": 100,
-        "allow_request_if": "anypost",
+        "name": "signout/request", "order": 100, "allow_if": "anypost",
         "request_function": "Signin_Page::signout_request"
     },
-    [   "signout/head", 1000, "Signin_Page::print_signout_head"   ],
-    [   "signout/body", 3000, "Signin_Page::print_signout_body"   ],
+    [   "signout/content", 1000, "Signin_Page::print_signout"   ],
 
 
     {   "name": "forgotpassword", "allow_disabled": true   },
     {
-        "name": "forgotpassword/request", "order": 100,
-        "allow_request_if": "anypost",
+        "name": "forgotpassword/request", "order": 100, "allow_if": "anypost",
         "request_function": "*Signin_Page::forgot_request"
     },
     [   "forgotpassword/head", 1000, "Signin_Page::print_forgot_head"   ],
     [   "forgotpassword/body", 3000, "Signin_Page::print_forgot_body"   ],
+    [   "forgotpassword/form/title", 1, "Signin_Page::print_forgot_form_title"   ],
     [   "forgotpassword/form/description", 10, "Signin_Page::print_forgot_form_description"   ],
     [   "forgotpassword/form/email", 20, "*Signin_Page::print_forgot_form_email"   ],
     [   "forgotpassword/form/actions", 100, "*Signin_Page::print_forgot_form_actions"   ],
@@ -188,10 +185,17 @@
         "name": "resetpassword/request", "order": 100,
         "request_function": "*Signin_Page::reset_request"
     },
+    {
+        "name": "resetpassword/request/basic", "order": 100,
+        "signin_function": "*Signin_Page::reset_request_basic"
+    },
+    {
+        "name": "resetpassword/request/success", "order": 100000,
+        "signin_function": "*Signin_Page::reset_request_success"
+    },
     [   "resetpassword/head", 1000, "Signin_Page::print_reset_head"   ],
-    [   "resetpassword/message", 2000, "home/message"   ],
-    [   "resetpassword/welcome", 2500, "home/welcome"   ],
     [   "resetpassword/body", 3000, "*Signin_Page::print_reset_body"   ],
+    [   "resetpassword/form/title", 1, "Signin_Page::print_reset_form_title"   ],
     [   "resetpassword/form/description", 10, "Signin_Page::print_reset_form_description"   ],
     [   "resetpassword/form/email", 20, "*Signin_Page::print_reset_form_email"   ],
     [   "resetpassword/form/autopassword", 29, "Signin_Page::print_reset_form_autopassword"   ],
@@ -205,6 +209,16 @@
     {   "name": "graph/procrastination", "print_function": "Graph_Procrastination_Page::go",
         "title": "Procrastination", "order": 10, "allow_if": "pc"   },
     [   "graph/reviewerlameness", false, "graph/procrastination"    ],
+
+
+    {   "name": "authorize", "print_function": "*Authorize_Page::go", "allow_disabled": true   },
+    [   "authorize/form/title", 1, "*Authorize_Page::print_form_title"   ],
+    [   "authorize/form/description", 10, "*Authorize_Page::print_form_description"   ],
+    [   "authorize/form/active", 15, "*Authorize_Page::print_form_active"   ],
+    [   "authorize/form/email", 20, "signin/form/email"   ],
+    [   "authorize/form/password", 30, "signin/form/password"   ],
+    [   "authorize/form/actions", 100, "*Authorize_Page::print_form_actions"   ],
+    [   "authorize/form/oauth", 1000, "Signin_Page::print_signin_form_oauth"   ],
 
 
     {   "name": "api", "print_function": "API_Page::go", "allow_disabled": true   },

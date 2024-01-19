@@ -72,7 +72,7 @@ class Log_Page {
     private function add_user_clause() {
         $ids = [];
         $accts = new SearchSplitter($this->qreq->u);
-        while (($word = $accts->shift()) !== "") {
+        while (($word = $accts->shift_balanced_parens()) !== "") {
             $flags = ContactSearch::F_TAG | ContactSearch::F_USER | ContactSearch::F_ALLOW_DELETED;
             if (substr($word, 0, 1) === "\"") {
                 $flags |= ContactSearch::F_QUOTED;
@@ -180,7 +180,7 @@ class Log_Page {
                 ++$page;
             }
         } else if ($this->qreq->offset
-                   && ($delta = cvtint($this->qreq->offset)) >= 0
+                   && ($delta = stoi($this->qreq->offset) ?? -1) >= 0
                    && $delta < $leg->page_size()) {
             $leg->set_page_delta($delta);
         }
@@ -190,11 +190,11 @@ class Log_Page {
 
     /** @param LogEntryGenerator $leg */
     function handle_download($leg) {
-        session_commit();
+        $this->qreq->qsession()->commit();
         assert(Contact::ROLE_PC === 1 && Contact::ROLE_ADMIN === 2 && Contact::ROLE_CHAIR === 4);
         $role_map = ["", "pc", "sysadmin", "pc sysadmin", "chair", "chair", "chair", "chair"];
 
-        $csvg = $this->conf->make_csvg("log");
+        $csvg = $this->conf->make_csvg("log")->set_will_emit(true);
         $narrow = true;
         $headers = ["date", "ipaddr", "email"];
         if ($narrow) {
@@ -202,6 +202,7 @@ class Log_Page {
         }
         array_push($headers, "affected_email", "via", $narrow ? "paper" : "papers", "action");
         $csvg->select($headers);
+        set_time_limit(300); // might take a while
         foreach ($leg->page_rows(1) as $row) {
             $date = date("Y-m-d H:i:s O", (int) $row->timestamp);
             $xusers = $leg->users_for($row, "contactId");
@@ -352,7 +353,7 @@ class Log_Page {
         if (($pc = $this->conf->pc_member_by_id($user->contactId))) {
             $user = $pc;
         }
-        if ($user->disablement & Contact::DISABLEMENT_DELETED) {
+        if ($user->disabled_flags() & Contact::CF_DELETED) {
             $t = '<del>' . $user->name_h(NAME_E) . '</del>';
         } else {
             $t = $user->name_h(NAME_P);
@@ -366,7 +367,7 @@ class Log_Page {
         }
         $url = $this->conf->hoturl("log", ["q" => "", "u" => $user->email, "n" => $this->qreq->n]);
         $t = "<a href=\"{$url}\">{$t}</a>";
-        if ($dt && $dt->has_decoration) {
+        if ($dt && $dt->has(TagInfo::TFM_DECORATION)) {
             $tagger = new Tagger($this->viewer);
             $t .= $tagger->unparse_decoration_html($viewable, Tagger::DECOR_USER);
         }
@@ -402,7 +403,7 @@ class Log_Page {
                 && (!isset($user->roles) || !($user->roles & Contact::ROLE_PCLIKE))) {
                 $all_pc = false;
             }
-            if ($user->disablement & Contact::DISABLEMENT_DELETED) {
+            if ($user->disabled_flags() & Contact::CF_DELETED) {
                 if ($user->email) {
                     $t = '<del>' . $user->name_h(NAME_E) . '</del>';
                 } else {
@@ -605,12 +606,12 @@ class Log_Page {
         if ($qreq->page === "earliest") { // NB `page` URL PARAMETER
             $page = null;
         } else {
-            $page = max(cvtint($qreq->page, -1), 1);
+            $page = max(stoi($qreq->page) ?? -1, 1);
         }
 
         $count = 50;
         if (isset($qreq->n) && trim($qreq->n) !== "") {
-            $count = cvtint($qreq->n, -1);
+            $count = stoi($qreq->n) ?? -1;
         }
         $bad_count = $count <= 0;
         $count = $bad_count ? 50 : min($count, 300);

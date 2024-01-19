@@ -1,0 +1,104 @@
+[
+    {
+        "legend": "Checkbox",
+        "type": "checkbox"
+    },
+    {
+        "legend": "Attestation",
+        "type": "checkbox",
+        "required": "submit",
+        "sample_view": {
+            "name": "Attestation",
+            "description": "An author must check this box before completing the submission."
+        }
+    },
+    {
+        "legend": "Dropdown",
+        "type": "dropdown",
+        "values": [],
+        "sample_view": {
+            "values": [
+                "Option 1",
+                "Option 2",
+                "Option 3"
+            ]
+        }
+    },
+    {
+        "legend": "Radio buttons",
+        "type": "radio",
+        "values": [],
+        "sample_view": {
+            "values": [
+                "Option 1",
+                "Option 2",
+                "Option 3"
+            ]
+        }
+    },
+    {
+        "legend": "Checkboxes",
+        "type": "checkboxes",
+        "values": [],
+        "sample_view": {
+            "values": [
+                "Option 1",
+                "Option 2",
+                "Group: Entry 1",
+                "Group: Entry 2"
+            ]
+        }
+    },
+    {
+        "legend": "Whole number",
+        "type": "numeric",
+        "value": 10
+    },
+    {
+        "legend": "Decimal number",
+        "type": "realnumber",
+        "value": -12.5
+    },
+    {
+        "legend": "Text field",
+        "type": "text",
+        "value": "Text entry"
+    },
+    {
+        "legend": "Multiline text",
+        "type": "mtext",
+        "display_space": 5,
+        "value": "Long text entry"
+    },
+    {
+        "legend": "PDF upload",
+        "type": "pdf"
+    },
+    {
+        "legend": "Slides upload",
+        "type": "slides"
+    },
+    {
+        "legend": "File upload",
+        "type": "document"
+    },
+    {
+        "legend": "Attachments",
+        "type": "attachments"
+    },
+    {
+        "legend": "Additional topic selector",
+        "type": "topics",
+        "sample_view": {
+            "name": "Topic selector",
+            "description": "Use topic selector fields to collect different kinds of topic entries, such as to distinguish a paper’s primary and secondary topics. Topic selectors use the conference’s global list of topics."
+        }
+    },
+    {
+        "legend": "Section break",
+        "type": "separator",
+        "sample_view": {
+            "name": "Optional section title"
+        }
+    }
+]

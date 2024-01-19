@@ -49,7 +49,7 @@ class S3VerifyAll_Batch {
 
         $algo_pos = -1;
         $algo_pfx = $last_key = $continuation_token = null;
-        $doc = new DocumentInfo([], $this->conf);
+        $doc = DocumentInfo::make($this->conf);
         $xml = null;
         $xmlpos = 0;
         $key_re = '/.*/';
@@ -102,7 +102,7 @@ class S3VerifyAll_Batch {
             $last_key = (string) $node->Key;
             if ((!$match_re || preg_match($match_re, $last_key))
                 && preg_match($key_re, $last_key, $m)
-                && ($khash = Filer::hash_as_binary($m[1]))) {
+                && ($khash = HashAnalysis::hash_as_binary($m[1]))) {
                 if ($this->verbose) {
                     fwrite(STDOUT, "$last_key: ");
                 }
@@ -113,7 +113,7 @@ class S3VerifyAll_Batch {
                     if (!$this->verbose) {
                         fwrite(STDOUT, "$last_key: ");
                     }
-                    fwrite(STDOUT, "bad checksum " . Filer::hash_as_text($chash) . " (" . Filer::hash_as_text($khash) . ")\n");
+                    fwrite(STDOUT, "bad checksum " . HashAnalysis::hash_as_text($chash) . " (" . HashAnalysis::hash_as_text($khash) . ")\n");
                 } else if ($this->verbose) {
                     fwrite(STDOUT, "ok\n");
                 }
@@ -140,7 +140,7 @@ Usage: php batch/s3verifyall.php [-n CONFID | --config CONFIG] [-c COUNT] [-m MA
          ->parse($argv);
 
         $conf = initialize_conf($arg["config"] ?? null, $arg["name"] ?? null);
-        if (!$conf->setting_data("s3_bucket")) {
+        if (!$conf->s3_client()) {
             throw new ErrorException("S3 is not configured for this conference");
         }
         return new S3VerifyAll_Batch($conf, $arg);
