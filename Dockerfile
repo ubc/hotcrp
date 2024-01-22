@@ -10,7 +10,7 @@ RUN apt-get update && \
 	libicu-dev libgmp-dev \
 	re2c libmhash-dev \
 	libmcrypt-dev file \
-	poppler-utils
+	poppler-utils netcat-openbsd
 
 RUN apt-get install -y -q --no-install-recommends \
 		msmtp
