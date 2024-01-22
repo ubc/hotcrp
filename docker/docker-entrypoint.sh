@@ -1,8 +1,10 @@
 #!/bin/sh
 set -e
 
+MYSQL_PORT="${MYSQL_PORT:-3306}"
+
 wait_for_mysql() {
-    until nc -z -v -w30 "mysql" "3306"; do
+    until nc -z -v -w30 "$MYSQL_HOST" "$MYSQL_PORT"; do
         echo "Waiting for MySQL to be ready..."
         sleep 2
     done
