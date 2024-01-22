@@ -5,6 +5,7 @@ global $Opt;
 $Opt["dbName"] = "hotcrp_testdb_cdb";
 $Opt["dbUser"] = "hotcrp_testdb";
 $Opt["dbPassword"] = "m5LuaN23j26g";
+$Opt["dbHost"] = "127.0.0.1";
 $Opt["shortName"] = "Testconf I";
 $Opt["longName"] = "Test Conference I";
 $Opt["contactName"] = "Eddie Kohler";

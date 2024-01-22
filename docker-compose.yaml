@@ -16,6 +16,7 @@ services:
       context: .
     expose:
       - 9000
+    container_name: hotcrp
     restart: always
     volumes:
       - ./docker/msmtprc:/etc/msmtprc
