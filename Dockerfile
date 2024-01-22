@@ -30,7 +30,6 @@ RUN rm -rf /var/lib/apt/lists/*
 
 COPY docker/www.conf /usr/local/etc/php-fpm.d/
 COPY docker/php.ini /usr/local/etc/php/
-COPY docker/hotcrp-options.php /var/www/html/conf/options.php
 COPY --chmod=755 docker/docker-entrypoint.sh /docker-entrypoint.sh
 COPY . /var/www/html
 

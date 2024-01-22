@@ -226,4 +226,19 @@ $Opt["smartScoreCompare"] = true;
 //   banalLimit      Limit on number of parallel paper format checker
 //                   executions. Defaults to 8.
 //   zipCommand      Set to the path to the `zip` executable. Defaults to
-//                   `zip`.
+//                   `zip`
+if (getenv("HOTCRP_LOGIN_TYPE") != false) {
+    $Opt["loginType"] = $_ENV["HOTCRP_LOGIN_TYPE"];
+}
+if (getenv("HOTCRP_LOGIN_TYPE") == "oauth") {
+//    $Opt["oAuthProviders"][] = '{
+//        "name": "Google",
+//        "issuer": "https://accounts.google.com",
+//        "auth_uri": "https://accounts.google.com/o/oauth2/v2/auth",
+//        "token_uri": "https://oauth2.googleapis.com/token",
+//        "client_id": "123456789-nnnnnnnnnnnnnnnnnnnnnnnnn.apps.googleusercontent.com",
+//        "client_secret": "GOCSPX-nnnnnnnnnnnnnnnnnnnnnnnn",
+//        "button_html": "Sign in with Google"
+//    }';
+    $Opt["oAuthProviders"][] = $_ENV['HOTCRP_OAUTH_PROVIDER'];
+}

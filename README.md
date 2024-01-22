@@ -39,6 +39,10 @@ software:
 You may need to install additional packages, such as php73, php73-fpm,
 php73-intl, php73-mysqlnd, zip, poppler-utils, and sendmail or postfix.
 
+Running with Docker
+-------------------
+See docker/README.md
+
 
 Installation
 ------------

@@ -1,0 +1,91 @@
+version: '3'
+
+services:
+  smtp:
+      image: mailhog/mailhog:v1.0.1
+      restart: always
+      expose:
+          - "25"
+      environment:
+          MH_SMTP_BIND_ADDR: 0.0.0.0:25
+      ports:
+          - 9002:8025
+
+  hotcrp:
+    build:
+      context: .
+    expose:
+      - 9000
+    restart: always
+    volumes:
+      - ./docker/msmtprc:/etc/msmtprc
+      - .data/logs/php:/var/log
+      - .:/var/www/html
+      - shared-files:/shared
+    environment:
+      MYSQL_USER: hotcrp
+      MYSQL_PASSWORD: hotcrppwd
+      MYSQL_DATABASE: hotcrp
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_HOST: mysql
+      HOTCRP_PAPER_SITE: ${HOTCRP_PAPER_SITE}
+      HOTCRP_CONTACT_NAME: ${HOTCRP_CONTACT_NAME}
+      HOTCRP_EMAIL_CONTACT: ${HOTCRP_EMAIL_CONTACT}
+      HOTCRP_EMAIL_FROM:  ${HOTCRP_EMAIL_FROM}
+      HOTCRP_OAUTH_PROVIDER: ${HOTCRP_OAUTH_PROVIDER}
+      HOTCRP_LOGIN_TYPE: ${HOTCRP_LOGIN_TYPE}
+    depends_on:
+      - smtp
+      - mysql
+
+  nginx:
+    image: nginx:alpine
+    restart: always
+    ports:
+      - 9001:80
+    volumes:
+      - .data/logs/nginx:/var/log/nginx
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf
+      - shared-files:/usr/share/nginx/html
+    depends_on:
+      - hotcrp
+
+  mysql:
+    image: mariadb:10.11
+    restart: always
+    command: --max_allowed_packet=20485760
+    volumes:
+      - .data/db:/var/lib/mysql
+      # use empty 05-skipcache.cnf file to mask host-cache-size=0 and skip-name-resolve. Otherwise, mariadb grant privilege
+      # will fail with "Can't find user entry" error
+      # https://github.com/MariaDB/mariadb-docker/blob/b1fff513e7b7d015c5cfb2d91ffc24d903d33434/10.11/Dockerfile#L127C21-L127C57
+      - ./docker/05-skipcache.cnf:/etc/mysql/mariadb.conf.d/05-skipcache.cnf
+    expose:
+      - 3306
+    environment:
+      # HOTCRP user and db are created with batch/createdb.php script
+#      MYSQL_USER: hotcrp
+#      MYSQL_PASSWORD: hotcrppwd
+#      MYSQL_DATABASE: hotcrp
+      MYSQL_ROOT_PASSWORD: root
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:23.0.4
+    container_name: keycloak
+    restart: always
+    ports:
+      - 9003:8080
+    volumes:
+      - .data/keycloak:/opt/keycloak/data/h2
+      - ./docker/keycloak:/opt/keycloak/data/import
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    # this will import a fixture realm to work with values set in .env.default. Any udpate in keycloak
+    # will not persist. To make any update, start container with --import-realm once and comment the
+    # next command and uncomment the one without --import-realm
+    command: ['start-dev', '--import-realm', '--log-level=INFO,org.keycloak:debug']
+    #command: ['start-dev']
+
+volumes:
+  shared-files:
