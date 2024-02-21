@@ -161,7 +161,7 @@ class Review_SettingParser extends SettingParser {
 
     static function print_rounds(SettingValues $sv) {
         Icons::stash_defs("trash");
-        echo '<p>Reviews are due by the deadline, but <em>cannot be modified</em> after the hard deadline. Most conferences don’t use hard deadlines for reviews.</p>',
+        echo '<p>Reviews are due by the deadline, but <em>cannot be modified</em> after the hard deadline. Most programs don’t use hard deadlines for reviews.</p>',
             '<p class="f-h">', $sv->type_hint("date"), '</p>',
             Ht::hidden("has_review", 1),
             Ht::unstash();

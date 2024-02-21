@@ -1,7 +1,7 @@
 [
     {
         "name": "chair", "title": "Chair’s guide", "order": 0,
-        "description": "<0>How to run a conference using HotCRP."
+        "description": "<0>How to run a program using HotCRP."
     },
     {
         "name": "chair/presubmission", "order": 0,

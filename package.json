@@ -3,7 +3,7 @@
     "eslint": "^8.21.0"
   },
   "name": "hotcrp",
-  "description": "HotCRP Conference Review Software",
+  "description": "HotCRP Program Review Software",
   "version": "3.0.0",
   "repository": {
     "type": "git",

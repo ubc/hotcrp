@@ -182,7 +182,7 @@ class Home_Page {
         echo '<div class="homegrp">Welcome to the ', htmlspecialchars($this->conf->full_name()), " submissions site.";
         if (($site = $this->conf->opt("conferenceSite"))
             && $site !== $this->conf->opt("paperSite"))
-            echo " For general conference information, see ", Ht::link(htmlspecialchars($site), htmlspecialchars($site)), ".";
+            echo " For general program information, see ", Ht::link(htmlspecialchars($site), htmlspecialchars($site)), ".";
         echo '</div>';
     }
 

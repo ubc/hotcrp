@@ -205,8 +205,8 @@
         ]
     },
 
-    ["resp_instrux", "The authors’ response should address reviewer concerns and correct misunderstandings. Make it short and to the point; the conference deadline has passed."],
-    ["resp_instrux", "The authors’ response should address reviewer concerns and correct misunderstandings. Make it short and to the point; the conference deadline has passed. Try to stay within {wordlimit} words.", ["{wordlimit}>0"]],
+    ["resp_instrux", "The authors’ response should address reviewer concerns and correct misunderstandings. Make it short and to the point; the program deadline has passed."],
+    ["resp_instrux", "The authors’ response should address reviewer concerns and correct misunderstandings. Make it short and to the point; the program deadline has passed. Try to stay within {wordlimit} words.", ["{wordlimit}>0"]],
 
     {"in": "conflictdef", "out": "This includes past advisors and students, people with the same affiliation, and any recent (~2 years) coauthors and collaborators.", "template": true},
 

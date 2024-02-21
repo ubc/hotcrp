@@ -1,13 +1,13 @@
 [
     {
         "name": "conference_abbreviation", "storage": "opt.shortName",
-        "title": "Conference abbreviation",
+        "title": "Program abbreviation",
         "type": "simplestring", "size": 20, "autogrow": true,
         "parser_class": "Basics_SettingParser"
     },
     {
         "name": "conference_name", "storage": "opt.longName",
-        "title": "Conference name", "placeholder": "(same as abbreviation)",
+        "title": "Program name", "placeholder": "(same as abbreviation)",
         "type": "simplestring", "size": 70,
         "parser_class": "Basics_SettingParser"
     },
@@ -152,7 +152,7 @@
     },
     {
         "name": "conference_url", "storage": "opt.conferenceSite",
-        "title": "Conference URL",
+        "title": "Program URL",
         "type": "url", "required": false, "size": 70, "placeholder": "N/A"
     },
     {
