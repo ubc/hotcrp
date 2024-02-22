@@ -197,7 +197,7 @@ class CheckFormat extends MessageSet {
         $limit = $doc->conf->opt("banalLimit") ?? 8;
         if ($limit > 0) {
             if ($n > $limit) {
-                $this->error_at("error", "<0>Server too busy to check paper formats");
+                $this->error_at("error", "<0>Server too busy to check application formats");
                 $this->inform_at("error", "<0>This is a transient error; feel free to try again.");
                 return $this->complete_banal_json($bj, $flags | CheckFormat::RUN_ABANDONED);
             }
@@ -507,7 +507,7 @@ class Default_FormatChecker implements FormatChecker {
             }
         }
         if (!$ok) {
-            $cf->problem_at("papersize", "<0>Paper size mismatch: expected " . commajoin(array_map(function ($d) { return FormatSpec::unparse_dimen($d, "paper"); }, $spec->papersize), "or") . ", got " . FormatSpec::unparse_dimen([$papersize[1], $papersize[0]], "paper"), 2);
+            $cf->problem_at("papersize", "<0>Application size mismatch: expected " . commajoin(array_map(function ($d) { return FormatSpec::unparse_dimen($d, "paper"); }, $spec->papersize), "or") . ", got " . FormatSpec::unparse_dimen([$papersize[1], $papersize[0]], "application"), 2);
         }
     }
 

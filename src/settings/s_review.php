@@ -246,7 +246,7 @@ class Review_SettingParser extends SettingParser {
              "fold_values" => [0]]);
 
         echo '<hr class="form-sep"><div class="settings-radio">',
-            '<div class="label">Who can <strong>always</strong> see reviewer names and review contents for their assigned papers?</div>',
+            '<div class="label">Who can <strong>always</strong> see reviewer names and review contents for their assigned applications?</div>',
             '<div class="settings-radioitem checki"><span class="checkc">✓</span>Metareviewers</div>',
             '<div class="settings-radioitem checki"><label><span class="checkc">',
             $sv->print_checkbox_only("review_visibility_lead"),

@@ -91,7 +91,7 @@
         "type": "topics",
         "sample_view": {
             "name": "Topic selector",
-            "description": "Use topic selector fields to collect different kinds of topic entries, such as to distinguish a paper’s primary and secondary topics. Topic selectors use the program’s global list of topics."
+            "description": "Use topic selector fields to collect different kinds of topic entries, such as to distinguish an application’s primary and secondary topics. Topic selectors use the program’s global list of topics."
         }
     },
     {

@@ -118,7 +118,7 @@ class Offline_Page {
         }
         echo '<li><a href="', $conf->hoturl("offline", "download=1"), '">Blank form</a></li>',
             '</ul>
-<div class="f-h"><strong>Tip:</strong> Use <a href="', $conf->hoturl("search", "q="), '">Search</a> &gt; Download to choose individual papers.</div>',
+<div class="f-h"><strong>Tip:</strong> Use <a href="', $conf->hoturl("search", "q="), '">Search</a> &gt; Download to choose individual applications.</div>',
             "</fieldset>";
 
         $pastDeadline = !$conf->time_review(null, $this->user->isPC, true);
@@ -143,7 +143,7 @@ class Offline_Page {
                 '<ul class="x mb-2">',
                 '<li><a href="', $conf->hoturl("search", ["fn" => "get", "getfn" => "rank", "tag" => "~{$ranktag}", "q" => "", "t" => "r", "p" => "all"]), '">Your reviews</a></li>';
             if ($this->user->isPC) {
-                echo "<li><a href=\"", $conf->hoturl("search", ["fn" => "get", "getfn" => "rank", "tag" => "~{$ranktag}", "q" => "", "t" => "s", "p" => "all"]), "\">All submitted papers</a></li>";
+                echo "<li><a href=\"", $conf->hoturl("search", ["fn" => "get", "getfn" => "rank", "tag" => "~{$ranktag}", "q" => "", "t" => "s", "p" => "all"]), "\">All submitted applications</a></li>";
             }
             echo '</ul></fieldset>', "\n";
 

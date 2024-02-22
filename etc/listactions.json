@@ -10,7 +10,7 @@
     },
     {
         "name": "get/json", "get": true,
-        "title": "Paper information/JSON",
+        "title": "Application information/JSON",
         "order": 10090,
         "allow_if": "manager",
         "function": "+GetJson_ListAction",
@@ -18,7 +18,7 @@
     },
     {
         "name": "get/jsonattach", "get": true,
-        "title": "Paper information/JSON with attachments",
+        "title": "Application information/JSON with attachments",
         "order": 10091,
         "allow_if": "manager",
         "function": "+GetJson_ListAction",
@@ -26,7 +26,7 @@
     },
     {
         "name": "get/jsonrqc", "get": true,
-        "title": "Paper information/JSON for reviewqualitycollector.org",
+        "title": "Application information/JSON for reviewqualitycollector.org",
         "order": 10092,
         "allow_if": "manager",
         "function": "+GetJsonRQC_ListAction"
@@ -198,40 +198,40 @@
     },
     {
         "name": "get/abstract", "get": true,
-        "title": "Paper information/Text with abstracts", "display_if": "listhas:abstract",
+        "title": "Application information/Text with abstracts", "display_if": "listhas:abstract",
         "order": 10000,
         "function": "+GetAbstracts_ListAction"
     },
     {
         "name": "get/abstract", "get": true,
-        "title": "Paper information/Text", "display_if": "!listhas:abstract",
+        "title": "Application information/Text", "display_if": "!listhas:abstract",
         "order": 10000,
         "function": "+GetAbstracts_ListAction"
     },
     {
         "name": "get/authors", "get": true,
-        "title": "Paper information/Authors",
+        "title": "Application information/Authors",
         "order": 10001, "display_if": "listhas:authors",
         "require": "src/listactions/la_get_sub.php",
         "function": "+GetAuthors_ListAction"
     },
     {
         "name": "get/topics", "get": true,
-        "title": "Paper information/Topics", "display_if": "conf.has_topics",
+        "title": "Application information/Topics", "display_if": "conf.has_topics",
         "order": 10050,
         "require": "src/listactions/la_get_sub.php",
         "function": "+GetTopics_ListAction"
     },
     {
         "name": "get/pcconf", "get": true,
-        "title": "Paper information/PC conflicts",
+        "title": "Application information/PC conflicts",
         "order": 10060,
         "require": "src/listactions/la_get_sub.php",
         "function": "+GetPcconflicts_ListAction"
     },
     {
         "name": "get/csv", "get": true,
-        "title": "Paper information/CSV",
+        "title": "Application information/CSV",
         "order": 10089,
         "require": "src/listactions/la_get_sub.php",
         "function": "+GetCSV_ListAction"

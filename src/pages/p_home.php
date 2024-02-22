@@ -166,7 +166,7 @@ class Home_Page {
         assert($user->conf->time_all_author_view_decision());
         if ($user->conf->time_all_author_view_decision()) {
             list($n, $nyes) = $user->conf->count_submitted_accepted();
-            echo '<li>', $user->conf->_("{} papers accepted out of {} submitted.", $nyes, $n), '</li>';
+            echo '<li>', $user->conf->_("{} applications accepted out of {} submitted.", $nyes, $n), '</li>';
         }
     }
 
@@ -206,7 +206,7 @@ class Home_Page {
             Ht::form($this->conf->hoturl("search"), ["method" => "get", "class" => "form-basic-search"]),
             Ht::entry("q", (string) $qreq->q, [
                 "id" => "homeq", "size" => 32,
-                "title" => "Enter paper numbers or search terms",
+                "title" => "Enter application numbers or search terms",
                 "class" => "papersearch need-suggest flex-grow-1 mb-1",
                 "placeholder" => "(All)",
                 "aria-labelledby" => "homesearch-label",
@@ -387,9 +387,9 @@ class Home_Page {
             }
         }
         if ($user->isPC && $user->can_review_any()) {
-            echo '  <span class="hint">As a PC member, you may review <a href="', $conf->hoturl("search", "q=&amp;t=s"), "\">any submitted paper</a>.</span><br>\n";
+            echo '  <span class="hint">As a PC member, you may review <a href="', $conf->hoturl("search", "q=&amp;t=s"), "\">any submitted application</a>.</span><br>\n";
         } else if ($user->privChair) {
-            echo '  <span class="hint">As an administrator, you may review <a href="', $conf->hoturl("search", "q=&amp;t=s"), "\">any submitted paper</a>.</span><br>\n";
+            echo '  <span class="hint">As an administrator, you may review <a href="', $conf->hoturl("search", "q=&amp;t=s"), "\">any submitted application</a>.</span><br>\n";
         }
 
         if ($has_rinfo) {
@@ -557,12 +557,12 @@ class Home_Page {
             $deadlines[] = 'The <a href="' . $this->conf->hoturl("deadlines") . "\">{$sr->title1}update deadline</a> has passed, but you can still submit.";
             if ($sr->submit > Conf::$now) {
                 $d = $this->conf->unparse_time_with_local_span($sr->submit);
-                $deadlines[] = "You have until {$d} to submit {$sr->title1}papers.";
+                $deadlines[] = "You have until {$d} to submit {$sr->title1}applications.";
             }
         } else {
             if ($sr->update > Conf::$now) {
                 $d = $this->conf->unparse_time_with_local_span($sr->update);
-                $deadlines[] = "You have until {$d} to submit {$sr->title1}papers.";
+                $deadlines[] = "You have until {$d} to submit {$sr->title1}applications.";
             }
         }
     }
@@ -642,7 +642,7 @@ class Home_Page {
             if ($conf->time_after_setting("final_soft") && $plist->has("need_final")) {
                 $deadlines[] = "<strong class=\"overdue\">Final versions are overdue.</strong> They were requested by {$d}.";
             } else if ($d) {
-                $deadlines[] = "Submit final versions of your accepted papers by {$d}.";
+                $deadlines[] = "Submit final versions of your accepted applications by {$d}.";
             }
         }
         if (!empty($deadlines)) {

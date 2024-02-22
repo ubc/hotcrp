@@ -91,10 +91,7 @@ class MergeAccounts_Page {
         $this->qreq->print_header("Merge accounts", "mergeaccounts");
 
         echo '<div class="w-text"><p>',
-            'You may have multiple accounts registered; perhaps you were asked to review
-papers using different email addresses. This form will allow you to transfer information
-between accounts, including authorship, reviews, and PC status. (Note that the
-transfer will only affect information currently stored in this program.)</p></div>';
+            'You may have multiple accounts registered; perhaps you were asked to review applications using different email addresses. This form will allow you to transfer information between accounts, including authorship, reviews, and PC status. (Note that the transfer will only affect information currently stored in this program.)</p></div>';
 
         echo Ht::form($this->conf->hoturl("=mergeaccounts")),
             '<div class="', $this->ms->control_class("email", "f-i"), '">',
