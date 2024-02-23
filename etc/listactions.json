@@ -72,7 +72,7 @@
     },
     {
         "name": "get/revt", "get": true,
-        "title": "Reviews/Reviews with paper info",
+        "title": "Reviews/Reviews with application info",
         "order": 30050,
         "allow_if": "view_review",
         "function": "+GetReviews_ListAction",

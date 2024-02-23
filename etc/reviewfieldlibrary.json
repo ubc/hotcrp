@@ -147,15 +147,15 @@
         "scheme": "orbu"
     },
     {
-        "legend": "Paper summary",
-        "name": "Paper summary",
+        "legend": "Application summary",
+        "name": "Application summary",
         "type": "text",
         "description": "Please summarize the application’s main results in your own words. This will frame the review and show that you have understood the application’s intent.",
         "visibility": "au"
     },
     {
-        "legend": "Paper summary (shorter description)",
-        "name": "Paper summary",
+        "legend": "Application summary (shorter description)",
+        "name": "Application summary",
         "type": "text",
         "description": "Please summarize the application briefly in your own words.",
         "visibility": "au"
