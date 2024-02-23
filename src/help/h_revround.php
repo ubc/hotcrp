@@ -8,7 +8,7 @@ class RevRound_HelpTopic {
 such as “R1” or “lastround”.
 (We suggest very short names like “R1”.)
 Different review rounds can have different deadlines and can even have different fields on their review forms.
-To search for any paper with a round “R2” review assignment, ",
+To search for any application with a round “R2” review assignment, ",
 $hth->search_link("search for “re:R2”", "re:R2"), ".
 To list a PC member’s round “R1” review assignments, ",
 $hth->search_link("search for “re:membername:R1”", "re:membername:R1"), ".</p>
