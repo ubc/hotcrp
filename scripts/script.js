@@ -3439,7 +3439,7 @@ handle_ui.on("js-tracker", function (evt) {
                 hc.push('PC members without tag ' + vis.substring(1));
             hc.push_pop('<div class="f-h">This <a href="' + escape_html(hoturl("settings", "group=tracks")) + '">setting</a> restricts all trackers.</div>');
         }
-        hc.push('<div class="entryi"><label></label><div class="entry"><label class="checki"><input type="hidden" name="has_tr' + trno + '-hideconflicts" value="1"><input class="checkc" name="tr' + trno + '-hideconflicts" value="1" type="checkbox"' + (tr.hide_conflicts ? ' checked' : '') + '>Hide conflicted papers</label></div></div>');
+        hc.push('<div class="entryi"><label></label><div class="entry"><label class="checki"><input type="hidden" name="has_tr' + trno + '-hideconflicts" value="1"><input class="checkc" name="tr' + trno + '-hideconflicts" value="1" type="checkbox"' + (tr.hide_conflicts ? ' checked' : '') + '>Hide conflicted applications</label></div></div>');
         if (tr.start_at)
             hc.push('<div class="entryi"><label>Elapsed time</label><span class="trackerdialog-elapsed" data-start-at="' + tr.start_at + '"></span></div>');
         try {
@@ -6701,7 +6701,7 @@ function cmt_edit_messages(cj, form) {
     } else if (cj.review_token
                && hotcrp.status.myperm.review_tokens
                && hotcrp.status.myperm.review_tokens.indexOf(cj.review_token) >= 0) {
-        append_feedback_to(ul, {message: '<0>You have a review token for this paper, so your comment will be anonymous.', status: -4 /*MessageSet::MARKED_NOTE*/});
+        append_feedback_to(ul, {message: '<0>You have a review token for this application, so your comment will be anonymous.', status: -4 /*MessageSet::MARKED_NOTE*/});
     } else if (!cj.response
                && cj.author_email
                && siteinfo.user.email
@@ -12023,7 +12023,7 @@ handle_ui.on("submit.js-submit-paper", function (evt) {
     if (is_submit
         && sub && sub.type === "checkbox" && !sub.checked
         && this.hasAttribute("data-submitted")) {
-        if (!window.confirm("Are you sure the paper is no longer ready for review?\n\nOnly papers that are ready for review will be considered.")) {
+        if (!window.confirm("Are you sure the application is no longer ready for review?\n\nOnly applications that are ready for review will be considered.")) {
             evt.preventDefault();
             return;
         }
@@ -12539,7 +12539,7 @@ handle_ui.on("js-edit-formulas", function () {
     function create(formulas) {
         var hc = popup_skeleton({className: "modal-dialog-w40", form_class: "need-diff-check"}), i;
         hc.push('<h2>Named formulas</h2>');
-        hc.push('<p><a href="' + hoturl("help", "t=formulas") + '" target="_blank" rel="noopener">Formulas</a>, such as “sum(OveMer)”, are calculated from review statistics and paper information. Named formulas are shared with the PC and can be used in other formulas. To view an unnamed formula, use a search term like “show:(sum(OveMer))”.</p>');
+        hc.push('<p><a href="' + hoturl("help", "t=formulas") + '" target="_blank" rel="noopener">Formulas</a>, such as “sum(OveMer)”, are calculated from review statistics and application information. Named formulas are shared with the PC and can be used in other formulas. To view an unnamed formula, use a search term like “show:(sum(OveMer))”.</p>');
         hc.push('<div class="editformulas">', '</div>');
         for (i in formulas || [])
             push1(hc, formulas[i]);
@@ -13378,7 +13378,7 @@ function render_events(e, rows) {
     if (events_more === false)
         $(e).find(".eventtable-more").addClass("hidden");
     if (events_more === false && !events.length)
-        j.append("<tr><td>No recent activity in papers you’re following</td></tr>");
+        j.append("<tr><td>No recent activity in applications you’re following</td></tr>");
 }
 
 handle_ui.on("js-open-activity", function (evt) {

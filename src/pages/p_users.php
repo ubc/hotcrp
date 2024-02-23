@@ -49,22 +49,22 @@ class Users_Page {
         if ($viewer->is_manager()
             || ($viewer->isPC
                 && $this->conf->submission_blindness() !== Conf::BLIND_ALWAYS)) {
-            $this->limits["au"] = "Contact authors of submitted papers";
+            $this->limits["au"] = "Contact authors of submitted applications";
         }
         if ($viewer->is_manager()
             || ($viewer->isPC
                 && $viewer->can_view_some_decision()
                 && $viewer->can_view_some_authors())) {
-            $this->limits["auacc"] = ["label" => "Contact authors of accepted papers", "exclude" => !$this->conf->has_any_accepted()];
+            $this->limits["auacc"] = ["label" => "Contact authors of accepted applications", "exclude" => !$this->conf->has_any_accepted()];
         }
         if ($viewer->is_manager()
             || ($viewer->isPC
                 && $viewer->can_view_some_decision()
                 && $this->conf->submission_blindness() !== Conf::BLIND_ALWAYS)) {
-            $this->limits["aurej"] = "Contact authors of rejected papers";
+            $this->limits["aurej"] = "Contact authors of rejected applications";
         }
         if ($viewer->is_manager()) {
-            $this->limits["auuns"] = "Contact authors of non-submitted papers";
+            $this->limits["auuns"] = "Contact authors of non-submitted applications";
         }
         if ($viewer->privChair) {
             $this->limits["all"] = "Active users";
