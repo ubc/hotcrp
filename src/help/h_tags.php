@@ -22,7 +22,10 @@ class Tags_HelpTopic {
             $conflictmsg = " and conflicted PC members";
         }
 
-        echo "<p>PC members and administrators can attach tag names to applicaitons. It’s easy to change tags and to list all applications with a given tag, and <em>ordered</em> tags preserve a particular application order. Tags also affect color highlighting in application lists.</p>
+        echo "<p>PC members and administrators can attach tag names to applications.
+It’s easy to change tags and to list all applications with a given tag,
+and <em>ordered</em> tags preserve a particular application order.
+Tags also affect color highlighting in application lists.</p>
 
 <p>Tags are visible to the PC and hidden from authors$conflictmsg. <em>Twiddle
 tags</em>, with names like “#~tag”, are visible only to their creators. Tags
@@ -52,7 +55,8 @@ case insensitive, so “#TAG” and “#tAg” are considered identical.</p>";
 
 <div class=\"mb-p\">", $hth->search_form("#discuss"), "</div>
 
-<p>You can also search with “", $hth->search_link("show:tags"), "” to see each application’s tags, or “", $hth->search_link("show:#tagname"), "” to see a particular tag
+<p>You can also search with “", $hth->search_link("show:tags"), "” to see each
+application’s tags, or “", $hth->search_link("show:#tagname"), "” to see a particular tag
 as a column.</p>
 
 <p>Tags are only shown to PC members and administrators. ";

@@ -60,7 +60,8 @@ request body.)</p>
     }
 
     function print_settings() {
-        echo "<p>The chair-only <code>api/settings</code> endpoint accesses program settings in ",
+        echo "<p>The chair-only <code>api/settings</code> endpoint accesses
+program settings in ",
     $this->hth->hotlink("JSON format", "help", ["t" => "jsonsettings"]) . ".
 To modify settings, use the POST method and provide a JSON request body.
 Examples:</p>
@@ -90,7 +91,8 @@ Examples:</p>
     }
 
     function print_submissions() {
-        echo "<p>The <code>api/paper</code> endpoint accesses program submissions. GET calls return paper information; use
+        echo "<p>The <code>api/paper</code> endpoint accesses program
+submissions. GET calls return application information; use
 <code>api/PAPERID/paper</code> to return one paper, and
 <code>api/paper?q=SEARCH&amp;t=SEARCHTYPE</code> to return all papers matching
 <code>SEARCH</code>.</p>";

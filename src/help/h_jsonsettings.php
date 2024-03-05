@@ -19,7 +19,10 @@ class JSONSettings_HelpTopic {
     function print() {
         echo "<p>With ",
             $this->hth->setting_group_link("Settings &gt; Advanced", "json"),
-            ", administrators can configure site operation by modifying a JSON specification. Advanced users can copy settings from one program to another and configure aspects of the site not accessible via the normal settings UI.</p>";
+            ", administrators can configure site operation by modifying a JSON
+specification. Advanced users can copy settings from one program to
+another and configure aspects of the site not accessible via the normal
+settings UI.</p>";
 
 
         echo $this->hth->subhead("View settings");
@@ -116,7 +119,9 @@ topics, so <em>all</em> topic subsettings remain unchanged):
 
 <li><p><strong>Copying settings between programs.</strong> Beware of IDs
 when copying settings between programs. Unless you are careful, the IDs
-used in one program may differ from the IDs in another. Consider removing the IDs from a program’s JSON settings before uploading those settings to another program.</p></li>
+used in one program may differ from the IDs in another. Consider removing
+the IDs from a program’s JSON settings before uploading those settings to
+another program.</p></li>
 
 
 <li><p><strong>Other common components</strong> in object lists include

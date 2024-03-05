@@ -179,11 +179,6 @@ class Home_Page {
     }
 
     function print_welcome() {
-        echo '<div id="motivationalQuotes">
-    <p>&bull; Dare to dream</p>
-    <p>&bull; Ignite your inspiration and innovation</p>
-    <p>&bull; Strive for excellence</p>
-    <p>&bull; Explore together &amp; unlock the world&apos;s knowledge</p></div>';
         echo '<div class="homegrp">Welcome to the ', htmlspecialchars($this->conf->full_name()), " submissions site.";
         if (($site = $this->conf->opt("conferenceSite"))
             && $site !== $this->conf->opt("paperSite"))
