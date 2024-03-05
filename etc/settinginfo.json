@@ -1,13 +1,13 @@
 [
     {
         "name": "conference_abbreviation", "storage": "opt.shortName",
-        "title": "Conference abbreviation",
+        "title": "Program abbreviation",
         "type": "simplestring", "size": 20, "autogrow": true,
         "parser_class": "Basics_SettingParser"
     },
     {
         "name": "conference_name", "storage": "opt.longName",
-        "title": "Conference name", "placeholder": "(same as abbreviation)",
+        "title": "Program name", "placeholder": "(same as abbreviation)",
         "type": "simplestring", "size": 70,
         "parser_class": "Basics_SettingParser"
     },
@@ -152,7 +152,7 @@
     },
     {
         "name": "conference_url", "storage": "opt.conferenceSite",
-        "title": "Conference URL",
+        "title": "Program URL",
         "type": "url", "required": false, "size": 70, "placeholder": "N/A"
     },
     {
@@ -498,7 +498,7 @@
     },
     {
         "name": "review_self_assign", "storage": "pcrev_any",
-        "title": "PC can review any paper",
+        "title": "PC can review any application",
         "type": "checkbox", "initial_value": 1
     },
     {
@@ -858,7 +858,7 @@
     },
     {
         "name_pattern": "format/$/papersize",
-        "title": "PDF format checker paper size",
+        "title": "PDF format checker application size",
         "type": "string", "size": 18, "placeholder": "any"
     },
     {
@@ -977,7 +977,7 @@
     },
     {
         "name": "tag_visibility_conflict", "storage": "tag_seeall",
-        "title": "PC can see tags for conflicted papers",
+        "title": "PC can see tags for conflicted applications",
         "type": "checkbox"
     },
     {
