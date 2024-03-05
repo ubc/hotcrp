@@ -265,7 +265,7 @@ class PermissionProblem extends Exception
             $ms[] = $this->conf->_("<0>“Override deadlines” can override this restriction.");
         }
         if ($this->_a["blindSubmission"] ?? false) {
-            $ms[] = $this->conf->_("<0>Submission to this conference is blind");
+            $ms[] = $this->conf->_("<0>Submission to this program is blind");
         }
         if ($this->_a["author"] ?? false) {
             $ms[] = $this->conf->_("<0>You aren’t a contact for #{}", $paperId);
@@ -302,7 +302,7 @@ class PermissionProblem extends Exception
             $ms[] = $this->conf->_("<0>Tag #{} can only be changed by administrators", $this->_a["tag"]);
         }
         if ($this->_a["voteTag"] ?? false) {
-            $ms[] = $this->conf->_("<0>The voting tag #{0} shouldn’t be changed directly. To vote for this paper, change the #~{0} tag", $this->_a["tag"]);
+            $ms[] = $this->conf->_("<0>The voting tag #{0} shouldn’t be changed directly. To vote for this application, change the #~{0} tag", $this->_a["tag"]);
         }
         if ($this->_a["voteTagNegative"] ?? false) {
             $ms[] = $this->conf->_("<0>Negative votes aren’t allowed");
