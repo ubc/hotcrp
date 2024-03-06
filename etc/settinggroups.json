@@ -1,13 +1,13 @@
 [
     {
         "name": "basics", "order": 0, "title": "Basics",
-        "description": "<0>Conference name, site contact, and email."
+        "description": "<0>Program name, site contact, and email."
     },
     {   "name": "info", "alias": "basics"   },
     {
         "name": "basics/names", "order": 10,
         "print_function": "Basics_SettingParser::print_names",
-        "title": "Conference information",
+        "title": "Program information",
         "settings": [
             "conference_abbreviation",
             "conference_name",
