@@ -5,17 +5,17 @@
 class Formulas_HelpTopic {
     static function print(HelpRenderer $hth) {
         echo "<p>Program committee members and administrators can search and display <em>formulas</em>
-that calculate properties of paper scores&mdash;for instance, the
-standard deviation of papers’ Overall merit scores, or average Overall
+that calculate properties of application scores&mdash;for instance, the
+standard deviation of applications’ Overall merit scores, or average Overall
 merit among reviewers with high Reviewer expertise.</p>
 
 <p>To display a formula, use a search term such as “",
 $hth->search_link("show:var(OveMer)"), "” (show
-the variance in Overall merit scores, along with statistics for all papers).
+the variance in Overall merit scores, along with statistics for all applications).
 You can also ", $hth->hotlink("graph formulas", "graph", "group=formula"), ".
 To search for a formula, use a search term such as “",
 $hth->search_link("formula:var(OveMer)>0.5"), "”
-(select papers with variance in Overall merit greater than 0.5).
+(select applications with variance in Overall merit greater than 0.5).
 Or save formulas using ",
 $hth->search_link("Search &gt; View options", ["q" => "", "#" => "view"]),
 " &gt; Edit formulas</a>.</p>
@@ -68,7 +68,7 @@ scores A, B, and D is A. For instance:</p>
         echo $hth->trow("log(<em>e</em>, <em>b</em>)", "Log to the base <em>b</em>");
         echo $hth->trow("round(<em>e</em>[, <em>m</em>])", "Round to the nearest multiple of <em>m</em>");
         echo $hth->tgroup("Submission properties");
-        echo $hth->trow("pid", "Paper ID");
+        echo $hth->trow("pid", "Application ID");
         echo $hth->trow("au", "Number of authors");
         echo $hth->trow("au:pc", "Number of PC authors");
         echo $hth->trow("au:<em>text</em>", "Number of authors matching <em>text</em>");
@@ -77,8 +77,8 @@ scores A, B, and D is A. For instance:</p>
             echo $hth->trow("topics:<em>text</em>", "Number of topics matching <em>text</em>");
         }
         echo $hth->tgroup("Tags");
-        echo $hth->trow("#<em>tagname</em>", "True if this paper has tag <em>tagname</em>");
-        echo $hth->trow("tagval:<em>tagname</em>", "The value of tag <em>tagname</em>, or null if this paper doesn’t have that tag");
+        echo $hth->trow("#<em>tagname</em>", "True if this application has tag <em>tagname</em>");
+        echo $hth->trow("tagval:<em>tagname</em>", "The value of tag <em>tagname</em>, or null if this application doesn’t have that tag");
         echo $hth->tgroup("Scores");
         echo $hth->trow("overall-merit", "This review’s Overall merit score<div class=\"hint\">Only completed reviews are considered.</div>");
         echo $hth->trow("OveMer", "Abbreviations also accepted");
@@ -103,9 +103,9 @@ scores A, B, and D is A. For instance:</p>
 
         echo $hth->subhead("Aggregate functions");
         echo "<p>Aggregate functions calculate a
-value based on all of a paper’s reviews and/or review preferences.
+value based on all of a application’s reviews and/or review preferences.
 For instance, “max(OveMer)” would return the maximum Overall merit score
-assigned to a paper.</p>
+assigned to a application.</p>
 
 <p>An aggregate function’s argument is calculated once per viewable review
 or preference.

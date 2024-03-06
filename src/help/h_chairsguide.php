@@ -291,7 +291,7 @@ administrator’s identity.</p>\n\n";
   " to expose decisions to PC members if desired.</p></li>\n";
 
         } else if ($gj->itemid === 4) {
-            echo "<li><p><strong>Shepherding (optional).</strong> If your conference uses
+            echo "<li><p><strong>Shepherding (optional).</strong> If your program uses
   shepherding for accepted applications, you can assign shepherds either ",
   $hth->hotlink("app by app", "paper"), " or ", $hth->hotlink("automatically", "autoassign", "t=accepted"), ".</p></li>\n";
         }
