@@ -26,7 +26,7 @@ their reviews.</p>
 <li><strong>Too narrow</strong>: The review’s perspective seems limited; for
   instance, it might overly privilege the reviewer’s own work.</li>
 <li><strong>Disrespectful</strong>: The review’s tone is unnecessarily aggressive or exhibits bias.</li>
-<li><strong>Not correct</strong>: The review misunderstands the paper.</li>
+<li><strong>Not correct</strong>: The review misunderstands the application.</li>
 </ul>
 
 <p>HotCRP reports aggregate ratings for each review.
