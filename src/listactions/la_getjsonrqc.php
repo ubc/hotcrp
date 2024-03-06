@@ -30,7 +30,7 @@ class GetJsonRQC_ListAction extends ListAction {
                     }
                 }
             } else {
-                $pj[] = (object) ["pid" => $prow->paperId, "error" => "You don’t have permission to administer this paper."];
+                $pj[] = (object) ["pid" => $prow->paperId, "error" => "You don’t have permission to administer this application."];
             }
         }
         $user->set_overrides($old_overrides);
