@@ -44,7 +44,7 @@ class MergeAccounts_Page {
             return false;
         }
         if (!$this->user->contactId && !$other->contactId) {
-            $this->conf->warning_msg("<0>Neither of those accounts has any data associated with this conference");
+            $this->conf->warning_msg("<0>Neither of those accounts has any data associated with this program");
             return false;
         }
         if ($other->contactId && $other->contactId === $this->user->contactId) {
@@ -92,9 +92,9 @@ class MergeAccounts_Page {
 
         echo '<div class="w-text"><p>',
             'You may have multiple accounts registered; perhaps you were asked to review
-papers using different email addresses. This form will allow you to transfer information
+applications using different email addresses. This form will allow you to transfer information
 between accounts, including authorship, reviews, and PC status. (Note that the
-transfer will only affect information currently stored in this conference.)</p></div>';
+transfer will only affect information currently stored in this program.)</p></div>';
 
         echo Ht::form($this->conf->hoturl("=mergeaccounts")),
             '<div class="', $this->ms->control_class("email", "f-i"), '">',
