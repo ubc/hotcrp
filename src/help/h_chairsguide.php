@@ -91,7 +91,7 @@ form also can include:</p>
         } else if ($gj->itemid === 1) {
             echo "<li><p>Consider checking ", $hth->search_link("the apps", ["q" => "", "t" => "all"]),
   " for anomalies.  Withdraw and/or delete duplicates or update details on the ",
-  $hth->hotlink("paper pages", "paper"), " (via “Edit app”).
+  $hth->hotlink("application pages", "paper"), " (via “Edit app”).
   Also consider contacting the authors of ",
   $hth->search_link("incomplete submissions", ["q" => "status:unsub", "t" => "all"]),
   ", especially if a PDF document was uploaded; sometimes a
@@ -129,7 +129,7 @@ form also can include:</p>
   Users can either set their preferences ",
   $hth->hotlink("all at once", "reviewprefs"), ", or (often more
   convenient) page through the ", $hth->search_link("list of submitted apps", ""),
-  " and set their preferences on the ", $hth->hotlink("paper pages", "paper"), ".</p>
+  " and set their preferences on the ", $hth->hotlink("application pages", "paper"), ".</p>
 
   <p>If desired, review preferences can be collected before the submission
   deadline.  Select ", $hth->setting_link("“PC can see <em>all registered apps</em> until submission deadline”", "draft_submission_early_visibility"),
@@ -286,7 +286,7 @@ administrator’s identity.</p>\n\n";
 
         } else if ($gj->itemid === 3) {
             echo "<li><p><strong>Application decisions</strong> can be recorded on the ",
-  $hth->hotlink("paper pages", "review"), " or en masse via ",
+  $hth->hotlink("application pages", "review"), " or en masse via ",
   $hth->search_link("search", ""), ".  Use ", $hth->setting_link("decision settings", "decision_visibility_author"),
   " to expose decisions to PC members if desired.</p></li>\n";
 
