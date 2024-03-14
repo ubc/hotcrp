@@ -4807,18 +4807,6 @@ class Conf {
         }
 
 
-        // site header
-        if ($id === "home" || ($extra["hide_title"] ?? false)) {
-            echo '<div id="h-site" class="header-site-home">',
-                '<h1> <a class="q" href="', $this->hoturl("index", ["cap" => null]),
-                '">', htmlspecialchars($this->short_name), '</a></h1></div>';
-        } else {
-            echo '<div id="h-site" class="header-site-page">',
-                '<a class="q" href="', $this->hoturl("index", ["cap" => null]),
-                '"><span class="header-site-name">', htmlspecialchars($this->short_name),
-                '</span> Home</a></div>';
-        }
-
         echo '<div id="h-right">';
         if ($user && !$user->is_empty()) {
             $this->print_header_profile($id, $qreq, $user);
