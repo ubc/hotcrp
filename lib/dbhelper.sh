@@ -1,5 +1,5 @@
 ## dbhelper.sh -- shell program helpers for HotCRP database access
-## Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+## Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 echo_n () {
         # suns can't echo -n, and Mac OS X can't echo "x\c"
@@ -103,7 +103,7 @@ sub fixshell ($) {
 if ($Opt{"multiconference"} && $Confname ne "") {
    foreach my $i ("dbName", "dbUser", "dbPassword",
                   "sessionName", "downloadPrefix", "conferenceSite") {
-       $Opt{$i} =~ s,\*|\*\{conf(?:id|name)\}|\$conf(?:id|name)\b,$Confname,g if exists($Opt{$i});
+       $Opt{$i} =~ s,\*|\$\{conf(?:id|name)\}|\$conf(?:id|name)\b,$Confname,g if exists($Opt{$i});
    }
 }
 

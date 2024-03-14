@@ -24,11 +24,13 @@ class SearchScope {
 
 class SearchStringContext {
     /** @var string */
-    public $subcontext;
+    public $q;
     /** @var int */
     public $ppos1;
     /** @var int */
     public $ppos2;
+    /** @var int */
+    public $depth;
     /** @var ?SearchStringContext */
     public $parent;
 }
@@ -152,102 +154,6 @@ class SearchQueryInfo {
     }
 }
 
-class SearchViewElement {
-    /** @var 'show'|'hide'|'edit'|'showsort'|'editsort'|'sort' */
-    public $action;
-    /** @var string */
-    public $keyword;
-    /** @var list<string> */
-    public $decorations = [];
-    /** @var ?int */
-    public $kwpos1;
-    /** @var ?int */
-    public $pos1;
-    /** @var ?int */
-    public $pos2;
-    /** @var ?SearchStringContext */
-    public $string_context;
-
-    /** @return ?string */
-    function show_action() {
-        if (in_array($this->action, ["show", "hide", "edit", "showsort", "editsort"])) {
-            return substr($this->action, 0, 4);
-        } else {
-            return null;
-        }
-    }
-
-    /** @return bool */
-    function sort_action() {
-        return str_ends_with($this->action, "sort");
-    }
-
-    /** @return bool */
-    function nondefault_sort_action() {
-        return str_ends_with($this->action, "sort")
-            && ($this->keyword !== "id" || !empty($this->decorations));
-    }
-}
-
-class PaperSearchPrepareParam {
-    /** @var 0|1|2|3 */
-    private $_nest = 0;
-    /** @var ?Then_SearchTerm */
-    private $_then_term;
-    /** @var int */
-    private $_then_count;
-
-    /** @return bool */
-    function toplevel() {
-        return $this->_nest === 0;
-    }
-
-    /** @return bool */
-    function allow_then() {
-        return $this->_nest <= 1;
-    }
-
-    /** @return bool */
-    function want_field_highlighter() {
-        return $this->_nest <= 2;
-    }
-
-    /** @param Op_SearchTerm $opterm
-     * @return PaperSearchPrepareParam */
-    function nest($opterm) {
-        if ($opterm->type === "and" || $opterm->type === "space") {
-            $level = 0;
-        } else if ($opterm->type === "then") {
-            $level = 1;
-        } else if ($opterm->type !== "not") {
-            $level = 2;
-        } else {
-            $level = 3;
-        }
-        if ($level <= $this->_nest
-            && ($level !== 1 || $this->_nest !== 1)) {
-            return $this;
-        }
-        $x = clone $this;
-        $x->_nest = $level;
-        return $x;
-    }
-
-
-    /** @return ?Then_SearchTerm */
-    function then_term() {
-        return $this->_then_term;
-    }
-
-    /** @param Then_SearchTerm $then */
-    function set_then_term($then) {
-        if ($this->_nest <= 1) {
-            ++$this->_then_count;
-            $this->_then_term = $this->_then_count === 1 ? $then : null;
-        }
-    }
-}
-
 class PaperSearch extends MessageSet {
     /** @var Conf
      * @readonly */
@@ -288,22 +194,22 @@ class PaperSearch extends MessageSet {
      * @readonly */
     private $_default_sort; // XXX should be used more often
 
-    /** @var ?array<string,TextPregexes> */
-    private $_match_preg;
-    /** @var ?string */
-    private $_match_preg_query;
     /** @var ?list<ContactSearch> */
     private $_contact_searches;
     /** @var ?SearchStringContext */
     private $_string_context;
     /** @var list<int> */
     private $_matches;
+    /** @var list<int> */
+    private $_sorted_matches;
     /** @var ?Then_SearchTerm */
     private $_then_term;
     /** @var ?array<int,int> */
     private $_then_map;
     /** @var ?array<int,list<string>> */
     private $_highlight_map;
+    /** @var ?list<SearchTerm> */
+    private $_group_slice_terms;
 
     static public $search_type_names = [
         "a" => "Your submissions",
@@ -394,10 +300,11 @@ class PaperSearch extends MessageSet {
     private function clear_compilation() {
         $this->clear_messages();
         $this->_qe = null;
-        $this->_match_preg = null;
-        $this->_match_preg_query = null;
+        // XXX does not reset _limit_explicit, that should be ok
+        $this->_then_term = null;
         $this->_contact_searches = null;
         $this->_matches = null;
+        $this->_sorted_matches = null;
     }
 
     /** @param bool $x
@@ -448,12 +355,6 @@ class PaperSearch extends MessageSet {
     function limit_explicit() {
         return $this->_limit_explicit;
     }
-    function apply_limit(Limit_SearchTerm $limit) {
-        if (!$this->_limit_explicit) {
-            $this->_limit_qe->set_limit($limit->named_limit);
-            $this->_limit_explicit = true;
-        }
-    }
 
     /** @return Contact */
     function reviewer_user() {
@@ -499,7 +400,7 @@ class PaperSearch extends MessageSet {
         $mi->pos2 = $pos2;
         $mis = [$mi];
         while ($context) {
-            $mi->context = $context->subcontext;
+            $mi->context = $context->q;
             $mi = MessageItem::inform("");
             $mi->landmark = "<5>→ <em>expanded from</em> ";
             $mi->pos1 = $context->ppos1;
@@ -666,21 +567,18 @@ class PaperSearch extends MessageSet {
             $srch->lwarning($sword, "<0>Named search not found");
         } else if (!($nextq = $srch->_expand_named_search($word, $sj))) {
             $srch->lwarning($sword, "<0>Named search defined incorrectly");
+        } else if ($srch->_string_context && $srch->_string_context->depth >= 10) {
+            $srch->lwarning($sword, "<0>Circular reference in named search definitions");
         } else {
             $context = new SearchStringContext;
-            $context->subcontext = $nextq;
+            $context->q = $nextq;
             $context->ppos1 = $sword->kwpos1;
             $context->ppos2 = $sword->pos2;
+            $context->depth = $srch->_string_context ? $srch->_string_context->depth + 1 : 1;
             $context->parent = $srch->_string_context;
-            for ($n = 0, $c = $context; $c; ++$n, $c = $c->parent) {
-            }
-            if ($n >= 10) {
-                $srch->lwarning($sword, "<0>Circular reference in named search definitions");
-            } else {
-                $srch->_string_context = $context;
-                $qe = $srch->_search_expression($nextq);
-                $srch->_string_context = $context->parent;
-            }
+            $srch->_string_context = $context;
+            $qe = $srch->_search_expression($nextq);
+            $srch->_string_context = $context->parent;
         }
         return $qe ?? new False_SearchTerm;
     }
@@ -727,7 +625,7 @@ class PaperSearch extends MessageSet {
     static private function _search_word_is_paperid($str) {
         $ch = substr($str, 0, 1);
         return ($ch === "#" || ctype_digit($ch))
-            && preg_match('/\A(?:#?\d+(?:(?:-|–|—)#?\d+)?(?:\s*,\s*|\z))+\z/s', $str);
+            && preg_match('/\A(?:#?\d++(?:(?:-|–|—)(?:|#?\d++))?(?:\s*,\s*|\z))+\z/s', $str);
     }
 
     /** @param string $str
@@ -763,7 +661,7 @@ class PaperSearch extends MessageSet {
             }
         }
 
-        // Paper ID search term (`1-2`, `#1-#2`, etc.)
+        // Paper ID search term (`1-2`, `#1-#2`, `1-`, etc.)
         if (!$sword->quoted
             && !$scope->defkw
             && self::_search_word_is_paperid($sword->word)) {
@@ -850,9 +748,6 @@ class PaperSearch extends MessageSet {
             foreach ($sa->child as $sac) {
                 $child[] = $this->_parse_atom($sac, $str, $scope, $depth);
             }
-            if ($sa->op->type === "+" || $sa->op->type === "(") {
-                return $child[0];
-            }
             $st = SearchTerm::combine_in($sa->op, $this->_string_context, ...$child);
         } else if ($sa->kword === null && $sa->text === "") {
             $st = new True_SearchTerm;
@@ -866,7 +761,7 @@ class PaperSearch extends MessageSet {
             $sword = SearchWord::make_kwarg($sa->text, $sa->kwpos1, $sa->pos1, $sa->pos2, $this->_string_context);
             $st = $this->_search_word($sa->kword ?? "", $sword, $scope);
         }
-        if ($st && !$st->is_uninteresting()) {
+        if ($st) {
             $st->apply_strspan($sa->kwpos1, $sa->pos2, $this->_string_context);
         }
         return $st;
@@ -1098,10 +993,15 @@ class PaperSearch extends MessageSet {
                 $this->_qe = new True_SearchTerm;
             }
 
-            // extract regular expressions
-            $param = new PaperSearchPrepareParam;
-            $this->_qe->prepare_visit($param, $this);
-            $this->_then_term = $param->then_term();
+            // check for limit
+            if (($xlimit = $this->_qe->get_float("xlimit"))) {
+                $this->_limit_explicit = true;
+                $this->_limit_qe->set_limit($xlimit->named_limit);
+            }
+
+            // extract group information
+            $this->_then_term = $this->_qe->get_float("ge");
+            $this->_group_slice_terms = null;
         }
         return $this->_qe;
     }
@@ -1217,7 +1117,7 @@ class PaperSearch extends MessageSet {
         // filter papers
         $thqe = $this->_then_term;
         $this->_then_map = [];
-        if ($thqe && $thqe->has_highlight()) {
+        if ($qe->get_float("hl")) {
             $this->_highlight_map = [];
         }
         foreach ($rowset as $row) {
@@ -1227,7 +1127,7 @@ class PaperSearch extends MessageSet {
                 $this->_matches[] = $row->paperId;
                 $this->_then_map[$row->paperId] = $thqe ? $thqe->_last_group() : 0;
                 if ($this->_highlight_map !== null
-                    && ($hls = $thqe->_last_highlights($row)) !== []) {
+                    && ($hls = $qe->highlight_list($row)) !== []) {
                     $this->_highlight_map[$row->paperId] = $hls;
                 }
             }
@@ -1255,41 +1155,75 @@ class PaperSearch extends MessageSet {
     /** @return list<int> */
     function sorted_paper_ids() {
         $this->_prepare();
-        if ($this->_default_sort || $this->sort_field_list()) {
+        if (($this->_default_sort || $this->sort_field_list() || $this->_then_term)
+            && $this->_sorted_matches === null) {
             $pl = new PaperList("empty", $this, ["sort" => $this->_default_sort]);
-            return $pl->paper_ids();
-        } else {
-            return $this->paper_ids();
+            $this->_sorted_matches = $pl->paper_ids();
         }
+        return $this->_sorted_matches ?? $this->_matches;
     }
 
     /** @return ?Then_SearchTerm */
     function then_term() {
+        $this->_prepare();
         return $this->_then_term;
     }
 
-    /** @return list<TagAnno> */
-    function paper_groups() {
-        $this->_prepare();
-        if ($this->_then_term) {
-            $groups = $this->_then_term->group_terms();
-            if (count($groups) > 1) {
-                $gs = [];
-                foreach ($groups as $i => $ch) {
-                    $spanstr = $ch->get_float("strspan_owner") ?? $this->q;
-                    $srch = rtrim(substr($spanstr, $ch->pos1 ?? 0, ($ch->pos2 ?? 0) - ($ch->pos1 ?? 0)));
-                    $h = $ch->get_float("legend");
-                    $ta = TagAnno::make_legend($h ?? $srch);
-                    $ta->set_prop("search", $srch);
-                    $gs[] = $ta;
-                }
-                return $gs;
-            }
-            $qe1 = $this->_then_term->child[0];
-        } else {
-            $qe1 = $this->_qe;
+    /** @param ?SearchAtom $a
+     * @return array{int,int} */
+    private static function strip_show_atom($a) {
+        if (!$a
+            || ($a->kword && in_array($a->kword, ["show", "hide", "edit", "sort", "showsort", "editsort"]))) {
+            return [0, 0];
         }
-        if (($h = $qe1->get_float("legend"))) {
+        if (!$a->kword && $a->op && !$a->op->unary) {
+            $pos1 = $pos2 = null;
+            foreach ($a->child as $ch) {
+                $span = self::strip_show_atom($ch);
+                if ($span[0] >= $span[1]) {
+                    continue;
+                }
+                if ($pos1 === null || $pos1 > $span[0]) {
+                    $pos1 = $span[0];
+                }
+                if ($pos2 === null || $pos2 < $span[1]) {
+                    $pos2 = $span[1];
+                }
+            }
+            if ($pos1 !== null) {
+                return [$pos1, $pos2];
+            }
+        }
+        return [$a->kwpos1, $a->pos2];
+    }
+
+    /** @param string $q
+     * @return string */
+    private static function strip_show($q) {
+        $splitter = new SearchSplitter($q, 0, strlen($q));
+        $span = self::strip_show_atom($splitter->parse_expression());
+        return $span[0] < $span[1] ? substr($q, $span[0], $span[1] - $span[0]) : "";
+    }
+
+    /** @return list<TagAnno> */
+    function group_anno_list() {
+        $this->_prepare();
+        if (($ng = $this->ngroups()) > 1) {
+            $gs = [];
+            for ($i = 0; $i !== $ng; ++$i) {
+                $ch = $this->_then_term->group_head_term($i);
+                $srchstr = $ch->source_subquery($this->q);
+                if ($ch->get_float("view")) {
+                    $srchstr = self::strip_show($srchstr);
+                }
+                $h = $ch->get_float("legend");
+                $ta = TagAnno::make_legend($h ?? $srchstr);
+                $ta->set_prop("search", $srchstr);
+                $gs[] = $ta;
+            }
+            return $gs;
+        }
+        if (($h = $this->_qe->get_float("legend"))) {
             return [TagAnno::make_legend($h)];
         } else {
             return [];
@@ -1301,6 +1235,37 @@ class PaperSearch extends MessageSet {
     function paper_group_index($pid) {
         $this->_prepare();
         return $this->_then_map[$pid] ?? null;
+    }
+
+    /** @return int */
+    function ngroups() {
+        $this->_prepare();
+        return $this->_then_term ? $this->_then_term->ngroups() : 1;
+    }
+
+    /** @return list<SearchTerm> */
+    function group_slice_terms() {
+        $this->_prepare();
+        if (($ng = $this->ngroups()) === 1) {
+            return [$this->_qe];
+        }
+        if ($this->_group_slice_terms === null) {
+            $this->_group_slice_terms = [];
+            for ($g = 0; $g !== $ng; ++$g) {
+                $this->_group_slice_terms[] = $this->_qe->group_slice_term($g);
+            }
+        }
+        return $this->_group_slice_terms;
+    }
+
+    /** @param ?int $group
+     * @return SearchTerm */
+    function group_slice_term($group) {
+        if ($group === null) {
+            return $this->main_term();
+        } else {
+            return ($this->group_slice_terms())[$group] ?? $this->_qe;
+        }
     }
 
     /** @return array<int,int> */
@@ -1316,70 +1281,10 @@ class PaperSearch extends MessageSet {
     }
 
     /** @param iterable<string>|iterable<array{string,?int,?int,?int,?SearchStringContext}> $words
-     * @return Generator<SearchViewElement> */
+     * @return list<SearchViewCommand>
+     * @deprecated */
     static function view_generator($words) {
-        foreach ($words as $w) {
-            $sve = new SearchViewElement;
-            if (is_array($w)) {
-                $sve->kwpos1 = $w[1];
-                $sve->pos1 = $w[2];
-                $sve->pos2 = $w[3];
-                $sve->string_context = $w[4];
-                $w = $w[0];
-            }
-
-            $colon = strpos($w, ":");
-            if ($colon === false
-                || !in_array(substr($w, 0, $colon), ["show", "sort", "edit", "hide", "showsort", "editsort"])) {
-                $w = "show:" . $w;
-                $colon = 4;
-            }
-
-            $sve->action = substr($w, 0, $colon);
-            $d = substr($w, $colon + 1);
-            $keyword = null;
-            if (str_starts_with($d, "[")) { /* XXX backward compat */
-                $dlen = strlen($d);
-                for ($ltrim = 1; $ltrim !== $dlen && ctype_space($d[$ltrim]); ++$ltrim) {
-                }
-                $rtrim = $dlen;
-                if ($rtrim > $ltrim && $d[$rtrim - 1] === "]") {
-                    --$rtrim;
-                    while ($rtrim > $ltrim && ctype_space($d[$rtrim - 1])) {
-                        --$rtrim;
-                    }
-                }
-                $sve->pos1 = $sve->pos1 !== null ? $sve->pos1 + $ltrim : null;
-                $sve->pos2 = $sve->pos2 !== null ? $sve->pos2 - ($dlen - $rtrim) : null;
-                $d = substr($d, $ltrim, $rtrim - $ltrim);
-            } else if (str_ends_with($d, "]")
-                       && ($lbrack = strrpos($d, "[")) !== false) {
-                $keyword = substr($d, 0, $lbrack);
-                $d = substr($d, $lbrack + 1, strlen($d) - $lbrack - 2);
-            }
-
-            if ($d !== "") {
-                $splitter = new SearchSplitter($d);
-                while ($splitter->skip_span(" \n\r\t\v\f,")) {
-                    $sve->decorations[] = $splitter->shift_balanced_parens(" \n\r\t\v\f,");
-                }
-            }
-
-            $keyword = $keyword ?? array_shift($sve->decorations) ?? "";
-            if ($keyword !== "") {
-                if ($keyword[0] === "-") {
-                    array_unshift($sve->decorations, "reverse");
-                }
-                if ($keyword[0] === "-" || $keyword[0] === "+") {
-                    $keyword = substr($keyword, 1);
-                    $sve->pos1 = $sve->pos1 !== null ? $sve->pos1 + 1 : null;
-                }
-                if ($keyword !== "") {
-                    $sve->keyword = $keyword;
-                    yield $sve;
-                }
-            }
-        }
+        return SearchViewCommand::analyze($words);
     }
 
     /** @param string|bool $action
@@ -1401,12 +1306,17 @@ class PaperSearch extends MessageSet {
         }
     }
 
+    /** @return list<SearchViewCommand> */
+    function view_commands() {
+        return $this->main_term()->view_commands();
+    }
+
     /** @return list<string> */
     private function sort_field_list() {
         $r = [];
-        foreach (self::view_generator($this->main_term()->view_anno() ?? []) as $sve) {
-            if ($sve->sort_action()) {
-                $r[] = $sve->keyword;
+        foreach ($this->main_term()->view_commands() as $svc) {
+            if ($svc->sort_action()) {
+                $r[] = $svc->keyword;
             }
         }
         return $r;
@@ -1422,6 +1332,14 @@ class PaperSearch extends MessageSet {
             }
         }
         $this->_matches = $m;
+        if ($this->_default_sort || $this->sort_field_list()) {
+            $m = [];
+            foreach ($this->sorted_paper_ids() as $pid) {
+                if (call_user_func($callback, $pid))
+                    $m[] = $pid;
+            }
+            $this->_sorted_matches = $m;
+        }
     }
 
     /** @return bool */
@@ -1596,7 +1514,7 @@ class PaperSearch extends MessageSet {
         $l = (new SessionList($listid, $ids, $this->description($listname)))
             ->set_urlbase($this->url_site_relative_raw($args));
         if ($this->field_highlighters()) {
-            $l->highlight = $this->_match_preg_query ? : true;
+            $l->highlight = true;
         }
         return $l;
     }
@@ -1623,30 +1541,27 @@ class PaperSearch extends MessageSet {
     }
 
 
-    /** @param string $q */
-    function set_field_highlighter_query($q) {
-        $ps = new PaperSearch($this->user, ["q" => $q]);
-        $this->_match_preg = $ps->field_highlighters();
-        $this->_match_preg_query = $q;
+    /** @return bool */
+    function has_field_highlighter($field) {
+        return $this->main_term()->get_float("fhl:{$field}") !== null;
     }
 
-    /** @return array<string,TextPregexes> */
-    function field_highlighters() {
-        $this->main_term();
-        return $this->_match_preg ?? [];
-    }
-
-    /** @return string */
-    function field_highlighter($field) {
-        return ($this->field_highlighters())[$field] ?? "";
-    }
-
-    /** @param string $field */
-    function add_field_highlighter($field, TextPregexes $regex) {
-        if (!$this->_match_preg_query && !$regex->is_empty()) {
-            $this->_match_preg[$field] = $this->_match_preg[$field] ?? TextPregexes::make_empty();
-            $this->_match_preg[$field]->add_matches($regex);
+    /** @param ?int $group
+     * @return array<string,TextPregexes> */
+    function field_highlighters($group = null) {
+        $hl = [];
+        foreach ($this->group_slice_term($group)->float_map() as $k => $v) {
+            if (str_starts_with($k, "fhl:")) {
+                $hl[substr($k, 4)] = $v;
+            }
         }
+        return $hl;
+    }
+
+    /** @param ?int $group
+     * @return ?TextPregexes */
+    function field_highlighter($field, $group = null) {
+        return $this->group_slice_term($group)->get_float("fhl:{$field}");
     }
 
 
@@ -1746,7 +1661,7 @@ class PaperSearch extends MessageSet {
     static function viewable_manager_limits(Contact $user) {
         if ($user->privChair) {
             if ($user->conf->has_any_manager()) {
-                $ts = ["admin", "alladmin", "s"];
+                $ts = ["alladmin", "admin", "s"];
             } else {
                 $ts = ["s"];
             }

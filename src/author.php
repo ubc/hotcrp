@@ -1,6 +1,6 @@
 <?php
 // author.php -- HotCRP author objects
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class Author {
     /** @var string */
@@ -210,6 +210,17 @@ class Author {
         $this->lastName = $l ?? "";
         $this->email = $e ?? "";
         $this->affiliation = $a ?? "";
+    }
+
+    /** @return $this */
+    function simplify_whitespace() {
+        $this->firstName = simplify_whitespace($this->firstName);
+        $this->lastName = simplify_whitespace($this->lastName);
+        $this->affiliation = simplify_whitespace($this->affiliation);
+        if ($this->_name !== null) {
+            $this->_name = simplify_whitespace($this->_name);
+        }
+        return $this;
     }
 
     /** @param string $s

@@ -1,6 +1,6 @@
 <?php
 // searchsplitter.php -- HotCRP helper class for splitting search strings
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class SearchSplitter {
     /** @var string */
@@ -238,10 +238,7 @@ class SearchSplitter {
                 if ($parens === 0) {
                     continue;
                 }
-                while (!$cura->is_paren()) {
-                    $cura = $cura->complete($pos1);
-                }
-                $cura->complete_paren($pos2);
+                $cura = $cura->complete_paren($pos1, $pos2);
                 --$parens;
                 continue;
             }

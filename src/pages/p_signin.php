@@ -1,6 +1,6 @@
 <?php
 // pages/p_signin.php -- HotCRP password reset partials
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class Signin_Page {
     /** @var ?string */
@@ -9,6 +9,8 @@ class Signin_Page {
     public $_reset_token;
     /** @var ?Contact */
     public $_reset_user;
+    /** @var ?associative-array<string,mixed> */
+    public $_oauth_hoturl_param;
     /** @var ?MessageSet */
     private $_ms;
 
@@ -55,9 +57,9 @@ class Signin_Page {
                 $info = $cs->call_function($gj, $gj->signin_function, $info, $gj);
             }
             $conf->redirect();
-        } else if (($lt = $conf->login_type()) === "none" || $lt === "oauth") {
+        } else if (!$conf->allow_local_signin()) {
             // do nothing
-        } else if ($lt === "htauth") {
+        } else if ($conf->login_type() === "htauth") {
             LoginHelper::check_http_auth($user, $qreq);
         } else if (!$qreq->valid_post()) {
             self::bad_post_error($user, $qreq, "signin");
@@ -127,7 +129,7 @@ class Signin_Page {
     /** @param ComponentSet $cs */
     static function print_signin_head(Contact $user, Qrequest $qreq, $cs) {
         $st = $user->conf->saved_messages_status();
-        $qreq->print_header("Sign in", "home", ["hide_title" => true, "body_class" => "body-signin"]);
+        $qreq->print_header("Sign in", "home", ["action_bar" => "", "hide_title" => true, "body_class" => "body-signin"]);
         $cs->push_print_cleanup("__footer");
     }
 
@@ -177,7 +179,7 @@ class Signin_Page {
         echo '<h1 class="signin">Sign in</h1>';
     }
 
-    static function print_signin_form_description(Contact $user, Qrequest $qreq) {
+    static function print_signin_form_accounts(Contact $user, Qrequest $qreq) {
         if (($su = Contact::session_users($qreq))) {
             $nav = $qreq->navigation();
             $links = [];
@@ -189,15 +191,18 @@ class Signin_Page {
             }
             echo '<p class="is-warning"><span class="warning-mark"></span> ', $user->conf->_("You are already signed in as {:list} on this browser.", $links), '</p>';
         }
-        if (($t = $user->conf->_("Sign in to submit or review papers.", new FmtArg("accounts", $su))) !== "") {
-            echo '<p class="mb-5">', $t, '</p>';
+    }
+
+    static function print_signin_form_local(Contact $user, Qrequest $qreq, ComponentSet $cs) {
+        if ($user->conf->allow_local_signin()) {
+            echo '<div class="mt-3">';
+            $cs->print_members("__local_signin");
+            echo '</div>';
         }
     }
 
     function print_signin_form_email(Contact $user, Qrequest $qreq) {
-        if (($lt = $user->conf->login_type()) === "none" || $lt === "oauth") {
-            return;
-        }
+        $lt = $user->conf->login_type();
         $email = $qreq->email ?? "";
         echo '<div class="', $this->control_class("email", "f-i fx"), '">',
             Ht::label($lt ? "Username" : "Email", "k-email"),
@@ -212,9 +217,7 @@ class Signin_Page {
     }
 
     function print_signin_form_password(Contact $user, Qrequest $qreq) {
-        if (($lt = $user->conf->login_type()) === "none" || $lt === "oauth") {
-            return;
-        }
+        $lt = $user->conf->login_type();
         echo '<div class="', $this->control_class("password", "f-i fx"), '">';
         if (!$lt) {
             echo '<div class="float-right"><a href="',
@@ -238,15 +241,9 @@ class Signin_Page {
 
     /** @param ComponentSet $cs */
     static function print_signin_form_actions(Contact $user, Qrequest $qreq, $cs) {
-        if (($lt = $user->conf->login_type()) === "none" || $lt === "oauth") {
-            return;
-        }
-        echo '<div class="popup-actions">',
-            Ht::submit("", "Sign in", ["id" => "k-signin", "class" => "btn-success", "tabindex" => 1]);
-        if ($cs->root !== "home") {
-            echo Ht::submit("cancel", "Cancel", ["tabindex" => 1, "formnovalidate" => true, "class" => "uic js-no-signin"]);
-        }
-        echo '</div>';
+        echo '<div class="mt-3">',
+            Ht::submit("", "Sign in", ["id" => "k-signin", "class" => "btn-success w-100 flex-grow-1", "tabindex" => 1]),
+            '</div>';
     }
 
     static function print_signin_form_create(Contact $user) {
@@ -257,19 +254,23 @@ class Signin_Page {
         }
     }
 
-    static function print_signin_form_oauth(Contact $user, Qrequest $qreq) {
+    function print_signin_form_oauth(Contact $user, Qrequest $qreq) {
         $conf = $user->conf;
         if (!$conf->opt("oAuthProviders") && !$conf->opt("oAuthTypes")) {
             return;
         }
         $buttons = [];
+        $param = array_merge(["authtype" => null, "post" => $qreq->maybe_post_value()], $this->_oauth_hoturl_param ?? ["redirect" => $qreq->redirect]);
+        $top = "";
         foreach ($conf->oauth_providers() as $authdata) {
             if ($authdata->button_html && !($authdata->disabled ?? false)) {
-                $buttons[] = Ht::button($authdata->button_html, ["type" => "submit", "formaction" => $conf->hoturl("=oauth", ["authtype" => $authdata->name, "redirect" => $qreq->redirect]), "formmethod" => "post", "class" => "mt-2 w-100 flex-grow-1"]);
+                $param["authtype"] = $authdata->name;
+                $buttons[] = Ht::button($authdata->button_html, ["type" => "submit", "formaction" => $conf->hoturl("oauth", $param), "formmethod" => "post", "class" => "{$top}w-100 flex-grow-1"]);
+                $top = "mt-2 ";
             }
         }
         if (!empty($buttons)) {
-            echo '<div class="mt-4">', join("", $buttons), '</div>';
+            echo '<div class="mt-5">', join("", $buttons), '</div>';
         }
     }
 
@@ -358,24 +359,28 @@ class Signin_Page {
             $conf->redirect();
         } else if ($conf->login_type()
                    || !$conf->allow_user_self_register()) {
-            // do nothing
-        } else if ($qreq->valid_post()) {
-            $info = LoginHelper::new_account_info($conf, $qreq);
-            if ($info["ok"]) {
-                $prep = $this->mail_user($conf, $info);
-                if ($prep->sent()
-                    && $prep->reset_capability
-                    && isset($info["firstuser"])) {
-                    $conf->success_msg("<0>As the first user, you have been assigned system administrator privilege. Use this screen to set a password. All later users will have to sign in normally.");
-                    $conf->redirect_hoturl("resetpassword", ["__PATH__" => $prep->reset_capability]);
-                } else if ($prep) {
-                    $conf->redirect_hoturl("signin");
-                }
-            } else {
-                LoginHelper::login_error($conf, $qreq->email, $info, $this->ms());
-            }
-        } else {
+            return;
+        } else if (!$qreq->valid_post()) {
             self::bad_post_error($user, $qreq, "newaccount");
+            return;
+        }
+        $info = LoginHelper::new_account_info($conf, $qreq);
+        if (!$info["ok"]) {
+            LoginHelper::login_error($conf, $qreq->email, $info, $this->ms());
+            return;
+        }
+        $prep = $this->mail_user($conf, $info);
+        if (!$prep) {
+            return;
+        }
+        if ($prep->sent() && $prep->reset_capability) {
+            $this->_reset_tokstr = $prep->reset_capability;
+        }
+        if ($this->_reset_tokstr && isset($info["firstuser"])) {
+            $conf->success_msg("<0>As the first user, you have been assigned system administrator privilege. Use this screen to set a password. All later users will have to sign in normally.");
+            $conf->redirect_hoturl("resetpassword", ["__PATH__" => $prep->reset_capability]);
+        } else {
+            $conf->redirect_hoturl("signin");
         }
     }
     /** @param ComponentSet $cs */
@@ -410,7 +415,7 @@ class Signin_Page {
     static function print_newaccount_form_actions(Contact $user, Qrequest $qreq) {
         echo '<div class="popup-actions">',
             Ht::submit("Create account", ["class" => "btn-primary"]),
-            Ht::submit("cancel", "Cancel", ["class" => "uic js-no-signin", "formnovalidate" => true]),
+            // Ht::submit("cancel", "Cancel", ["class" => "uic js-no-signin", "formnovalidate" => true]),
             '</div>';
     }
 
@@ -467,7 +472,7 @@ class Signin_Page {
     function print_forgot_form_actions() {
         echo '<div class="popup-actions">',
             Ht::submit("Reset password", ["class" => $this->_reset_user ? "btn-success" : "btn-primary"]),
-            Ht::submit("cancel", "Cancel", ["class" => "uic js-no-signin", "formnovalidate" => true]),
+            // Ht::submit("cancel", "Cancel", ["class" => "uic js-no-signin", "formnovalidate" => true]),
             '</div>';
     }
 

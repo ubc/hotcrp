@@ -1,6 +1,6 @@
 <?php
 // o_pcconflicts.php -- HotCRP helper class for PC conflicts intrinsic
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class PCConflicts_PaperOption extends PaperOption {
     /** @var ?string */
@@ -367,6 +367,8 @@ class PCConflicts_PaperOption extends PaperOption {
     function export_setting() {
         $sfs = parent::export_setting();
         $sfs->exists_if = $this->visible_if ?? "all";
+        $sfs->exists_disabled = $sfs->exists_disabled
+            || strcasecmp($sfs->exists_if, "NONE") === 0;
         return $sfs;
     }
 }

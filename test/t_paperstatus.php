@@ -798,7 +798,7 @@ Phil Porras.");
         $nprow1->invalidate_topics();
         xassert_eqq($nprow1->topic_list(), [1, 3]);
 
-        assert_search_ids($this->u_chair, "topic:\"cloud computing\"", "{$this->pid2}");
+        xassert_search($this->u_chair, "topic:\"cloud computing\"", "{$this->pid2}");
 
         $ps->save_paper_json((object) [
             "id" => $this->pid2,
@@ -1505,6 +1505,44 @@ Phil Porras.");
         $fl = $ps->changed_fields_qreq($qreq, $p2b);
         xassert_eqq(count($fl), 1);
         xassert_eqq($fl[0]->formid, "title");
+    }
+
+    function test_submit_noneditable_submission() {
+        $sv = SettingValues::make_request($this->u_chair, [
+            "has_sf" => 1,
+            "sf/1/id" => "submission",
+            "sf/1/edit_condition" => "NONE"
+        ]);
+        xassert($sv->execute());
+
+        $p2au = $this->conf->checked_user_by_email("micke@cdt.luth.se");
+        $ps = new PaperStatus($p2au);
+        $qreq = new Qrequest("POST", [
+            "status:submit" => 1,
+            "title" => "This paper should not be submitted",
+            "abstract" => "Though it has an abstract",
+            "has_authors" => "1",
+            "authors:1:name" => "David Attenborough", "authors:1:email" => "atten@_.com",
+            "authors:2:name" => "Geborah Gestrin", "authors:2:email" => "gestrin@gusc.gedu"
+        ]);
+        xassert($ps->prepare_save_paper_web($qreq, null));
+        xassert_eqq($ps->decorated_feedback_text(), "Submission: Entry required to complete submission\n");
+        xassert($ps->execute_save());
+
+        $newprow = $this->conf->checked_paper_by_id($ps->paperId);
+        xassert(!!$newprow);
+        xassert(!$this->conf->option_by_id(DTYPE_SUBMISSION)->test_editable($newprow));
+        xassert_le($newprow->timeSubmitted ?? 0, 0);
+
+        $sv = SettingValues::make_request($this->u_chair, [
+            "has_sf" => 1,
+            "sf/1/id" => "submission",
+            "sf/1/edit_condition" => ""
+        ]);
+        xassert($sv->execute());
+
+        $newprow = $this->conf->checked_paper_by_id($ps->paperId);
+        xassert($this->conf->option_by_id(DTYPE_SUBMISSION)->test_editable($newprow));
     }
 
     function test_invariants_last() {

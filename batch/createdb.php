@@ -60,6 +60,8 @@ class CreateDB_Batch {
     /** @var bool */
     public $replace;
     /** @var bool */
+    public $replace_user;
+    /** @var bool */
     public $quiet;
     /** @var bool */
     public $verbose;
@@ -74,6 +76,18 @@ class CreateDB_Batch {
         $this->need_password = isset($arg["password"]) && $arg["password"] === false;
         if (!$this->need_password) {
             $this->password = $arg["password"] ?? null;
+        }
+        if (isset($arg["password-file"])) {
+            if (($t = @file_get_contents($arg["password-file"])) === false) {
+                throw new CommandLineException("cannot read `--password-file`");
+            }
+            if (preg_match('/^user\s+(\S+)/m', $t, $m)) {
+                $this->user = $m[1];
+            }
+            if (preg_match('/^password\s+(.*)$/m', $t, $m)) {
+                $this->password = trim($m[1]);
+                $this->need_password = false;
+            }
         }
 
         $this->name = $arg["name"] ?? null;
@@ -98,6 +112,7 @@ class CreateDB_Batch {
 
         $this->batch = !$interactive || isset($arg["batch"]);
         $this->replace = isset($arg["replace"]);
+        $this->replace_user = isset($arg["replace-user"]);
         $this->quiet = isset($arg["quiet"]);
         $this->verbose = isset($arg["verbose"]);
         $this->interactive = $interactive;
@@ -373,7 +388,7 @@ class CreateDB_Batch {
 
     function check_dbpass() {
         if ($this->dbpass === null
-            && $this->dbuser === ($this->configopt["dbUser"] ?? null)) {
+            && $this->dbuser === ($this->configopt["dbUser"] ?? $this->configopt["dbName"] ?? null)) {
             $this->dbpass = $this->configopt["dbPassword"] ?? null;
         }
     }
@@ -401,12 +416,15 @@ class CreateDB_Batch {
             fwrite(STDERR, "* Database {$this->name} already exists!\n");
             $replacing[] = "database";
         }
+        if ($this->had_dbuser && $this->replace_user) {
+            $replacing[] = "user";
+        }
         if ($this->replace) {
             return;
         } else if ($this->batch) {
             throw new CommandLineException("`--replace` required in batch mode");
         } else {
-            $this->replace = $this->confirm("Recreate " . join(" and ", $replacing) . "? [Y/n] ");
+            $this->replace = $this->confirm("Delete and replace " . join(" and ", $replacing) . "? [Y/n] ");
         }
     }
 
@@ -435,6 +453,14 @@ class CreateDB_Batch {
 
     function create_dbuser() {
         $want_hosts = $this->all_hosts;
+        if ($this->had_dbuser && $this->replace_user) {
+            $result = $this->qe("SELECT Host FROM user WHERE User=? AND Host?a", $this->dbuser, $want_hosts);
+            while (($row = $result->fetch_row())) {
+                $this->vqe("DROP USER ?@?", $this->dbuser, $row[0]);
+            }
+            $result->close();
+            $this->vqe("FLUSH PRIVILEGES");
+        }
         if ($this->had_dbuser) {
             $result = $this->qe("SELECT Host FROM user WHERE User=?", $this->dbuser);
             while (($row = $result->fetch_row())) {
@@ -442,6 +468,7 @@ class CreateDB_Batch {
                     array_splice($want_hosts, $i, 1);
                 }
             }
+            $result->close();
         }
         if (empty($want_hosts)) {
             return;
@@ -454,7 +481,7 @@ class CreateDB_Batch {
             if ($this->verbose) {
                 fwrite(STDOUT, Dbl::format_query($this->dblink(), "- CREATE USER ?@? IDENTIFIED BY <redacted>;\n", $this->dbuser, $h));
             }
-            $this->vqe("CREATE USER ?@? IDENTIFIED BY ?", $this->dbuser, $h, $this->dbpass);
+            $this->qe("CREATE USER ?@? IDENTIFIED BY ?", $this->dbuser, $h, $this->dbpass);
         }
         $this->vqe("FLUSH PRIVILEGES");
     }
@@ -596,13 +623,15 @@ class CreateDB_Batch {
      * @return CreateDB_Batch */
     static function make_args($argv, $interactive) {
         $arg = (new Getopt)->long(
-            "user:,u: =USER Set username for database admin connection",
-            "password::,p:: =PASSWORD Set password for database admin connection",
+            "user:,u: =USER Set username for database admin",
+            "password::,p:: =PASSWORD Set password for database admin",
+            "password-file: =FILE Read database admin information from FILE",
             "name:,n: =DBNAME Set name of HotCRP database",
             "config:,c: =CONFIG Set configuration file [conf/options.php]",
             "minimal Output minimal configuration file",
             "batch Batch installation: never stop for input",
             "replace Replace existing HotCRP database if present",
+            "replace-user Replace existing HotCRP database user if present",
             "no-grant Do not create user or grant privileges for HotCRP database access",
             "dbuser: =USER,PASS Specify database USER and PASS for HotCRP database access",
             "host: =HOST Specify database host [localhost]",

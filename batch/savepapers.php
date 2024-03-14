@@ -1,6 +1,6 @@
 <?php
 // savepapers.php -- HotCRP command-line paper modification script
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 if (realpath($_SERVER["PHP_SELF"]) === __FILE__) {
     require_once(dirname(__DIR__) . "/src/init.php");
@@ -252,7 +252,7 @@ class SavePapers_Batch {
             fwrite(STDERR, "{$action}\n");
         }
         // XXX does not change decision
-        if (!$this->silent) {
+        if (!$this->silent || !$pid) {
             foreach ($this->ps->decorated_message_list() as $mi) {
                 fwrite(STDERR, $prefix . $mi->message_as(0) . "\n");
             }
@@ -330,7 +330,7 @@ class SavePapers_Batch {
             $j = $jl[$index];
             $jl[$index] = null;
             $this->run_one($index, $j);
-            if ($this->nerrors && !$this->ignore_errors) {
+            if ($this->nerrors > 0 && !$this->ignore_errors) {
                 break;
             }
             gc_collect_cycles();

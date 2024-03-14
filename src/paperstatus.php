@@ -1,6 +1,6 @@
 <?php
 // paperstatus.php -- HotCRP helper for reading/storing papers as JSON
-// Copyright (c) 2008-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2008-2024 Eddie Kohler; see LICENSE.
 
 class PaperStatus extends MessageSet {
     /** @var Conf
@@ -786,6 +786,21 @@ class PaperStatus extends MessageSet {
             }
         }
 
+        // if submitting for the first time, and a required field is present
+        // but missing, save draft instead
+        if ($pj_submitted && !$old_submitted) {
+            foreach ($this->prow->form_fields() as $opt) {
+                if ($opt->required > 0
+                    && $opt->test_exists($this->prow)) {
+                    $ov = $this->prow->force_option($opt);
+                    if (!$opt->value_check_required($ov)) {
+                        $ov->append_messages_to($this);
+                        $pj_submitted = $old_submitted;
+                    }
+                }
+            }
+        }
+
         // mark whether submitted
         $this->_paper_submitted = $pj_submitted && !$pj_withdrawn;
 
@@ -933,7 +948,7 @@ class PaperStatus extends MessageSet {
     /** @param Contact|Author|string $u
      * @param int $mask
      * @param int $new
-     * @return bool */
+     * @return void */
     function update_conflict_value($u, $mask, $new) {
         assert(($new & $mask) === $new);
         if (is_string($u) || $u->contactId <= 0) {
@@ -941,7 +956,7 @@ class PaperStatus extends MessageSet {
             $u = $this->_make_user($au, $new);
         }
         if (!$u || $u->contactId <= 0) {
-            return false;
+            return;
         }
         $uid = $u->contactId;
         if (!isset($this->_conflict_values[$uid])) {
@@ -953,8 +968,6 @@ class PaperStatus extends MessageSet {
             $cv[1] |= $mask;
             $cv[2] = ($cv[2] & ~$mask) | $new;
         }
-        // return true iff `$mask` bits have changed
-        return ($cv[0] & $mask) !== ((($cv[0] & ~$cv[1]) | $cv[2]) & $mask);
     }
 
     function checkpoint_conflict_values() {
@@ -1412,8 +1425,7 @@ class PaperStatus extends MessageSet {
                 }
                 $us[] = $u;
                 if (self::new_conflict_value($this->_conflict_values[$u->contactId]) >= CONFLICT_CONTACTAUTHOR
-                    && $u->activate_placeholder_prop(false)) {
-                    $u->save_prop();
+                    && $u->activate_placeholder(false)) {
                     $this->_created_contacts[] = $u;
                 }
             }
@@ -1425,28 +1437,6 @@ class PaperStatus extends MessageSet {
                     $u->update_cdb_roles();
                 }
             }
-        }
-    }
-
-    private function _postexecute_check_required_options() {
-        $prow = $this->conf->paper_by_id($this->paperId, $this->user, ["options" => true]);
-        $required_failure = false;
-        foreach ($prow->form_fields() as $o) {
-            if ($o->required
-                && $this->user->can_edit_option($prow, $o)) {
-                $ov = $prow->force_option($o);
-                if (!$o->value_check_required($ov)) {
-                    $ov->append_messages_to($this);
-                    $required_failure = true;
-                }
-            }
-        }
-        if ($required_failure && $this->prow->timeSubmitted <= 0) {
-            // Some required option was missing and the paper was not submitted
-            // before, so it shouldn't be submitted now.
-            $this->conf->qe("update Paper set timeSubmitted=? where paperId=?",
-                            $this->prow->timeSubmitted, $this->paperId);
-            $this->_paper_submitted = false;
         }
     }
 
@@ -1513,9 +1503,6 @@ class PaperStatus extends MessageSet {
         $this->_execute_options();
         $this->_execute_conflicts();
 
-        if ($this->_paper_submitted) {
-            $this->_postexecute_check_required_options();
-        }
         if (!empty($this->_update_pid_dids)) {
             $this->conf->qe("update PaperStorage set paperId=? where paperStorageId?a", $this->paperId, $this->_update_pid_dids);
         }

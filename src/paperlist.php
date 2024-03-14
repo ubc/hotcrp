@@ -1,6 +1,6 @@
 <?php
 // paperlist.php -- HotCRP helper class for producing paper lists
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class PaperListTableRender {
     /** @var string */
@@ -102,7 +102,7 @@ class PaperListTableRender {
             if (is_array($v) || is_object($v)) {
                 $v = $k === "class" ? join(" ", $v) : json_encode_browser($v);
             }
-            if ($k === "data-fields" || $k === "data-groups" || $k === "data-columns" /* XXX backwards compat */) {
+            if ($k === "data-fields" || $k === "data-groups") {
                 $v = str_replace("'", "&apos;", htmlspecialchars($v, ENT_NOQUOTES | ENT_SUBSTITUTE | ENT_HTML5));
                 echo " ", $k, "='", $v, "'";
             } else {
@@ -215,11 +215,11 @@ class PaperList {
     /** @var bool */
     private $_sortable;
     /** @var ?string */
-    private $_paper_linkto;
+    private $_view_linkto;
     /** @var bool */
     private $_view_facets = false;
-    /** @var bool */
-    private $_view_force = false;
+    /** @var int */
+    private $_view_force = 0;
     /** @var int */
     private $_view_hide_all = 0;
     /** @var array<string,int> */
@@ -275,6 +275,8 @@ class PaperList {
     private $_finding_column;
     /** @var ?list<MessageItem> */
     private $_finding_column_errors;
+    /** @var ?bool */
+    private $_report_view_errors;
 
     /** @var list<PaperColumn> */
     private $_sortcol = [];
@@ -382,10 +384,9 @@ class PaperList {
             $this->_then_map = $this->search->groups_by_paper_id();
             $this->_highlight_map = $this->search->highlights_by_paper_id();
         }
-        $qe = $this->search->main_term();
-        foreach (PaperSearch::view_generator($qe->view_anno()) as $sve) {
-            if (($show_action = $sve->show_action())) {
-                $this->set_view($sve->keyword, $show_action, self::VIEWORIGIN_SEARCH, $sve->decorations);
+        foreach ($this->search->view_commands() as $svc) {
+            if (($show_action = $svc->show_action())) {
+                $this->set_view($svc->keyword, $show_action, self::VIEWORIGIN_SEARCH, $svc->decorations);
             }
         }
 
@@ -509,6 +510,11 @@ class PaperList {
         return $this->search->message_set();
     }
 
+    /** @return list<MessageItem> */
+    function message_list() {
+        return $this->message_set()->message_list();
+    }
+
     /** @return string */
     function siteurl() {
         return $this->qreq->navigation()->siteurl();
@@ -564,8 +570,15 @@ class PaperList {
      * @return bool */
     function want_column_errors($k) {
         $origin = $this->view_origin($k);
-        return $origin === self::VIEWORIGIN_SEARCH
-            || $origin === self::VIEWORIGIN_MAX;
+        return $this->_report_view_errors
+            ?? ($origin === self::VIEWORIGIN_SEARCH || $origin === self::VIEWORIGIN_MAX);
+    }
+
+    /** @param ?bool $x
+     * @return $this */
+    function set_report_view_errors($x) {
+        $this->_report_view_errors = $x;
+        return $this;
     }
 
     /** @param int $v
@@ -609,8 +622,11 @@ class PaperList {
         assert($origin >= self::VIEWORIGIN_REPORT && $origin <= self::VIEWORIGIN_MAX);
         if ($v === "show" || $v === "hide") {
             $v = $v === "show";
+        } else if ($v === "edit") {
+            $v = true;
+            $decorations[] = "edit";
         }
-        assert(is_bool($v) || $v === "edit");
+        assert(is_bool($v));
 
         if ($k !== "" && $k[0] === "\"" && $k[strlen($k) - 1] === "\"") {
             $k = substr($k, 1, -1);
@@ -651,9 +667,6 @@ class PaperList {
         $flags = ($flags & ~(self::VIEW_ORIGINMASK | self::VIEW_SHOW))
             | $origin
             | ($v ? self::VIEW_SHOW : 0);
-        if ($v === "edit") {
-            $decorations[] = "edit";
-        }
         if (!empty($decorations)) {
             $this->_view_decorations[$k] = $decorations;
         } else {
@@ -661,13 +674,13 @@ class PaperList {
         }
 
         if ($k === "force") {
-            $this->_view_force = $v;
+            $this->_view_force = $v ? Contact::OVERRIDE_CONFLICT : 0;
         } else if ($k === "facets") {
             $this->_view_facets = $v;
         } else if ($k === "linkto") {
             if (!empty($decorations)
                 && in_array($decorations[0], ["paper", "paperedit", "assign", "finishreview"])) {
-                $this->_paper_linkto = $decorations[0];
+                $this->_view_linkto = $decorations[0];
             }
         } else if (($k === "aufull" || $k === "anonau")
                    && $origin >= self::VIEWORIGIN_SEARCH
@@ -748,7 +761,7 @@ class PaperList {
      * @param 0|1|2|3|4|5 $origin */
     function parse_view($str, $origin) {
         $groups = SearchSplitter::split_balanced_parens($str ?? "");
-        foreach (PaperSearch::view_generator($groups) as $sve) {
+        foreach (SearchViewCommand::analyze($groups) as $sve) {
             if (($show_action = $sve->show_action())) {
                 $this->set_view($sve->keyword, $show_action, $origin, $sve->decorations);
             }
@@ -907,7 +920,7 @@ class PaperList {
     /** @param ?list<int> $sort_subset */
     private function _add_search_sorters(SearchTerm $qe, $sort_subset) {
         $nsortcol = count($this->_sortcol);
-        foreach (PaperSearch::view_generator($qe->view_anno()) as $sve) {
+        foreach ($qe->view_commands() as $sve) {
             if ($sve->sort_action()) {
                 $this->_add_sorter($sve->keyword, PaperList::VIEWORIGIN_SEARCH, $sve->decorations, $sort_subset, $sve->pos1, $sve->pos2);
             }
@@ -974,7 +987,7 @@ class PaperList {
         $this->_groups = []; // `_groups === null` means _sort has not been called
 
         // actually sort
-        $overrides = $this->user->add_overrides($this->_view_force ? Contact::OVERRIDE_CONFLICT : 0);
+        $overrides = $this->user->add_overrides($this->_view_force);
         if ($this->_then_map) {
             foreach ($rowset as $row) {
                 $row->_search_group = $this->_then_map[$row->paperId];
@@ -990,7 +1003,7 @@ class PaperList {
         if ($this->_sort_etag !== "") {
             $groups = $this->_sort_etag_anno_groups();
         } else {
-            $groups = $this->search->paper_groups();
+            $groups = $this->search->group_anno_list();
         }
         if (!empty($groups)) {
             $this->_collect_groups($rowset->as_list(), $groups);
@@ -1095,7 +1108,7 @@ class PaperList {
         $sn = $s0->sort_subset === null ? $s0->full_sort_name() : "none";
         $sp = urlencode($sn);
         $rp = urlencode($this->_report_id);
-        $fsp = $this->_view_force ? 1 : "";
+        $fsp = $this->_view_force !== 0 ? 1 : "";
         return "{$qp}&sort={$sp}&forceShow={$fsp}&report={$rp}";
     }
 
@@ -1222,10 +1235,10 @@ class PaperList {
         } else {
             $mi = $message;
         }
-        if (($sve = $this->search->main_term()->view_anno_element($name))
+        if (($sve = $this->search->main_term()->find_view_command($name))
             && ($mi->status !== MessageSet::INFORM || empty($this->_finding_column_errors))) {
             if ($mi->pos1 !== null) {
-                $mis = $this->search->expand_message_context($mi, $mi->pos1 + $sve->pos1, $mi->pos2 + $sve->pos2, $sve->string_context);
+                $mis = $this->search->expand_message_context($mi, $mi->pos1 + $sve->pos1, $mi->pos2 + $sve->pos1, $sve->string_context);
             } else {
                 $mis = $this->search->expand_message_context($mi, $sve->kwpos1, $sve->pos2, $sve->string_context);
             }
@@ -1371,6 +1384,13 @@ class PaperList {
         }
     }
 
+    /** @param ?int $context
+     * @return $this */
+    function prepare_table_view($context = null) {
+        $this->_reset_vcolumns($context ?? (FieldRender::CFLIST | FieldRender::CFHTML));
+        return $this;
+    }
+
 
     /** @param PaperInfo $row
      * @return string */
@@ -1386,11 +1406,11 @@ class PaperList {
 
     /** @return string */
     function _paperLink(PaperInfo $row) {
-        $pt = $this->_paper_linkto ?? "paper";
+        $pt = $this->_view_linkto ?? "paper";
         $pm = "";
         if ($pt === "finishreview") {
             $ci = $row->contact_info($this->user);
-            $pt = $ci->review_status <= PaperContactInfo::RS_UNSUBMITTED ? "review" : "paper";
+            $pt = $ci->review_status <= PaperContactInfo::CIRS_UNSUBMITTED ? "review" : "paper";
         } else if ($pt === "paperedit") {
             $pt = "paper";
             $pm = "&amp;m=edit";
@@ -1653,7 +1673,7 @@ class PaperList {
                     $this->row_attr["data-color-classes-conflicted"] = $ccx;
                     $trclass[] = "colorconflict";
                 }
-                $cc = $this->_view_force ? $cco : $ccx;
+                $cc = $this->_view_force !== 0 ? $cco : $ccx;
                 $rstate->hascolors = $rstate->hascolors || str_ends_with($cco, " tagbg");
             } else if ($this->row_tags !== "") {
                 $cc = $row->conf->tags()->color_classes($this->row_tags);
@@ -1826,7 +1846,6 @@ class PaperList {
         $classes[] = "fold7" . ($this->viewing("statistics") ? "o" : "c");
         $classes[] = "fold8" . ($has_statistics ? "o" : "c");
         $this->table_attr["data-fields"] = $jscol;
-        $this->table_attr["data-columns"] = $jscol; /* XXX backward compat */
     }
 
     /** @param PaperListTableRender $rstate
@@ -2040,7 +2059,7 @@ class PaperList {
         if (($sort = $this->sortdef()) !== "") {
             $args["sort"] = $sort;
         }
-        if ($this->_view_force) {
+        if ($this->_view_force !== 0) {
             $args["forceShow"] = 1;
         }
         return $this->search->create_session_list_object($this->paper_ids(), $this->_list_description(), $args);
@@ -2055,6 +2074,7 @@ class PaperList {
         if ($this->_sort_etag !== "") {
             return "tagval:{$this->_sort_etag}";
         }
+        // XXX should check that `then_term` is not complex
         $thenqe = $this->search->then_term();
         $groups = $thenqe ? $thenqe->group_terms() : [];
         if (count($groups) < 2) {
@@ -2134,6 +2154,13 @@ class PaperList {
             $this->table_attr["id"] = $this->_table_id;
         }
         $this->table_attr["data-search-params"] = $this->encoded_search_params();
+        $views = [];
+        foreach ($this->search->view_commands() as $svc) {
+            $views[] = $svc->command;
+        }
+        if (!empty($views)) {
+            $this->table_attr["data-search-view"] = join(" ", $views);
+        }
         if ($this->_table_fold_session) {
             $this->table_attr["data-fold-session-prefix"] = $this->_table_fold_session;
             $this->table_attr["data-fold-session"] = json_encode_browser([
@@ -2385,6 +2412,7 @@ class PaperList {
         $this->_reset_vcolumns(FieldRender::CFTEXT | FieldRender::CFCSV | FieldRender::CFVERBOSE);
         $data = [];
         if (!empty($this->_vcolumns)) {
+            $overrides = $this->user->add_overrides($this->_view_force);
             foreach ($this->rowset() as $row) {
                 $this->_row_setup($row);
                 $p = ["id" => $row->paperId];
@@ -2396,6 +2424,7 @@ class PaperList {
                 }
                 $data[$row->paperId] = $p;
             }
+            $this->user->set_overrides($overrides);
         }
         return $data;
     }
@@ -2435,6 +2464,7 @@ class PaperList {
     function text_csv() {
         // get column list, check sort
         $this->_reset_vcolumns(FieldRender::CFTEXT | FieldRender::CFCSV | FieldRender::CFVERBOSE);
+        $overrides = $this->user->add_overrides($this->_view_force);
 
         // collect row data
         $body = [];
@@ -2455,6 +2485,7 @@ class PaperList {
             }
         }
 
+        $this->user->set_overrides($overrides);
         return [$header, $body];
     }
 }

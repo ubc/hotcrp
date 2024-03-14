@@ -1,6 +1,6 @@
 <?php
 // helpers.php -- HotCRP non-class helper functions
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 // string helpers
 
@@ -233,8 +233,8 @@ class JsonResult implements JsonSerializable, ArrayAccess {
     }
 
 
-    /** @param ?bool $validated */
-    function emit($validated = null) {
+    /** @param ?Qrequest $qreq */
+    function emit($qreq = null) {
         if ($this->status && !$this->minimal) {
             if (!isset($this->content["ok"])) {
                 $this->content["ok"] = $this->status <= 299;
@@ -245,22 +245,23 @@ class JsonResult implements JsonSerializable, ArrayAccess {
         } else if (isset($this->content["status"])) {
             $this->status = $this->content["status"];
         }
-        if ($validated
-            ?? (Qrequest::$main_request && Qrequest::$main_request->valid_token())) {
+        if ($qreq && $qreq->valid_token()) {
             // Don’t set status on unvalidated requests, since that can leak
             // information (e.g. via <link prefetch onerror>).
             if ($this->status) {
                 http_response_code($this->status);
             }
-            header("Access-Control-Allow-Origin: *");
+            if (($origin = $qreq->header("Origin"))) {
+                header("Access-Control-Allow-Origin: {$origin}");
+            }
         }
         header("Content-Type: application/json; charset=utf-8");
-        if (Qrequest::$main_request && isset(Qrequest::$main_request->pprint)) {
-            $pprint = friendly_boolean(Qrequest::$main_request->pprint);
+        if ($qreq && isset($qreq->pprint)) {
+            $pprint = friendly_boolean($qreq->pprint);
         } else if ($this->pretty_print !== null) {
             $pprint = $this->pretty_print;
         } else {
-            $pprint = Contact::$main_user && Contact::$main_user->is_bearer_authorized();
+            $pprint = $qreq && $qreq->user() && $qreq->user()->is_bearer_authorized();
         }
         echo json_encode_browser($this->content, $pprint ? JSON_PRETTY_PRINT : 0), "\n";
     }
@@ -475,9 +476,14 @@ function pluralize($s) {
                && $len > 1
                && strpos("bcdfgjklmnpqrstvxz", $s[$len - 2]) !== false) {
         return substr($s, 0, $len - 1) . "ies";
-    } else if ($last === "t"
-               && $s === "that") {
-        return "those";
+    } else if ($last === "t") {
+        if ($s === "that") {
+            return "those";
+        } else if ($s === "it") {
+            return "them";
+        } else {
+            return "{$s}s";
+        }
     } else if ($last === ")"
                && preg_match('/\A(.*?)(\s*\([^)]*\))\z/', $s, $m)) {
         return pluralize($m[1]) . $m[2];
@@ -599,14 +605,12 @@ function unparse_preference($preference) {
 }
 
 /** @param int $revtype
- * @param bool $unfinished
  * @param ?string $classes
  * @return string */
-function review_type_icon($revtype, $unfinished = false, $classes = null) {
+function review_type_icon($revtype, $classes = null) {
     // see also script.js:review_form
     assert(!!$revtype);
     return '<span class="rto rt' . $revtype
-        . ($revtype > 0 && $unfinished ? " rtinc" : "")
         . ($classes ? " " . $classes : "")
         . '" title="' . ReviewForm::$revtype_names_full[$revtype]
         . '"><span class="rti">' . ReviewForm::$revtype_icon_text[$revtype] . '</span></span>';

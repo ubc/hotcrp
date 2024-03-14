@@ -1,6 +1,6 @@
 <?php
 // qrequest.php -- HotCRP helper class for request objects (no warnings)
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSerializable {
     /** @var ?Conf */
@@ -636,7 +636,7 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
 
     /** @param string|list<string> $title
      * @param string $id
-     * @param array{paperId?:int|string,body_class?:string,action_bar?:string,title_div?:string,subtitle?:string,save_messages?:bool,hide_title?:bool} $extra */
+     * @param array{paperId?:int|string,body_class?:string,action_bar?:string,title_div?:string,subtitle?:string,save_messages?:bool,hide_title?:bool,hide_header?:bool} $extra */
     function print_header($title, $id, $extra = []) {
         if (!$this->_conf->_header_printed) {
             $this->_conf->print_head_tag($this, $title, $extra);
@@ -647,7 +647,7 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     function print_footer() {
         echo '<hr class="c"></div>', // close #p-body
             '</div>',                // close #p-page
-            '<div id="p-footer">',
+            '<div id="p-footer" class="need-banner-offset banner-bottom">',
             $this->_conf->opt("extraFooter") ?? "",
             '<a class="noq" href="https://hotcrp.com/">HotCRP</a>';
         if (!$this->_conf->opt("noFooterVersion")) {
@@ -683,7 +683,7 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
         return $this->_active_list;
     }
 
-    function set_active_list(SessionList $list = null) {
+    function set_active_list(?SessionList $list) {
         assert($this->_active_list === false);
         $this->_active_list = $list;
     }

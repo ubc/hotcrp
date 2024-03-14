@@ -1,6 +1,6 @@
 <?php
 // api_upload.php -- HotCRP upload manager
-// Copyright (c) 2008-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2008-2024 Eddie Kohler; see LICENSE.
 
 class Upload_API {
     const MIN_MULTIPART_SIZE = 5 << 20;
@@ -154,7 +154,7 @@ class Upload_API {
     }
 
     /** @return array<string,mixed> */
-    function exec_start(Contact $user, Qrequest $qreq, PaperInfo $prow = null) {
+    function exec_start(Contact $user, Qrequest $qreq, ?PaperInfo $prow) {
         $size = self::qreqint($qreq->size);
         if ($size === null) {
             return self::_make_simple_error(400, "<0>Missing `size` parameter");
@@ -619,7 +619,7 @@ class Upload_API {
     }
 
     /** @return array<string,mixed> */
-    function exec(Contact $user, Qrequest $qreq, PaperInfo $prow = null) {
+    function exec(Contact $user, Qrequest $qreq, ?PaperInfo $prow) {
         $this->_cap = $this->_capd = null;
         if (!$this->tmpdir) {
             return self::_make_simple_error(501, "<0>Upload API not available on this site");
@@ -698,7 +698,7 @@ class Upload_API {
             && !$this->synchronous
             && JsonCompletion::$allow_short_circuit) {
             $json = new JsonResult($this->_make_result());
-            $json->emit($qreq->valid_token());
+            $json->emit($qreq);
             if (PHP_SAPI === "fpm-fcgi") {
                 fastcgi_finish_request();
             }
@@ -710,7 +710,7 @@ class Upload_API {
         }
     }
 
-    static function run(Contact $user, Qrequest $qreq, PaperInfo $prow = null) {
+    static function run(Contact $user, Qrequest $qreq, ?PaperInfo $prow) {
         return (new Upload_API($user->conf))->exec($user, $qreq, $prow);
     }
 

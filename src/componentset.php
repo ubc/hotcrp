@@ -1,6 +1,6 @@
 <?php
 // componentset.php -- HotCRP JSON-based component specifications
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class ComponentContext {
     /** @var list<mixed> */
@@ -250,13 +250,13 @@ class ComponentSet {
 
     /** @template T
      * @param class-string<T> $name
-     * @return ?T */
+     * @return T */
     function callable($name) {
         if (!isset($this->_callables[$name])) {
             /** @phan-suppress-next-line PhanTypeExpectedObjectOrClassName */
             $this->_callables[$name] = new $name(...$this->_ctx->args);
         }
-        return $this->_callables[$name] ?? null;
+        return $this->_callables[$name];
     }
 
     /** @param string $name
