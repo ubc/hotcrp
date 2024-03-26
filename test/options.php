@@ -5,7 +5,7 @@ global $Opt;
 $Opt["dbName"] = "hotcrp_testdb";
 $Opt["dbPassword"] = "m5LuaN23j26g";
 $Opt["shortName"] = "Testconf I";
-$Opt["longName"] = "Test Conference I";
+$Opt["longName"] = "Test Program I";
 $Opt["paperSite"] = "http://hotcrp.lcdf.org/test/";
 $Opt["contactName"] = "Eddie Kohler";
 $Opt["contactEmail"] = "ekohler@hotcrp.lcdf.org";
