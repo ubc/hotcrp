@@ -1248,8 +1248,8 @@ test
 \***************************************************************************
 
 
-You’re following comments for Test Program I (Testconf I) submission
-#2. For the most up-to-date comments, or to unsubscribe from email
+You’re following comments for Test Program I (Testconf I) submission #2.
+For the most up-to-date comments, or to unsubscribe from email
 notification, see the submission site.
 
 * Title: Small Forwarding Tables for Fast Routing Lookups
@@ -1272,8 +1272,8 @@ my identity should be hidden
 \***************************************************************************
 
 
-You’re following comments for Test Program I (Testconf I) submission
-#2. For the most up-to-date comments, or to unsubscribe from email
+You’re following comments for Test Program I (Testconf I) submission #2.
+For the most up-to-date comments, or to unsubscribe from email
 notification, see the submission site.
 
 * Title: Small Forwarding Tables for Fast Routing Lookups
@@ -1296,8 +1296,8 @@ my identity should be hidden
 \***************************************************************************
 
 
-You’re following comments for Test Program I (Testconf I) submission
-#2. For the most up-to-date comments, or to unsubscribe from email
+You’re following comments for Test Program I (Testconf I) submission #2.
+For the most up-to-date comments, or to unsubscribe from email
 notification, see the submission site.
 
 * Title: Small Forwarding Tables for Fast Routing Lookups
@@ -1320,8 +1320,8 @@ my identity should be hidden
 \***************************************************************************
 
 
-You’re following comments for Test Program I (Testconf I) submission
-#2. For the most up-to-date comments, or to unsubscribe from email
+You’re following comments for Test Program I (Testconf I) submission #2.
+For the most up-to-date comments, or to unsubscribe from email
 notification, see the submission site.
 
 * Title: Small Forwarding Tables for Fast Routing Lookups
@@ -1368,8 +1368,8 @@ Do not notify chair
 \***************************************************************************
 
 
-You’re following comments for Test Program I (Testconf I) submission
-#2. For the most up-to-date comments, or to unsubscribe from email
+You’re following comments for Test Program I (Testconf I) submission #2.
+For the most up-to-date comments, or to unsubscribe from email
 notification, see the submission site.
 
 * Title: Small Forwarding Tables for Fast Routing Lookups
@@ -1392,8 +1392,8 @@ Do notify chair
 \***************************************************************************
 
 
-You’re following comments for Test Program I (Testconf I) submission
-#2. For the most up-to-date comments, or to unsubscribe from email
+You’re following comments for Test Program I (Testconf I) submission #2.
+For the most up-to-date comments, or to unsubscribe from email
 notification, see the submission site.
 
 * Title: Small Forwarding Tables for Fast Routing Lookups
@@ -1416,8 +1416,8 @@ Do notify chair #2
 \***************************************************************************
 
 
-You’re following comments for Test Program I (Testconf I) submission
-#2. For the most up-to-date comments, or to unsubscribe from email
+You’re following comments for Test Program I (Testconf I) submission #2.
+For the most up-to-date comments, or to unsubscribe from email
 notification, see the submission site.
 
 * Title: Small Forwarding Tables for Fast Routing Lookups
@@ -1440,8 +1440,8 @@ Do not notify chair #2
 \***************************************************************************
 
 
-You’re following comments for Test Program I (Testconf I) submission
-#2. For the most up-to-date comments, or to unsubscribe from email
+You’re following comments for Test Program I (Testconf I) submission #2.
+For the most up-to-date comments, or to unsubscribe from email
 notification, see the submission site.
 
 * Title: Small Forwarding Tables for Fast Routing Lookups
@@ -1498,8 +1498,8 @@ Do notify chair #3
 \***************************************************************************
 
 
-You’re following comments for Test Program I (Testconf I) submission
-#2. For the most up-to-date comments, or to unsubscribe from email
+You’re following comments for Test Program I (Testconf I) submission #2.
+For the most up-to-date comments, or to unsubscribe from email
 notification, see the submission site.
 
 * Title: Small Forwarding Tables for Fast Routing Lookups
