@@ -1,6 +1,6 @@
 <?php
 // tagger.php -- HotCRP helper class for dealing with tags
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 // Note that tags MUST NOT contain HTML or URL special characters:
 // no "'&<>.  If you add PHP-protected characters, such as $, make sure you
@@ -569,7 +569,7 @@ class TagMap {
     /** @param string $tag
      * @param string $ltag
      * @return ?TagInfo */
-    private function update_patterns($tag, $ltag, TagInfo $ti = null) {
+    private function update_patterns($tag, $ltag, ?TagInfo $ti) {
         if (!$this->pattern_re) {
             $a = [];
             foreach ($this->pattern_storage as $p) {
@@ -1069,7 +1069,7 @@ class TagMap {
     /** @param 0|1 $ctype
      * @param ?string $tags
      * @return string */
-    function censor($ctype, $tags, Contact $user, PaperInfo $prow = null) {
+    function censor($ctype, $tags, Contact $user, ?PaperInfo $prow = null) {
         // empty tag optimization
         if ($tags === null || $tags === "") {
             return "";
@@ -1390,6 +1390,7 @@ class Tagger {
     const NOCHAIR = 8;
     const ALLOWSTAR = 16;
     const ALLOWCONTACTID = 32;
+    const ALLOWNONE = 64;
     const EEMPTY = -1;
     const EINVAL = -2;
     const EMULTIPLE = -3;
@@ -1541,14 +1542,18 @@ class Tagger {
      * @param int $flags
      * @return string|false */
     function check($tag, $flags = 0) {
-        if ($tag === null || $tag === "" || $tag === "#") {
+        if (($tag = $tag ?? "") !== "" && $tag[0] === "#") {
+            $tag = substr($tag, 1);
+        }
+        if (($flags & self::ALLOWNONE) !== 0
+            && ($tag === "" || strcasecmp($tag, "none") === 0)) {
+            $this->errcode = 0;
+            return "";
+        } else if ($tag === "") {
             return $this->set_error_code($tag, self::EEMPTY);
         }
         if (!$this->contact->privChair) {
             $flags |= self::NOCHAIR;
-        }
-        if ($tag[0] === "#") {
-            $tag = substr($tag, 1);
         }
         if (!preg_match('/\A(|~|~~|[1-9][0-9]*~)(' . TAG_REGEX_NOTWIDDLE . ')(|[#=](?:-?\d+(?:\.\d*)?|-?\.\d+|))\z/', $tag, $m)) {
             if (preg_match('/\A([-a-zA-Z0-9!@*_:.\/#=]+)[\s,]+\S+/', $tag, $m)
@@ -1681,8 +1686,8 @@ class Tagger {
             }
             $b = self::unparse_emoji_html($e, $count);
             if ($type === self::DECOR_PAPER) {
-                $url = $this->conf->hoturl("search", ["q" => "emoji:{$e}"]);
-                $b = "<a class=\"q\" href=\"{$url}\">{$b}</a>";
+                $q = htmlspecialchars("emoji:{$e}");
+                $b = "<a href=\"\" class=\"q uic js-sq\" data-q=\"{$q}\">{$b}</a>";
             }
             if ($x === "") {
                 $x = " ";
@@ -1690,18 +1695,19 @@ class Tagger {
             $x .= $b;
         }
         foreach ($dt->badges($tags) as $tb) {
-            $klass = " class=\"badge badge-{$tb[1]}\"";
+            $klass = "badge badge-{$tb[1]}";
             if (str_starts_with($tb[1], "rgb-")) {
                 TagMap::stash_ensure_pattern("badge-{$tb[1]}");
             }
             $tag = $this->unparse($tb[0]);
-            if ($type === self::DECOR_PAPER && ($link = $this->link($tag))) {
-                $b = "<a href=\"{$link}\"{$klass}>#{$tag}</a>";
+            if ($type === self::DECOR_PAPER && ($q = $this->js_sq($tag, false)) !== null) {
+                $dq = $q === "" ? "" : " data-q=\"" . htmlspecialchars($q) . "\"";
+                $b = "<a href=\"\" class=\"uic js-sq {$klass}\"{$dq}>#{$tag}</a>";
             } else {
                 if ($type !== self::DECOR_USER) {
                     $tag = "#{$tag}";
                 }
-                $b = "<span{$klass}>{$tag}</span>";
+                $b = "<span class=\"{$klass}\">{$tag}</span>";
             }
             $x .= ' ' . $b;
         }
@@ -1722,13 +1728,13 @@ class Tagger {
     }
 
     /** @param string $tv
-     * @param int $flags
-     * @return string|false */
-    function link($tv, $flags = 0) {
+     * @param bool $always
+     * @return ?string */
+    private function js_sq($tv, $always) {
         if (ctype_digit($tv[0])) {
             $p = strlen((string) $this->_contactId);
             if (substr($tv, 0, $p) != $this->_contactId || $tv[$p] !== "~") {
-                return false;
+                return null;
             }
             $tv = substr($tv, $p);
         }
@@ -1737,13 +1743,14 @@ class Tagger {
         if ($dt->has(TagInfo::TFM_VOTES)
             && ($dt->is_votish($base)
                 || ($base[0] === "~" && $dt->is_allotment(substr($base, 1))))) {
-            $q = "#{$base} showsort:-#{$base}";
+            return "#{$base} showsort:-#{$base}";
+        } else if (!$always) {
+            return "";
         } else if ($base === $tv) {
             $q = "#{$base}";
         } else {
             $q = "order:#{$base}";
         }
-        return $this->conf->hoturl("search", ["q" => $q], $flags);
     }
 
     /** @param list<string>|string $viewable
@@ -1761,11 +1768,13 @@ class Tagger {
             if (!($base = Tagger::tv_tag($tv))) {
                 continue;
             }
-            if (($link = $this->link($tv))) {
-                $tsuf = substr($tv, strlen($base));
-                $tx = "<a class=\"qo ibw\" href=\"{$link}\"><u class=\"x\">#{$base}</u>{$tsuf}</a>";
-            } else {
+            $q = $this->js_sq($tv, false);
+            if ($q === null) {
                 $tx = "#{$tv}";
+            } else {
+                $tsuf = substr($tv, strlen($base));
+                $dq = $q === "" ? "" : " data-q=\"" . htmlspecialchars($q) . "\"";
+                $tx = "<a href=\"\" class=\"qo ibw uic js-sq\"{$dq}><u class=\"x\">#{$base}</u>{$tsuf}</a>";
             }
             if (($cc = $dt->styles($base))) {
                 $ccs = join(" ", $cc);

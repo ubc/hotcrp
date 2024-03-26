@@ -167,9 +167,6 @@ class ManualAssign_Page {
             "q" => $this->qreq->q,
             "reviewer" => $reviewer
         ]))->set_urlbase("manualassign");
-        if (!empty($hlsearch)) {
-            $search->set_field_highlighter_query(join(" OR ", $hlsearch));
-        }
         $pl = new PaperList("reviewAssignment", $search, ["sort" => true], $this->qreq);
         $pl->apply_view_session($this->qreq);
         $pl->apply_view_qreq($this->qreq);
@@ -216,7 +213,7 @@ class ManualAssign_Page {
     }
 
 
-    function print(Contact $reviewer = null) {
+    function print(?Contact $reviewer = null) {
         $this->qreq->print_header("Assignments", "manualassign", ["subtitle" => "Manual"]);
         echo '<nav class="papmodes mb-5 clearfix"><ul>',
             '<li class="papmode"><a href="', $this->conf->hoturl("autoassign"), '">Automatic</a></li>',

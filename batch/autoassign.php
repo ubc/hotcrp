@@ -1,6 +1,6 @@
 <?php
 // autoassign.php -- HotCRP autoassignment script
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 if (realpath($_SERVER["PHP_SELF"]) === __FILE__) {
     require_once(dirname(__DIR__) . "/src/init.php");
@@ -37,11 +37,13 @@ class Autoassign_Batch {
     /** @var bool */
     public $dry_run = false;
     /** @var bool */
+    public $unsorted_dry_run = false;
+    /** @var bool */
     public $help_param = false;
     /** @var bool */
     public $profile = false;
     /** @var ?callable */
-    public $attached;
+    public $detacher;
     /** @var ?TokenInfo */
     private $_jtok;
 
@@ -53,13 +55,13 @@ class Autoassign_Batch {
     }
 
     /** @param array<string,mixed> $arg
-     * @param ?callable $attached */
-    function __construct(Conf $conf, $arg, Getopt $getopt, $attached = null) {
+     * @param ?callable $detacher */
+    function __construct(Conf $conf, $arg, Getopt $getopt, $detacher = null) {
         $this->conf = $conf;
         $this->getopt = $getopt;
-        $this->attached = $attached;
+        $this->detacher = $detacher;
         if (isset($arg["job"])) {
-            $this->_jtok = Job_Capability::claim($arg["job"], $this->conf, "batch/autoassign");
+            $this->_jtok = Job_Capability::claim($this->conf, $arg["job"], "Autoassign");
             $this->user = $this->_jtok->user() ?? $conf->root_user();
         } else {
             $this->user = $conf->root_user();
@@ -74,7 +76,7 @@ class Autoassign_Batch {
             try {
                 $this->_jtok->update_use();
                 $this->parse_arg($arg);
-                $this->parse_arg($getopt->parse($this->_jtok->input("argv") ?? []));
+                $this->parse_arg($getopt->parse($this->_jtok->input("assign_argv") ?? []));
                 $this->complete_arg();
             } catch (CommandLineException $ex) {
                 $this->report([MessageItem::error("<0>{$ex->getMessage()}")], $ex->exitStatus);
@@ -98,7 +100,6 @@ class Autoassign_Batch {
                 $this->_jtok->change_data("exit_status", $exit_status)
                     ->change_data("status", "done");
             }
-            Conf::set_current_time(microtime(true));
             $this->_jtok->update_use()->update();
         } else {
             $s = MessageSet::feedback_text($message_list);
@@ -123,7 +124,8 @@ class Autoassign_Batch {
     /** @param associative-array $arg */
     private function parse_arg($arg) {
         $this->quiet = $this->quiet || isset($arg["quiet"]);
-        $this->dry_run = $this->dry_run || isset($arg["dry-run"]);
+        $this->unsorted_dry_run = $this->unsorted_dry_run || isset($arg["unsorted-dry-run"]);
+        $this->dry_run = $this->dry_run || $this->unsorted_dry_run || isset($arg["dry-run"]);
         $this->help_param = $this->help_param || isset($arg["help-param"]);
         $this->profile = $this->profile || isset($arg["profile"]);
         if (isset($arg["autoassigner"])) {
@@ -134,9 +136,6 @@ class Autoassign_Batch {
         if (isset($arg["count"])) {
             $this->param["count"] = $arg["count"];
         }
-        if (isset($arg["type"])) {
-            $this->param["type"] = $arg["type"];
-        }
         foreach ($arg["_"] ?? [] as $x) {
             if (($eq = strpos($x, "=")) === false) {
                 $this->report([MessageItem::error("<0>`NAME=VALUE` format expected for parameter arguments")], 3);
@@ -146,6 +145,8 @@ class Autoassign_Batch {
         $this->q = $arg["q"] ?? $this->q;
         if (isset($arg["all"])) {
             $this->t = "all";
+        } else {
+            $this->t = $arg["type"] ?? "s";
         }
         $pcc = $this->pcc;
         if (!empty($arg["u"])) {
@@ -191,7 +192,10 @@ class Autoassign_Batch {
             fwrite(STDOUT, $this->getopt->help());
             throw new CommandLineException("", $this->getopt, 0);
         }
-        $gj = $this->aaname !== "" ? $this->conf->autoassigner($this->aaname) : null;
+        $gj = null;
+        if ($this->aaname !== "" && !str_starts_with($this->aaname, "__")) {
+            $gj = $this->conf->autoassigner($this->aaname);
+        }
         if (!$gj) {
             $ml = [];
             if ($this->aaname === "") {
@@ -205,16 +209,17 @@ class Autoassign_Batch {
             $this->report([MessageItem::error("<0>Invalid autoassigner `{$this->aaname}`")], 3);
         }
         $this->gj = $gj;
-        $parameters = $this->gj->parameters ?? [];
-        if (isset($this->param["type"])
-            && !in_array("type", $parameters)
-            && in_array("rtype", $parameters)) {
-            $this->param["rtype"] = $this->param["type"];
+        if (isset($this->param["type"])) {
+            $parameters = Autoassigner::expand_parameters($this->conf, $gj->parameters ?? []);
+            if (!Autoassigner::find_parameter("type", $parameters)
+                && Autoassigner::find_parameter("rtype", $parameters)) {
+                $this->param["rtype"] = $this->param["type"];
+            }
         }
     }
 
     function report_progress($progress) {
-        $this->_jtok->change_data("progress", $progress)->update();
+        $this->_jtok->change_data("progress", $progress)->update_use()->update();
         set_time_limit(240);
     }
 
@@ -241,15 +246,16 @@ class Autoassign_Batch {
         } else {
             $aa = call_user_func($this->gj->function, $this->user, $this->pcc, $pids, $this->param, $this->gj);
         }
+        '@phan-var-force Autoassigner $aa';
         foreach ($this->no_coassign as $pair) {
             $aa->avoid_coassignment($pair[0], $pair[1]);
         }
         $this->report($aa->message_list(), $aa->has_error() ? 1 : null);
 
         // run autoassigner
-        if ($this->attached) {
-            call_user_func($this->attached, $this);
-            $this->attached = null;
+        if ($this->detacher) {
+            call_user_func($this->detacher, $this);
+            $this->detacher = null;
         }
         if ($this->_jtok) {
             $aa->add_progress_function([$this, "report_progress"]);
@@ -277,6 +283,9 @@ class Autoassign_Batch {
 
         // exit if dry run
         if ($this->dry_run) {
+            if (!$this->unsorted_dry_run) {
+                $aa->sort_assignments();
+            }
             if ($this->_jtok) {
                 $this->_jtok->change_output(join("",  $aa->assignments()));
                 $this->report([], 0);
@@ -316,11 +325,9 @@ class Autoassign_Batch {
     function run() {
         if ($this->help_param) {
             $s = ["{$this->gj->name} parameters:\n"];
-            foreach ($this->gj->parameters ?? [] as $p) {
-                if (($px = Autoassigner::expand_parameter_help($p))) {
-                    $arg = "  {$px->name}={$px->argname}" . ($px->required ? " *" : "");
-                    $s[] = Getopt::format_help_line($arg, $px->description);
-                }
+            foreach (Autoassigner::expand_parameters($this->conf, $this->gj->parameters ?? []) as $px) {
+                $arg = "  {$px->name}={$px->argname}" . ($px->required ? " *" : "");
+                $s[] = Getopt::format_help_line($arg, $px->description);
             }
             $s[] = "\n";
             fwrite(STDOUT, join("", $s));
@@ -342,13 +349,14 @@ class Autoassign_Batch {
             "config: !",
             "job:,j: JOBID Run stored job",
             "dry-run,d Do not perform assignment; output CSV instead",
+            "unsorted-dry-run,D !",
             "autoassigner:,a: =AA !",
             "q:,search: =QUERY Use papers matching QUERY [all]",
+            "type:,t: =TYPE Set search type [all]",
             "all Include all papers (default is submitted papers)",
             "u[],user[] =USER Include users matching USER (`-u -USER` excludes)",
             "disjoint[],X[] =USER1,USER2 Don’t coassign users",
             "count:,c: {n} =N Set `count` parameter to N",
-            "type:,t: =TYPE Set `type`/`rtype` parameter to TYPE",
             "help-param Print parameters for AUTOASSIGNER",
             "profile Print profile to standard error",
             "quiet Don’t warn on empty assignment",
@@ -360,11 +368,13 @@ Usage: php batch/autoassign.php [--dry-run] AUTOASSIGNER [PARAM=VALUE]...")
          ->interleave(true);
     }
 
-    /** @return Autoassign_Batch */
-    static function make_args($argv) {
+    /** @param list<string> $argv
+     * @param ?callable $detacher
+     * @return Autoassign_Batch */
+    static function make_args($argv, $detacher = null) {
         $getopt = self::make_getopt();
         $arg = $getopt->parse($argv);
         $conf = initialize_conf($arg["config"] ?? null, $arg["name"] ?? null);
-        return new Autoassign_Batch($conf, $arg, $getopt);
+        return new Autoassign_Batch($conf, $arg, $getopt, $detacher);
     }
 }

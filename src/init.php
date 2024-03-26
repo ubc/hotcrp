@@ -1,9 +1,9 @@
 <?php
 // init.php -- HotCRP initialization (test or site)
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 declare(strict_types=1);
-const HOTCRP_VERSION = "3.0b3";
+const HOTCRP_VERSION = "3.0.0";
 
 // All positive review types must be 1 digit
 const REVIEW_META = 5;
@@ -68,7 +68,7 @@ require_once(SiteLoader::find("lib/dbl.php"));
 require_once(SiteLoader::find("src/helpers.php"));
 require_once(SiteLoader::find("src/conference.php"));
 require_once(SiteLoader::find("src/contact.php"));
-Conf::set_current_time(microtime(true));
+Conf::set_current_time();
 if (defined("HOTCRP_TESTHARNESS")) {
     Conf::$test_mode = true;
 }
@@ -273,8 +273,7 @@ function initialize_request($kwarg = null) {
     // check method
     if ($qreq->method() !== "GET"
         && $qreq->method() !== "POST"
-        && $qreq->method() !== "HEAD"
-        && ($qreq->method() !== "OPTIONS" || $nav->page !== "api")) {
+        && $qreq->method() !== "HEAD") {
         header("HTTP/1.0 405 Method Not Allowed");
         exit;
     }
@@ -354,7 +353,7 @@ function initialize_request($kwarg = null) {
             initialize_user_preferred_uindex($qreq, $uindex);
         }
         if ($uindex < $nus
-            && $nav->page !== "api"
+            && !in_array($nav->page, ["api", "scripts", "stylesheets", "images", "cacheable"])
             && ($qreq->method() === "GET" || $qreq->method() === "HEAD")) {
             // redirect to `/u` version
             $nav->query = preg_replace('/[?&;]i=[^&;]++/', '', $nav->query);

@@ -1,6 +1,6 @@
 <?php
 // commentinfo.php -- HotCRP helper class for comments
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class CommentInfo {
     /** @var Conf
@@ -94,7 +94,7 @@ class CommentInfo {
     ];
 
 
-    function __construct(PaperInfo $prow = null, Conf $conf = null) {
+    function __construct(?PaperInfo $prow = null, ?Conf $conf = null) {
         assert(($prow || $conf) && (!$prow || !$conf || $prow->conf === $conf));
         if ($prow) {
             $this->conf = $prow->conf;
@@ -128,7 +128,7 @@ class CommentInfo {
 
     /** @param Dbl_Result $result
      * @return ?CommentInfo */
-    static function fetch($result, PaperInfo $prow = null, Conf $conf = null) {
+    static function fetch($result, ?PaperInfo $prow, ?Conf $conf) {
         $cinfo = $result->fetch_object("CommentInfo", [$prow, $conf]);
         if ($cinfo) {
             $cinfo->fetch_incorporate();

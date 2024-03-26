@@ -1,6 +1,6 @@
 <?php
 // t_unit.php -- HotCRP tests
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class Unit_Tester {
     /** @var Conf
@@ -740,25 +740,30 @@ class Unit_Tester {
     }
 
     function test_parse_preference() {
-        xassert_eqq(Preference_AssignmentParser::parse("--2"), [-2, null]);
-        xassert_eqq(Preference_AssignmentParser::parse("--3 "), [-3, null]);
-        xassert_eqq(Preference_AssignmentParser::parse("\"--2\""), [-2, null]);
-        xassert_eqq(Preference_AssignmentParser::parse("\"-2-\""), [-2, null]);
-        xassert_eqq(Preference_AssignmentParser::parse("`-2-`"), [-2, null]);
-        xassert_eqq(Preference_AssignmentParser::parse(" - 2"), [-2, null]);
-        xassert_eqq(Preference_AssignmentParser::parse(" – 2"), [-2, null]);
-        xassert_eqq(Preference_AssignmentParser::parse(" — 2"), [-2, null]);
-        xassert_eqq(Preference_AssignmentParser::parse(" — 2--"), null);
-        xassert_eqq(Preference_AssignmentParser::parse("+0.2"), [0, null]);
-        xassert_eqq(Preference_AssignmentParser::parse("-2x"), [-2, 1]);
-        xassert_eqq(Preference_AssignmentParser::parse("-2     Y"), [-2, 0]);
-        xassert_eqq(Preference_AssignmentParser::parse("- - - -Y"), null);
-        xassert_eqq(Preference_AssignmentParser::parse("- - - -"), [-4, null]);
-        xassert_eqq(Preference_AssignmentParser::parse("++"), [2, null]);
-        xassert_eqq(Preference_AssignmentParser::parse("+ 2+"), [2, null]);
-        xassert_eqq(Preference_AssignmentParser::parse("xsaonaif"), null);
-        xassert_eqq(Preference_AssignmentParser::parse("NONE"), [0, null]);
-        xassert_eqq(Preference_AssignmentParser::parse("CONFLICT"), [-100, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("--2"), [-2.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("--3 "), [-3.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("\"--2\""), [-2.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("\"-2-\""), null);
+        xassert_eqq(Preference_AssignmentParser::parsef("`-2-`"), null);
+        xassert_eqq(Preference_AssignmentParser::parsef(" - 2"), [-2.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef(" – 2"), [-2.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef(" — 2"), [-2.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef(" — 2--"), null);
+        xassert_eqq(Preference_AssignmentParser::parsef("+0.2"), [0.2, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("-2x"), [-2.0, 1]);
+        xassert_eqq(Preference_AssignmentParser::parsef("-2     Y"), [-2.0, 0]);
+        xassert_eqq(Preference_AssignmentParser::parsef("- 3z   "), [-3.0, -1]);
+        xassert_eqq(Preference_AssignmentParser::parsef("- - - -Y"), null);
+        xassert_eqq(Preference_AssignmentParser::parsef("- - - -"), [-4.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("++"), [2.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("+ 2"), [2.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("+ 2+"), null);
+        xassert_eqq(Preference_AssignmentParser::parsef("xsaonaif"), null);
+        xassert_eqq(Preference_AssignmentParser::parsef("NONE"), [0.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("n/a"), [0.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("x"), [0.0, 1]);
+        xassert_eqq(Preference_AssignmentParser::parsef("c"), [-100.0, null]);
+        xassert_eqq(Preference_AssignmentParser::parsef("CONFLICT"), [-100.0, null]);
     }
 
     function test_span_balanced_parens() {
@@ -1000,6 +1005,21 @@ class Unit_Tester {
         xassert(!Contact::is_anonymous_email("example@anonymous"));
     }
 
+    function test_is_real_email() {
+        xassert(!Contact::is_real_email("anonymous"));
+        xassert(!Contact::is_real_email("anonymous1"));
+        xassert(!Contact::is_real_email("anonymous10"));
+        xassert(!Contact::is_real_email("anonymous9"));
+        xassert(!Contact::is_real_email("anonymous@example.com"));
+        xassert(!Contact::is_real_email("example@anonymous")); // not enough dots
+        xassert(Contact::is_real_email("example@anonymous.com"));
+        xassert(Contact::is_real_email("ass@butt.com"));
+        xassert(Contact::is_real_email("ass@fxample.edu"));
+        xassert(!Contact::is_real_email("ass@_.com"));
+        xassert(!Contact::is_real_email("ass@_.co.uk"));
+        xassert(Contact::is_real_email("ass@underscore.com"));
+    }
+
     function test_valid_email() {
         xassert(Contact::make_email($this->conf, "ass@butt.com")->can_receive_mail());
         xassert(Contact::make_email($this->conf, "ass@fxample.edu")->can_receive_mail());
@@ -1032,14 +1052,20 @@ class Unit_Tester {
     }
 
     function test_clean_html() {
-        xassert_eqq(CleanHTML::basic_clean('<a>Hello'), false);
-        xassert_eqq(CleanHTML::basic_clean('<a>Hello</a>'), '<a>Hello</a>');
-        xassert_eqq(CleanHTML::basic_clean('<script>Hello</script>'), false);
-        xassert_eqq(CleanHTML::basic_clean('< SCRIPT >Hello</script>'), false);
-        xassert_eqq(CleanHTML::basic_clean('<a href = fuckovia ><B>Hello</b></a>'), '<a href="fuckovia"><b>Hello</b></a>');
-        xassert_eqq(CleanHTML::basic_clean('<a href = " javaScript:hello" ><B>Hello</b></a>'), false);
-        xassert_eqq(CleanHTML::basic_clean('<a href = "https://hello" onclick="fuck"><B>Hello</b></a>'), false);
-        xassert_eqq(CleanHTML::basic_clean('<a href =\'https:"""//hello\' butt><B>Hello</b></a>'), '<a href="https:&quot;&quot;&quot;//hello" butt><b>Hello</b></a>');
+        $chtml = CleanHtml::basic();
+        xassert_eqq($chtml->clean('<a>Hello'), false);
+        xassert_eqq($chtml->clean('<a>Hello</a>'), '<a>Hello</a>');
+        xassert_eqq($chtml->clean('<script>Hello</script>'), false);
+        xassert_eqq($chtml->clean('< SCRIPT >Hello</script>'), false);
+        xassert_eqq($chtml->clean('<a href = fuckovia ><B>Hello</b></a>'), '<a href="fuckovia"><b>Hello</b></a>');
+        xassert_eqq($chtml->clean('<a href = " javaScript:hello" ><B>Hello</b></a>'), false);
+        xassert_eqq($chtml->clean('<a href = "https://hello" onclick="fuck"><B>Hello</b></a>'), false);
+        xassert_eqq($chtml->clean('<a href =\'https:"""//hello\' butt><B>Hello</b></a>'), '<a href="https:&quot;&quot;&quot;//hello" butt><b>Hello</b></a>');
+        xassert_eqq($chtml->clean('<p><b><p>a</p></b></p>'), false);
+        xassert_eqq($chtml->clean('<table> X </table>'), false);
+        xassert_eqq($chtml->clean('<table><tr><td>hi</td><td>there</td></tr></table>'), '<table><tr><td>hi</td><td>there</td></tr></table>');
+        xassert_eqq($chtml->clean("<ul><li>X</li> <li>Y</li>\n\n<li>Z</li>\n</ul>\n"), "<ul><li>X</li> <li>Y</li>\n\n<li>Z</li>\n</ul>\n");
+        xassert_eqq($chtml->clean("<ul><li>X</li> p <li>Y</li>\n\n<li>Z</li>\n</ul>\n"), false);
     }
 
     function test_base48() {

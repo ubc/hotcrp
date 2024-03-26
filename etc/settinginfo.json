@@ -135,6 +135,18 @@
         "parser_class": "Messages_SettingParser"
     },
     {
+        "name": "preference_min", "storage": "pref_min",
+        "title": "Minimum allowed review preference",
+        "type": "int", "default_value": -1000000,
+        "parser_class": "Preference_SettingParser"
+    },
+    {
+        "name": "preference_max", "storage": "pref_max",
+        "title": "Maximum allowed review preference",
+        "type": "int", "default_value": 1000000,
+        "parser_class": "Preference_SettingParser"
+    },
+    {
         "name": "submission_edit_message", "storage": "msg.submit",
         "title": "Submission edit message",
         "type": "htmlstring", "size": 5
@@ -1142,14 +1154,27 @@
     },
     {   "name_pattern": "named_search/$/title", "internal": true, "parser_class": "NamedSearch_SettingParser"   },
     {
-        "name_pattern": "named_search/$/q",
+        "name_pattern": "named_search/$/search",
         "title": "/Search",
-        "type": "string", "subtype": "search"
+        "type": "string", "subtype": "search", "storage": "member.q"
     },
+    {   "name_pattern": "named_search/$/q", "alias_pattern": "named_search/$/search"   },
     {
         "name_pattern": "named_search/$/display",
         "title": "/Display",
         "type": "radio", "values": ["default", "none", "highlight"], "default_value": "default"
+    },
+
+    {
+        "name": "autoassign_review_max_load_tag",
+        "title": "Autoassignment maximum PC review load tag",
+        "type": "tag", "subtype": "allow_chair", "required": false
+    },
+    {
+        "name": "autoassign_review_preference_gadget",
+        "title": "Review autoassignment method",
+        "type": "radio", "values": ["default", "expertise"], "default_value": "default",
+        "storage": "opt.autoassignReviewGadget"
     },
 
     {   "name": "extrev_hard_0", "merge": true, "storage": "extrev_hard"   },

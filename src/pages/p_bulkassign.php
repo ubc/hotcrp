@@ -1,6 +1,6 @@
 <?php
 // pages/p_bulkassign.php -- HotCRP bulk paper assignment page
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class BulkAssign_Page {
     /** @var Conf */
@@ -37,7 +37,7 @@ class BulkAssign_Page {
         return $defaults;
     }
 
-    function keep_browser_alive(AssignmentSet $aset, CsvRow $line = null) {
+    function keep_browser_alive(AssignmentSet $aset, ?CsvRow $line = null) {
         $time = microtime(true);
         if (!$this->csv_started) {
             $this->csv_started = $time;

@@ -1,6 +1,6 @@
 <?php
 // mailsender.php -- HotCRP mail merge manager
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class MailSender {
     /** @var Conf
@@ -43,6 +43,8 @@ class MailSender {
     private $skipcount = 0;
     /** @var array<int,true> */
     private $mrecipients = [];
+    /** @var bool */
+    private $had_nonreceivable = false;
     /** @var int */
     private $cbcount = 0;
 
@@ -341,7 +343,7 @@ class MailSender {
         }
         $s .= "% done\";";
         $m = plural($this->mcount, "mail") . ", "
-            . plural($this->mrecipients, "recipient");
+            . plural($this->mrecipients, $this->had_nonreceivable ? "valid recipient" : "recipient");
         $s .= "document.getElementById('mailinfo').innerHTML=\"<span class='barsep'>·</span>" . $m . "\";";
         if (!$this->sending && $this->groupable) {
             $s .= "\$('#mail-group-disabled').addClass('hidden');\$('#mail-group-enabled').removeClass('hidden')";
@@ -404,28 +406,43 @@ class MailSender {
             $show_prep->finalize();
         }
 
-        echo '<fieldset class="mail-preview-send main-width';
-        if (!$this->sending) {
-            echo ' uimd ui js-click-child d-flex"><div class="pr-2">',
+        // are there any valid recipients?
+        $valid_recip = false;
+        $recipt = [];
+        foreach ($prep->recipients() as $u) {
+            $t = htmlspecialchars(MailPreparation::recipient_address($u));
+            if ($u->can_receive_mail($prep->self_requested())) {
+                $recipt[] = $t;
+                $valid_recip = true;
+            } else {
+                $recipt[] = "<del>{$t}</del>";
+            }
+        }
+
+        echo '<fieldset class="main-width';
+        if (!$this->sending && !$valid_recip) {
+            echo ' mail-preview-disabled d-flex"><div class="pr-2">',
+                Ht::checkbox("", 1, false, ["disabled" => true]),
+                '</div><div class="flex-grow-0">';
+        } else if (!$this->sending) {
+            echo ' mail-preview-send uimd ui js-click-child d-flex"><div class="pr-2">',
                 Ht::checkbox(self::prep_key($prep), 1, true, [
                     "class" => "uic js-range-click js-mail-preview-choose",
                     "data-range-type" => "mhcb", "id" => "psel{$this->cbcount}"
                 ]), '</div><div class="flex-grow-0">';
         } else {
-            echo '">';
+            echo ' mail-preview-send">';
         }
         foreach (["To", "cc", "bcc", "reply-to", "Subject"] as $k) {
             if ($k == "To") {
-                $vh = [];
-                foreach ($prep->recipients() as $u) {
-                    $t = htmlspecialchars(MailPreparation::recipient_address($u));
-                    if ($u->can_receive_mail($prep->self_requested())) {
-                        $vh[] = $t;
-                    } else {
-                        $vh[] = "<del>{$t}</del>";
-                    }
+                $vh = '<span class="nw">' . join(',</span> <span class="nw">', $recipt) . '</span>';
+                $ml = $prep->invalid_recipient_message_list();
+                if (!$valid_recip) {
+                    $ml[] = MessageItem::warning("<0>This mail has no valid recipients");
                 }
-                $vh = '<span class="nw">' . join(',</span> <span class="nw">', $vh) . '</span>';
+                if ($ml) {
+                    $vh = "<div class=\"mb-1\">{$vh}</div>" . MessageSet::feedback_html($ml);
+                }
             } else if ($k == "Subject") {
                 $vh = htmlspecialchars(MimeText::decode_header($show_prep->subject));
             } else if (($line = $show_prep->headers[$k] ?? null)) {
@@ -461,11 +478,15 @@ class MailSender {
         }
 
         ++$this->mcount;
-        foreach ($prep->recipient_uids() as $cid) {
-            $this->mrecipients[$cid] = true;
-            if ($this->sending) {
-                // Log format matters
-                $this->conf->log_for($this->user, $cid, "Sent mail #{$this->mailid}", $prep->paperId);
+        foreach ($prep->recipients() as $recip) {
+            if (!$recip->can_receive_mail($prep->self_requested())) {
+                $this->had_nonreceivable = true;
+            } else if ($recip->conf === $prep->conf) {
+                $this->mrecipients[$recip->contactId] = true;
+                if ($this->sending) {
+                    // Log format matters
+                    $this->conf->log_for($this->user, $recip, "Sent mail #{$this->mailid}", $prep->paperId);
+                }
             }
         }
 

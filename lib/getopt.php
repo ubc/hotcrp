@@ -1,6 +1,6 @@
 <?php
 // getopt.php -- HotCRP helper function for extended getopt
-// Copyright (c) 2009-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2009-2024 Eddie Kohler; see LICENSE.
 
 class Getopt {
     /** @var array<string,GetoptOption> */
@@ -17,6 +17,8 @@ class Getopt {
     private $allmulti = false;
     /** @var ?bool */
     private $otheropt = false;
+    /** @var ?bool */
+    private $dupopt = true;
     /** @var bool */
     private $interleave = false;
     /** @var ?int */
@@ -149,6 +151,13 @@ class Getopt {
      * @return $this */
     function otheropt($otheropt) {
         $this->otheropt = $otheropt;
+        return $this;
+    }
+
+    /** @param ?bool $dupopt
+     * @return $this */
+    function dupopt($dupopt) {
+        $this->dupopt = $dupopt;
         return $this;
     }
 
@@ -503,7 +512,7 @@ class Getopt {
                 throw new CommandLineException("Missing argument for `{$oname}`", $this);
             }
 
-            $poty = $po->argtype;
+            $poty = $value !== false ? $po->argtype : null;
             if ($poty === "n" || $poty === "i") {
                 if (!ctype_digit($value) && !preg_match('/\A[-+]\d+\z/', $value)) {
                     throw new CommandLineException("`{$oname}` requires integer", $this);
@@ -527,6 +536,9 @@ class Getopt {
             if (!array_key_exists($name, $res)) {
                 $res[$name] = $pot >= self::MARG ? [$value] : $value;
             } else if ($pot < self::MARG && !$this->allmulti) {
+                if (!$this->dupopt) {
+                    throw new CommandLineException("`{$oname}` was given multiple times", $this);
+                }
                 $res[$name] = $value;
             } else if (is_array($res[$name])) {
                 $res[$name][] = $value;

@@ -1,6 +1,6 @@
 <?php
 // navigation.php -- HotCRP navigation helper functions
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class NavigationState {
     // Base URL:    PROTOCOL://HOST[:PORT]/BASEPATH/
@@ -50,7 +50,8 @@ class NavigationState {
         $nav = new NavigationState;
 
         // host, protocol, server
-        $nav->host = $server["HTTP_HOST"] ?? $server["SERVER_NAME"] ?? null;
+        $http_host = $server["HTTP_HOST"] ?? null;
+        $nav->host = $http_host ?? $server["SERVER_NAME"] ?? null;
         if ((isset($server["HTTPS"])
              && $server["HTTPS"] !== ""
              && $server["HTTPS"] !== "off")
@@ -64,9 +65,10 @@ class NavigationState {
         }
         $nav->protocol = $x;
         $x .= $nav->host ? : "localhost";
-        if (($port = $server["SERVER_PORT"])
-            && $port != $xport
-            && strpos($x, ":", 6) === false) {
+        if ($http_host === null // HTTP `Host` header should contain port
+            && strpos($x, ":", 6) === false
+            && ($port = $server["SERVER_PORT"])
+            && $port != $xport) {
             $x .= ":" . $port;
         }
         $nav->server = $x;
@@ -307,16 +309,16 @@ class NavigationState {
 
     /** @param bool $downcase_host
      * @return string */
-    function site_absolute($downcase_host = false) {
+    function base_absolute($downcase_host = false) {
         $x = $downcase_host ? strtolower($this->server) : $this->server;
-        return $x . $this->site_path;
+        return $x . $this->base_path;
     }
 
     /** @param bool $downcase_host
      * @return string */
-    function base_absolute($downcase_host = false) {
+    function site_absolute($downcase_host = false) {
         $x = $downcase_host ? strtolower($this->server) : $this->server;
-        return $x . $this->base_path;
+        return $x . $this->site_path;
     }
 
     /** @param ?string $url
@@ -345,13 +347,23 @@ class NavigationState {
         }
     }
 
-    /** @param string $url
-     * @return string */
-    function set_siteurl($url) {
-        if ($url !== "" && $url[strlen($url) - 1] !== "/") {
-            $url .= "/";
+    /** @param string $url */
+    function set_site_path_relative($url) {
+        if ($url === $this->site_path_relative) {
+            return;
+        } else if ($url !== "" && $url !== "../" && !preg_match('/\A(\.\.\/)+\z/', $url)) {
+            $this->base_path_relative = $this->base_path;
+            $this->site_path_relative = $this->site_path;
+            return;
         }
-        return ($this->site_path_relative = $url);
+        if ($this->base_path_relative === $this->site_path_relative) {
+            $this->base_path_relative = $url;
+        } else if (str_starts_with($this->base_path_relative, "../")) {
+            $this->base_path_relative = substr($this->base_path_relative, 0, -strlen($this->site_path_relative)) . $url;
+        } else {
+            $this->base_path_relative = $this->base_path;
+        }
+        $this->site_path_relative = $url;
     }
 
     /** @param string $page

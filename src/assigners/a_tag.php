@@ -1,6 +1,6 @@
 <?php
 // a_tag.php -- HotCRP assignment helper classes
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class Tag_Assignable extends Assignable {
     /** @var string */
@@ -45,71 +45,87 @@ class Tag_Assignable extends Assignable {
             && ($q->_index ?? $this->_index) === $this->_index;
     }
     static function load(AssignmentState $state) {
-        if (!$state->mark_type("tag", ["pid", "ltag"], "Tag_Assigner::make")) {
-            return;
+        if ($state->mark_type("tag", ["pid", "ltag"], "Tag_Assigner::make")) {
+            foreach ($state->prows() as $prow) {
+                self::load_prow($state, $prow);
+            }
         }
-        $result = $state->conf->qe("select paperId, tag, tagIndex from PaperTag where paperId?a", $state->paper_ids());
-        while (($row = $result->fetch_row())) {
-            $state->load(new Tag_Assignable(+$row[0], strtolower($row[1]), $row[1], (float) $row[2]));
+    }
+    static function load_prow(AssignmentState $state, PaperInfo $prow) {
+        foreach (Tagger::split_unpack($prow->all_tags_text()) as $ti) {
+            $state->load(new Tag_Assignable($prow->paperId, strtolower($ti[0]), $ti[0], $ti[1]));
         }
-        Dbl::free($result);
     }
 }
 
-class NextTagAssigner implements AssignmentPreapplyFunction {
-    /** @var string */
-    private $tag;
-    /** @var array<int,?float> */
-    public $pidindex = [];
-    /** @var float */
-    private $first_index;
-    /** @var float */
-    private $next_index;
+class NextTagAssignmentState {
+    /** @var AssignmentState */
+    private $astate;
     /** @var bool */
-    private $isseq;
-    function __construct($state, $tag, $index, $isseq) {
-        $this->tag = $tag;
-        $ltag = strtolower($tag);
-        $res = $state->query(new Tag_Assignable(null, $ltag));
-        foreach ($res as $x) {
-            $this->pidindex[$x->pid] = $x->_index;
-        }
-        asort($this->pidindex);
-        if ($index === null) {
-            $indexes = array_values($this->pidindex);
-            sort($indexes);
-            $index = count($indexes) ? $indexes[count($indexes) - 1] : 0;
-            $index += Tagger::value_increment($isseq);
-        }
-        $this->first_index = $this->next_index = ceil($index);
-        $this->isseq = $isseq;
+    private $all = false;
+    /** @var ?string */
+    private $prev_ltag;
+    /** @var ?int */
+    private $expected_state_version;
+    /** @var ?float */
+    private $prev_value;
+
+    function __construct(AssignmentState $astate) {
+        $this->astate = $astate;
     }
-    function next_index($isseq) {
-        $index = $this->next_index;
-        $this->next_index += Tagger::value_increment($isseq);
-        return (float) $index;
+    /** @param bool $x
+     * @return $this */
+    function set_all($x) {
+        $this->all = $x;
+        return $this;
     }
-    function preapply(AssignmentState $state) {
-        if ($this->next_index == $this->first_index) {
+    private function resolve_all() {
+        if ($this->all) {
             return;
         }
-        $ltag = strtolower($this->tag);
-        foreach ($this->pidindex as $pid => $index) {
-            if ($index >= $this->first_index && $index < $this->next_index) {
-                $x = $state->query_unedited(new Tag_Assignable($pid, $ltag));
-                if (!empty($x)) {
-                    $state->add(new Tag_Assignable($pid, $ltag, $this->tag, $this->next_index($this->isseq), true));
-                }
+        $known = $this->astate->paper_ids();
+        $arg = empty($known) ? [] : ["where" => "Paper.paperId not in (" . join(",", $known) . ")"];
+        $arg["tags"] = true;
+        foreach ($this->astate->user->paper_set($arg) as $prow) {
+            $this->astate->add_prow($prow);
+            Tag_Assignable::load_prow($this->astate, $prow);
+        }
+        $this->all = true;
+    }
+    /** @param string $ltag
+     * @param bool $isseq
+     * @return float */
+    function compute_next(PaperInfo $prow, $ltag, $isseq) {
+        if ($this->astate->state_version() === $this->expected_state_version
+            && $this->prev_ltag === $ltag) {
+            $this->prev_value += Tagger::value_increment($isseq);
+            ++$this->expected_state_version;
+            return $this->prev_value;
+        }
+        $this->resolve_all();
+        $items = $this->astate->query_items(new Tag_Assignable(null, $ltag));
+        $maxvalue = null;
+        foreach ($items as $item) {
+            $value = $item["_index"];
+            if ($item->pid() !== $prow->paperId
+                && ($maxvalue === null || $value > $maxvalue)
+                && ($p = $this->astate->prow($item->pid()))
+                && $this->astate->user->can_view_tag($p, $ltag)) {
+                $maxvalue = floor($value);
             }
         }
+        $this->prev_value = ($maxvalue ?? 0.0) + Tagger::value_increment($isseq);
+        $this->prev_ltag = $ltag;
+        $this->expected_state_version = $this->astate->state_version() + 1;
+        return $this->prev_value;
     }
 }
 
 class Tag_AssignmentParser extends UserlessAssignmentParser {
     const I_SET = 0;
-    const I_NEXT = 1;
-    const I_NEXTSEQ = 2;
-    const I_SOME = 3;
+    const I_SOME = 1;
+    const I_NEXT = 2;
+    const I_NEXTSEQ = 3;
     /** @var ?bool */
     private $remove;
     /** @var 0|1|2|3 */
@@ -126,7 +142,12 @@ class Tag_AssignmentParser extends UserlessAssignmentParser {
         }
     }
     function expand_papers($req, AssignmentState $state) {
-        return $this->itype ? "ALL" : (string) $req["paper"];
+        if ($this->itype >= self::I_NEXT) {
+            $state->callable("NextTagAssignmentState")->set_all(true);
+            return "ALL";
+        } else {
+            return parent::expand_papers($req, $state);
+        }
     }
     function load_state(AssignmentState $state) {
         Tag_Assignable::load($state);
@@ -170,26 +191,18 @@ class Tag_AssignmentParser extends UserlessAssignmentParser {
     private function apply1($tag, PaperInfo $prow, Contact $contact, $req,
                             AssignmentState $state) {
         // parse tag into parts
-        $xvalue = trim((string) $req["tag_value"]);
         if (!preg_match('/\A([-+]?+#?+)(|~~|[^-~+#]*+~)([a-zA-Z@*_:.][-+a-zA-Z0-9!@*_:.\/]*)(\z|#|#?[=!<>]=?|#?≠|#?≤|#?≥)(.*)\z/', $tag, $m)
             || ($m[4] !== "" && $m[4] !== "#")) {
             $state->error("<0>Invalid tag ‘{$tag}’");
             return false;
         }
-
-        // check parts
-        $m[5] = trim($m[5]);
-        if ($xvalue !== "" && $m[5] !== "" && $m[5] !== $xvalue) {
-            $state->error("<0>‘{$tag}’: Value conflicts with ‘tag_value’");
-            return false;
-        } else if (($this->remove || str_starts_with($m[1], "-")) && $m[5] !== "") {
-            $state->warning("<0>‘{$tag}’: Tag values ignored when removing a tag");
-        } else if (($this->remove && str_starts_with($m[1], "+"))
-                   || ($this->remove === false && str_starts_with($m[1], "-"))) {
+        if (($this->remove && str_starts_with($m[1], "+"))
+            || ($this->remove === false && str_starts_with($m[1], "-"))) {
             $state->error("<0>Tag ‘{$tag}’ is incompatible with this action");
             return false;
         }
 
+        // set parts
         $xremove = $this->remove || str_starts_with($m[1], "-");
         $xtag = $m[3];
         if ($m[2] === "~" || strcasecmp($m[2], "me~") === 0) {
@@ -200,8 +213,22 @@ class Tag_AssignmentParser extends UserlessAssignmentParser {
         } else {
             $xuser = $m[2];
         }
-        $xvalue = $xvalue !== "" ? $xvalue : $m[5];
         $xitype = $this->itype;
+
+        // set value part
+        $xvalue = trim((string) $req["tag_value"]);
+        if (($m[5] = trim($m[5])) !== "") {
+            if ($xvalue !== "" && $m[5] !== $xvalue) {
+                $state->error("<0>‘{$tag}’: Value conflicts with ‘tag_value’");
+                return false;
+            }
+            $xvalue = $m[5];
+        }
+        if ($xvalue !== ""
+            && ($this->remove || str_starts_with($m[1], "-") || $xitype >= self::I_NEXT)) {
+            $state->warning("<0>‘{$tag}’: Tag values ignored with this action");
+            $xvalue = "";
+        }
 
         // parse index
         if ($xremove) {
@@ -293,7 +320,7 @@ class Tag_AssignmentParser extends UserlessAssignmentParser {
         $ntag = $xuser . $xtag;
         $ltag = strtolower($ntag);
         if ($xitype === self::I_NEXT || $xitype === self::I_NEXTSEQ) {
-            $nvalue = $this->apply_next_index($prow->paperId, $xitype, $ntag, $nvalue, $state);
+            $nvalue = $state->callable("NextTagAssignmentState")->compute_next($prow, $ltag, $xitype === self::I_NEXTSEQ);
         } else if ($nvalue === null) {
             $items = $state->query_items(new Tag_Assignable($prow->paperId, $ltag),
                                          AssignmentState::INCLUDE_DELETED);
@@ -320,19 +347,6 @@ class Tag_AssignmentParser extends UserlessAssignmentParser {
             $state->add(new Tag_Assignable($prow->paperId, $ltag, $ntag, $nvalue));
         }
         return true;
-    }
-    /** @param int $pid
-     * @param 1|2 $xitype
-     * @param string $tag
-     * @param ?float $nvalue
-     * @return float */
-    private function apply_next_index($pid, $xitype, $tag, $nvalue, AssignmentState $state) {
-        $ltag = strtolower($tag);
-        // NB ignore $index on second & subsequent nexttag assignments
-        $fin = $state->register_preapply_function("seqtag $ltag", new NextTagAssigner($state, $tag, $nvalue, $xitype === self::I_NEXTSEQ));
-        assert($fin instanceof NextTagAssigner);
-        unset($fin->pidindex[$pid]);
-        return $fin->next_index($xitype === self::I_NEXTSEQ);
     }
     /** @param string $xuser
      * @param string $xtag */

@@ -1,6 +1,6 @@
 <?php
 // t_fmt.php -- HotCRP tests
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class Fmt_Tester {
     function test_1() {
@@ -186,5 +186,11 @@ class Fmt_Tester {
         xassert(FmtItem::context_starts_with("a/b", "a"));
         xassert(!FmtItem::context_starts_with("a/b", "ab"));
         xassert(!FmtItem::context_starts_with("a", "a/b"));
+    }
+
+    function test_plural() {
+        $ms = new Fmt;
+        xassert_eqq($ms->_("{:plural Hello}", 0), "Hellos");
+        xassert_eqq($ms->_("{:plural Hello}", 1), "Hello");
     }
 }

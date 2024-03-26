@@ -1,12 +1,14 @@
 <?php
 // pages/p_api.php -- HotCRP JSON API access page
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class API_Page {
+    /** @return JsonResult */
     static function go(Contact $user, Qrequest $qreq) {
+        // initialize user, paper request
         $conf = $user->conf;
         if ($qreq->base !== null) {
-            $conf->set_siteurl($qreq->base);
+            $conf->set_site_path_relative($qreq->navigation(), $qreq->base);
         }
         if (!$user->has_account_here()
             && ($key = $user->capability("@kiosk"))) {
@@ -52,7 +54,7 @@ class API_Page {
             }
         }
 
-        json_exit($jr);
+        return $jr;
     }
 
     /** @param string $fn
@@ -114,6 +116,36 @@ class API_Page {
         return $ml;
     }
 
+    static function go_options(NavigationState $nav) {
+        if ($nav->page === "u"
+            && ($unum = $nav->path_component(0)) !== false
+            && ctype_digit($unum)) {
+            $nav->shift_path_components(2);
+        }
+        $ok = true;
+        if (($m = $_SERVER["HTTP_ACCESS_CONTROL_REQUEST_METHOD"] ?? null)) {
+            if ($nav->page === "api") {
+                $origin = $_SERVER["HTTP_ORIGIN"] ?? "*";
+                header("Access-Control-Allow-Origin: {$origin}");
+                if (($hdrs = $_SERVER["HTTP_ACCESS_CONTROL_REQUEST_HEADERS"] ?? null)) {
+                    header("Access-Control-Allow-Headers: {$hdrs}");
+                }
+                header("Access-Control-Allow-Credentials: true");
+                header("Access-Control-Allow-Methods: OPTIONS, GET, HEAD, POST");
+                header("Access-Control-Max-Age: 86400");
+            } else if (in_array($nav->page, ["cacheable", "scorechart", "images", "scripts", "stylesheets"])) {
+                header("Access-Control-Allow-Origin: *");
+                header("Access-Control-Allow-Methods: OPTIONS, GET, HEAD");
+                header("Access-Control-Max-Age: 86400");
+            } else {
+                $ok = false;
+            }
+        } else {
+            header("Allow: OPTIONS, GET, HEAD, POST"); // XXX other methods?
+        }
+        http_response_code($ok ? 200 : 403);
+        exit;
+    }
 
     /** @param NavigationState $nav
      * @param Conf $conf */
@@ -152,7 +184,13 @@ class API_Page {
             initialize_request(["no_main_user" => true]);
             MeetingTracker::trackerstatus_api(Contact::make($conf));
         } else {
-            self::go(...initialize_request(["bearer" => true]));
+            list($user, $qreq) = initialize_request(["bearer" => true]);
+            try {
+                $jr = self::go($user, $qreq);
+            } catch (JsonCompletion $jc) {
+                $jr = $jc->result;
+            }
+            $jr->emit($qreq);
         }
     }
 }

@@ -1,6 +1,6 @@
 <?php
 // test/setup.php -- HotCRP helper file to initialize tests
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 require_once(dirname(__DIR__) . "/src/siteloader.php");
 define("HOTCRP_OPTIONS", SiteLoader::find("test/options.php"));
@@ -155,7 +155,8 @@ class MailChecker {
                     "Mail mismatch\n",
                     "... line {$badline} differs near {$havel[$badline-1]}\n",
                     "... expected {$wantl[$badline-1]}\n",
-                    "... ", var_export($wtext, true), " !== ", var_export($have, true), "\n"
+                    "... ", str_replace("\n", "\n    ", rtrim($wtext)),
+                    "\n!== ", str_replace("\n", "\n    ", rtrim($wtext)), "\n"
                 ];
                 if (is_object($want) && isset($want->landmark)) {
                     $ml[] =  "... expected mail at {$want->landmark}\n";
@@ -170,7 +171,7 @@ class MailChecker {
         }
 
         foreach ($haves as $have) {
-            Xassert::fail_with("Unexpected mail: " . var_export($have, true));
+            Xassert::fail_with("Unexpected mail: " . $have);
         }
         self::$preps = [];
     }
@@ -261,6 +262,8 @@ class Xassert {
     static public $nerror = 0;
     /** @var int */
     static public $disabled = 0;
+    /** @var ?string */
+    static public $context = null;
     /** @var bool */
     static public $stop = false;
     /** @var ?TestRunner */
@@ -293,6 +296,18 @@ class Xassert {
         }
     }
 
+    static function print_landmark() {
+        list($location, $rest) = self::landmark(true);
+        $x = $location . $rest;
+        if ($x !== "") {
+            self::will_print();
+            if (!str_ends_with($x, "\n")) {
+                $x .= "\n";
+            }
+            fwrite(STDERR, $x);
+        }
+    }
+
     /** @param string ...$sl */
     static function fail_with(...$sl) {
         if (self::$test_runner) {
@@ -301,7 +316,8 @@ class Xassert {
         if (($sl[0] ?? null) === "!") {
             $x = join("", array_slice($sl, 1));
         } else {
-            $x = assert_location() . ": " . join("", $sl);
+            list($location, $rest) = self::landmark(true);
+            $x = $location . join("", $sl) . $rest;
         }
         if ($x !== "" && !str_ends_with($x, "\n")) {
             $x .= "\n";
@@ -317,8 +333,8 @@ class Xassert {
      * @param mixed $actual
      * @return string */
     static function match_failure_message($xprefix, $eprefix, $expected, $aprefix, $actual) {
-        $estr = var_export($expected, true);
-        $astr = var_export($actual, true);
+        $estr = xassert_var_export($expected);
+        $astr = xassert_var_export($actual);
         if (strlen($estr) < 20 && strlen($astr) < 20) {
             return "{$xprefix}{$eprefix}{$estr}{$aprefix}{$astr}\n";
         } else {
@@ -340,8 +356,57 @@ class Xassert {
      * @param mixed $actual
      * @return void */
     static function match_fail($location, $eprefix, $expected, $aprefix, $actual) {
-        $location = ($location ?? assert_location()) . ": ";
-        self::fail_with("!", self::match_failure_message($location, $eprefix, $expected, $aprefix, $actual));
+        if ($location === null) {
+            list($location, $rest) = self::landmark(true);
+        } else {
+            $rest = "";
+        }
+        self::fail_with("!", self::match_failure_message($location, $eprefix, $expected, $aprefix, $actual), $rest);
+    }
+
+    /** @param bool $want_color
+     * @return array{string,string} */
+    static function landmark($want_color = false) {
+        $colorize = $want_color && self::$test_runner && self::$test_runner->color;
+        $trace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS);
+        $first = "";
+        $rest = "";
+        for ($pos = 2; isset($trace[$pos]); ++$pos) {
+            $tr = $trace[$pos];
+            $fname = (isset($tr["class"]) ? $tr["class"] . "::" : "") . $tr["function"];
+            if (preg_match('/\A[Xx]?assert|\AMailChecker::check|::x?assert/s', $fname)) {
+                continue;
+            }
+            $loc = $fname;
+            if (($file = $trace[$pos - 1]["file"] ?? null) !== null) {
+                if (str_starts_with($file, SiteLoader::$root)) {
+                    $file = substr($file, strlen(SiteLoader::$root) + 1);
+                }
+                $loc = $file . ":" . $trace[$pos - 1]["line"] . ":" . $fname;
+            } else {
+                $loc = $fname;
+            }
+            if ($first === "") {
+                if (self::$context !== null) {
+                    $loc .= " <" . self::$context . ">";
+                }
+                if ($colorize) {
+                    $first = "\x1b[1m{$loc}:\x1b[m ";
+                } else if ($want_color) {
+                    $first = "{$loc}: ";
+                } else {
+                    $first = $loc;
+                }
+            } else if ($colorize) {
+                $rest .= "  \x1b[90;1m{$loc}:\x1b[22m called from here\x1b[m\n";
+            } else {
+                $rest .= "  {$loc}: called from here\n";
+            }
+            if (preg_match('/::test[_A-Z]/', $fname)) {
+                return [$first, $rest];
+            }
+        }
+        return [$first, ""];
     }
 }
 
@@ -362,8 +427,25 @@ function xassert_error_handler($errno, $emsg, $file, $line) {
 
 set_error_handler("xassert_error_handler");
 
-function assert_location($position = 1) {
-    return caller_landmark($position, '/(?:^[Xx]?assert|^MailChecker::check|::x?assert)/');
+/** @param mixed $x
+ * @return string */
+function xassert_var_export($x) {
+    if (is_scalar($x)) {
+        return json_encode($x);
+    } else if (is_object($x)) {
+        $cn = get_class($x);
+        $ch = spl_object_id($x);
+        $xp = "[{$cn}#{$ch}]";
+        if (($s = json_encode($x))) {
+            $s = strlen($s) > 120 ? substr($s, 0, 120) . "...}" : $s;
+            $xp .= $s;
+        }
+        return $xp;
+    } else if (($s = json_encode($x))) {
+        return strlen($s) > 121 ? substr($s, 0, 120) . "..." : $s;
+    } else {
+        return "[" . gettype($s) . "]";
+    }
 }
 
 /** @param mixed $x
@@ -415,7 +497,7 @@ function xassert_neqq($actual, $nonexpected) {
     if ($ok) {
         Xassert::succeed();
     } else {
-        Xassert::fail_with("Expected !== " . var_export($actual, true));
+        Xassert::fail_with("Expected !== " . xassert_var_export($actual));
     }
     return $ok;
 }
@@ -541,6 +623,19 @@ function xassert_gt($actual, $expected_bound) {
 /** @param string $haystack
  * @param string $needle
  * @return bool */
+function xassert_str_starts_with($haystack, $needle) {
+    $ok = str_starts_with($haystack, $needle);
+    if ($ok) {
+        Xassert::succeed();
+    } else {
+        Xassert::fail_with("Expected `{$haystack}` to start with `{$needle}`");
+    }
+    return $ok;
+}
+
+/** @param string $haystack
+ * @param string $needle
+ * @return bool */
 function xassert_str_contains($haystack, $needle) {
     $ok = strpos($haystack, $needle) !== false;
     if ($ok) {
@@ -656,7 +751,8 @@ function search_json($user, $query, $cols = "id", $allow_warnings = false) {
     $pl->parse_view($cols, PaperList::VIEWORIGIN_MAX);
     if ($pl->search->has_problem() && !$allow_warnings) {
         Xassert::will_print();
-        fwrite(STDERR, assert_location() . ": Search reports warnings: " . $pl->search->full_feedback_text());
+        list($first, $rest) = Xassert::landmark(true);
+        fwrite(STDERR, "{$first}Search reports warnings: " . $pl->search->full_feedback_text() . $rest);
     }
     return $pl->text_json();
 }
@@ -681,7 +777,7 @@ function search_text_col($user, $query, $col = "id") {
  * @param string|array $query
  * @param list<int|string>|string|int $expected
  * @return bool */
-function assert_search_papers($user, $query, $expected) {
+function xassert_search($user, $query, $expected) {
     return xassert_int_list_eqq(array_keys(search_json($user, $query)), $expected);
 }
 
@@ -689,7 +785,7 @@ function assert_search_papers($user, $query, $expected) {
  * @param string|array $query
  * @param list<int|string>|string|int $expected
  * @return bool */
-function assert_search_all_papers($user, $query, $expected) {
+function xassert_search_all($user, $query, $expected) {
     $q = is_string($query) ? ["q" => $query] : $query;
     $q["t"] = $q["t"] ?? "all";
     return xassert_int_list_eqq(array_keys(search_json($user, $q)), $expected);
@@ -699,12 +795,40 @@ function assert_search_all_papers($user, $query, $expected) {
  * @param string|array $query
  * @param list<int|string>|string|int $expected
  * @return bool */
-function assert_search_papers_ignore_warnings($user, $query, $expected) {
+function xassert_search_ignore_warnings($user, $query, $expected) {
     return xassert_int_list_eqq(array_keys(search_json($user, $query, "id", true)), $expected);
 }
 
 /** @param Contact $user
- * @return bool */
+ * @param string|array $query
+ * @param list<int|string>|string|int $expected
+ * @return bool
+ * @deprecated */
+function assert_search_papers($user, $query, $expected) {
+    return xassert_search($user, $query, $expected);
+}
+
+/** @param Contact $user
+ * @param string|array $query
+ * @param list<int|string>|string|int $expected
+ * @return bool
+ * @deprecated */
+function assert_search_all_papers($user, $query, $expected) {
+    return xassert_search_all($user, $query, $expected);
+}
+
+/** @param Contact $user
+ * @param string|array $query
+ * @param list<int|string>|string|int $expected
+ * @return bool
+ * @deprecated */
+function assert_search_papers_ignore_warnings($user, $query, $expected) {
+    return xassert_search_ignore_warnings($user, $query, $expected);
+}
+
+/** @param Contact $user
+ * @return bool
+ * @deprecated Use `xassert_search` instead. */
 function assert_search_ids($user, $query, $expected) {
     return xassert_int_list_eqq((new PaperSearch($user, $query))->paper_ids(), $expected);
 }
@@ -954,8 +1078,9 @@ class TestRunner {
     private $reset;
     /** @var bool */
     private $need_reset;
-    /** @var ?bool */
-    private $color;
+    /** @var ?bool
+     * @readonly */
+    public $color;
     /** @var int */
     private $width = 47;
     /** @var ?string */
@@ -1204,7 +1329,10 @@ class TestRunner {
                 && ($m->name[4] === "_" || ctype_upper($m->name[4]))
                 && ($methodmatch === "" || fnmatch($methodmatch, $m->name))) {
                 if ($this->verbose) {
-                    $mpfx = rtrim(str_pad("{$ro->getName()}::{$m->name} ", $this->width, "."));
+                    $mpfx = str_pad("{$ro->getName()}::{$m->name} ", $this->width, ".");
+                    if (strlen($mpfx) > $this->width) {
+                        $mpfx = rtrim($mpfx);
+                    }
                     if ($this->color) {
                         fwrite(STDERR, "{$mpfx} \x1b[01;36mRUN\x1b[m");
                     } else {

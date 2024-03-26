@@ -1,6 +1,6 @@
 <?php
 // pages/p_profile.php -- HotCRP profile management page
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class Profile_Page {
     /** @var Conf
@@ -228,7 +228,7 @@ class Profile_Page {
 
 
     /** @return \Generator<MessageItem> */
-    private function decorated_message_list(MessageSet $msx, UserStatus $us = null) {
+    private function decorated_message_list(MessageSet $msx, ?UserStatus $us = null) {
         $ms = new MessageSet(MessageSet::IGNORE_DUPS_FIELD);
         foreach ($msx->message_list() as $mi) {
             if ($us
