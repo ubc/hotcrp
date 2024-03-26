@@ -89,9 +89,9 @@ form also can include:</p>
             echo "</ol>\n\n";
 
         } else if ($gj->itemid === 1) {
-            echo "<li><p>Consider checking ", $hth->search_link("the apps", ["q" => "", "t" => "all"]),
+            echo "<li><p>Consider checking ", $hth->search_link("the applications", ["q" => "", "t" => "all"]),
   " for anomalies.  Withdraw and/or delete duplicates or update details on the ",
-  $hth->hotlink("paper pages", "paper"), " (via “Edit app”).
+  $hth->hotlink("paper pages", "paper"), " (via “Edit application”).
   Also consider contacting the authors of ",
   $hth->search_link("incomplete submissions", ["q" => "status:unsub", "t" => "all"]),
   ", especially if a PDF document was uploaded; sometimes a
@@ -111,7 +111,7 @@ form also can include:</p>
         } else if ($gj->itemid === 4) {
             echo "<li><p><strong>", $hth->setting_group_link("Set review policies and deadlines", "reviews"),
   "</strong>, including reviewing deadlines,
-  review anonymity, and whether PC members may review any app
+  review anonymity, and whether PC members may review any application
   (usually “yes” is the right answer).</p></li>\n";
 
         } else if ($gj->itemid === 5) {
@@ -128,11 +128,11 @@ form also can include:</p>
   in the range −20 to 20; the higher the number, the more desired the review assignment.
   Users can either set their preferences ",
   $hth->hotlink("all at once", "reviewprefs"), ", or (often more
-  convenient) page through the ", $hth->search_link("list of submitted apps", ""),
+  convenient) page through the ", $hth->search_link("list of submitted applications", ""),
   " and set their preferences on the ", $hth->hotlink("paper pages", "paper"), ".</p>
 
   <p>If desired, review preferences can be collected before the submission
-  deadline.  Select ", $hth->setting_link("“PC can see <em>all registered apps</em> until submission deadline”", "draft_submission_early_visibility"),
+  deadline.  Select ", $hth->setting_link("“PC can see <em>all registered applications</em> until submission deadline”", "draft_submission_early_visibility"),
   ", which allows PC members to see abstracts for registered applications that haven’t yet
   been submitted.</p></li>\n";
 
@@ -143,7 +143,7 @@ form also can include:</p>
   such conflicts.</p></li>\n";
 
         } else if ($gj->itemid === 8) {
-            echo "<li><p><strong>", $hth->hotlink("Assign reviews.", "manualassign"), "</strong> You can make assignments ", $hth->hotlink("by app", "assign"), ", ",
+            echo "<li><p><strong>", $hth->hotlink("Assign reviews.", "manualassign"), "</strong> You can make assignments ", $hth->hotlink("by applications", "assign"), ", ",
   $hth->hotlink("by PC member", "manualassign"), ", ",
   $hth->hotlink("by uploading an assignment file", "bulkassign"), ", or, even easier, ",
   $hth->hotlink("automatically", "autoassign"), ".  PC
@@ -241,7 +241,7 @@ administrator’s identity.</p>\n\n";
         } else if ($gj->itemid === 5) {
             echo "<li><p><strong>", $hth->hotlink("Assign discussion leads (optional).", "autoassign"), "</strong> Discussion leads are expected to be able to
   summarize the application and the reviews.  You can assign leads either ",
-                $hth->hotlink("app by app", "assign"), " or ",
+                $hth->hotlink("application by application", "assign"), " or ",
                 $hth->hotlink("automatically", "autoassign"), ".</p></li>\n";
 
         } else if ($gj->itemid === 6) {
@@ -278,7 +278,7 @@ administrator’s identity.</p>\n\n";
   " . Ht::img("extracker.png", "[Meeting tracker]", ["style" => "max-width:714px"]) . "
   <p>Manage multiple trackers and limit PC visibility
   by shift-clicking “&#9759;” or clicking it again. You can also view the discussion
-  status on the ", $hth->hotlink("discussion status app", "buzzer"), ".</p></li>\n";
+  status on the ", $hth->hotlink("discussion status application", "buzzer"), ".</p></li>\n";
 
         } else if ($gj->itemid === 2) {
             echo "<li><p>Scribes can capture discussions as comments for the authors’
@@ -293,7 +293,7 @@ administrator’s identity.</p>\n\n";
         } else if ($gj->itemid === 4) {
             echo "<li><p><strong>Shepherding (optional).</strong> If your conference uses
   shepherding for accepted applications, you can assign shepherds either ",
-  $hth->hotlink("app by app", "paper"), " or ", $hth->hotlink("automatically", "autoassign", "t=accepted"), ".</p></li>\n";
+  $hth->hotlink("application by application", "paper"), " or ", $hth->hotlink("automatically", "autoassign", "t=accepted"), ".</p></li>\n";
         }
     }
 

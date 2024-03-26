@@ -1643,7 +1643,8 @@ class UserStatus extends MessageSet {
             return;
         }
         $us->cs()->add_section_class("w-text fx1")->print_start_section("Topic interests");
-        echo '<p>Please indicate your interest in reviewing applications on these program topics. We use this information to help match papers to reviewers.</p>',
+        echo '<p>Please indicate your interest in reviewing applications on these program
+topics. We use this information to help match applications to reviewers.</p>',
             Ht::hidden("has_ti", 1),
             $us->feedback_html_at("ti"),
             '  <table class="table-striped"><thead>

@@ -31,7 +31,7 @@ class AdminHome_Page {
         if (($row = $result->fetch_row())
             && $row[1] < $max_file_size
             && !$conf->opt("dbNoPapers")) {
-            $ml[] = new MessageItem(null, "<5>MySQL’s <code>max_allowed_packet</code> setting, which is " . htmlspecialchars($row[1]) . "&nbsp;bytes, is less than the PHP upload file limit, which is {$max_file_size}&nbsp;bytes.  You should update <code>max_allowed_packet</code> in the system-wide <code>my.cnf</code> file or the system may not be able to handle large papers", MessageSet::URGENT_NOTE);
+            $ml[] = new MessageItem(null, "<5>MySQL’s <code>max_allowed_packet</code> setting, which is " . htmlspecialchars($row[1]) . "&nbsp;bytes, is less than the PHP upload file limit, which is {$max_file_size}&nbsp;bytes.  You should update <code>max_allowed_packet</code> in the system-wide <code>my.cnf</code> file or the system may not be able to handle large applications", MessageSet::URGENT_NOTE);
         }
         if ($max_file_size < ini_get_bytes(null, "10M")
             && $max_file_size < $conf->upload_max_filesize()) {
