@@ -12,7 +12,7 @@ runcheck () {
     if [ "$a" = 0 ]; then a=$z; fi
 }
 
-#runcheck test/test01.php "$@"
+runcheck test/test01.php "$@"
 #runcheck test/test02.php "$@"
 #runcheck test/test03.php "$@"
 #runcheck test/test04.php "$@"
