@@ -1925,8 +1925,8 @@ X-Landmark: test/t_paperstatus.php:1114
 
 Dear authors,
 
-The Test Program I (Testconf I) program committee is sorry to inform
-you that your submission #14 was rejected, and will not appear in the
+The Test Program I (Testconf I) program committee is sorry to inform you
+that your submission #14 was rejected, and will not appear in the
 program.
 
 * Title: Network Performance Effects of HTTP/1.1, CSS1, and PNG
@@ -1976,8 +1976,8 @@ X-Landmark: test/t_paperstatus.php:821
 
 Dear authors,
 
-The Test Program I (Testconf I) program committee is sorry to inform
-you that your submission #14 was rejected, and will not appear in the
+The Test Program I (Testconf I) program committee is sorry to inform you
+that your submission #14 was rejected, and will not appear in the
 program.
 
 * Title: Network Performance Effects of HTTP/1.1, CSS1, and PNG
