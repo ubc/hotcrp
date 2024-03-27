@@ -1719,8 +1719,8 @@ X-Landmark: test/test06.php:747
 Dear Jo March,
 
 On behalf of the Test Program I (Testconf I) adjudication committee,
-Lixia Zhang <lixia@cs.ucla.edu> has asked you to review Test Program
-I (Testconf I) submission #17.
+Lixia Zhang <lixia@cs.ucla.edu> has asked you to review Test Program I
+(Testconf I) submission #17.
 
 * Title: Network Text Editor (NTE): A Scalable Shared Text Editor for
   the MBone
