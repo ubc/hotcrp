@@ -70,7 +70,6 @@ class Job_Capability {
     static function run_live(TokenInfo $tok, ?Qrequest $qreq = null, $redirect_uri = null) {
         assert(self::validate($tok, null));
         $batch_class = $tok->input("batch_class");
-        $argv = $tok->input("argv");
 
         $status = "done";
         $detacher = function () use (&$status, $qreq, $redirect_uri) {
@@ -89,12 +88,65 @@ class Job_Capability {
         putenv("HOTCRP_JOB={$tok->salt}");
 
         try {
-            $x = call_user_func("{$batch_class}_Batch::make_args", $tok->input("argv"), $detacher);
+            $argv = [$batch_class];
+            if (($confid = $tok->conf->opt("confid"))) {
+                // The `-n` option is not normally needed: the batch class
+                // calls initialize_conf, which does nothing as Conf::$main
+                // is already initialized. But we should include it anyway
+                // for consistency.
+                $argv[] = "-n{$confid}";
+            }
+            array_push($argv, ...$tok->input("argv"));
+            $x = call_user_func("{$batch_class}_Batch::make_args", $argv, $detacher);
             $x->run();
         } catch (CommandLineException $ex) {
         }
 
         putenv("HOTCRP_JOB=");
         return $status;
+    }
+
+    /** @return int */
+    static function run_background(TokenInfo $tok) {
+        assert(self::validate($tok, null));
+        $batch_class = $tok->input("batch_class");
+        $f = strtolower($batch_class) . "_batch.php";
+        $paths = SiteLoader::expand_includes(SiteLoader::$root, $f, ["autoload" => true]);
+        if (count($paths) !== 1
+            || ($s = file_get_contents($paths[0], false, null, 0, 1024)) === false
+            || !preg_match('/\A[^\n]*\/\*\{hotcrp\s*([^\n]*?)\}\*\//', $s, $m)
+            || !preg_match("/(?:\\A|\\s){$batch_class}_Batch(?:\\s|\\z)/", $m[1])) {
+            return -1;
+        }
+
+        $cmd = [];
+        $cmd[] = self::shell_quote_light($tok->conf->opt("phpCommand") ?? "php");
+        $cmd[] = self::shell_quote_light($paths[0]);
+        if (($confid = $tok->conf->opt("confid"))) {
+            $cmd[] = self::shell_quote_light("-n{$confid}");
+        }
+        foreach ($tok->input("argv") as $w) {
+            $cmd[] = self::shell_quote_light($w);
+        }
+
+        $env = getenv();
+        $env["HOTCRP_JOB"] = $tok->salt;
+        $env["HOTCRP_EXEC_MODE"] = "background";
+
+        $redirect = PHP_VERSION_ID >= 70400 ? ["redirect", 1] : ["file", "/dev/null", "a"];
+        $p = proc_open(join(" ", $cmd),
+            [["file", "/dev/null", "r"], ["file", "/dev/null", "a"], $redirect],
+            $pipes,
+            SiteLoader::$root,
+            $env);
+        return proc_close($p);
+    }
+
+    static function shell_quote_light($word) {
+        if (preg_match('/\A[-_.,:+\/a-zA-Z0-9][-_.,:=+\/a-zA-Z0-9~]*\z/', $word)) {
+            return $word;
+        } else {
+            return escapeshellarg($word);
+        }
     }
 }

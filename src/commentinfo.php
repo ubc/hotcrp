@@ -209,7 +209,7 @@ class CommentInfo {
                         $j["done"] = $rrd->done;
                     }
                 }
-                $t[] = "hotcrp.set_response_round(" . json_encode($rrd->name) . "," . json_encode($j) . ")";
+                $t[] = "hotcrp.set_response_round(" . json_encode_browser($rrd->name) . "," . json_encode_browser($j) . ")";
             }
             Icons::stash_licon("ui_tag");
             Icons::stash_licon("ui_attachment");
@@ -290,6 +290,38 @@ class CommentInfo {
         }
     }
 
+    /** @return string */
+    function raw_contents() {
+        return $this->commentOverflow ?? $this->comment ?? "";
+    }
+
+    /** @param ?Contact $viewer
+     * @param bool $censor_mentions
+     * @param ?int $censor_mentions_after
+     * @return string */
+    function contents($viewer = null, $censor_mentions = false, $censor_mentions_after = null) {
+        $t = $this->raw_contents();
+        if ($t === ""
+            || !$censor_mentions
+            || !($mx = $this->data("mentions"))
+            || !is_array($mx)) {
+            return $t;
+        }
+        $delta = 0;
+        foreach ($mx as $m) {
+            if (is_array($m)
+                && count($m) >= 4
+                && $m[3]
+                && (!$viewer || $m[0] !== $viewer->contactId)
+                && ($censor_mentions_after === null || $m[1] + $delta < $censor_mentions_after)) {
+                $r = $this->prow->unparse_pseudonym($viewer, $m[0]) ?? "Anonymous";
+                $t = substr_replace($t, "@{$r}", $m[1] + $delta, $m[2] - $m[1]);
+                $delta += strlen($r) - ($m[2] - $m[1] - 1);
+            }
+        }
+        return $t;
+    }
+
     /** @return object */
     private function make_data() {
         if ($this->_jdata === null) {
@@ -316,7 +348,7 @@ class CommentInfo {
         } else {
             $this->_jdata->$key = $value;
         }
-        $s = json_encode($this->_jdata);
+        $s = json_encode_db($this->_jdata);
         $this->commentData = $s === "{}" ? null : $s;
     }
 
@@ -396,13 +428,15 @@ class CommentInfo {
     private function unparse_commenter_pseudonym(Contact $viewer) {
         if (($this->commentType & self::CT_BYAUTHOR_MASK) !== 0) {
             return "Author";
-        } else if (($this->commentType & (self::CTVIS_MASK | self::CT_BYSHEPHERD)) === (self::CTVIS_AUTHOR | self::CT_BYSHEPHERD)) {
+        } else if (($this->commentType & (self::CTVIS_MASK | self::CT_BYSHEPHERD)) === (self::CTVIS_AUTHOR | self::CT_BYSHEPHERD)
+                   && $this->contactId === $this->prow->shepherdContactId) {
             return "Shepherd";
         } else if (($rrow = $this->prow->review_by_user($this->contactId))
                    && $rrow->reviewOrdinal
                    && $viewer->can_view_review_assignment($this->prow, $rrow)) {
             return "Reviewer " . unparse_latin_ordinal($rrow->reviewOrdinal);
-        } else if (($this->commentType & self::CT_BYSHEPHERD) !== 0) {
+        } else if (($this->commentType & self::CT_BYSHEPHERD) !== 0
+                   && $this->contactId === $this->prow->shepherdContactId) {
             return "Shepherd";
         } else if (($this->commentType & self::CT_BYADMINISTRATOR) !== 0) {
             return "Administrator";
@@ -522,33 +556,6 @@ class CommentInfo {
         return $this->attachments()->document_ids();
     }
 
-    /** @param ?Contact $viewer
-     * @param bool $censor_mentions
-     * @param ?int $censor_mentions_after
-     * @return string */
-    function contents($viewer = null, $censor_mentions = false, $censor_mentions_after = null) {
-        $t = $this->commentOverflow ?? $this->comment ?? "";
-        if ($t === ""
-            || !$censor_mentions
-            || !($mx = $this->data("mentions"))
-            || !is_array($mx)) {
-            return $t;
-        }
-        $delta = 0;
-        foreach ($mx as $m) {
-            if (is_array($m)
-                && count($m) >= 4
-                && $m[3]
-                && (!$viewer || $m[0] !== $viewer->contactId)
-                && ($censor_mentions_after === null || $m[1] + $delta < $censor_mentions_after)) {
-                $r = $this->prow->unparse_pseudonym($viewer, $m[0]) ?? "Anonymous";
-                $t = substr_replace($t, "@{$r}", $m[1] + $delta, $m[2] - $m[1]);
-                $delta += strlen($r) - ($m[2] - $m[1] - 1);
-            }
-        }
-        return $t;
-    }
-
     /** @param bool $editable
      * @return list<object> */
     function attachments_json($editable = false) {
@@ -602,7 +609,7 @@ class CommentInfo {
         if (($this->commentType & self::CT_DRAFT) !== 0) {
             $cj->draft = true;
             if (!$this->prow->has_author($viewer)) {
-                $cj->folded = true;
+                $cj->collapsed = $cj->folded /* XXX */ = true;
             }
         }
         if (($this->commentType & self::CT_RESPONSE) !== 0) {
@@ -689,7 +696,7 @@ class CommentInfo {
             }
         } else {
             $cj->text = false;
-            $cj->word_count = count_words($this->commentOverflow ?? $this->comment);
+            $cj->word_count = count_words($this->raw_contents());
         }
 
         return $cj;
@@ -866,10 +873,13 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
         // notifications
         $displayed = ($ctype & self::CT_DRAFT) === 0;
 
-        // text
+        // text, mentions
         $text = $req["text"] ?? null;
+        $desired_mentions = [];
         if ($text !== false) {
             $text = (string) $text;
+            $desired_mentions = $this->analyze_mentions($user, $text, $ctype);
+            $this->set_data("mentions", empty($desired_mentions) ? null : $desired_mentions);
         }
 
         // query
@@ -977,7 +987,7 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
             }
             $ch = [];
             if ($this->commentId
-                && $text !== ($this->commentOverflow ?? $this->comment)) {
+                && $text !== $this->raw_contents()) {
                 $ch[] = "text";
             }
             if ($this->commentId
@@ -1051,8 +1061,8 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
         if ($displayed
             && $this->commentId
             && ($this->commentType & self::CTVIS_MASK) > self::CTVIS_ADMINONLY
-            && strpos($text, "@") !== false) {
-            $this->analyze_mentions($user);
+            && !empty($desired_mentions)) {
+            $this->inform_mentions($desired_mentions);
         }
 
         if ($this->timeNotified === $this->timeModified) {
@@ -1076,25 +1086,28 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
         return $n;
     }
 
-    /** @param Contact $user */
-    private function analyze_mentions($user) {
-        // enumerate desired mentions and save them
-        $desired_mentions = [];
-        $text = $this->commentOverflow ?? $this->comment;
-        foreach (MentionParser::parse($text, ...Completion_API::mention_lists($user, $this->prow, $this->commentType & self::CTVIS_MASK, Completion_API::MENTION_PARSE)) as $mpx) {
+    /** @param Contact $user
+     * @param string $text
+     * @param int $ctype
+     * @return list<array{int,int,int,bool}> */
+    private function analyze_mentions($user, $text, $ctype) {
+        if (strpos($text, "@") === false) {
+            return [];
+        }
+        $dm = [];
+        foreach (MentionParser::parse($text, ...Completion_API::mention_lists($user, $this->prow, $ctype & self::CTVIS_MASK, Completion_API::MENTION_PARSE)) as $mpx) {
             $named = $mpx[0] instanceof Contact || $mpx[0]->status !== Author::STATUS_ANONYMOUS_REVIEWER;
-            $desired_mentions[] = [$mpx[0]->contactId, $mpx[1], $mpx[2], $named];
-            $this->conf->prefetch_user_by_id($mpx[0]->contactId);
+            $dm[] = [$mpx[0]->contactId, $mpx[1], $mpx[2], $named];
         }
+        return $dm;
+    }
 
-        $old_data = $this->commentData;
-        $this->set_data("mentions", empty($desired_mentions) ? null : $desired_mentions);
-        if ($this->commentData !== $old_data) {
-            $this->conf->qe("update PaperComment set commentData=? where paperId=? and commentId=?", $this->commentData, $this->paperId, $this->commentId);
+    /** @param list<array{int,int,int,bool}> $mentions */
+    private function inform_mentions($mentions) {
+        foreach ($mentions as $mxm) {
+            $this->conf->prefetch_user_by_id($mxm[0]);
         }
-
-        // go over mentions, send email
-        foreach ($desired_mentions as $mxm) {
+        foreach ($mentions as $mxm) {
             $mentionee = $this->conf->user_by_id($mxm[0], USER_SLICE);
             if (!$mentionee) {
                 continue;
@@ -1110,7 +1123,8 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
                 "comment_row" => $this
             ]);
             if (!$mxm[3]) {
-                $notification->user_html = htmlspecialchars(substr($text, $mxm[1] + 1, $mxm[2] - $mxm[1] - 1));
+                $n = substr($this->raw_contents(), $mxm[1] + 1, $mxm[2] - $mxm[1] - 1);
+                $notification->user_html = htmlspecialchars($n);
             }
         }
     }
