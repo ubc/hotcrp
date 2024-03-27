@@ -19,8 +19,8 @@ runcheck test/test04.php "$@"
 runcheck test/test05.php "$@"
 runcheck test/test06.php "$@"
 runcheck test/test07.php "$@"
-#if $all; then
-#    runcheck test/test08.php "$@"
-#fi
+if $all; then
+    runcheck test/test08.php "$@"
+fi
 
 exit $a
