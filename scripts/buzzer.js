@@ -242,7 +242,7 @@ function do_kiosk() {
         .append($e("p", null, "Kiosk mode is a discussion status page with no other site privileges. It’s safe to leave a browser in kiosk mode open in the hallway."),
             $e("p", null, $e("strong", null, "Kiosk mode will sign your browser out of the site."), " Do not use kiosk mode on your main browser."),
             $e("p", null, "These URLs access kiosk mode directly:"),
-            $e("dl", null, $e("dt", null, "With papers"), $e("dd", null, info.kiosk_urls[1]),
+            $e("dl", null, $e("dt", null, "With applications"), $e("dd", null, info.kiosk_urls[1]),
                 $e("dt", null, "Conflicts only"), $e("dd", null, info.kiosk_urls[0])));
     if (show_papers)
         $pu.append(hotcrp.hidden_input("buzzer_showpapers", 1));

@@ -47,7 +47,7 @@
         "name": "review_ensure",
         "function": "+Review_Autoassigner",
         "parameters": [
-            "count {n} Number of reviews to ensure per paper",
+            "count {n} Number of reviews to ensure per application",
             "$__review_parameters"
         ]
     },
@@ -55,7 +55,7 @@
         "name": "review_adjust",
         "function": "+Review_Autoassigner",
         "parameters": [
-            "count {n} Number of reviews to ensure per paper",
+            "count {n} Number of reviews to ensure per application",
             "$__review_parameters"
         ]
     },

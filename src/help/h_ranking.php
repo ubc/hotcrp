@@ -4,24 +4,24 @@
 
 class Ranking_HelpTopic {
     static function print(HelpRenderer $hth) {
-        echo "<p>Paper ranking is a way to extract the PC’s preference order for
-submitted papers.  Each PC member ranks the submitted papers, and a voting
+        echo "<p>Application ranking is a way to extract the PC’s preference order for
+submitted applications.  Each PC member ranks the submitted applications, and a voting
 algorithm, <a href=\"http://en.wikipedia.org/wiki/Schulze_method\">the Schulze
 method</a> by default, combines these rankings into a global preference order.</p>
 
 <p>HotCRP supports ranking through ", $hth->help_link("tags", "tags"), ". The chair chooses
 a tag for ranking—“rank” is a good default—and enters it on ",
 $hth->setting_link("the settings page", "tag_rank"), ".
-PC members then rank papers using their private versions of this tag,
+PC members then rank applications using their private versions of this tag,
 tagging their first preference with “~rank#1”,
 their second preference with “~rank#2”,
 and so forth.  To combine PC rankings into a global preference order, the PC
-chair selects all papers on ", $hth->search_link("the search page", ""),
+chair selects all applications on ", $hth->search_link("the search page", ""),
 " and chooses Tags &gt; Calculate&nbsp;rank, entering
 “rank” for the tag.  At that point, the global rank can be viewed
 by ", $hth->search_link("searching for “order:rank”", "order:rank"), ".</p>
 
-<p>PC members can enter rankings by reordering rows in a paper list.
+<p>PC members can enter rankings by reordering rows in a application list.
 For example, for rank tag “rank”, PC members should ",
 $hth->search_link("search for “editsort:#~rank”", "editsort:#~rank"), ".
 Ranks can be entered directly in the text fields, or the rows can be dragged
@@ -36,12 +36,12 @@ file:</p>
 # Edit the rank order by rearranging this file's lines.
 # The first line has the highest rank.
 
-# Lines that start with \"#\" are ignored.  Unranked papers appear at the end
+# Lines that start with \"#\" are ignored.  Unranked applications appear at the end
 # in lines starting with \"X\", sorted by overall merit.  Create a rank by
 # removing the \"X\"s and rearranging the lines.  A line that starts with \"=\"
-# marks a paper with the same rank as the preceding paper.  A line that starts
+# marks a application with the same rank as the preceding application.  A line that starts
 # with \">>\", \">>>\", and so forth indicates a rank gap between the preceding
-# paper and the current paper.  When you are done, upload the file at
+# application and the current application.  When you are done, upload the file at
 #   http://your.site.here.com/offline
 
 Tag: ~rank

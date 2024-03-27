@@ -285,7 +285,7 @@ class Log_Page {
             $this->ms->feedback_html_at("q"),
             Ht::entry("q", $this->qreq->q, ["id" => "q", "size" => 40]),
             '</div></div><div class="', $this->ms->control_class("p", "entryi medium"),
-            '"><label for="p">Concerning paper(s)</label><div class="entry">',
+            '"><label for="p">Concerning application(s)</label><div class="entry">',
             $this->ms->feedback_html_at("p"),
             Ht::entry("p", $this->qreq->p, ["id" => "p", "class" => "need-suggest papersearch", "size" => 40, "spellcheck" => false]),
             '</div></div><div class="', $this->ms->control_class("u", "entryi medium"),
@@ -454,7 +454,7 @@ class Log_Page {
         if (!$this->viewer->privChair || !empty($this->exclude_pids)) {
             echo '<div class="msgs-wide">';
             if (!$this->viewer->privChair) {
-                $conf->feedback_msg(new MessageItem(null, "<0>Only showing your actions, plus entries for papers you administer", MessageSet::MARKED_NOTE));
+                $conf->feedback_msg(new MessageItem(null, "<0>Only showing your actions, plus entries for applications you administer", MessageSet::MARKED_NOTE));
             } else if (!empty($this->exclude_pids)
                        && (!$this->include_pids || array_intersect_key($this->include_pids, $this->exclude_pids))
                        && array_keys($this->exclude_pids) != array_keys($this->viewer->hidden_papers ? : [])) {
@@ -470,7 +470,7 @@ class Log_Page {
                 if ($this->qreq->forceShow) { // XXX never true
                     $conf->feedback_msg(new MessageItem(null, "<5>Showing all entries (" . Ht::link("unprivileged view", $conf->selfurl($this->qreq, $req + ["forceShow" => null])) . ")", MessageSet::MARKED_NOTE));
                 } else {
-                    $conf->feedback_msg(new MessageItem(null, "<5>Not showing entries for " . Ht::link("conflicted administered papers", $conf->hoturl("search", "q=" . join("+", array_keys($this->exclude_pids)))), MessageSet::MARKED_NOTE));
+                    $conf->feedback_msg(new MessageItem(null, "<5>Not showing entries for " . Ht::link("conflicted administered applications", $conf->hoturl("search", "q=" . join("+", array_keys($this->exclude_pids)))), MessageSet::MARKED_NOTE));
                 }
             }
             echo '</div>';
@@ -582,9 +582,9 @@ class Log_Page {
         $at .= htmlspecialchars($act);
         if (($pids = $leg->paper_ids($row))) {
             if (count($pids) === 1)
-                $at .= ' (<a class="track" href="' . $conf->hoturl("paper", "p=" . $pids[0]) . '">paper ' . $pids[0] . "</a>)";
+                $at .= ' (<a class="track" href="' . $conf->hoturl("paper", "p=" . $pids[0]) . '">application ' . $pids[0] . "</a>)";
             else {
-                $at .= ' (<a href="' . $conf->hoturl("search", "t=all&amp;q=" . join("+", $pids)) . '">papers</a>';
+                $at .= ' (<a href="' . $conf->hoturl("search", "t=all&amp;q=" . join("+", $pids)) . '">applications</a>';
                 foreach ($pids as $i => $p) {
                     $at .= ($i ? ', ' : ' ') . '<a class="track" href="' . $conf->hoturl("paper", "p=" . $p) . '">' . $p . '</a>';
                 }

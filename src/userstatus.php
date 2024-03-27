@@ -1643,8 +1643,8 @@ class UserStatus extends MessageSet {
             return;
         }
         $us->cs()->add_section_class("w-text fx1")->print_start_section("Topic interests");
-        echo '<p>Please indicate your interest in reviewing papers on these conference
-topics. We use this information to help match papers to reviewers.</p>',
+        echo '<p>Please indicate your interest in reviewing applications on these program
+topics. We use this information to help match applications to reviewers.</p>',
             Ht::hidden("has_ti", 1),
             $us->feedback_html_at("ti"),
             '  <table class="table-striped"><thead>
@@ -1737,7 +1737,7 @@ topics. We use this information to help match papers to reviewers.</p>',
                 $disabled = true;
             } else if (($disablement & Contact::CF_ROLEDISABLED) !== 0) {
                 $klass = "flex-grow-1 disabled";
-                $p = "<p class=\"pt-1 mb-0 feedback is-warning\">Conference settings prevent this account from being enabled.</p>";
+                $p = "<p class=\"pt-1 mb-0 feedback is-warning\">Program settings prevent this account from being enabled.</p>";
                 $disabled = true;
             } else if ($us->user->security_locked_here()) {
                 $klass = "flex-grow-1 disabled";

@@ -201,9 +201,9 @@ class Autoassign_Page {
                       ["size" => 3, "class" => $this->ms->control_class("review:count", "js-autosubmit")]),
             "&nbsp; <i>additional</i>&nbsp; ",
             Ht::select("review:rtype", ["primary" => "primary", "secondary" => "secondary", "optional" => "optional", "metareview" => "metareview"], $qreq["review:type"]),
-            "&nbsp; review(s) per selected paper</div>\n";
+            "&nbsp; review(s) per selected application</div>\n";
 
-        $this->print_radio_row("a", "review_ensure", "Ensure each selected paper has <i>at least</i>", ["open" => true]);
+        $this->print_radio_row("a", "review_ensure", "Ensure each selected application has <i>at least</i>", ["open" => true]);
         echo "&nbsp; ",
             Ht::entry("review_ensure:count", $qreq["review_ensure:count"] ?? 1,
                       ["size" => 3, "class" => $this->ms->control_class("review_ensure:count", "js-autosubmit")]), "&nbsp; ",
@@ -216,7 +216,7 @@ class Autoassign_Page {
                       ["size" => 3, "class" => $this->ms->control_class("review_per_pc:count", "js-autosubmit")]),
             "&nbsp; additional&nbsp; ",
             Ht::select("review_per_pc:rtype", ["primary" => "primary", "secondary" => "secondary", "optional" => "optional", "metareview" => "metareview"], $qreq["review_per_pc:rtype"]),
-            "&nbsp; review(s) from this paper selection";
+            "&nbsp; review(s) from this application selection";
 
         // Review round
         $rev_rounds = $this->conf->round_selector_options(null);
@@ -244,7 +244,7 @@ class Autoassign_Page {
         $this->print_radio_row("a", "prefconflict", "Assign conflicts when PC members have review preferences of &minus;100 or less");
         $this->print_radio_row("a", "clear", "Clear all &nbsp;", ["open" => true]);
         echo Ht::select("clear:type", ["primary" => "primary", "secondary" => "secondary", "optional" => "optional", "metareview" => "metareview", "conflict" => "conflict", "lead" => "discussion lead", "shepherd" => "shepherd"], $this->qreq["clear:type"]),
-            " &nbsp;assignments for selected papers and PC members</div></div>\n";
+            " &nbsp;assignments for selected applications and PC members</div></div>\n";
     }
 
     private function print_lead_actions() {
@@ -262,7 +262,7 @@ class Autoassign_Page {
         $this->print_radio_row("a", "discussion_order", "Create discussion order in tag #", ["open" => true]);
         echo Ht::entry("discussion_order:tag", $this->qreq["discussion_order:tag"] ?? "discuss",
                        ["size" => 12, "class" => $this->ms->control_class("discussion_order:tag", "js-autosubmit")]),
-            ", grouping papers with similar PC conflicts</div></div>";
+            ", grouping applications with similar PC conflicts</div></div>";
     }
 
     private function bp_selector($i, $which) {
@@ -285,7 +285,7 @@ class Autoassign_Page {
             echo '</td><td class="lentry">', $this->bp_selector($i, "a"),
                 " &nbsp;and&nbsp; ", $this->bp_selector($i, "b");
             if ($i == 1) {
-                echo ' &nbsp;to the same paper &nbsp;(<button type="button" class="link ui js-badpairs-row more">More</button> &nbsp;·&nbsp; <button type="button" class="link ui js-badpairs-row less">Fewer</button>)';
+                echo ' &nbsp;to the same application &nbsp;(<button type="button" class="link ui js-badpairs-row more">More</button> &nbsp;·&nbsp; <button type="button" class="link ui js-badpairs-row less">Fewer</button>)';
             }
             echo "</td></tr>\n";
         }
@@ -308,7 +308,7 @@ class Autoassign_Page {
         Assignment methods:
         <ul><li><a href="', $conf->hoturl("autoassign"), '" class="q"><strong>Automatic</strong></a></li>
          <li><a href="', $conf->hoturl("manualassign"), '">Manual by PC member</a></li>
-         <li><a href="', $conf->hoturl("assign") . '">Manual by paper</a></li>
+         <li><a href="', $conf->hoturl("assign") . '">Manual by application</a></li>
          <li><a href="', $conf->hoturl("conflictassign"), '">Potential conflicts</a></li>
          <li><a href="', $conf->hoturl("bulkassign"), '">Bulk update</a></li>
         </ul>
@@ -325,7 +325,7 @@ class Autoassign_Page {
 
         // paper selection
         echo '<div class="form-section">',
-            '<h3 class="', $this->ms->control_class("pap", "form-h", "is-"), '">Paper selection</h3>',
+            '<h3 class="', $this->ms->control_class("pap", "form-h", "is-"), '">Application selection</h3>',
             Ht::entry("q", $qreq->q, [
                 "id" => "autoassignq", "placeholder" => "(All)",
                 "size" => 40, "aria-label" => "Search",
@@ -340,7 +340,7 @@ class Autoassign_Page {
             $plist = new PaperList("reviewersSel", $search);
             $plist->set_selection($this->ssel)->set_table_decor(PaperList::DECOR_HEADER);
             if ($search->paper_ids()) {
-                echo "<br><span class=\"hint\">Assignments will apply to the selected papers.</span>";
+                echo "<br><span class=\"hint\">Assignments will apply to the selected applications.</span>";
             }
             echo '<div class="g"></div>';
             $plist->print_table_html();

@@ -33,7 +33,7 @@ try “-term”.  Or select ", $hth->hotlink("Advanced search", "search", "opt=1
 " and use “With <b>any</b> of the words” and “<b>Without</b> the words.”</p>
 
 <p>You can search several categories, depending on your role in the
-conference. Options include:</p>
+program. Options include:</p>
 <ul>
 <li><b>", PaperSearch::limit_description($hth->conf, "s"), "</b> &mdash; all submissions ready for review.</li>
 <li><b>", PaperSearch::limit_description($hth->conf, "a"), "</b> &mdash; submissions for which you’re a contact.</li>
@@ -43,7 +43,7 @@ conference. Options include:</p>
 </ul>
 
 <p>Search won’t show you information you aren’t supposed to see.  For example,
-authors can only search their own submissions, and if the conference used
+authors can only search their own submissions, and if the program used
 anonymous submission, then only the PC chairs can search by author.</p>
 
 <p>By default, search examines titles, abstracts, and authors. ",
@@ -65,12 +65,12 @@ to navigate through the rest of the search matches.</p>
 
 " . Ht::img("exsearchaction.png", "[Search action area]") . "<br />
 
-<p>Use the checkboxes to select some papers, then choose an action.
+<p>Use the checkboxes to select some applications, then choose an action.
 You can:</p>
 
 <ul>
-<li>Download a <code>.zip</code> file with the selected papers.</li>
-<li>Download all reviews for the selected papers.</li>
+<li>Download a <code>.zip</code> file with the selected applications.</li>
+<li>Download all reviews for the selected applications.</li>
 <li>Download tab-separated text files with authors, PC
  conflicts, review scores, and so forth (some options chairs only).</li>
 <li>Add, remove, and define ", $hth->help_link("tags", "tags"), ".</li>
@@ -79,9 +79,9 @@ You can:</p>
 <li>Send mail to paper authors or reviewers (chairs only).</li>
 </ul>
 
-<p>Select papers one by one, select in groups by shift-clicking
+<p>Select applications one by one, select in groups by shift-clicking
 the checkboxes, or use the “select all” link.
-The easiest way to tag a set of papers is
+The easiest way to tag a set of applications is
 to enter their numbers in the search box, search, “select all,” and add the
 tag.</p>";
 
@@ -95,7 +95,7 @@ one paper, to go directly to that paper.</p>
 
 <p>Paper screens have quicklinks that step through search results:<br />
 " . Ht::img("pageresultsex.png", "[Quicklinks]") . "<br />
-Click on the search description (here, “Submitted papers search”) to return
+Click on the search description (here, “Submitted applications search”) to return
 to the search results.  On many pages, you can press “<code>j</code>” or
 “<code>k</code>” to go to the previous or next paper in the list.</p>";
     }

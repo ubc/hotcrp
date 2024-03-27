@@ -79,9 +79,9 @@
         "type": "radio",
         "values": [
             "Reject",
-            "Weak paper, though I will not fight strongly against it",
-            "OK paper, but I will not champion it",
-            "Good paper, I will champion it"
+            "Weak application, though I will not fight strongly against it",
+            "OK application, but I will not champion it",
+            "Good application, I will champion it"
         ],
         "start": "A",
         "flip": true,
@@ -94,11 +94,11 @@
         "name": "Overall merit",
         "type": "radio",
         "values": [
-            "Bottom 50% of submitted papers",
-            "Top 50% but not top 25% of submitted papers",
-            "Top 25% but not top 10% of submitted papers",
-            "Top 10% but not top 5% of submitted papers",
-            "Top 5% of submitted papers!"
+            "Bottom 50% of submitted applications",
+            "Top 50% but not top 25% of submitted applications",
+            "Top 25% but not top 10% of submitted applications",
+            "Top 10% but not top 5% of submitted applications",
+            "Top 5% of submitted applications!"
         ],
         "required": true,
         "visibility": "au"
@@ -147,17 +147,17 @@
         "scheme": "orbu"
     },
     {
-        "legend": "Paper summary",
-        "name": "Paper summary",
+        "legend": "Application summary",
+        "name": "Application summary",
         "type": "text",
-        "description": "Please summarize the paper’s main results in your own words. This will frame the review and show that you have understood the paper’s intent.",
+        "description": "Please summarize the application’s main results in your own words. This will frame the review and show that you have understood the application’s intent.",
         "visibility": "au"
     },
     {
-        "legend": "Paper summary (shorter description)",
-        "name": "Paper summary",
+        "legend": "Application summary (shorter description)",
+        "name": "Application summary",
         "type": "text",
-        "description": "Please summarize the paper briefly in your own words.",
+        "description": "Please summarize the application briefly in your own words.",
         "visibility": "au"
     },
     {
@@ -225,14 +225,14 @@
         "legend": "Strengths",
         "name": "Strengths",
         "type": "text",
-        "description": "What are the paper’s important strengths? Just a couple sentences, please.",
+        "description": "What are the application’s important strengths? Just a couple sentences, please.",
         "visibility": "au"
     },
     {
         "legend": "Weaknesses",
         "name": "Weaknesses",
         "type": "text",
-        "description": "What are the paper’s important weaknesses? Just a couple sentences, please.",
+        "description": "What are the application’s important weaknesses? Just a couple sentences, please.",
         "visibility": "au"
     }
 ]

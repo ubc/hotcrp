@@ -297,7 +297,7 @@
 		"subject": "[%CONFSHORTNAME%] Withdrawn submission #%NUMBER% %TITLEHINT%",
 		"body": [
 			"Greetings,\n\n",
-			"%CONFSHORTNAME% submission #%NUMBER%, which you reviewed or were assigned to review, has been withdrawn from consideration for the conference.\n\n",
+			"%CONFSHORTNAME% submission #%NUMBER%, which you reviewed or were assigned to review, has been withdrawn from consideration for the program.\n\n",
 			"%IF(ADMINUPDATE)%An administrator withdrew the submission.%ELSE%Authors can withdraw submissions during the review process.%ENDIF%%IF(REASON)% They provided this reason: %REASON%%ENDIF%\n\n",
 			"* Title: %TITLE%\n",
 			"* Author(s): %OPT(AUTHORS)%\n",
@@ -698,7 +698,7 @@
 		"subject": "[%CONFSHORTNAME%] Accepted submission #%NUMBER% %TITLEHINT%",
 		"body": [
 			"Dear author(s),\n\n",
-			"The %CONFNAME% program committee is delighted to inform you that your submission #%NUMBER% has been accepted to appear in the conference.\n\n",
+			"The %CONFNAME% program committee is delighted to inform you that your submission #%NUMBER% has been accepted to appear in the program.\n\n",
 			"* Title: %TITLE%\n",
 			"* Author(s): %OPT(AUTHORS)%\n",
 			"* Site: %URL(paper, p=%NUMBER%, %AUTHORVIEWCAPABILITY%)%\n\n",
@@ -719,7 +719,7 @@
 		"subject": "[%CONFSHORTNAME%] Rejected submission #%NUMBER% %TITLEHINT%",
 		"body": [
 			"Dear author(s),\n\n",
-			"The %CONFNAME% program committee is sorry to inform you that your submission #%NUMBER% was rejected, and will not appear in the conference.\n\n",
+			"The %CONFNAME% program committee is sorry to inform you that your submission #%NUMBER% was rejected, and will not appear in the program.\n\n",
 			"* Title: %TITLE%\n",
 			"* Author(s): %OPT(AUTHORS)%\n",
 			"* Site: %URL(paper, p=%NUMBER%, %AUTHORVIEWCAPABILITY%)%\n\n",

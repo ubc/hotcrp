@@ -265,7 +265,7 @@ class Mail_Page {
                     Ht::button("Change template", ["id" => "template-changer", "class" => "ui js-mail-set-template"]), '</div>';
         } else {
             echo '<div class="mr-2">', Ht::button("Load template", ["class" => "ui js-mail-set-template"]), '</div>',
-                '<div class="small">Templates are mail texts tailored for common conference tasks.</div>';
+                '<div class="small">Templates are mail texts tailored for common program tasks.</div>';
         }
         echo '</div>';
     }

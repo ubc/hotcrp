@@ -227,7 +227,7 @@ class ManualAssign_Page {
 <p>Assignment methods:</p>
 <ul><li><a href="', $this->conf->hoturl("autoassign"), '">Automatic</a></li>
  <li><a href="', $this->conf->hoturl("manualassign"), '" class="q"><strong>Manual by PC member</strong></a></li>
- <li><a href="', $this->conf->hoturl("assign"), '">Manual by paper</a></li>
+ <li><a href="', $this->conf->hoturl("assign"), '">Manual by application</a></li>
  <li><a href="', $this->conf->hoturl("conflictassign"), '">Potential conflicts</a></li>
  <li><a href="', $this->conf->hoturl("bulkassign"), '">Bulk update</a></li>
 </ul>
@@ -238,10 +238,10 @@ class ManualAssign_Page {
   <dt>', review_type_icon(REVIEW_PC), ' Optional</dt><dd>May be declined</dd>
   <dt>', review_type_icon(REVIEW_META), ' Metareview</dt><dd>Can view all other reviews before completing their own</dd></dl>
 <hr>
-<dl><dt>Potential conflicts</dt><dd>Matches between PC member collaborators and paper authors, or between PC member and paper authors or collaborators</dd>
+<dl><dt>Potential conflicts</dt><dd>Matches between PC member collaborators and application authors, or between PC member and application authors or collaborators</dd>
   <dt>Preference</dt><dd><a href="', $this->conf->hoturl("reviewprefs"), '">Review preference</a></dd>
-  <dt>Topic score</dt><dd>High value means PC member has interest in many paper topics</dd>
-  <dt>Desirability</dt><dd>High values mean many PC members want to review the paper</dd></dl>
+  <dt>Topic score</dt><dd>High value means PC member has interest in many application topics</dd>
+  <dt>Desirability</dt><dd>High values mean many PC members want to review the application</dd></dl>
 <p>Click a heading to sort.</p></div></div>';
 
         echo '<h2 class="mt-3">Assignments ';
@@ -273,7 +273,7 @@ class ManualAssign_Page {
             "<tr><td colspan=\"2\"><hr class=\"g\"></td></tr>\n";
 
         // Paper selection
-        echo "<tr><td>Paper selection: &nbsp;</td><td>",
+        echo "<tr><td>Application selection: &nbsp;</td><td>",
             Ht::entry("q", $this->qreq->q, [
                 "id" => "manualassignq", "size" => 40, "placeholder" => "(All)",
                 "class" => "papersearch want-focus need-suggest", "aria-label" => "Search",

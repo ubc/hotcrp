@@ -7019,7 +7019,7 @@ function cmt_edit_messages(cj, form) {
     } else if (cj.review_token
                && hotcrp.status.myperm.review_tokens
                && hotcrp.status.myperm.review_tokens.indexOf(cj.review_token) >= 0) {
-        append_feedback_to(ul, {message: '<0>You have a review token for this paper, so your comment will be anonymous.', status: -4 /*MessageSet::MARKED_NOTE*/});
+        append_feedback_to(ul, {message: '<0>You have a review token for this application, so your comment will be anonymous.', status: -4 /*MessageSet::MARKED_NOTE*/});
     } else if (!cj.response
                && cj.author_email
                && siteinfo.user.email
@@ -12380,7 +12380,7 @@ handle_ui.on("submit.js-submit-paper", function (evt) {
     if (is_submit
         && sub && sub.type === "checkbox" && !sub.checked
         && this.hasAttribute("data-submitted")) {
-        if (!window.confirm("Are you sure the paper is no longer ready for review?\n\nOnly papers that are ready for review will be considered.")) {
+        if (!window.confirm("Are you sure the application is no longer ready for review?\n\nOnly applications that are ready for review will be considered.")) {
             evt.preventDefault();
             return;
         }
@@ -13737,7 +13737,7 @@ function render_events(e, rows) {
     if (events_more === false)
         $(e).find(".eventtable-more").addClass("hidden");
     if (events_more === false && !events.length)
-        j.append("<tr><td>No recent activity in papers you’re following</td></tr>");
+        j.append("<tr><td>No recent activity in applications you’re following</td></tr>");
 }
 
 handle_ui.on("js-open-activity", function (evt) {

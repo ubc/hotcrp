@@ -5,8 +5,8 @@
 class ScoreSort_HelpTopic {
     static function print(HelpRenderer $hth) {
         echo "
-<p>Some paper search results include columns with score graphs. Click on a score
-column heading to sort the paper list using that score. Search &gt; View
+<p>Some application search results include columns with score graphs. Click on a score
+column heading to sort the application list using that score. Search &gt; View
 options changes how scores are sorted.  There are five choices:</p>
 
 <dl>
@@ -14,9 +14,9 @@ options changes how scores are sorted.  There are five choices:</p>
 <dt><strong>Counts</strong> (default)</dt>
 
 <dd>Sort by the number of highest scores, then the number of second-highest
-scores, then the number of third-highest scores, and so on.  To sort a paper
+scores, then the number of third-highest scores, and so on.  To sort a application
 with fewer reviews than others, HotCRP adds phantom reviews with scores just
-below the paper’s lowest real score.  Also known as Minshall score.</dd>
+below the application’s lowest real score.  Also known as Minshall score.</dd>
 
 <dt><strong>Average</strong></dt>
 <dd>Sort by the average (mean) score.</dd>

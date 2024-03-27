@@ -31,7 +31,7 @@ class AdminHome_Page {
         if (($row = $result->fetch_row())
             && $row[1] < $max_file_size
             && !$conf->opt("dbNoPapers")) {
-            $ml[] = new MessageItem(null, "<5>MySQL’s <code>max_allowed_packet</code> setting, which is " . htmlspecialchars($row[1]) . "&nbsp;bytes, is less than the PHP upload file limit, which is {$max_file_size}&nbsp;bytes.  You should update <code>max_allowed_packet</code> in the system-wide <code>my.cnf</code> file or the system may not be able to handle large papers", MessageSet::URGENT_NOTE);
+            $ml[] = new MessageItem(null, "<5>MySQL’s <code>max_allowed_packet</code> setting, which is " . htmlspecialchars($row[1]) . "&nbsp;bytes, is less than the PHP upload file limit, which is {$max_file_size}&nbsp;bytes.  You should update <code>max_allowed_packet</code> in the system-wide <code>my.cnf</code> file or the system may not be able to handle large applications", MessageSet::URGENT_NOTE);
         }
         if ($max_file_size < ini_get_bytes(null, "10M")
             && $max_file_size < $conf->upload_max_filesize()) {
@@ -58,14 +58,14 @@ class AdminHome_Page {
         }
         // Conference names
         if ($conf->opt("shortNameDefaulted")) {
-            $ml[] = new MessageItem(null, "<5><a href=\"" . $conf->hoturl("settings", "group=basics") . "\">Set the conference abbreviation</a> to a short name for your conference, such as “OSDI ’14”", MessageSet::WARNING_NOTE);
+            $ml[] = new MessageItem(null, "<5><a href=\"" . $conf->hoturl("settings", "group=basics") . "\">Set the program abbreviation</a> to a short name for your program, such as “OSDI ’14”", MessageSet::WARNING_NOTE);
         } else if (simplify_whitespace($conf->short_name) != $conf->short_name) {
-            $ml[] = new MessageItem(null, "<5>The <a href=\"" . $conf->hoturl("settings", "group=basics") . "\">conference abbreviation</a> setting has a funny value. To fix it, remove leading and trailing spaces, use only space characters (no tabs or newlines), and make sure words are separated by single spaces (never two or more)", MessageSet::WARNING);
+            $ml[] = new MessageItem(null, "<5>The <a href=\"" . $conf->hoturl("settings", "group=basics") . "\">program abbreviation</a> setting has a funny value. To fix it, remove leading and trailing spaces, use only space characters (no tabs or newlines), and make sure words are separated by single spaces (never two or more)", MessageSet::WARNING);
         }
         // Site contact
         $site_contact = $conf->site_contact();
         if (!$site_contact->email || $site_contact->email == "you@example.com") {
-            $ml[] = new MessageItem(null, "<5><a href=\"" . $conf->hoturl("settings", "group=basics") . "\">Set the conference contact’s name and email</a> so submitters can reach someone if things go wrong", MessageSet::URGENT_NOTE);
+            $ml[] = new MessageItem(null, "<5><a href=\"" . $conf->hoturl("settings", "group=basics") . "\">Set the program contact’s name and email</a> so submitters can reach someone if things go wrong", MessageSet::URGENT_NOTE);
         }
         // Configuration updates
         if ($conf->opt("oAuthTypes")) {

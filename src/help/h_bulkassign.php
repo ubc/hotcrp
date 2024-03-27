@@ -11,21 +11,21 @@ other aspects of site operation. Users upload a CSV (comma-separated value
 file) to prepare an assignment. HotCRP will display the consequences of the
 requested assignment for confirmation and approval.</p>
 
-<p>Assignment CSVs contain <code>paper</code> and <code>action</code> fields,
-where <code>paper</code> determines which submissions are affected and
+<p>Assignment CSVs contain <code>application</code> and <code>action</code> fields,
+where <code>application</code> determines which submissions are affected and
 <code>action</code> determines what kind of assignment is performed. The
-<code>paper</code> field can be a simple submission number, like “10”, or a
+<code>application</code> field can be a simple submission number, like “10”, or a
 search string, like “#manny OR #ramirez”. Other parameter fields depend on the
 action. For instance, the <code>tag</code> action adds the tag specified in
 the <code>tag</code> field. Actions requiring a user locate that user via the
 <code>email</code>, <code>name</code>, <code>first name</code>, <code>last
 name</code>, and/or <code>user</code> fields.</p>
 
-<p>This example file clears existing R1 review assignments for papers tagged
+<p>This example file clears existing R1 review assignments for applications tagged
 #redo, then assigns two primary reviews for submission #1 and one secondary
 review for submission #2:</p>
 
-<pre class=\"sample\">paper,action,email,round
+<pre class=\"sample\">application,action,email,round
 #redo,clearreview,all,R1
 1,primary,man@alice.org
 2,secondary,slugger@manny.com
@@ -33,7 +33,7 @@ review for submission #2:</p>
 
 <p>Errors will be reported if <code>man@alice.org</code> or
 <code>slugger@manny.com</code> aren’t PC members, or if they have conflicts
-with their assigned papers.</p>
+with their assigned applications.</p>
 
 <p>Assignment files are parsed from top to bottom, but applied as a unit. For
 example, if a file clears and then recreates a existing review assignment,
@@ -41,8 +41,8 @@ HotCRP will leave the existing assignment alone.</p>";
 
         echo $hth->subhead("Action overview");
         self::print_actions($hth->user, $hth);
-        echo '<p><em>Notes:</em> The <code>paper</code> parameter
-can be a paper number, like “1”, or a search, like
+        echo '<p><em>Notes:</em> The <code>application</code> parameter
+can be a application number, like “1”, or a search, like
 “re:jhala #good”. Instead of a <code>user</code> parameter, you can
 supply <code>email</code>, <code>name</code>,
 <code>first_name</code>, and/or <code>last_name</code>. <code>tag</code>
@@ -69,29 +69,29 @@ entered.</p>
 <code>drew@harvard.edu</code> in review round R2, or, if Drew already has a
 review assignment for submission #1, modify that review’s type and round:</p>
 
-<pre class=\"sample\">paper,action,email,reviewtype,round
+<pre class=\"sample\">application,action,email,reviewtype,round
 1,review,drew@harvard.edu,primary,R2</pre>
 
 <p>To avoid modifying an existing review, use this syntax, which means “ignore
 this assignment unless the current review type is ‘none’”:</p>
 
-<pre class=\"sample\">paper,action,email,reviewtype,round
+<pre class=\"sample\">application,action,email,reviewtype,round
 1,review,drew@harvard.edu,none:primary,R2</pre>
 
 <p>To modify an existing review (the “<code>any</code>” review type only
 matches existing reviews):</p>
 
-<pre class=\"sample\">paper,action,email,reviewtype,round
+<pre class=\"sample\">application,action,email,reviewtype,round
 1,review,drew@harvard.edu,any,R2</pre>
 
 <p>To change an existing review from round R1 to round R2:</p>
 
-<pre class=\"sample\">paper,action,email,reviewtype,round
+<pre class=\"sample\">application,action,email,reviewtype,round
 1,review,drew@harvard.edu,any,R1:R2</pre>
 
 <p>To change all round-R1 primary reviews to round R2:</p>
 
-<pre class=\"sample\">paper,action,email,reviewtype,round
+<pre class=\"sample\">application,action,email,reviewtype,round
 all,review,all,primary,R1:R2</pre>
 
 <p>The <code>primary</code>, <code>secondary</code>, <code>pcreview</code>,
@@ -111,14 +111,14 @@ value</code> field.</p>
 <code>clear</code>. For example, this file clears all #p tags with value
 less than 10:</p>
 
-<pre class=\"sample\">paper,action,tag
+<pre class=\"sample\">application,action,tag
 #p#&lt;10,cleartag,p</pre>
 
 <p>To add to a tag order, use action <code>nexttag</code>; to add to a gapless
 tag order, use <code>seqnexttag</code>. For example, this file creates a tag
-order #p that lists papers 4, 3, 2, 9, 10, and 6, in that order:</p>
+order #p that lists applications 4, 3, 2, 9, 10, and 6, in that order:</p>
 
-<pre class=\"sample\">paper,action,tag
+<pre class=\"sample\">application,action,tag
 all,cleartag,p
 4,nexttag,p
 3,nexttag,p
@@ -154,7 +154,7 @@ a conflict type, such as “advisor” or “institutional”.</p>";
                 && ($hashid = $hth->hashid("bulkassignactions/{$uf->name}"))) {
                 $n = "<a href=\"#{$hashid}\">{$n}</a>";
             }
-            $t .= $n . '</td><td class="pad"><code>paper</code>';
+            $t .= $n . '</td><td class="pad"><code>application</code>';
             foreach ($uf->parameters ?? [] as $param) {
                 $t .= ', ';
                 if ($param[0] === "?") {
