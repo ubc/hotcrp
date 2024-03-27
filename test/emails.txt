@@ -2091,8 +2091,8 @@ concerns.
 To: Marcel Waldvogel <waldvogel@tik.ee.ethz.ch>, George Varghese <varghese@ccrc.wustl.edu>
 Subject: [Testconf I] Response for #4 "Scalable High Speed IP Routing Lookups"
 
-The authors' response for Test Program I (Testconf I) submission #4
-is available as shown below. The authors may still update their
+The authors' response for Test Program I (Testconf I) submission #4 is
+available as shown below. The authors may still update their
 response; for the most up-to-date version, or to turn off notification
 emails, see the submission site.
 
@@ -2112,8 +2112,8 @@ Non-Draft
 To: Deborah Estrin <estrin@usc.edu>
 Subject: [Testconf I] Response for #4 "Scalable High Speed IP Routing Lookups"
 
-The authors' response for Test Program I (Testconf I) submission #4
-is available as shown below. The authors may still update their
+The authors' response for Test Program I (Testconf I) submission #4 is
+available as shown below. The authors may still update their
 response; for the most up-to-date version, or to turn off notification
 emails, see the submission site.
 
