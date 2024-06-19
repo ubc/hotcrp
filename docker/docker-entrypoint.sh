@@ -28,7 +28,7 @@ wait_for_mysql
 
 # provision db, db user and schema
 if [ -n "$MYSQL_ROOT_PASSWORD" ]; then
-    if php batch/createdb.php -u root --password=$MYSQL_ROOT_PASSWORD -n $MYSQL_DATABASE --batch --dbuser $MYSQL_USER,$MYSQL_PASSWORD --host mysql --grant-host '%'; then
+    if php batch/createdb.php -u root --password=$MYSQL_ROOT_PASSWORD -n $MYSQL_DATABASE --batch --dbuser $MYSQL_USER,$MYSQL_PASSWORD --host $MYSQL_HOST --no-grant --no-replace --no-config; then
         echo "Database has been initialized."
     fi
 fi

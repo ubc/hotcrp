@@ -112,6 +112,7 @@ class CreateDB_Batch {
 
         $this->batch = !$interactive || isset($arg["batch"]);
         $this->replace = isset($arg["replace"]);
+        $this->no_replace = isset($arg["no-replace"]);
         $this->replace_user = isset($arg["replace-user"]);
         $this->quiet = isset($arg["quiet"]);
         $this->verbose = isset($arg["verbose"]);
@@ -338,6 +339,17 @@ class CreateDB_Batch {
         return $found;
     }
 
+    /** @return bool */
+    function table_exists() {
+        $result = Dbl::qe($this->hcrp_dblink(), "DESCRIBE `ActionLog`");
+        $found = false;
+        while (($x = $result->fetch_row())) {
+            $found = $found || $x[0] === "logId";
+        }
+        $result->close();
+        return $found;
+    }
+
     function read_dbuser() {
         $defuser = $this->configopt["dbUser"] ?? substr($this->name, 0, 16);
         while (true) {
@@ -433,7 +445,11 @@ class CreateDB_Batch {
         if ($this->replace) {
             return true;
         } else if ($this->batch) {
-            throw new CommandLineException("Not populating existing database in batch mode");
+            if (!$this->table_exists()) {
+                return true;
+            } else {
+                throw new CommandLineException("Not populating existing database in batch mode");
+            }
         } else {
             return $this->confirm("Replace contents of existing database? [Y/n] ");
         }
@@ -586,7 +602,7 @@ class CreateDB_Batch {
             $this->had_dbuser = $this->grant && $this->dbuser_exists();
             $this->check_dbpass();
         }
-        if ($this->had_db) {
+        if ($this->had_db && !$this->no_replace) {
             $this->check_replace();
         }
 
@@ -631,7 +647,9 @@ class CreateDB_Batch {
             "minimal Output minimal configuration file",
             "batch Batch installation: never stop for input",
             "replace Replace existing HotCRP database if present",
+            "no-replace Do not replace database",
             "replace-user Replace existing HotCRP database user if present",
+            "no-config Do not replace database",
             "no-grant Do not create user or grant privileges for HotCRP database access",
             "dbuser: =USER,PASS Specify database USER and PASS for HotCRP database access",
             "host: =HOST Specify database host [localhost]",
