@@ -3,13 +3,15 @@
         "name": "conference_abbreviation", "storage": "opt.shortName",
         "title": "Program abbreviation",
         "type": "simplestring", "size": 20, "autogrow": true,
-        "parser_class": "Basics_SettingParser"
+        "parser_class": "Basics_SettingParser",
+        "tags": ["id"]
     },
     {
         "name": "conference_name", "storage": "opt.longName",
         "title": "Program name", "placeholder": "(same as abbreviation)",
         "type": "simplestring", "size": 70,
-        "parser_class": "Basics_SettingParser"
+        "parser_class": "Basics_SettingParser",
+        "tags": ["id"]
     },
 
     {
@@ -18,9 +20,16 @@
         "type": "checkbox"
     },
     {
-        "name": "comment_allow_author", "storage": "cmt_author",
-        "title": "Allow authors to post comments",
-        "type": "checkbox"
+        "name": "comment_author", "storage": "cmt_author",
+        "title": "Allow authors to respond to reviewer comments",
+        "type": "checkbox", "default_value": 0,
+        "parser_class": "Comment_SettingParser"
+    },
+    {
+        "name": "comment_author_initiate", "storage": "none",
+        "title": "Allow authors to initiate comment exchanges",
+        "type": "checkbox",
+        "parser_class": "Comment_SettingParser"
     },
     {
         "name": "comment_visibility_reviewer", "storage": "cmt_revid",
@@ -72,7 +81,8 @@
     {
         "name": "final_done",
         "title": "Final version upload hard deadline",
-        "type": "date"
+        "type": "date",
+        "tags": ["time"]
     },
     {
         "name": "final_grace",
@@ -82,12 +92,14 @@
     {
         "name": "final_open",
         "title": "Collect final versions setting",
-        "type": "checkbox"
+        "type": "checkbox",
+        "tags": ["time"]
     },
     {
         "name": "final_soft",
         "title": "Final version upload deadline",
-        "type": "date"
+        "type": "date",
+        "tags": ["time"]
     },
     {
         "name": "mailbody_requestreview",
@@ -305,7 +317,7 @@
         "type": "string", "subtype": "condition", "size": 30, "placeholder": "Search",
         "parse_order": 3
     },
-    {   "name_pattern": "sf/$/editcondition", "alias_pattern": "rf/$/edit_condition"   },
+    {   "name_pattern": "sf/$/editcondition", "alias_pattern": "sf/$/edit_condition"   },
     {
         "name_pattern": "sf/$/min",
         "title": "/Minimum value count",
@@ -314,6 +326,16 @@
     {
         "name_pattern": "sf/$/max",
         "title": "/Maximum value count",
+        "type": "nonnegint", "size": 5, "placeholder": "none", "default_value": 0
+    },
+    {
+        "name_pattern": "sf/$/wordlimit",
+        "title": "/Word limit",
+        "type": "nonnegint", "size": 5, "placeholder": "none", "default_value": 0
+    },
+    {
+        "name_pattern": "sf/$/hard_wordlimit",
+        "title": "/Hard word limit",
         "type": "nonnegint", "size": 5, "placeholder": "none", "default_value": 0
     },
     {
@@ -462,11 +484,13 @@
     },
     {
         "name_pattern": "response/$/open",
-        "title": "/Start time", "type": "date"
+        "title": "/Start time", "type": "date",
+        "tags": ["time"]
     },
     {
         "name_pattern": "response/$/done",
-        "title": "/Hard deadline", "type": "date"
+        "title": "/Hard deadline", "type": "date",
+        "tags": ["time"]
     },
     {
         "name_pattern": "response/$/grace",
@@ -499,7 +523,8 @@
     {
         "name": "review_open", "storage": "rev_open",
         "title": "Enable reviewing",
-        "type": "cdate"
+        "type": "cdate",
+        "tags": ["time"]
     },
     {
         "name": "review_blind", "storage": "rev_blind",
@@ -608,22 +633,26 @@
     {
         "name_pattern": "review/$/soft",
         "title": "/Deadline",
-        "type": "date", "placeholder": "none"
+        "type": "date", "placeholder": "none",
+        "tags": ["time"]
     },
     {
         "name_pattern": "review/$/done",
         "title": "/Hard deadline",
-        "type": "date", "placeholder": "none"
+        "type": "date", "placeholder": "none",
+        "tags": ["time"]
     },
     {
         "name_pattern": "review/$/external_soft",
         "title": "/External deadline",
-        "type": "date", "subtype": "explicit_none", "placeholder": "same as PC"
+        "type": "date", "subtype": "explicit_none", "placeholder": "same as PC",
+        "tags": ["time"]
     },
     {
         "name_pattern": "review/$/external_done",
         "title": "/External hard deadline",
-        "type": "date", "subtype": "explicit_none", "placeholder": "same as PC"
+        "type": "date", "subtype": "explicit_none", "placeholder": "same as PC",
+        "tags": ["time"]
     },
     {
         "name": "review_default_round_index", "storage": "none", "json": false,
@@ -661,7 +690,7 @@
         "name": "review_rating", "storage": "rev_ratings",
         "title": "Collect ratings of reviews",
         "type": "radio",
-        "values": [0, 1, 2], "default_value": 0,
+        "values": [0, 1, -1], "default_value": 0,
         "json_values": ["pc", "all", "no"]
     },
 
@@ -793,20 +822,23 @@
         "title": "Decision visibility to authors",
         "type": "radio",
         "values": [0, 2, 1], "default_value": 0,
-        "json_values": ["no", "yes", "condition"]
+        "json_values": ["no", "yes", "condition"],
+        "tags": ["final"]
     },
     {
         "name": "decision_visibility_author_condition", "storage": "dat.au_seedec",
         "title": "Decision visibility condition",
         "type": "string", "subtype": "search", "size": 30, "placeholder": "Search",
-        "parser_class": "DecisionVisibility_SettingParser"
+        "parser_class": "DecisionVisibility_SettingParser",
+        "tags": ["final"]
     },
     {
         "name": "decision_visibility_reviewer", "storage": "seedec",
         "title": "Decision visibility for reviewers",
         "type": "radio",
         "values": [0, 3, 1], "default_value": 0,
-        "json_values": ["no", "unconflicted", "yes"]
+        "json_values": ["no", "unconflicted", "yes"],
+        "tags": ["final"]
     },
     {
         "name": "decision_visibility", "storage": "none",
@@ -903,18 +935,21 @@
     {
         "name": "submission_open", "storage": "sub_open",
         "title": "Enable submissions",
-        "type": "cdate"
+        "type": "cdate",
+        "tags": ["time"]
     },
     {
         "name": "submission_registration", "storage": "sub_reg",
         "title": "Submission registration deadline",
-        "type": "date", "parse_order": 0
+        "type": "date", "parse_order": 0,
+        "tags": ["time"]
     },
     {
         "name": "submission_done", "storage": "sub_sub",
         "title": "Submission deadline",
         "type": "date", "parse_order": 1,
-        "parser_class": "Submissions_SettingParser"
+        "parser_class": "Submissions_SettingParser",
+        "tags": ["time"]
     },
     {
         "name": "submission_update", "storage": "sub_update",
@@ -1146,11 +1181,11 @@
         "title_pattern": "${sv named_search/$/title}",
         "parser_class": "NamedSearch_SettingParser"
     },
-    {   "name_pattern": "named_search/$/id", "internal": true, "type": "string"   },
+    {   "name_pattern": "named_search/$/id", "internal": true, "json": true, "type": "string"   },
     {
         "name_pattern": "named_search/$/name",
         "title": "Search name",
-        "type": "tag", "size": 20, "autogrow": true
+        "type": "string", "subtype": "simple", "size": 30, "autogrow": true
     },
     {   "name_pattern": "named_search/$/title", "internal": true, "parser_class": "NamedSearch_SettingParser"   },
     {
@@ -1159,6 +1194,11 @@
         "type": "string", "subtype": "search", "storage": "member.q"
     },
     {   "name_pattern": "named_search/$/q", "alias_pattern": "named_search/$/search"   },
+    {
+        "name_pattern": "named_search/$/description",
+        "title": "Search description",
+        "type": "string", "subtype": "simple", "size": 50, "autogrow": true
+    },
     {
         "name_pattern": "named_search/$/display",
         "title": "/Display",
@@ -1192,5 +1232,6 @@
     {   "name": "pcrev_assigntime", "internal": true   },
     {   "name": "pcrev_informtime", "internal": true   },
     {   "name": "has_colontag", "internal": true   },
-    {   "name": "no_papersub", "internal": true   }
+    {   "name": "no_papersub", "internal": true   },
+    {   "name": "cmt_author", "internal": true, "default_value": 0   }
 ]

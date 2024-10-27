@@ -86,7 +86,7 @@ class Track_SettingParser extends SettingParser {
             return "reviewer name";
         } else if ($perm === Track::ASSREV) {
             return "assignment";
-        } else if ($perm === Track::UNASSREV) {
+        } else if ($perm === Track::SELFASSREV) {
             return "self-assignment";
         } else if ($perm === Track::VIEWTRACKER) {
             return "tracker visibility";
@@ -165,6 +165,11 @@ class Track_SettingParser extends SettingParser {
         }
     }
 
+    /** @return ?Track_Setting */
+    function current_track_setting() {
+        return $this->cur_trx;
+    }
+
     const PERM_DEFAULT_UNFOLDED = 1;
 
     /** @param SettingValues $sv
@@ -174,7 +179,7 @@ class Track_SettingParser extends SettingParser {
     function print_perm($sv, $permname, $label, $flags = 0) {
         $perm = Track::$perm_name_map[$permname];
         $deftype = Track::perm_required($perm) ? "none" : "all";
-        $trx = $sv->oldv("track/{$this->ctr}");
+        $trx = $this->cur_trx;
         $pfx = "track/{$this->ctr}/perm/{$permname}";
         $p = $sv->reqstr($pfx) ?? $trx->perms[$perm];
         $reqtype = $sv->reqstr("{$pfx}/type") ?? Track_Setting::perm_type($p);
@@ -212,14 +217,7 @@ class Track_SettingParser extends SettingParser {
         $sv->print_feedback_at("{$pfx}/type");
         $sv->print_feedback_at("{$pfx}/tag");
         if ($hint) {
-            $klass = "f-h";
-            if (str_starts_with($hint, '<div class="fx">')
-                && str_ends_with($hint, '</div>')
-                && strpos($hint, '<div', 16) === false) {
-                $hint = substr($hint, 16, -6);
-                $klass .= " fx";
-            }
-            echo '<div class="', $klass, '">', $hint, '</div>';
+            echo str_starts_with($hint, "<") ? $hint : "<div class=\"f-d\">{$hint}</div>";
         }
         echo "</div></div>";
     }
@@ -229,14 +227,14 @@ class Track_SettingParser extends SettingParser {
     }
 
     function print_viewrev_perm(SettingValues $sv, $gj) {
-        $hint = "<div class=\"fx\">This setting constrains all users including co-reviewers.</div>";
+        $hint = "<div class=\"f-d fx\">This setting constrains all users including co-reviewers.</div>";
         $this->print_perm($sv, "viewrev", ["Who can see reviews?", $hint]);
     }
 
     private function print_track(SettingValues $sv, $ctr) {
         $this->ctr = $ctr;
+        $this->cur_trx = $trx = $sv->oldv("track/{$ctr}");
         $this->nfolded = 0;
-        $trx = $sv->oldv("track/{$ctr}");
         echo '<fieldset id="track/', $ctr, '" class="settings-tracks has-fold ',
             $trx->is_new ? "fold3o" : "fold3c", '">',
             '<legend class="mb-1">';
@@ -265,11 +263,13 @@ class Track_SettingParser extends SettingParser {
                 '</button></div></div>';
         }
         echo "</div></fieldset>\n\n";
+        $this->cur_trx = null;
     }
 
     private function print_cross_track(SettingValues $sv) {
         echo "<fieldset class=\"settings-tracks\"><legend class=\"mb-1\">General permissions</legend>";
         $this->ctr = $sv->search_oblist("track", "id", "any");
+        $this->cur_trx = $sv->oldv("track/{$this->ctr}");
         $this->print_perm($sv, "viewtracker", "Who can see the <a href=\"" . $sv->conf->hoturl("help", "t=chair#meeting") . "\">meeting tracker</a>?", self::PERM_DEFAULT_UNFOLDED);
         echo "</fieldset>\n\n";
     }
@@ -402,21 +402,21 @@ class Track_SettingParser extends SettingParser {
                 }
                 $tr = $conf->track($id === "any" ? "" : $id);
                 if ($tr->perm[Track::VIEWPDF]
-                    && $tr->perm[Track::VIEWPDF] !== $tr->perm[Track::UNASSREV]
-                    && $tr->perm[Track::UNASSREV] !== "+none"
+                    && $tr->perm[Track::VIEWPDF] !== $tr->perm[Track::SELFASSREV]
+                    && $tr->perm[Track::SELFASSREV] !== "+none"
                     && $tr->perm[Track::VIEWPDF] !== $tr->perm[Track::VIEW]
-                    && $conf->setting("pcrev_any")) {
+                    && $conf->allow_self_assignment()) {
                     $sv->warning_at("track/{$ctr}/perm/unassrev", "<0>A track that restricts who can see documents should generally restrict review self-assignment in the same way.");
                 }
                 if ($tr->perm[Track::ASSREV]
-                    && $tr->perm[Track::UNASSREV]
-                    && $tr->perm[Track::UNASSREV] !== "+none"
-                    && $tr->perm[Track::ASSREV] !== $tr->perm[Track::UNASSREV]
-                    && $conf->setting("pcrev_any")) {
+                    && $tr->perm[Track::SELFASSREV]
+                    && $tr->perm[Track::SELFASSREV] !== "+none"
+                    && $tr->perm[Track::ASSREV] !== $tr->perm[Track::SELFASSREV]
+                    && $conf->allow_self_assignment()) {
                     $n = 0;
                     foreach ($conf->pc_members() as $pc) {
                         if ($pc->has_permission($tr->perm[Track::ASSREV])
-                            && $pc->has_permission($tr->perm[Track::UNASSREV]))
+                            && $pc->has_permission($tr->perm[Track::SELFASSREV]))
                             ++$n;
                     }
                     if ($n === 0) {

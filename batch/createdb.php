@@ -649,7 +649,7 @@ class CreateDB_Batch {
             "replace Replace existing HotCRP database if present",
             "no-replace Do not replace database",
             "replace-user Replace existing HotCRP database user if present",
-            "no-config Do not replace database",
+            "no-config Do not create config file",
             "no-grant Do not create user or grant privileges for HotCRP database access",
             "dbuser: =USER,PASS Specify database USER and PASS for HotCRP database access",
             "host: =HOST Specify database host [localhost]",

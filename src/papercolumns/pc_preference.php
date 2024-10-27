@@ -1,6 +1,6 @@
 <?php
 // pc_preference.php -- HotCRP helper classes for paper list content
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class Preference_PaperColumn extends PaperColumn {
     /** @var bool */
@@ -11,10 +11,12 @@ class Preference_PaperColumn extends PaperColumn {
     private $user;
     /** @var bool */
     private $not_me;
-    /** @var bool */
-    private $show_conflict;
     /** @var string */
     private $prefix;
+    /** @var bool */
+    private $show_conflict;
+    /** @var bool */
+    private $all = false;
     /** @var bool */
     private $secondary_sort_topic_score = false;
     /** @var ScoreInfo */
@@ -27,25 +29,10 @@ class Preference_PaperColumn extends PaperColumn {
         if (isset($cj->user)) {
             $this->user = $conf->pc_member_by_email($cj->user);
         }
-        if ($cj->edit ?? false) {
-            $this->mark_editable();
-        }
+        $this->editable = $cj->edit ?? false;
     }
-    function add_decoration($decor) {
-        if ($decor === "topicscore" || $decor === "topic_score" || $decor === "topicsort") {
-            $this->secondary_sort_topic_score = true;
-            return $this->__add_decoration($decor);
-        } else if ($decor === "edit") {
-            $this->mark_editable();
-            return $this->__add_decoration($decor);
-        } else {
-            return parent::add_decoration($decor);
-        }
-    }
-    function mark_editable() {
-        $this->editable = true;
-        $this->override = PaperColumn::OVERRIDE_BOTH;
-        $this->className = "pl_editrevpref";
+    function view_option_schema() {
+        return ["topics", "topicscore/topics", "topic_score/topics", "edit", "all"];
     }
     function prepare(PaperList $pl, $visible) {
         $this->viewer = $pl->user;
@@ -55,7 +42,14 @@ class Preference_PaperColumn extends PaperColumn {
             || ($this->not_me && !$this->viewer->can_view_preference(null))) {
             return false;
         }
-        if ($visible) {
+        $this->editable = $this->view_option("edit") ?? $this->editable;
+        if ($this->editable) {
+            $this->override = PaperColumn::OVERRIDE_BOTH;
+            $this->className = "pl_editrevpref";
+        }
+        $this->secondary_sort_topic_score = $this->view_option("topics") ?? false;
+        $this->all = $this->view_option("all") ?? false;
+        if ($visible || $this->secondary_sort_topic_score) {
             $pl->qopts["topics"] = 1;
         }
         $this->prefix =  "";
@@ -64,39 +58,30 @@ class Preference_PaperColumn extends PaperColumn {
         }
         return true;
     }
+    /** @return PaperReviewPreference */
     private function sortable_preference(PaperInfo $row) {
         if ($this->not_me
             && ($this->editable
                 ? !$this->viewer->allow_view_preference($row)
                 : !$this->viewer->can_view_preference($row))) {
-            return [-PHP_INT_MAX, null];
-        } else {
-            $pv = $row->preference($this->user)->as_list();
-            if ($pv[0] === 0 && $pv[1] === null) {
-                if (!$this->viewer->can_edit_preference_for($this->user, $row)) {
-                    $pv[0] = -PHP_INT_MAX;
-                } else if ($row->has_conflict($this->user)) {
-                    $pv[0] = $this->editable ? -0.00001 : -PHP_INT_MAX;
-                }
-            }
-            return $pv;
+            return PaperReviewPreference::make_sentinel();
         }
+        $pf = $row->preference($this->user);
+        if (!$pf->exists()) {
+            if ($this->not_me && !$this->user->can_view_paper($row)) {
+                return PaperReviewPreference::make_sentinel();
+            } else if ($row->has_conflict($this->user)) {
+                return new PaperReviewPreference($this->editable ? -0.00001 : -PHP_INT_MAX, null);
+            }
+        }
+        return $pf;
     }
     function compare(PaperInfo $a, PaperInfo $b, PaperList $pl) {
-        list($ap, $ae) = $this->sortable_preference($a);
-        list($bp, $be) = $this->sortable_preference($b);
-        if ($ap !== $bp) {
-            return $ap <=> $bp;
-        } else if ($ae !== $be) {
-            if (($ae === null) !== ($be === null)) {
-                return $ae === null ? 1 : -1;
-            }
-            return (int) $ae <=> (int) $be;
-        } else if ($this->secondary_sort_topic_score) {
-            return $a->topic_interest_score($this->user) <=> $b->topic_interest_score($this->user);
-        } else {
-            return 0;
+        $cmp = PaperReviewPreference::compare($this->sortable_preference($a), $this->sortable_preference($b));
+        if ($cmp === 0 && $this->secondary_sort_topic_score) {
+            $cmp = $a->topic_interest_score($this->user) <=> $b->topic_interest_score($this->user);
         }
+        return $cmp;
     }
     function reset(PaperList $pl) {
         if ($this->show_conflict === null) {
@@ -131,8 +116,10 @@ class Preference_PaperColumn extends PaperColumn {
     function content(PaperList $pl, PaperInfo $row) {
         $pf = $row->preference($this->user);
         $pf_exists = $pf->exists();
-        $editable = $this->editable && $this->viewer->can_edit_preference_for($this->user, $row, true);
-        $has_conflict = $row->has_conflict($this->user);
+        $conflicted = $row->has_conflict($this->user);
+        $editable = $this->editable
+            && (!$this->not_me || $this->user->can_view_paper($row))
+            && ($this->all || $this->user->pc_track_assignable($row));
 
         // compute HTML
         $t = "";
@@ -147,10 +134,10 @@ class Preference_PaperColumn extends PaperColumn {
             }
             $pft = $pf_exists ? $pf->unparse() : "";
             $t = "<input name=\"{$iname}\" class=\"uikd uich revpref\" value=\"{$pft}\" type=\"text\" size=\"4\" tabindex=\"2\" placeholder=\"0\">";
-            if ($has_conflict && $this->show_conflict) {
+            if ($conflicted && $this->show_conflict) {
                 $t .= " " . review_type_icon(-1);
             }
-        } else if (!$has_conflict || $pf_exists) {
+        } else if (!$conflicted || $pf_exists) {
             $t = str_replace("-", "−" /* U+2212 */, $pf->unparse());
         } else if ($this->show_conflict) {
             $t = review_type_icon(-1);

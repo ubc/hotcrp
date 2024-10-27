@@ -243,9 +243,9 @@ class UnicodeHelper {
     static function utf8_to_html_entities($str, $flag = ENT_NOQUOTES) {
         if ($flag & ENT_IGNORE) {
             $start = "";
-        } else if (($flag & ENT_QUOTES) == ENT_QUOTES) {
+        } else if (($flag & ENT_QUOTES) === ENT_QUOTES) {
             $start = "&<>\"'";
-        } else if (($flag & ENT_COMPAT) == ENT_COMPAT) {
+        } else if (($flag & ENT_COMPAT) === ENT_COMPAT) {
             $start = "&<>\"";
         } else {
             $start = "&<>";
@@ -280,9 +280,9 @@ class UnicodeHelper {
     static function utf8_to_xml_numeric_entities($str, $flag = ENT_NOQUOTES) {
         if ($flag & ENT_IGNORE) {
             $start = "";
-        } else if (($flag & ENT_QUOTES) == ENT_QUOTES) {
+        } else if (($flag & ENT_QUOTES) === ENT_QUOTES) {
             $start = "&<>\"'";
-        } else if (($flag & ENT_COMPAT) == ENT_COMPAT) {
+        } else if (($flag & ENT_COMPAT) === ENT_COMPAT) {
             $start = "&<>\"";
         } else {
             $start = "&<>";
@@ -382,7 +382,7 @@ class UnicodeHelper {
     static function utf8_abbreviate($str, $len) {
         $pfx = self::utf8_word_prefix($str, $len);
         if (strlen($pfx) < strlen($str)) {
-            return "$pfx...";
+            return "{$pfx}...";
         } else {
             return $pfx;
         }
@@ -402,6 +402,13 @@ class UnicodeHelper {
         return preg_replace_callback("/\xEF\xAC[\x80-\x84]/", function ($m) {
             return UnicodeHelper::$f_ligature_map[$m[0]];
         }, $str);
+    }
+
+    /** @param string $str
+     * @param int $len
+     * @return string */
+    static function utf8_truncate($str, $len) {
+        return self::utf8_truncate_invalid(substr($str, 0, $len));
     }
 
     /** @param string $str

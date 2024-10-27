@@ -21,9 +21,8 @@ class Offline_Page {
 
     function handle_download() {
         $rf = $this->conf->review_form();
-        $this->conf->make_csvg("review", CsvGenerator::TYPE_STRING)
-            ->set_inline(false)
-            ->add_string($rf->text_form_header(false)
+        $this->conf->make_text_downloader("review")
+            ->set_content($rf->text_form_header(false)
                 . $rf->text_form(null, null, $this->user) . "\n")
             ->emit();
     }
@@ -35,11 +34,12 @@ class Offline_Page {
             $this->ms->error_at("file");
             return false;
         }
-        $rf = $this->conf->review_form();
-        $tf = ReviewValues::make_text($rf, $this->qreq->file_contents("file"),
-                                      $this->qreq->file_filename("file"));
-        while ($tf->parse_text($this->qreq->override)) {
+        $tf = (new ReviewValues($this->conf))
+            ->set_text($this->qreq->file_content("file"),
+                       $this->qreq->file_filename("file"));
+        while ($tf->set_req_override(!!$this->qreq->override)->parse_text()) {
             $tf->check_and_save($this->user, null, null);
+            $tf->clear_req();
         }
         $tf->report();
         $this->conf->redirect_self($this->qreq);
@@ -49,7 +49,7 @@ class Offline_Page {
     /** @return bool */
     function handle_tag_indexes() {
         if ($this->qreq->upload && $this->qreq->has_file("file")) {
-            if (($text = $this->qreq->file_contents("file")) === false) {
+            if (($text = $this->qreq->file_content("file")) === false) {
                 $this->conf->error_msg("<0>Internal error: cannot read uploaded file");
                 return false;
             }
@@ -81,19 +81,20 @@ class Offline_Page {
         }
     }
 
+    /** @return bool */
     function handle_request() {
-        if ($this->qreq->download || $this->qreq->downloadForm /* XXX */) {
+        if ($this->qreq->download) {
             $this->handle_download();
             return true;
-        }
-        if (($this->qreq->upload || $this->qreq->uploadForm /* XXX */)
-            && $this->qreq->valid_post()) {
+        } else if ($this->qreq->upload
+                   && $this->qreq->valid_post()) {
             return $this->handle_upload();
-        }
-        if (($this->qreq->setvote || $this->qreq->setrank)
-            && $this->qreq->valid_post()
-            && $this->user->is_reviewer()) {
+        } else if (($this->qreq->setvote || $this->qreq->setrank)
+                   && $this->qreq->valid_post()
+                   && $this->user->is_reviewer()) {
             return $this->handle_tag_indexes();
+        } else {
+            return false;
         }
     }
 
@@ -118,7 +119,7 @@ class Offline_Page {
         }
         echo '<li><a href="', $conf->hoturl("offline", "download=1"), '">Blank form</a></li>',
             '</ul>
-<div class="f-h"><strong>Tip:</strong> Use <a href="', $conf->hoturl("search", "q="), '">Search</a> &gt; Download to choose individual applications.</div>',
+<div class="f-d"><strong>Tip:</strong> Use <a href="', $conf->hoturl("search", "q="), '">Search</a> &gt; Download to choose individual applications.</div>',
             "</fieldset>";
 
         $pastDeadline = !$conf->time_review(null, $this->user->isPC, true);
@@ -132,7 +133,7 @@ class Offline_Page {
         if ($pastDeadline && $this->user->privChair) {
             echo '<label class="checki"><span class="checkc">', Ht::checkbox("override"), '</span>Override deadlines</label>';
         }
-        echo '<div class="f-h"><strong>Tip:</strong> You may upload a file containing several forms.</div>';
+        echo '<div class="f-d"><strong>Tip:</strong> You may upload a file containing several forms.</div>';
         echo "</form></fieldset></div>";
 
         // Ranks
@@ -155,7 +156,7 @@ class Offline_Page {
             if ($pastDeadline && $this->user->privChair) {
                 echo '<label class="checki"><span class="checkc">', Ht::checkbox("override"), '</span>Override deadlines</label>';
             }
-            echo '<div class="f-h"><strong>Tip:</strong> Search “<a href="', $conf->hoturl("search", "q=" . urlencode("editsort:#~$ranktag")), '">editsort:#~', $ranktag, '</a>” to drag and drop your ranking.</span><br>',
+            echo '<div class="f-d"><strong>Tip:</strong> Search “<a href="', $conf->hoturl("search", "q=" . urlencode("editsort:#~$ranktag")), '">editsort:#~', $ranktag, '</a>” to drag and drop your ranking.</span><br>',
                 '“<a href="', $conf->hoturl("search", "q=order:%23%7E$ranktag"), '">order:#~', $ranktag, '</a>” searches by your ranking.</div>',
                 '</form></fieldset></div>';
         }
@@ -169,7 +170,7 @@ class Offline_Page {
         } else if (!$user->is_reviewer()) {
             Multiconference::fail($qreq, 403, ["title" => "Offline reviewing"], "<0>You aren’t registered as a reviewer or PC member for this program");
         } else if (!$user->conf->time_review_open() && !$user->privChair) {
-            Multiconference::fail($qreq, 403, ["title" => "Offline reviewing"], "<0>The site is not open for review");
+            Multiconference::fail($qreq, 403, ["title" => "Offline reviewing"], "<0>Reviewing is currently closed");
         }
 
         if ($qreq->post && $qreq->post_empty()) {

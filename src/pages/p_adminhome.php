@@ -26,12 +26,13 @@ class AdminHome_Page {
         if (PHP_VERSION_ID <= 70200) {
             $ml[] = new MessageItem(null, "<0>HotCRP requires PHP version 7.2 or higher.  You are running PHP version " . phpversion(), 2);
         }
-        $result = Dbl::qx($conf->dblink, "show variables like 'max_allowed_packet'");
         $max_file_size = ini_get_bytes("upload_max_filesize");
-        if (($row = $result->fetch_row())
-            && $row[1] < $max_file_size
-            && !$conf->opt("dbNoPapers")) {
-            $ml[] = new MessageItem(null, "<5>MySQL’s <code>max_allowed_packet</code> setting, which is " . htmlspecialchars($row[1]) . "&nbsp;bytes, is less than the PHP upload file limit, which is {$max_file_size}&nbsp;bytes.  You should update <code>max_allowed_packet</code> in the system-wide <code>my.cnf</code> file or the system may not be able to handle large applications", MessageSet::URGENT_NOTE);
+        if (!$conf->opt("dbNoPapers")) {
+            $result = Dbl::qx($conf->dblink, "show variables like 'max_allowed_packet'");
+            if (($row = $result->fetch_row())
+                && $row[1] < $max_file_size) {
+                $ml[] = new MessageItem(null, "<5>MySQL’s <code>max_allowed_packet</code> setting, which is " . htmlspecialchars($row[1]) . "&nbsp;bytes, is less than the PHP upload file limit, which is {$max_file_size}&nbsp;bytes.  You should update <code>max_allowed_packet</code> in the system-wide <code>my.cnf</code> file or the system may not be able to handle large applications", MessageSet::URGENT_NOTE);
+            }
         }
         if ($max_file_size < ini_get_bytes(null, "10M")
             && $max_file_size < $conf->upload_max_filesize()) {
@@ -85,7 +86,7 @@ class AdminHome_Page {
         // Any -100 preferences around?
         $result = PrefConflict_Autoassigner::query_result($conf, true);
         if (($row = $result->fetch_row())) {
-            $ml[] = new MessageItem(null, '<5>PC members have indicated paper conflicts (using review preferences of &#8722;100 or less) that aren’t yet confirmed. <a href="' . $conf->hoturl("=conflictassign") . '" class="nw">Confirm these conflicts</a>', MessageSet::MARKED_NOTE);
+            $ml[] = new MessageItem(null, '<5>PC members have indicated application conflicts (using review preferences of &#8722;100 or less) that aren’t yet confirmed. <a href="' . $conf->hoturl("=conflictassign") . '" class="nw">Confirm these conflicts</a>', MessageSet::MARKED_NOTE);
         }
         // Weird URLs?
         foreach (["conferenceSite", "paperSite"] as $k) {
@@ -95,7 +96,7 @@ class AdminHome_Page {
         }
         // Unnotified reviews?
         if (($conf->setting("pcrev_assigntime") ?? 0) > ($conf->setting("pcrev_informtime") ?? 0)
-            && $conf->rev_open) {
+            && $conf->time_review_open()) {
             $assigntime = $conf->setting("pcrev_assigntime");
             $result = $conf->fetch_ivalue("select exists(select * from PaperReview where reviewType>" . REVIEW_PC . " and timeRequested>timeRequestNotified and reviewSubmitted is null and (rflags&" . ReviewInfo::RF_LIVE . ")!=0) from dual");
             if ($result) {
@@ -117,10 +118,20 @@ class AdminHome_Page {
                 }
             }
         }
+        // Condition recursion?
+        if ($conf->setting("__sf_condition_recursion") > 0)  {
+            $ml[] = MessageItem::error("<0>Self-referential search in submission field conditions");
+            $ml[] = new MessageItem(null, "<5>Some presence conditions in submission fields appear to be circularly defined. The fields involved will never appear. You should <a href=\"" . $conf->hoturl("settings", "group=subform") . "\">update the submission form settings</a> to fix this problem.", MessageSet::INFORM);
+        }
 
         if (!empty($ml)) {
             $ml[] = new MessageItem(null, "", MessageSet::WARNING);
             $conf->feedback_msg($ml);
+        }
+
+        // Help message
+        if (!$conf->has_any_submitted()) {
+            $conf->feedback_msg([MessageItem::success("<5>For help setting up the site, see " . Ht::link("Help &gt; Chair’s guide", $conf->hoturl("help", "t=chair")))]);
         }
     }
 }

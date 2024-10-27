@@ -104,7 +104,23 @@ class Unit_Tester {
         xassert_eqq($result->fetch_row(), null);
         Dbl::free($result);
         $result = $mresult->next();
-        xassert_eqq($result, false);
+        xassert(!$result);
+
+        $mresult = Dbl::multi_q("select 0 from dual; select 2, 3 from dual; select 1 from dual");
+        $result = $mresult->next();
+        xassert($result instanceof mysqli_result);
+        xassert_array_eqq($result->fetch_row(), ["0"]);
+        $result->close();
+        $result = $mresult->next();
+        xassert($result instanceof mysqli_result);
+        xassert_array_eqq($result->fetch_row(), ["2", "3"]);
+        $result->close();
+        $result = $mresult->next();
+        xassert($result instanceof mysqli_result);
+        xassert_array_eqq($result->fetch_row(), ["1"]);
+        $result->close();
+        $result = $mresult->next();
+        xassert(!$result);
     }
 
     function test_array_sort_unique() {
@@ -624,7 +640,7 @@ class Unit_Tester {
         $t = $this->conf->parse_time("May 29, 2018 03:00:00 AoE");
         xassert_eqq($t, 1527606000);
         $this->conf->set_opt("timezone", "Etc/GMT+12");
-        $this->conf->refresh_options();
+        $this->conf->refresh_settings();
         $this->conf->refresh_globals();
         $t = $this->conf->parse_time("May 29, 2018 03:00:00");
         xassert_eqq($t, 1527606000);
@@ -767,17 +783,37 @@ class Unit_Tester {
     }
 
     function test_span_balanced_parens() {
-        xassert_eqq(SearchSplitter::span_balanced_parens("abc def"), 3);
-        xassert_eqq(SearchSplitter::span_balanced_parens("abc() def"), 5);
-        xassert_eqq(SearchSplitter::span_balanced_parens("abc()def ghi"), 8);
-        xassert_eqq(SearchSplitter::span_balanced_parens("abc(def g)hi"), 12);
-        xassert_eqq(SearchSplitter::span_balanced_parens("abc(def g)hi jk"), 12);
-        xassert_eqq(SearchSplitter::span_balanced_parens("abc(def g)h)i jk"), 11);
-        xassert_eqq(SearchSplitter::span_balanced_parens("abc(def [g)h)i jk"), 12);
-        xassert_eqq(SearchSplitter::span_balanced_parens("abc(def sajf"), 12);
+        xassert_eqq(SearchParser::span_balanced_parens("abc def"), 3);
+        xassert_eqq(SearchParser::span_balanced_parens("abc() def"), 5);
+        xassert_eqq(SearchParser::span_balanced_parens("abc()def ghi"), 8);
+        xassert_eqq(SearchParser::span_balanced_parens("abc(def g)hi"), 12);
+        xassert_eqq(SearchParser::span_balanced_parens("abc(def g)hi jk"), 12);
+        xassert_eqq(SearchParser::span_balanced_parens("abc(def g)h)i jk"), 11);
+        xassert_eqq(SearchParser::span_balanced_parens("abc(def [g)h)i jk"), 12);
+        xassert_eqq(SearchParser::span_balanced_parens("abc(def sajf"), 12);
 
-        $m = SearchSplitter::split_balanced_parens(" a(b) )c");
+        $m = SearchParser::split_balanced_parens(" a(b) )c");
         xassert_array_eqq($m, ["a(b)", ")c"]);
+
+        $sp = new SearchParser("a(b(c(d(e) ) ) ) ", 1);
+        $x = $sp->shift_balanced_parens();
+        xassert_eqq($x, "(b(c(d(e) ) ) )");
+
+        $sp = new SearchParser("a(b(c(d(e", 1, 5);
+        $x = $sp->shift_balanced_parens();
+        xassert_eqq($x, "(b(c");
+
+        $sp = new SearchParser("HIGHLIGHT:foobar");
+        $pe = $sp->parse_expression();
+        xassert_neqq($pe->op, null);
+        xassert_eqq($pe->op->type, "highlight");
+        xassert_eqq($pe->op->subtype, "foobar");
+
+        $sp = new SearchParser("HIGHLIGHT:foobar", 0, 11);
+        $pe = $sp->parse_expression();
+        xassert_neqq($pe->op, null);
+        xassert_eqq($pe->op->type, "highlight");
+        xassert_eqq($pe->op->subtype, "f");
     }
 
     function test_unpack_comparison() {
@@ -1051,23 +1087,6 @@ class Unit_Tester {
         $this->conf->set_opt("debugShowSensitiveEmail", true);
     }
 
-    function test_clean_html() {
-        $chtml = CleanHtml::basic();
-        xassert_eqq($chtml->clean('<a>Hello'), false);
-        xassert_eqq($chtml->clean('<a>Hello</a>'), '<a>Hello</a>');
-        xassert_eqq($chtml->clean('<script>Hello</script>'), false);
-        xassert_eqq($chtml->clean('< SCRIPT >Hello</script>'), false);
-        xassert_eqq($chtml->clean('<a href = fuckovia ><B>Hello</b></a>'), '<a href="fuckovia"><b>Hello</b></a>');
-        xassert_eqq($chtml->clean('<a href = " javaScript:hello" ><B>Hello</b></a>'), false);
-        xassert_eqq($chtml->clean('<a href = "https://hello" onclick="fuck"><B>Hello</b></a>'), false);
-        xassert_eqq($chtml->clean('<a href =\'https:"""//hello\' butt><B>Hello</b></a>'), '<a href="https:&quot;&quot;&quot;//hello" butt><b>Hello</b></a>');
-        xassert_eqq($chtml->clean('<p><b><p>a</p></b></p>'), false);
-        xassert_eqq($chtml->clean('<table> X </table>'), false);
-        xassert_eqq($chtml->clean('<table><tr><td>hi</td><td>there</td></tr></table>'), '<table><tr><td>hi</td><td>there</td></tr></table>');
-        xassert_eqq($chtml->clean("<ul><li>X</li> <li>Y</li>\n\n<li>Z</li>\n</ul>\n"), "<ul><li>X</li> <li>Y</li>\n\n<li>Z</li>\n</ul>\n");
-        xassert_eqq($chtml->clean("<ul><li>X</li> p <li>Y</li>\n\n<li>Z</li>\n</ul>\n"), false);
-    }
-
     function test_base48() {
         for ($i = 0; $i !== 1000; ++$i) {
             $n = mt_rand(0, 99);
@@ -1207,19 +1226,19 @@ class Unit_Tester {
         foreach (["1,2,3,4,5", "1,2,3,5,5", "3,5,5", "3,3,5,5", "2,3,3,5,5"] as $st) {
             $s[] = new ScoreInfo($st);
         }
-        xassert($s[0]->compare_by($s[0], "counts") == 0);
+        xassert($s[0]->compare_by($s[0], "counts") === 0);
         xassert($s[0]->compare_by($s[1], "counts") < 0);
         xassert($s[0]->compare_by($s[2], "counts") < 0);
         xassert($s[0]->compare_by($s[3], "counts") < 0);
-        xassert($s[1]->compare_by($s[1], "counts") == 0);
+        xassert($s[1]->compare_by($s[1], "counts") === 0);
         xassert($s[1]->compare_by($s[2], "counts") < 0);
         xassert($s[1]->compare_by($s[3], "counts") < 0);
-        xassert($s[2]->compare_by($s[2], "counts") == 0);
+        xassert($s[2]->compare_by($s[2], "counts") === 0);
         xassert($s[2]->compare_by($s[3], "counts") < 0);
         xassert($s[3]->compare_by($s[0], "counts") > 0);
         xassert($s[3]->compare_by($s[1], "counts") > 0);
         xassert($s[3]->compare_by($s[2], "counts") > 0);
-        xassert($s[3]->compare_by($s[3], "counts") == 0);
+        xassert($s[3]->compare_by($s[3], "counts") === 0);
         xassert($s[3]->compare_by($s[4], "counts") > 0);
 
         xassert_eqq(ScoreInfo::parse_score_sort("avg"), "average");
@@ -1398,5 +1417,41 @@ class Unit_Tester {
         xassert_eqq(SearchWord::unquote("“abc”"), "abc");
         xassert_eqq(SearchWord::unquote("\"abc”"), "abc");
         xassert_eqq(SearchWord::unquote("\"abc“"), "abc");
+        xassert_eqq(SearchWord::unquote("\"abc\\\"def\""), "abc\"def");
+        xassert_eqq(SearchWord::quote("abc\"def"), "\"abc\\\"def\"");
+    }
+
+    function test_view_option_schema() {
+        $schema = "asc,ascending,up desc,descending,down forward reverse";
+        xassert_eqq(ViewOptionSchema::validate_enum("ascending", $schema), "asc");
+        xassert_eqq(ViewOptionSchema::validate_enum("asc", $schema), "asc");
+        xassert_eqq(ViewOptionSchema::validate_enum("descending", $schema), "desc");
+        xassert_eqq(ViewOptionSchema::validate_enum("forward", $schema), "forward");
+        xassert_eqq(ViewOptionSchema::validate_enum("reverse", $schema), "reverse");
+        xassert_eqq(ViewOptionSchema::validate_enum("fart", $schema), null);
+        xassert_eqq(ViewOptionSchema::validate_enum("asc,ascending", $schema), null);
+
+        $vos = new ViewOptionSchema;
+        xassert_eqq($vos->define_check("display=row col,column"), true);
+        xassert_eqq($vos->define_check((object) ["name" => "sort", "enum" => $schema, "lifted" => true]), true);
+        xassert_eqq($vos->define_check((object) ["name" => "test", "enum" => "all,yes none,no some"]), true);
+        xassert_eqq($vos->define_check("fart!"), true);
+        xassert_eqq($vos->define_check(null), false);
+
+        xassert_eqq($vos->validate("display", "row"), ["display", "row"]);
+        xassert_eqq($vos->validate("display", "col"), ["display", "col"]);
+        xassert_eqq($vos->validate("display", "column"), ["display", "col"]);
+        xassert_eqq($vos->validate("display", true), null);
+        xassert_eqq($vos->validate("sort", "up"), ["sort", "asc"]);
+        xassert_eqq($vos->validate("up", true), ["sort", "asc"]);
+        xassert_eqq($vos->validate("shit", true), ["fart", "shit"]);
+        xassert_eqq($vos->validate("test", true), ["test", "all"]);
+        xassert_eqq($vos->validate("test", false), ["test", "none"]);
+        xassert_eqq($vos->validate("test", "yes"), ["test", "all"]);
+
+        $vos = new ViewOptionSchema;
+        $vos->define("display=row col,column");
+        $vos->define("sort=asc,ascending,up desc,down,descending forward reverse");
+        xassert_eqq($vos->validate("reverse", true), ["sort", "reverse"]);
     }
 }

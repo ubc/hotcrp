@@ -2,56 +2,84 @@
     {
         "name": "acceptreview", "post": true, "redirect": true,
         "function": "RequestReview_API::acceptreview",
-        "parameters": ["r"]
+        "parameters": "p r",
+        "response": "action review_site_relative"
     },
     {
         "name": "account", "get": true,
         "function": "User_API::account",
-        "parameters": ["email"]
+        "parameters": "email",
+        "response": "email disabled placeholder"
     },
     {
         "name": "account", "post": true,
         "function": "User_API::account",
-        "parameters": ["email", "?disable", "?enable", "?sendinfo"]
+        "parameters": "email ?disable ?enable ?sendinfo",
+        "response": "email disabled placeholder"
     },
     {
         "name": "alltags", "get": true,
         "function": "AllTags_API::run",
-        "parameters": []
+        "response": "tags ?readonly_tagmap ?sitewide_tagmap"
     },
     {
         "name": "assign", "post": true, "redirect": true,
         "function": "Assign_API::assign",
-        "parameters": ["assignments"]
+        "parameters": "?p =assignments"
     },
     {
-        "name": "claimreview", "paper": true, "post": true, "redirect": true,
+        "name": "assigntags", "post": true,
+        "function": "Tags_API::assigntags",
+        "parameters": "=tagassignment ?=search",
+        "response": "p ?ids ?groups ?hotlist ?search_params"
+    },
+    {
+        "name": "claimreview", "post": true, "paper": true, "redirect": true,
         "function": "RequestReview_API::claimreview",
-        "parameters": ["r", "email"]
+        "parameters": "r email",
+        "response": "action review_site_relative"
     },
     {
         "name": "clickthrough", "post": true,
         "function": "User_API::clickthrough",
-        "parameters": ["accept", "clickthrough_id"]
+        "parameters": "?p ?=accept =clickthrough_id =clickthrough_type =clickthrough_time"
     },
     {
-        "name": "comment", "paper": true, "get": true, "post": true,
+        "name": "comment", "get": true, "paper": true,
         "function": "Comment_API::run",
-        "get_parameters": ["c"],
-        "post_parameters": ["c", "text", "topic", "draft", "blind", "tags", "visibility"]
+        "parameters": "?c ?content",
+        "response": "?comment ?comments",
+        "response_deprecated": "cmt"
+    },
+    {
+        "name": "comment", "post": true, "paper": true,
+        "function": "Comment_API::run",
+        "parameters": "c ?override ?=text ?=:attachment ?=tags ?=topic ?=visibility ?=ready ?=draft ?=blind ?=response ?=by_author ?=review_token ?delete",
+        "response": "?comment ?conflict",
+        "response_deprecated": "cmt"
     },
     {
         "name": "declinereview", "post": true, "redirect": true,
         "function": "RequestReview_API::declinereview",
-        "parameters": ["r", "?reason"]
+        "parameters": "p r ?=reason",
+        "response": "action ?reason review_site_relative"
     },
     {
-        "name": "decision", "paper": true, "get": true, "post": true,
-        "function": "Decision_API::run"
+        "name": "decision", "get": true, "paper": true,
+        "function": "Decision_API::run",
+        "response": "decision decision_html ?editable"
+    },
+    {
+        "name": "decision", "post": true, "paper": true,
+        "function": "Decision_API::run",
+        "parameters": "=decision",
+        "response": "decision decision_html ?editable"
     },
     {
         "name": "events", "get": true,
-        "function": "Events_API::run"
+        "function": "Events_API::run",
+        "parameters": "?from",
+        "response": "from to rows more"
     },
     {
         "name": "fieldtext", "get": true,
@@ -59,15 +87,22 @@
     },
     {
         "name": "fieldhtml", "get": true,
-        "function": "Search_API::fieldhtml"
+        "function": "Search_API::fieldhtml",
+        "parameters": "f ?aufull ?session q ?t ?sort ?qt ?reviewer",
+        "response": "fields data ?stat ?classes ?attr"
     },
     {
-        "name": "follow", "paper": true, "post": true, "xxx": true,
-        "function": "Follow_API::run"
+        "name": "follow", "post": true, "paper": true, "xxx": true,
+        "function": "Follow_API::run",
+        "parameters": "?u =following",
+        "response": "following"
     },
     {
-        "name": "formatcheck", "get": true, "post": true,
-        "function": "FormatCheck_API::run"
+        "name": "formatcheck", "get": true,
+        "function": "FormatCheck_API::run",
+        "parameters": "?p ?doc ?soft ?dt ?docid",
+        "response": "npages nwords problem_fields has_error docid",
+        "response_deprecated": "result"
     },
     {
         "name": "graphdata", "get": true,
@@ -75,47 +110,72 @@
     },
     {
         "name": "job", "get": true,
-        "function": "Job_API::job"
+        "function": "Job_API::job",
+        "parameters": "job",
+        "response": "update_at ?status *"
     },
     {
-        "name": "jserror", "get": true,
-        "function": "Error_API::jserror"
+        "name": "jserror", "post": true,
+        "function": "Error_API::jserror",
+        "parameters": "=error ?=url ?=lineno ?=colno ?=stack"
     },
     {
-        "name": "lead", "paper": true, "get": true, "post": true,
-        "function": "PaperPC_API::lead_api"
+        "name": "lead", "get": true, "paper": true,
+        "function": "PaperPC_API::lead_api",
+        "response": "lead lead_html ?color_classes"
     },
     {
-        "name": "mailtext", "get": true, "post": true,
-        "function": "Mail_API::mailtext"
+        "name": "lead", "post": true, "paper": true,
+        "function": "PaperPC_API::lead_api",
+        "parameters": "=lead",
+        "response": "lead lead_html ?color_classes"
     },
     {
-        "name": "manager", "paper": true, "get": true, "post": true,
+        "name": "mailtext", "get": true,
+        "function": "Mail_API::mailtext",
+        "parameters": "?template ?p ?r ?email ?given_name ?family_name ?affiliation ?reason ?width ?text ?subject ?body",
+        "response": "?templates ?subject ?body"
+    },
+    {
+        "name": "manager", "get": true, "paper": true,
         "function": "PaperPC_API::manager_api",
-        "post_parameters": ["manager"]
+        "response": "manager manager_html ?color_classes"
     },
     {
-        "name": "administrator", "alias": "manager"
+        "name": "manager", "post": true, "paper": true,
+        "function": "PaperPC_API::manager_api",
+        "parameters": "=manager",
+        "response": "manager manager_html ?color_classes"
+    },
+    {
+        "name": "administrator", "alias": "manager", "get": true, "post": true
     },
     {
         "name": "namedformula", "get": true,
-        "function": "SearchConfig_API::namedformula"
+        "function": "SearchConfig_API::namedformula",
+        "response": "formulas"
     },
     {
         "name": "namedformula", "post": true,
-        "function": "SearchConfig_API::save_namedformula"
+        "function": "SearchConfig_API::save_namedformula",
+        "parameters": "=:formula",
+        "response": "formulas"
     },
     {
         "name": "namedsearch", "get": true, "allow_if": "pc",
-        "function": "SearchConfig_API::namedsearch"
+        "function": "SearchConfig_API::namedsearch",
+        "response": "searches"
     },
     {
         "name": "namedsearch", "post": true,
-        "function": "SearchConfig_API::save_namedsearch"
+        "function": "SearchConfig_API::save_namedsearch",
+        "response": "searches"
     },
     {
-        "name": "mentioncompletion", "get": true, "post": true,
-        "function": "Completion_API::mentioncompletion_api"
+        "name": "mentioncompletion", "get": true,
+        "function": "Completion_API::mentioncompletion_api",
+        "parameters": "?p",
+        "response": "mentioncompletion"
     },
     {
         "name": "oauthtoken", "post": true, "allow_disabled": true, "check_token": false,
@@ -130,23 +190,43 @@
         "function": "Paper_API::run"
     },
     {
-        "name": "pc", "get": true, "post": true,
-        "function": "PaperPC_API::pc_api"
+        "name": "pc", "get": true,
+        "function": "PaperPC_API::pc_api",
+        "parameters": "?ui",
+        "response": "pc ?tags ?sort ?p"
     },
     {
-        "name": "review", "paper": true, "get": true, "post": true,
+        "name": "requestreview", "post": true, "paper": true,
+        "function": "RequestReview_API::requestreview",
+        "parameters": "?round =email ?=given_name ?=family_name ?=name ?=affiliation ?=override ?=reason"
+    },
+    {
+        "name": "review", "get": true, "post": true, "paper": true,
         "function": "Review_API::review"
     },
     {
+        "name": "reviewhistory", "get": true, "paper": true,
+        "function": "Review_API::reviewhistory"
+    },
+    {
         "name": "reviewfieldlibrary", "get": true, "allow_if": "chair",
-        "function": "Settings_API::reviewfieldlibrary"
+        "function": "Settings_API::reviewfieldlibrary",
+        "response": "samples types"
     },
     {
-        "name": "reviewrating", "paper": true, "get": true, "post": true,
-        "function": "Review_API::reviewrating"
+        "name": "reviewrating", "get": true, "paper": true,
+        "function": "Review_API::reviewrating",
+        "parameters": "r",
+        "response": "?ratings ?user_rating"
     },
     {
-        "name": "reviewround", "paper": true, "post": true, "xxx": true,
+        "name": "reviewrating", "post": true, "paper": true,
+        "function": "Review_API::reviewrating",
+        "parameters": "r =user_rating",
+        "response": "?ratings ?user_rating"
+    },
+    {
+        "name": "reviewround", "post": true, "xxx": true, "paper": true,
         "function": "Review_API::reviewround"
     },
     {
@@ -154,100 +234,153 @@
         "function": "ReviewToken_API::run"
     },
     {
-        "name": "revpref", "get": true, "post": true,
-        "function": "Preference_API::pref_api"
+        "name": "revpref", "get": true,
+        "function": "Preference_API::pref_api",
+        "parameters": "p ?u",
+        "response": "value pref ?prefexp ?topic_score"
     },
     {
-        "name": "reviewpref", "alias": "revpref"
+        "name": "revpref", "post": true,
+        "function": "Preference_API::pref_api",
+        "parameters": "p ?u =pref",
+        "response": "value pref ?prefexp ?topic_score"
     },
     {
-        "name": "pref", "alias": "revpref"
+        "name": "reviewpref", "alias": "revpref", "get": true, "post": true
+    },
+    {
+        "name": "pref", "alias": "revpref", "get": true, "post": true
     },
     {
         "name": "search", "get": true,
-        "function": "Search_API::search"
+        "function": "Search_API::search",
+        "parameters": "q t ?qt ?sort ?report ?scoresort ?reviewer",
+        "response": "ids groups hotlist search_params"
+    },
+    {
+        "name": "searchaction", "get": true,
+        "function": "Search_API::searchaction",
+        "parameters": "?action q t ?qt ?sort ?report ?scoresort ?reviewer ?pap[]"
     },
     {
         "name": "searchcompletion", "get": true,
-        "function": "Completion_API::searchcompletion_api"
+        "function": "Completion_API::searchcompletion_api",
+        "response": "searchcompletion"
     },
     {
         "name": "session", "get": true, "allow_disabled": true,
-        "function": "Session_API::getsession"
+        "function": "Session_API::getsession",
+        "response": "sessioninfo"
     },
     {
         "name": "session", "post": true,
-        "function": "Session_API::setsession"
+        "function": "Session_API::setsession",
+        "parameters": "v",
+        "response": "sessioninfo"
     },
     {
-        "name": "settags", "alias": "tags"
+        "name": "tags", "get": true, "paper": true,
+        "function": "Tags_API::run",
+        "response": "pid tags tags_edit_text tags_view_html tag_decoration_html color_classes ?tags_conflicted ?color_classes_conflicted"
     },
     {
-        "name": "tags", "get": true, "post": true,
-        "function": "Tags_API::run"
+        "name": "tags", "post": true, "paper": true,
+        "function": "Tags_API::run",
+        "parameters": "?=tags ?=addtags ?=deltags ?=search",
+        "response": "pid ?tags ?tags_edit_text ?tags_view_html ?tag_decoration_html ?color_classes ?tags_conflicted ?color_classes_conflicted ?ids ?groups ?hotlist ?search_params"
     },
     {
         "name": "settingdescriptions", "get": true,
-        "function": "Settings_API::descriptions"
+        "function": "Settings_API::descriptions",
+        "response": "setting_descriptions"
     },
     {
         "name": "settings", "get": true, "post": true,
-        "function": "Settings_API::run"
+        "function": "Settings_API::run",
+        "parameters": "?=settings ?dryrun",
+        "response": "?dry_run ?changes"
     },
     {
-        "name": "shepherd", "paper": true, "get": true, "post": true,
-        "function": "PaperPC_API::shepherd_api"
+        "name": "shepherd", "get": true, "paper": true,
+        "function": "PaperPC_API::shepherd_api",
+        "response": "shepherd shepherd_html ?color_classes"
+    },
+    {
+        "name": "shepherd", "post": true, "paper": true,
+        "function": "PaperPC_API::shepherd_api",
+        "parameters": "=shepherd",
+        "response": "shepherd shepherd_html ?color_classes"
     },
     {
         "name": "submissionfieldlibrary", "get": true, "allow_if": "chair",
-        "function": "Settings_API::submissionfieldlibrary"
+        "function": "Settings_API::submissionfieldlibrary",
+        "response": "samples types"
     },
     {
         "name": "taganno", "get": true,
-        "function": "TagAnno_API::get"
+        "function": "TagAnno_API::get",
+        "parameters": "tag ?search",
+        "response": "tag editable anno ?ids ?groups ?hotlist ?search_params"
     },
     {
         "name": "taganno", "post": true,
-        "function": "TagAnno_API::set"
+        "function": "TagAnno_API::set",
+        "parameters": "tag ?search =anno",
+        "response": "tag editable anno ?ids ?groups ?hotlist ?search_params"
     },
     {
-        "name": "tagmessages", "paper": true, "get": true,
-        "function": "Tags_API::tagmessages_api"
+        "name": "tagmessages", "get": true, "paper": true,
+        "function": "Tags_API::tagmessages_api",
+        "response": "pid"
     },
     {
-        "name": "tagreport", "alias": "tagmessages"
+        "name": "track", "post": true,
+        "parameters": "track ?tracker_start_at ?p ?=hotlist-info"
     },
     {
         "name": "trackerconfig", "post": true,
-        "function": "MeetingTracker::trackerconfig_api"
+        "function": "TrackerConfig_API::run",
+        "parameters": "?=stopall ?=:tr ?=:has_tr",
+        "response": "?tracker ?tracker_recent ?tracker_status ?now tracker_status_at tracker_eventid ?new_trackerid ?tracker_site"
     },
     {
-        "name": "trackerstatus", "get": true, "post": true,
+        "name": "trackerstatus", "get": true,
         "function": "MeetingTracker::trackerstatus_api"
     },
     {
         "name": "upload", "post": true,
-        "function": "Upload_API::run"
+        "function": "Upload_API::run",
+        "parameters": "?p ?dtype ?start ?offset ?size ?finish ?token ?cancel ?=mimetype ?=filename ?@blob",
+        "response": "token ?dtype ?filename ?mimetype ?size ?ranges ?hash ?server_progress_loaded ?server_progress_max"
+
     },
     {
         "name": "user", "get": true,
         "function": "User_API::user",
-        "parameters": ["email"]
+        "parameters": "email ?p ?potential_conflict",
+        "response": "found ?email ?given_name ?family_name ?affiliation ?potential_conflict ?orcid ?country"
     },
     {
-        "name": "viewoptions", "get": true, "post": true,
-        "function": "SearchConfig_API::viewoptions"
+        "name": "viewoptions", "get": true,
+        "function": "SearchConfig_API::viewoptions",
+        "parameters": "?report ?q",
+        "response": "report display_current display_default display_difference display_default_message_list"
     },
     {
-        "name": "listreport", "alias": "viewoptions"
+        "name": "viewoptions", "post": true,
+        "function": "SearchConfig_API::viewoptions",
+        "parameters": "?report ?q =display",
+        "response": "report display_current display_default display_difference display_default_message_list"
     },
     {
-        "name": "votereport", "paper": true, "get": true, "post": true,
-        "function": "Tags_API::votereport_api"
+        "name": "votereport", "get": true, "paper": true,
+        "function": "Tags_API::votereport_api",
+        "parameters": "tag",
+        "response": "tag report"
     },
     {
         "name": "whoami", "get": true,
         "function": "User_API::whoami",
-        "parameters": []
+        "response": "?email ?given_name ?family_name ?affiliation"
     }
 ]

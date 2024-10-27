@@ -141,7 +141,7 @@ class Review_SettingParser extends SettingParser {
                 plural($round_map[$id - 1], "review"), '</a></span>';
         }
         if ($ctr === '$') {
-            echo '<div class="f-h fx">Names like “R1” and “R2” work well.</div>';
+            echo '<div class="f-d fx">Names like “R1” and “R2” work well.</div>';
         }
         echo '</legend>';
         $sv->print_feedback_at($namesi->name);
@@ -162,7 +162,7 @@ class Review_SettingParser extends SettingParser {
     static function print_rounds(SettingValues $sv) {
         Icons::stash_defs("trash");
         echo '<p>Reviews are due by the deadline, but <em>cannot be modified</em> after the hard deadline. Most programs don’t use hard deadlines for reviews.</p>',
-            '<p class="f-h">', $sv->type_hint("date"), '</p>',
+            '<p class="f-d">', $sv->type_hint("date"), '</p>',
             Ht::hidden("has_review", 1),
             Ht::unstash();
 
@@ -203,21 +203,22 @@ class Review_SettingParser extends SettingParser {
     static function print_pc(SettingValues $sv) {
         echo '<div class="form-g has-fold foldo">';
         $sv->print_checkbox("review_self_assign", "PC members can self-assign reviews", ["class" => "uich js-foldup"]);
-        if ($sv->conf->setting("pcrev_any")
-            && $sv->conf->check_track_sensitivity(Track::UNASSREV)) {
-            echo '<p class="f-h fx">', $sv->setting_group_link("Current track settings", "tracks"), ' may restrict self-assigned reviews.</p>';
+        if ($sv->conf->allow_self_assignment()
+            && $sv->conf->check_track_sensitivity(Track::SELFASSREV)) {
+            echo '<p class="f-d fx">', $sv->setting_group_link("Current track settings", "tracks"), ' may restrict self-assigned reviews.</p>';
         }
         echo "</div>\n";
 
 
         $hint = "";
         if ($sv->conf->check_track_sensitivity(Track::VIEWREVID)) {
-            $hint = '<p class="settings-radiohint f-h">' . $sv->setting_group_link("Current track settings", "tracks") . ' restrict reviewer name visibility.</p>';
+            $hint = '<p class="settings-radiohint f-d">' . $sv->setting_group_link("Current track settings", "tracks") . ' restrict reviewer name visibility.</p>';
         }
         $sv->print_radio_table("review_identity_visibility_pc", [
                 Conf::VIEWREV_ALWAYS => "Yes",
                 Conf::VIEWREV_IFASSIGNED => "Only if assigned a review for the same submission",
-                Conf::VIEWREV_AFTERREVIEW => "Only after completing a review for the same submission"
+                Conf::VIEWREV_AFTERREVIEW => "Only after completing a review for the same submission",
+                Conf::VIEWREV_NEVER => "No",
             ],
             'Can non-conflicted PC members see <strong>reviewer names</strong>?',
             ["after" => $hint]);
@@ -226,7 +227,7 @@ class Review_SettingParser extends SettingParser {
         $hint = "";
         if ($sv->conf->check_track_sensitivity(Track::VIEWREV)
             || $sv->conf->check_track_sensitivity(Track::VIEWALLREV)) {
-            $hint = '<p class="settings-radiohint f-h">' . $sv->setting_group_link("Current track settings", "tracks") . ' restrict review visibility.</p>';
+            $hint = '<p class="settings-radiohint f-d">' . $sv->setting_group_link("Current track settings", "tracks") . ' may restrict review visibility.</p>';
         }
         echo '<hr class="form-sep">';
         $sv->print_radio_table("review_visibility_pc", [
@@ -239,8 +240,8 @@ class Review_SettingParser extends SettingParser {
 
         echo '<hr class="form-sep">';
         $sv->print_radio_table("comment_visibility_reviewer", [
-                1 => ["label" => "Yes", "hint" => '<p class="settings-ap f-hx fn">Commenters will be pseudonymized (e.g., as “Reviewer A”) when reviewer names are hidden. Note that comment <em>contents</em> cannot be pseudonymized reliably.</p>'],
-                0 => ["label" => "Only when they can see reviewer names", "hint" => '<p class="settings-ap f-hx fx">Responses and other author-visible comments are always visible to reviewers.</p>']
+                1 => ["label" => "Yes", "hint" => '<p class="f-d fn">Commenters will be pseudonymized (e.g., as “Reviewer A”) when reviewer names are hidden. Note that comment <em>contents</em> cannot be pseudonymized reliably.</p>'],
+                0 => ["label" => "Only when they can see reviewer names", "hint" => '<p class="f-d fx">Responses and other author-visible comments are always visible to reviewers.</p>']
             ], 'Can reviewers see <strong>comments</strong>?',
             ["item_class" => "uich js-foldup",
              "fold_values" => [0]]);
@@ -284,7 +285,7 @@ class Review_SettingParser extends SettingParser {
         echo '<hr class="form-sep">';
         $label3 = "Yes, and external reviews are visible only to their requesters";
         if ($sv->conf->fetch_ivalue("select exists (select * from PaperReview where reviewType=" . REVIEW_EXTERNAL . " and reviewSubmitted>0)")) {
-            $label3 = '<label for="review_proposal_editable_3">' . $label3 . '</label><div class="settings-ap f-hx fx">Existing ' . Ht::link("submitted external reviews", $sv->conf->hoturl("search", ["q" => "re:ext:submitted"]), ["target" => "_new"]) . ' will remain visible to others.</div>';
+            $label3 = '<label for="review_proposal_editable_3">' . $label3 . '</label><div class="f-d fx">Existing ' . Ht::link("submitted external reviews", $sv->conf->hoturl("search", ["q" => "re:ext:submitted"]), ["target" => "_new"]) . ' will remain visible to others.</div>';
         }
         $sv->print_radio_table("review_proposal_editable", [
                 0 => "No",
@@ -313,9 +314,9 @@ class Review_SettingParser extends SettingParser {
 
     static function print_ratings(SettingValues $sv) {
         $sv->print_radio_table("review_rating", [
-                REV_RATINGS_NONE => "No",
-                REV_RATINGS_PC => "Yes, PC members can rate reviews",
-                REV_RATINGS_PC_EXTERNAL => "Yes, PC members and external reviewers can rate reviews"
+                -1 => "No",
+                0 => "Yes, PC members can rate reviews",
+                1 => "Yes, PC members and external reviewers can rate reviews"
             ], 'Should HotCRP collect ratings of reviews?   <a class="hint" href="' . $sv->conf->hoturl("help", "t=revrate") . '">Learn more</a>');
     }
 

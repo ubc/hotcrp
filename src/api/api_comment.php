@@ -155,17 +155,20 @@ class Comment_API {
         $this->ms->append_item(self::save_success_message($xcrow));
 
         $aunames = $mentions = [];
-        $mentions_missing = false;
+        $mentions_missing = $mentions_censored = false;
         foreach ($xcrow->notifications ?? [] as $n) {
-            if (($n->types & NotificationInfo::CONTACT) !== 0 && $n->sent) {
+            if ($n->has(NotificationInfo::CONTACT | NotificationInfo::SENT)) {
                 $aunames[] = $n->user->name_h(NAME_EB);
             }
-            if (($n->types & NotificationInfo::MENTION) !== 0) {
-                if ($n->sent) {
+            if ($n->has(NotificationInfo::MENTION)) {
+                if ($n->sent()) {
                     $mentions[] = $n->user_html ?? $suser->reviewer_html_for($n->user);
                 } else if ($xcrow->timeNotified === $xcrow->timeModified) {
                     $mentions_missing = true;
                 }
+            }
+            if ($n->has(NotificationInfo::CENSORED)) {
+                $mentions_censored = true;
             }
         }
         if ($aunames && !$this->prow->has_author($suser)) {
@@ -181,11 +184,24 @@ class Comment_API {
         if ($mentions_missing) {
             $this->ms->msg_at(null, $this->conf->_("<0>Some mentioned users cannot currently see this comment, so they were not notified."), MessageSet::WARNING_NOTE);
         }
+        if ($mentions_censored) {
+            $this->ms->msg_at(null, $this->conf->_("<0>Some notifications were censored to anonymize mentioned users."), MessageSet::WARNING_NOTE);
+        }
         return $xcrow;
     }
 
     /** @return JsonResult */
     private function run_qreq(Qrequest $qreq) {
+        // check for all-comments request
+        $content = $qreq->is_post() || friendly_boolean($qreq->content ?? "1");
+        if (!isset($qreq->c) && !isset($qreq->response) && !$qreq->is_post()) {
+            $comments = [];
+            foreach ($this->prow->viewable_comments($this->user) as $crow) {
+                $comments[] = $crow->unparse_json($this->user, !$content);
+            }
+            return new JsonResult(200, ["ok" => true, "comments" => $comments]);
+        }
+
         // analyze response parameter
         $c = $qreq->c ?? "";
         if ($c === "response") {
@@ -218,8 +234,9 @@ class Comment_API {
             $crow = $rcrow;
         } else if ($c === "new" || $c === "response") {
             $crow = null;
-        } else if (ctype_digit($c)) {
-            $crow = $this->find_comment("commentId=" . intval($c));
+        } else if (is_int($c) || ctype_digit($c)) {
+            $cn = is_int($c) ? $c : intval($c);
+            $crow = $this->find_comment("commentId={$cn}");
         } else if ($c === "" && $qreq->is_post()) {
             $c = "new";
             $crow = null;
@@ -254,7 +271,7 @@ class Comment_API {
 
         // check comment view permission
         if ($crow && !$this->user->can_view_comment($this->prow, $crow, true)) {
-            if ($this->user->can_view_review($this->prow, null)) {
+            if ($this->user->can_view_submitted_review($this->prow)) {
                 return JsonResult::make_error(403, "<0>You aren’t allowed to view that {$lccmttype}");
             } else {
                 return JsonResult::make_error(404, "<0>{$uccmttype} not found");
@@ -277,16 +294,18 @@ class Comment_API {
             }
         }
         if ($crow && $crow->commentId > 0) {
-            $jr["cmt"] = $crow->unparse_json($this->user);
+            $jr["comment"] = $crow->unparse_json($this->user, !$content);
+            $jr["cmt"] = $jr["comment"]; // XXX backward compat
         }
         return $jr;
     }
 
     static function run(Contact $user, Qrequest $qreq, PaperInfo $prow) {
         // check parameters
-        if ((!isset($qreq->text) && !isset($qreq->delete) && $qreq->is_post())
-            || ($qreq->c === "new" && !$qreq->is_post())) {
-            return JsonResult::make_error(400, "<0>Bad request");
+        if (!isset($qreq->text) && !isset($qreq->delete) && $qreq->is_post()) {
+            return JsonResult::make_parameter_error("text");
+        } else if ($qreq->c === "new" && !$qreq->is_post()) {
+            return JsonResult::make_parameter_error("c");
         } else {
             return (new Comment_API($user, $prow))->run_qreq($qreq);
         }

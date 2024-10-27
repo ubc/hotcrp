@@ -65,7 +65,17 @@ class API_Page {
         JsonCompletion::$allow_short_circuit = true;
         $conf = $user->conf;
         $uf = $conf->api($fn, $user, $qreq->method());
+        if (($validate = $uf && $conf->opt("validateApiSpec"))) {
+            SpecValidator_API::request($uf, $qreq);
+        }
         $jr = $conf->call_api_on($uf, $fn, $user, $qreq, $conf->paper);
+        if ($validate) {
+            SpecValidator_API::response($uf, $qreq, $jr);
+        }
+        if ($jr instanceof Downloader) {
+            $jr->emit();
+            exit();
+        }
         if ($uf
             && ($uf->redirect ?? false)
             && ($url = $conf->qreq_redirect_url($qreq))) {
@@ -81,7 +91,9 @@ class API_Page {
      * @return JsonResult */
     static private function status_api($fn, $user, $qreq) {
         $prow = $user->conf->paper;
-        $jr = new JsonResult($user->my_deadlines($prow ? [$prow] : []));
+        // default status API to not being pretty printed; it's frequently called
+        $jr = (new JsonResult($user->status_json($prow ? [$prow] : [])))
+            ->set_pretty_print(false);
         $jr["ok"] = true;
         if ($fn === "track" && ($new_trackerid = $qreq->annex("new_trackerid"))) {
             $jr["new_trackerid"] = $new_trackerid;
@@ -107,7 +119,7 @@ class API_Page {
                 $ml[] = $mi;
             }
         }
-        if (empty($ml) && isset($jr->content["error"])) {
+        if (empty($ml) && isset($jr->content["error"])) { // XXX backward compat
             $ml[] = new MessageItem(null, "<0>" . $jr->content["error"], 2);
         }
         if (empty($ml) && !($jr->content["ok"] ?? ($jr->status <= 299))) {
@@ -164,9 +176,9 @@ class API_Page {
             } else if (isset($_GET["track"])) {
                 $_GET["fn"] = "track";
             } else {
-                http_response_code(404);
+                http_response_code(400);
                 header("Content-Type: application/json; charset=utf-8");
-                echo '{"ok": false, "error": "API function missing"}', "\n";
+                echo '{"ok": false, "message_list": [{"field": "fn", "message": "<0>Parameter missing", "status": 2}]}', "\n";
                 exit();
             }
         }

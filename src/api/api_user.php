@@ -21,15 +21,24 @@ class User_API {
         if (($email = trim($qreq->email ?? "")) === "") {
             return JsonResult::make_missing_error("email");
         }
+        if (!is_valid_utf8($email)) {
+            return JsonResult::make_parameter_error("email");
+        }
+        if (strlen($email) < 8
+            && (($at = strpos($email, "@")) === false
+                || $at === 0
+                || ($dot = strpos($email, ".", $at + 1)) === false)) {
+            return new JsonResult(["ok" => false]);
+        }
 
-        $slice = Contact::SLICE_MINIMAL - Contact::SLICEBIT_COLLABORATORS
-            - Contact::SLICEBIT_COUNTRY - Contact::SLICEBIT_ORCID;
+        $slice = Contact::SLICE_MINIMAL & ~(Contact::SLICEBIT_COLLABORATORS
+            | Contact::SLICEBIT_COUNTRY | Contact::SLICEBIT_ORCID);
         $broad_lookup = $user->conf->opt("allowLookupUser");
 
         $found = null;
         if (strcasecmp($user->email, $email) >= 0
             && strcasecmp($user->email, "{$email}~") < 0) {
-            $found = $user;
+            $found = $user->populated_user();
         }
 
         if (($user->can_view_pc() || $broad_lookup)
@@ -61,19 +70,20 @@ class User_API {
         }
 
         if (!$found) {
-            return new JsonResult(["ok" => false]);
+            return new JsonResult(["ok" => true, "found" => false]);
         }
 
         $ok = strcasecmp($found->email, $email) === 0;
         $rj = [
             "ok" => $ok,
+            "found" => true,
             "email" => $found->email,
-            "firstName" => $found->firstName,
-            "lastName" => $found->lastName,
+            "given_name" => $found->firstName,
+            "family_name" => $found->lastName,
             "affiliation" => $found->affiliation
         ];
-        if ($found->country() !== "") {
-            $rj["country"] = $found->country();
+        if ($found->country_code() !== "") {
+            $rj["country"] = $found->country_code();
         }
         if ($found->orcid() !== "") {
             $rj["orcid"] = $found->orcid();
@@ -118,20 +128,13 @@ class User_API {
             return JsonResult::make_permission_error();
         } else if ($viewer->contactId === $user->contactId) {
             return JsonResult::make_error(400, "<0>You cannot disable your own account");
-        } else {
-            $ustatus = new UserStatus($viewer);
-            $ustatus->set_user($user);
-            if ($ustatus->save_user((object) ["disabled" => $disabled], $user)) {
-                return new JsonResult([
-                    "ok" => true,
-                    "u" => $user->email,
-                    "disabled" => $user->is_disabled(),
-                    "placeholder" => $user->is_placeholder()
-                ]);
-            } else {
-                return new JsonResult(["ok" => false, "u" => $user->email]);
-            }
         }
+        $ustatus = new UserStatus($viewer);
+        $ustatus->set_user($user);
+        if (!$ustatus->save_user((object) ["disabled" => $disabled], $user)) {
+            return new JsonResult(["ok" => false]);
+        }
+        return new JsonResult(["ok" => true]);
     }
 
     /** @return JsonResult */
@@ -141,22 +144,19 @@ class User_API {
         }
         $user->activate_placeholder(false);
         $prep = $user->prepare_mail("@accountinfo");
-        if ($prep->send()) {
-            $jr = new JsonResult(200);
-        } else {
-            $jr = new JsonResult(400);
-            $jr->content["message_list"] = $prep->message_list();
+        if (!$prep->send()) {
+            return new JsonResult(["ok" => false, "message_list" => $prep->message_list()]);
         }
-        $jr->content["u"] = $user->email;
-        return $jr;
+        return new JsonResult(["ok" => true]);
     }
 
     /** @return JsonResult */
     static function account(Contact $viewer, Qrequest $qreq) {
-        if (!isset($qreq->u) || $qreq->u === "me" || strcasecmp($qreq->u, $viewer->email) === 0) {
+        $u = $qreq->email ?? $qreq->u;
+        if ($u === null || $u === "me" || strcasecmp($u, $viewer->email) === 0) {
             $user = $viewer;
         } else if ($viewer->isPC) {
-            $user = $viewer->conf->user_by_email($qreq->u);
+            $user = $viewer->conf->user_by_email($u);
         } else {
             return JsonResult::make_permission_error();
         }
@@ -164,11 +164,17 @@ class User_API {
             return JsonResult::make_error(404, "<0>User not found");
         }
         if ($qreq->valid_post() && ($qreq->disable || $qreq->enable)) {
-            return self::account_disable($user, $viewer, !!$qreq->disable);
+            $jr = self::account_disable($user, $viewer, !!$qreq->disable);
         } else if ($qreq->valid_post() && $qreq->sendinfo) {
-            return self::account_sendinfo($user, $viewer);
+            $jr = self::account_sendinfo($user, $viewer);
         } else {
-            return new JsonResult(["ok" => true]);
+            $jr = new JsonResult(["ok" => true]);
         }
+        if ($jr->content["ok"]) {
+            $jr->content["email"] = $user->email;
+            $jr->content["disabled"] = $user->is_disabled();
+            $jr->content["placeholder"] = $user->is_placeholder();
+        }
+        return $jr;
     }
 }

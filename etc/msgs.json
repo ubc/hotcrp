@@ -26,8 +26,9 @@
     },
 
     ["<0>A {submission} may have at most {max} authors", "<0>A {submission} may have at most one author", ["{max}=1"]],
+    ["<0>This site requests that authors provide ORCID iDs. Please ask {0:list} to sign in and update their profiles.", "<0>This site requests that authors provide ORCID iDs. Please ask {0:list} to sign in and update their profile.", ["#{0}=1"]],
 
-    ["{} applications accepted out of {} submitted.", "{} application accepted out of {} submitted.", ["{0}=1"]],
+    ["{naccepted} of {nsubmitted} {submissions} accepted", "{naccepted} of {nsubmitted} {submission} accepted", ["{naccepted}=1", "{nsubmitted}=1"]],
 
     ["<5>{sclass} registration deadline", "<5>Registration deadline", ["!{sclass}"]],
     ["<5>You can register new {sclass} {submissions} until this deadline.", "<5>You can register new {submissions} until this deadline.", ["!{sclass}"]],
@@ -63,10 +64,8 @@
     ["sf_submission", "Draft submission", ["{draft}"]],
     ["sf_submission", "Submission", ["{edit}"]],
     ["sf_submission", "Submission (optional)", ["{edit}", "!{required}"]],
-    ["sf_submission", "Submissions", ["{plural}"]],
     ["sf_submission", "Submission PDF", ["{missing}"]],
     ["sf_submission", "Submission version", ["{version}=submission"]],
-    ["sf_final", "Final versions", ["{plural}"]],
     ["sf_abstract", "Abstract (optional)", ["{edit}", "!{required}"]],
     ["sf_authors", "Author", ["{count}=1"]],
     ["sf_authors", "Author", ["{edit}", "{max}=1"]],
@@ -128,6 +127,8 @@
     ["<5>Updated reviews {:list}", "<5>Review updated", ["{single}"]],
     ["<5>Approved reviews {:list}", "<5>Approved review {:list}", ["#{0}=1"]],
     ["<5>Approved reviews {:list}", "<5>Review approved", ["{single}"]],
+    ["<5>Accepted review requests {:list}", "<5>Accepted review request {:list}", ["#{0}=1"]],
+    ["<5>Accepted review requests {:list}", "<5>Review request accepted", ["{single}"]],
     ["<5>Submitted reviews for approval {:list}", "<5>Submitted review for approval {:list}", ["#{0}=1"]],
     ["<5>Submitted reviews for approval {:list}", "<5>Review submitted for approval", ["{single}"]],
     ["<5>Saved draft reviews for submissions {:list}", "<5>Saved draft review for submission {:list}", ["#{0}=1"]],
@@ -175,10 +176,10 @@
 
     {
         "context": "deadline_error", "in": "<0>Action not available", "m": [
-            ["<0>Authors can’t view reviews for {submission} #{pid} now", ["{deadline}=au_seerev"]],
-            ["<0>The site is not open for reviewing", ["{deadline}=rev_open"]],
-            ["<0>The site is not open for {submissions}", ["{deadline}=sub_open"]],
-            ["<0>The site is not open for responses", ["{deadline}^=response"]]
+            ["<0>Authors can’t currently view reviews for {submission} #{pid}", ["{deadline}=au_seerev"]],
+            ["<0>Reviewing is currently closed", ["{deadline}=rev_open"]],
+            ["<0>{Submissions} are currently closed", ["{deadline}=sub_open"]],
+            ["<0>Responses are currently closed", ["{deadline}^=response"]]
         ]
     },
     {

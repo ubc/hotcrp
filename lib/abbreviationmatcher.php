@@ -167,11 +167,6 @@ class AbbreviationMatcher {
     }
     /** @param string $s
      * @return bool */
-    static function is_camel_word_old($s) {
-        return preg_match('/\A[-_.A-Za-z0-9]*(?:[A-Za-z](?=[-_.A-Z0-9])|[0-9](?=[-_.A-Za-z]))[-_.A-Za-z0-9]*\*?\z/', $s);
-    }
-    /** @param string $s
-     * @return bool */
     static function is_camel_word($s) {
         return preg_match('/\A[_.A-Za-z0-9~?!\'*]*(?:[A-Za-z][_.A-Z0-9]|[0-9][_.A-Za-z])[_.A-Za-z0-9~?!\'*]*\z/', $s);
     }
@@ -184,7 +179,11 @@ class AbbreviationMatcher {
      * @return string */
     static function make_xtester($s) {
         $s = str_replace("\'", "", $s);
-        preg_match_all('/(?:\A_+|)[A-Za-z~?!][A-Za-z~?!]*|(?:[0-9]|\.[0-9])[0-9.]*/', $s, $m);
+        if (is_usascii($s)) {
+            preg_match_all('/(?:\A_+|)[A-Za-z~?!][A-Za-z~?!]*|(?:[0-9]|\.[0-9])[0-9.]*/', $s, $m);
+        } else {
+            preg_match_all('/(?:\A_+|)[A-Za-z~?!][A-Za-z~?!]*|(?:[0-9]|\.[0-9])[0-9.]*|\pL+|\pN+|\pZ+/u', $s, $m);
+        }
         if (!empty($m[0])) {
             return " " . join(" ", $m[0]);
         } else {
@@ -307,7 +306,11 @@ class AbbreviationMatcher {
                 ++$npatternw;
             }
         } else {
-            preg_match_all('/(?:\A_+|)[A-Za-z~?!*][A-Za-z~?!*]*|(?:[0-9]|\.[0-9])[0-9.]*\**/', $upat, $m);
+            if (is_usascii($upat)) {
+                preg_match_all('/(?:\A_+|)[A-Za-z~?!*][A-Za-z~?!*]*|(?:[0-9]|\.[0-9])[0-9.]*\**/', $upat, $m);
+            } else {
+                preg_match_all('/(?:\A_+|)[A-Za-z~?!*][A-Za-z~?!*]*|(?:[0-9]|\.[0-9])[0-9.]*\**|[\pL*]+|[\pN*]+|[\pS*]+/u', $upat, $m);
+            }
             $sep = " ";
             foreach ($m[0] as $w) {
                 $re .= $sep . preg_quote($w, "/");

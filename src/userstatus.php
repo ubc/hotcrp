@@ -22,8 +22,6 @@ class UserStatus extends MessageSet {
     public $viewer;
     /** @var Contact */
     public $user;
-    /** @var bool */
-    public $is_auth_user;
 
     /** @var bool */
     public $notify = false;
@@ -47,6 +45,11 @@ class UserStatus extends MessageSet {
     /** @var object */
     public $jval;
 
+    const AUTHF_USER = 1;
+    const AUTHF_SELF = 2;
+    const AUTHF_CDB = 4;
+    /** @var int */
+    private $_authf;
     /** @var ?bool */
     private $_req_security;
     /** @var bool */
@@ -124,15 +127,30 @@ class UserStatus extends MessageSet {
     }
 
     function set_user(Contact $user) {
-        if ($user !== $this->user) {
-            $this->user = $user;
-            $auth_user = $this->viewer->base_user();
-            $this->is_auth_user = $auth_user->has_email()
-                && strcasecmp($auth_user->email, $user->email) === 0;
-            if ($this->_cs) {
-                $this->_cs->reset_context();
-                $this->initialize_cs();
+        if ($user === $this->user) {
+            return;
+        }
+        $this->user = $user;
+
+        // set authentication flags
+        $this->_authf = 0;
+        $auth_viewer = $this->viewer->base_user();
+        if ($auth_viewer->has_email()
+            && strcasecmp($auth_viewer->email, $user->email) === 0) {
+            $this->_authf |= self::AUTHF_USER;
+            if (!$this->viewer->is_actas_user()) {
+                $this->_authf |= self::AUTHF_SELF | self::AUTHF_CDB;
             }
+        }
+        if (($this->_authf & self::AUTHF_CDB) === 0
+            && $auth_viewer->privChair
+            && $this->conf->opt("contactdbAdminUpdate")) {
+            $this->_authf |= self::AUTHF_CDB;
+        }
+
+        if ($this->_cs) {
+            $this->_cs->reset_context();
+            $this->initialize_cs();
         }
     }
 
@@ -144,23 +162,23 @@ class UserStatus extends MessageSet {
     /** Test if the edited user is the authenticated user.
      * @return bool */
     function is_auth_user() {
-        return $this->is_auth_user;
+        return ($this->_authf & self::AUTHF_USER) !== 0;
     }
 
     /** Test if the edited user is the authenticated user and same as the viewer.
      * @return bool */
     function is_auth_self() {
-        return $this->is_auth_user && !$this->viewer->is_actas_user();
+        return ($this->_authf & self::AUTHF_SELF) !== 0;
+    }
+
+    /** @return bool */
+    function can_update_cdb() {
+        return ($this->_authf & self::AUTHF_CDB) !== 0;
     }
 
     /** @return ?Contact */
     function cdb_user() {
         return $this->user->cdb_user();
-    }
-
-    /** @return ?Contact */
-    function actor() {
-        return $this->viewer->is_root_user() ? null : $this->viewer;
     }
 
     /** @param object $gj
@@ -208,12 +226,20 @@ class UserStatus extends MessageSet {
         }
     }
 
-    /** @return 0|1|2 */
+    /** @return 0|1|2
+     * @deprecated */
     function update_if_empty(Contact $user) {
+        assert($user === $this->user || $user === $this->user->cdb_user());
+        return $this->if_empty_code($user->is_cdb_user());
+    }
+
+    /** @param bool $cdb
+     * @return 0|1|2 */
+    function if_empty_code($cdb = false) {
+        // 0: allow all changes
+        // 1: allow null -> non-null changes only
         // CDB user profiles belong to their owners
-        if ($user->is_cdb_user()
-            && (strcasecmp($user->email, $this->viewer->email) !== 0
-                || $this->viewer->is_actas_user())) {
+        if ($cdb && !$this->can_update_cdb()) {
             return 1;
         } else if (($this->jval->user_override ?? null) !== null) {
             return $this->jval->user_override ? 0 : 1;
@@ -1045,9 +1071,9 @@ class UserStatus extends MessageSet {
         $cj = $us->jval;
 
         // Profile properties
-        $us->set_profile_prop($user, $us->update_if_empty($user));
+        $us->set_profile_prop($user, $us->if_empty_code(false));
         if (($cdbu = $user->cdb_user())) {
-            $us->set_profile_prop($cdbu, $us->update_if_empty($cdbu));
+            $us->set_profile_prop($cdbu, $us->if_empty_code(true));
         }
 
         // Disabled
@@ -1062,7 +1088,6 @@ class UserStatus extends MessageSet {
         if (($cflags & Contact::CFM_DISABLEMENT) === Contact::CF_PLACEHOLDER) {
             $cflags &= ~Contact::CF_PLACEHOLDER;
         }
-        $user->set_prop("disabled", $cflags & Contact::CFM_DISABLEMENT);
         $user->set_prop("cflags", $cflags);
         if ($user->prop_changed("disabled") && isset($cj->disabled)) {
             $us->diffs[$cj->disabled ? "disabled" : "enabled"] = true;
@@ -1288,21 +1313,8 @@ class UserStatus extends MessageSet {
     /** @param string $k
      * @return ?string */
     function field_label($k) {
-        if ($k === "firstName") {
-            return "First name";
-        } else if ($k === "lastName") {
-            return "Last name";
-        } else if ($k === "email" || $k === "uemail") {
-            return "Email";
-        } else if ($k === "affiliation") {
-            return "Affiliation";
-        } else if ($k === "collaborators") {
-            return "Collaborators";
-        } else if ($k === "topics") {
-            return "Topics";
-        } else {
-            return null;
-        }
+        $gj = $this->cs()->get("__field/{$k}");
+        return $gj->label ?? null;
     }
 
 
@@ -1492,9 +1504,9 @@ class UserStatus extends MessageSet {
     }
 
     static function print_country(UserStatus $us) {
-        //$t = Countries::selector("country", $us->qreq->country ?? $us->user->country(), ["id" => "country", "data-default-value" => $us->user->country(), "autocomplete" => $us->autocomplete("country")]) . $us->global_profile_difference("country");
-//        $t = Countries::selector("country", $us->qreq->country ?? $us->user->country(), ["id" => "country", "data-default-value" => $us->user->country(), "autocomplete" => $us->autocomplete("country")]) . $us->global_profile_difference("country");
-        $t = Ht::entry("country", $us->qreq->country ?? $us->user->country(), ["size" => 52, "autocomplete" => $us->autocomplete("country"), "class" => "fullw", "id" => "affiliation", "data-default-value" => $us->user->country()]) . $us->global_profile_difference("country");
+        $user_country = Countries::fix($us->user->country_code());
+        #$t = Countries::selector("country", $us->qreq->country ?? $user_country, ["id" => "country", "data-default-value" => $user_country, "autocomplete" => $us->autocomplete("country")]) . $us->global_profile_difference("country");
+        $t = Ht::entry("country", $us->qreq->country ?? $user_country, ["size" => 52, "autocomplete" => $us->autocomplete("country"), "class" => "fullw", "id" => "affiliation", "data-default-value" => $user_country]) . $us->global_profile_difference("country");
         $us->print_field("country", "Faculty/Institution", $t);
     }
 
@@ -1607,11 +1619,12 @@ class UserStatus extends MessageSet {
         echo '<div class="checki"><label><span class="checkc">',
             Ht::checkbox("ass", 1, $is_ass, ["data-default-checked" => $cis_ass, "class" => "uich js-profile-role" . $diffclass]),
             '</span>Sysadmin</label>',
-            '<p class="f-h">Sysadmins and PC chairs have full control over all site operations. Sysadmins need not be members of the PC. There’s always at least one administrator (sysadmin or chair).</p></div></td></tr></table>', "\n";
+            '<p class="f-d">Sysadmins and PC chairs have full control over all site operations. Sysadmins need not be members of the PC. There’s always at least one administrator (sysadmin or chair).</p></div></td></tr></table>', "\n";
     }
 
     static function print_collaborators(UserStatus $us) {
         if (!$us->user->isPC
+            && !$us->conf->setting("sub_collab")
             && !$us->qreq->collaborators
             && !$us->user->collaborators()
             && !$us->viewer->privChair) {
@@ -1620,7 +1633,7 @@ class UserStatus extends MessageSet {
         $cd = $us->conf->_i("conflictdef");
         $us->cs()->add_section_class("w-text")->print_start_section();
         /*
-        echo '<h3 class="', $us->control_class("collaborators", "form-h"), '">Collaborators and other affiliations</h3>', "\n",
+        echo '<h3 class="', $us->control_class("collaborators", "form-h field-title"), '">Collaborators and other affiliations</h3>', "\n",
             "<p>List potential conflicts of interest one per line, using parentheses for affiliations and institutions. We may use this information when assigning reviews.<br>Examples: “Ping Yen Zhang (INRIA)”, “All (University College London)”</p>";
         if ($cd !== "" && preg_match('/<(?:p|div)[ >]/', $cd)) {
             echo $cd;
@@ -1628,7 +1641,7 @@ class UserStatus extends MessageSet {
             echo '<p>', $cd, '</p>';
         }
         echo $us->feedback_html_at("collaborators"),
-            '<textarea name="collaborators" rows="5" cols="80" class="',
+            '<textarea id="collaborators" name="collaborators" rows="5" cols="80" class="',
             $us->control_class("collaborators", "need-autogrow w-text"),
             "\" data-default-value=\"", htmlspecialchars($us->user->collaborators()), "\">",
             htmlspecialchars($us->qreq->collaborators ?? $us->user->collaborators()),
@@ -1691,11 +1704,10 @@ topics. We use this information to help match applications to reviewers.</p>',
 /*            echo '<div class="', $us->control_class("tags", "f-i"), '">',
                 $us->feedback_html_at("tags"),
                 Ht::entry("tags", $us->qreq->tags ?? $itags, ["data-default-value" => $itags, "class" => "fullw"]),
-                "</div>
-  <p class=\"f-h\">Example: “heavy”. Separate tags by spaces; the “pc” tag is set automatically.<br /><strong>Tip:</strong>&nbsp;Use <a href=\"", $us->conf->hoturl("settings", "group=tags"), "\">tag colors</a> to highlight subgroups in review lists.</p>\n";
- */
+                "<p class=\"f-d\">Example: “heavy”. Separate tags by spaces; the “pc” tag is set automatically.<br /><strong>Tip:</strong>&nbsp;Use <a href=\"", $us->conf->hoturl("settings", "group=tags"), "\">tag colors</a> to highlight subgroups in review lists.</p></div>\n";
+*/
         } else {
-  //          echo $itags, "<p class=\"f-h\">Tags represent PC subgroups and are set by administrators.</p>\n";
+ //           echo $itags, "<p class=\"f-d\">Tags represent PC subgroups and are set by administrators.</p>\n";
         }
     }
 
@@ -1767,7 +1779,8 @@ topics. We use this information to help match applications to reviewers.</p>',
             Ht::submit("save", $this->is_new_user() ? "Create account" : "Save changes", ["class" => "btn-primary"]),
             Ht::submit("cancel", "Cancel", ["formnovalidate" => true])
         ];
-        if ($this->is_auth_self() && $this->cs()->root === "main") {
+        if ($this->can_update_cdb()
+            && $this->cs()->root === "main") {
             if ($this->cdb_user()) {
                 echo '<label class="checki mt-7"><span class="checkc">',
                     Ht::hidden("has_update_global", 1),

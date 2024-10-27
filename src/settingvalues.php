@@ -779,7 +779,7 @@ class SettingValues extends MessageSet {
         return $si->base_unparse_jsonv($this->choosev($si, $new), $this);
     }
 
-    /** @param array{new?:bool,reset?:?bool} $args
+    /** @param array{new?:bool,reset?:?bool,filter?:SearchExpr} $args
      * @return object */
     function all_jsonv($args = []) {
         $new = $args["new"] ?? false;
@@ -787,8 +787,10 @@ class SettingValues extends MessageSet {
         if ($args["reset"] ?? false) {
             $j["reset"] = true;
         }
+        $include = $args["filter"] ?? null;
         foreach ($this->conf->si_set()->top_list() as $si) {
             if ($si->json_export()
+                && (!$include || $include->evaluate_simple([$si, "expr_matches"]))
                 && ($v = $this->json_choosev($si, $new)) !== null) {
                 $j[$si->name] = $v;
             }
@@ -1054,6 +1056,47 @@ class SettingValues extends MessageSet {
                 && !$this->has_error_at($name))
                 $this->error_at($name, "<0>Entry required");
         }
+    }
+
+    /** @param string $pfx
+     * @param string $sfx
+     * @param string $description
+     * @return bool */
+    function error_if_match_ambiguous($pfx, $sfx, $description) {
+        // NB: $pfx may or may not end with `/`; $sfx may or may not begin with `/`
+        if (!str_ends_with($pfx, "/")) {
+            $pfx .= "/";
+        }
+        if (!str_starts_with($sfx, "/")) {
+            $sfx = "/{$sfx}";
+        }
+        $am = new AbbreviationMatcher;
+        $strs = [];
+        $ctrs = [];
+        for ($ctr = 1; array_key_exists("{$pfx}{$ctr}/id", $this->req); ++$ctr) {
+            if (!$this->reqstr("{$pfx}{$ctr}/delete")
+                && ($v = $this->base_parse_req("{$pfx}{$ctr}{$sfx}"))) {
+                $strs[] = $v;
+                $ctrs[] = $ctr;
+                $am->add_phrase($v, $ctr);
+            }
+        }
+        $errored = false;
+        foreach ($ctrs as $i => $ctr) {
+            $fval = $am->find_all($strs[$i]);
+            if ($fval === [$ctr]) {
+                continue;
+            }
+            if (!$errored) {
+                $this->error_at("{$pfx}{$ctr}{$sfx}", "<0>{$description} settings are ambiguous");
+                $this->msg_at("{$pfx}{$ctr}{$sfx}", "<0>Values should differ substantively, not just in punctuation, case, or spacing.", MessageSet::INFORM);
+                $errored = true;
+            }
+            foreach ($fval as $ctr1) {
+                $this->error_at("{$pfx}{$ctr1}{$sfx}");
+            }
+        }
+        return $errored;
     }
 
     /** @param list<string> $list1
@@ -1722,7 +1765,7 @@ class SettingValues extends MessageSet {
         echo '</span>', $this->label($name, $text, ["for" => $name, "class" => $js["label_class"] ?? null]);
         $this->print_feedback_at($name);
         if (($hint = $js["hint"] ?? "")) {
-            echo '<div class="', Ht::add_tokens("settings-ap f-hx", $js["hint_class"] ?? null), '">', $hint, '</div>';
+            echo '<p class="', Ht::add_tokens("f-d", $js["hint_class"] ?? null), '">', $hint, '</p>';
         }
         if (!($js["group_open"] ?? null)) {
             echo "</div>\n";
@@ -1748,9 +1791,9 @@ class SettingValues extends MessageSet {
             assert(is_array($fold_values));
         }
 
-        $this->print_group_open($name, "settings-radio", $rest + ["group_id" => $name]);
+        $this->print_group_open($name, "settings-radio f-i", $rest + ["group_id" => $name]);
         if ($heading) {
-            echo '<div class="label">', $heading, '</div>';
+            echo '<div class="label n">', $heading, '</div>';
         }
         foreach ($varr as $k => $item) {
             if (is_string($item)) {
@@ -1847,7 +1890,7 @@ class SettingValues extends MessageSet {
         $hint = $js["hint"] ?? "";
         $thint = $this->type_hint($si->type);
         if ($hint || $thint) {
-            echo '<div class="f-h">';
+            echo '<div class="f-d">';
             if ($hint && $thint) {
                 echo '<div>', $hint, '</div><div>', $thint, '</div>';
             } else if ($hint || $thint) {

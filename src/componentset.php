@@ -5,7 +5,7 @@
 class ComponentContext {
     /** @var list<mixed> */
     public $args = [];
-    /** @var ?list<callable> */
+    /** @var ?list */
     public $cleanup;
 }
 
@@ -105,6 +105,7 @@ class ComponentSet {
         $this->reset_context();
     }
 
+    /** @return $this */
     function reset_context() {
         assert(empty($this->_ctxstack) && empty($this->_ctx->cleanup));
         $this->root = null;
@@ -112,6 +113,7 @@ class ComponentSet {
         $this->_callables = ["Conf" => $this->conf];
         $this->_next_section_class = $this->_section_class;
         $this->_section_closer = null;
+        return $this;
     }
 
     /** @return Contact */
@@ -320,6 +322,27 @@ class ComponentSet {
         return $old_separator;
     }
 
+    /** @return $this */
+    function enter() {
+        $this->_ctxstack[] = $this->_ctx;
+        $this->_ctx = clone $this->_ctx;
+        $this->_ctx->cleanup = null;
+        return $this;
+    }
+
+    /** @return $this */
+    function leave() {
+        assert(!empty($this->_ctxstack));
+        $c = $this->_ctx->cleanup;
+        if ($c !== null) {
+            for ($i = count($c) - 2; $i >= 0; $i -= 2) {
+                call_user_func_array($c[$i], $c[$i + 1]);
+            }
+        }
+        $this->_ctx = array_pop($this->_ctxstack);
+        return $this;
+    }
+
     /** @param mixed ...$args
      * @return $this */
     function set_context_args(...$args) {
@@ -339,29 +362,29 @@ class ComponentSet {
     }
 
 
-    private function start_print() {
-        $this->_ctxstack[] = $this->_ctx;
-        $this->_ctx = clone $this->_ctx;
-        $this->_ctx->cleanup = null;
-    }
-
-    private function end_print() {
+    /** @param callable $function
+     * @return $this */
+    function on_leave($function, ...$args) {
         assert(!empty($this->_ctxstack));
-        $cleanup = $this->_ctx->cleanup ?? [];
-        for ($i = count($cleanup) - 1; $i >= 0; --$i) {
-            $cleaner = $cleanup[$i];
-            if (is_string($cleaner) && ($gj = $this->get($cleaner))) {
-                $this->print($gj);
-            } else if (is_callable($cleaner)) {
-                $this->call_function(null, $cleaner);
-            }
-        }
-        $this->_ctx = array_pop($this->_ctxstack);
+        $this->_ctx->cleanup[] = $function;
+        $this->_ctx->cleanup[] = $args;
+        return $this;
     }
 
+    /** @param string $name
+     * @return $this */
+    function print_on_leave($name) {
+        return $this->on_leave([$this, "print"], $name);
+    }
+
+    /** @param string $cleaner
+     * @deprecated */
     function push_print_cleanup($cleaner) {
-        assert(!empty($this->_ctxstack));
-        $this->_ctx->cleanup[] = $cleaner;
+        if (is_string($cleaner)) {
+            $this->print_on_leave($cleaner);
+        } else {
+            $this->on_leave($cleaner);
+        }
     }
 
     /** @param string $classes
@@ -495,8 +518,10 @@ class ComponentSet {
         $result = null;
         if (isset($gj->print_function)) {
             $result = $this->call_function($gj, $gj->print_function, $gj);
+        } else if (isset($gj->content)) {
+            echo Ftext::as(5, $gj->content, 0);
         } else if (isset($gj->html_content)) {
-            echo $gj->html_content;
+            echo $gj->html_content; /* XXX backward compat */
         }
         if (isset($gj->print_members)) {
             $print_members = $gj->print_members;
@@ -522,9 +547,9 @@ class ComponentSet {
      * @return mixed */
     function print_body_members($name) {
         if (($gj = $this->get($name))) {
-            $this->start_print();
+            $this->enter();
             $result = $this->_print_body($gj, true);
-            $this->end_print();
+            $this->leave();
         } else {
             $result = $this->print_members($name);
         }
@@ -535,14 +560,36 @@ class ComponentSet {
     /** @param string $name
      * @return mixed */
     function print_members($name) {
-        $this->start_print();
+        $this->enter();
         $result = null;
         foreach ($this->members($name) as $gj) {
             if (($result = $this->print($gj)) === false) {
                 break;
             }
         }
-        $this->end_print();
+        $this->leave();
+        return $result;
+    }
+
+    /** @param string $name
+     * @param null|string $reducer
+     * @return mixed */
+    function call_members($name, $reducer = null) {
+        $result = $reducer === null ? [] : null;
+        foreach ($this->members($name) as $gj) {
+            if (isset($gj->function)) {
+                $v = $this->call_function($gj, $gj->function, $gj);
+            } else {
+                $v = $gj->value ?? null;
+            }
+            if ($reducer === null) {
+                $result[] = $v;
+            } else if ($reducer === "&&" ? !$v : $v) {
+                return $v;
+            } else {
+                $result = $v;
+            }
+        }
         return $result;
     }
 

@@ -323,6 +323,18 @@ class Settings_Tester {
         $this->conf->save_refresh_setting("outcome_map", 1, $x);
     }
 
+    function test_ambiguous_decisions() {
+        // near-duplicate decision names are rejected
+        $sv = SettingValues::make_request($this->u_chair, [
+            "has_decision" => 1,
+            "decision/1/id" => "2",
+            "decision/1/name" => "Rejected.",
+            "decision/1/name_force" => "1"
+        ]);
+        xassert(!$sv->execute());
+        xassert_str_contains($sv->full_feedback_text(), "ambiguous");
+    }
+
     /** @param ReviewField $rf
      * @param int|string $fval
      * @return string */
@@ -1347,12 +1359,13 @@ class Settings_Tester {
         xassert_eqq($this->conf->_i("clickthrough_submit"), null);
     }
 
+    #[SkipLandmark]
     static function unexpected_unified_diff($x, $y) {
         $dmp = new dmp\diff_match_patch;
         $diff = $dmp->line_diff($x, $y);
         $udiff = $dmp->line_diff_toUnified($diff, 10, 50);
         fwrite(STDERR, $udiff);
-        xassert_eqq($udiff, "", caller_landmark());
+        xassert_eqq($udiff, "");
     }
 
     function test_json_settings_roundtrip() {
@@ -1631,8 +1644,8 @@ class Settings_Tester {
         xassert(!array_key_exists("contactEmail", $this->conf->opt_override));
         xassert_eqq($this->conf->setting("opt.contactName"), null);
         xassert_eqq($this->conf->setting("opt.contactEmail"), null);
+        $this->conf->refresh_settings();
 
-        $this->conf->refresh_options();
         $dsc = $this->conf->default_site_contact();
         $sc = $this->conf->site_contact();
         xassert_eqq($dsc->name(), "Jane Chair");
@@ -1743,5 +1756,132 @@ class Settings_Tester {
         xassert_eqq($this->conf->round_name(3), "R1");
         xassert_eqq($this->conf->assignment_round_option(false), "R1");
         xassert_eqq($this->conf->assignment_round_option(true), "R1");
+    }
+
+    function test_submission_fields() {
+        xassert_search($this->u_chair, "has:calories", "1 2 3 4 5");
+        xassert_search($this->u_mgbaker, "has:calories", "1 2 3 4 5");
+
+        // rename field
+        $sv = SettingValues::make_request($this->u_chair, [
+            "has_sf" => 1,
+            "sf/1/name" => "Fudge",
+            "sf/1/id" => 1,
+            "sf/1/order" => 100,
+            "sf/1/type" => "numeric"
+        ]);
+        xassert($sv->execute());
+        xassert_eqq($sv->changed_keys(), ["options"]);
+        xassert_search($this->u_chair, "has:fudge", "1 2 3 4 5");
+        xassert_search($this->u_mgbaker, "has:fudge", "1 2 3 4 5");
+
+        // retype field => fails
+        $sv = SettingValues::make_request($this->u_chair, [
+            "has_sf" => 1,
+            "sf/1/name" => "Fudge",
+            "sf/1/id" => 1,
+            "sf/1/order" => 100,
+            "sf/1/type" => "checkbox"
+        ]);
+        xassert(!$sv->execute());
+        xassert_search($this->u_mgbaker, "has:fudge", "1 2 3 4 5");
+
+        // delete old field, create new field with same name
+        $sv = SettingValues::make_request($this->u_chair, [
+            "has_sf" => 1,
+            "sf/1/name" => "Fudge",
+            "sf/1/id" => 1,
+            "sf/1/order" => 100,
+            "sf/1/delete" => 1,
+            "sf/2/name" => "Fudge",
+            "sf/2/id" => "new",
+            "sf/2/type" => "checkbox",
+            "sf/2/order" => 101
+        ]);
+        xassert($sv->execute());
+        xassert_eqq($sv->changed_keys(), ["options"]);
+        xassert_search($this->u_mgbaker, "has:fudge", "");
+
+        // new field
+        $sv = SettingValues::make_request($this->u_chair, [
+            "has_sf" => 1,
+            "sf/1/name" => "Brownies",
+            "sf/1/id" => "new",
+            "sf/1/order" => 102,
+            "sf/1/type" => "numeric"
+        ]);
+        xassert($sv->execute());
+        xassert_eqq($sv->changed_keys(), ["options"]);
+        xassert_search($this->u_mgbaker, "has:brownies", "");
+
+        // `order` is obeyed
+        $opts = array_values(Options_SettingParser::configurable_options($this->conf));
+        $names = array_map(function ($opt) { return $opt->name; }, $opts);
+        xassert_in_eqq("Fudge", $names);
+        xassert_in_eqq("Brownies", $names);
+        $fudgepos = array_search("Fudge", $names);
+        $browniespos = array_search("Brownies", $names);
+        xassert_lt($fudgepos, $browniespos);
+
+        // nonunique name => fail
+        $sv = SettingValues::make_request($this->u_chair, [
+            "has_sf" => 1,
+            "sf/1/name" => "Brownies",
+            "sf/1/id" => "new",
+            "sf/1/order" => 102,
+            "sf/1/type" => "numeric"
+        ]);
+        xassert(!$sv->execute());
+        xassert_str_contains($sv->full_feedback_text(), "is not unique");
+        xassert($sv->has_error_at("sf/1/name"));
+
+        // no name => fail
+        $sv = SettingValues::make_request($this->u_chair, [
+            "has_sf" => 1,
+            "sf/1/id" => "new",
+            "sf/1/order" => 103,
+            "sf/1/type" => "numeric"
+        ]);
+        xassert(!$sv->execute());
+        xassert_str_contains($sv->full_feedback_text(), "Entry required");
+        xassert($sv->has_error_at("sf/1/name"));
+    }
+
+    function test_ioptions_title() {
+        $sv = SettingValues::make_request($this->u_chair, [
+            "has_sf" => 1,
+            "sf/1/id" => "submission",
+            "sf/1/name" => "Subterranean",
+            "sf/2/id" => "abstract",
+            "sf/2/name" => "Blabstract",
+            "sf/2/required" => "no"
+        ]);
+        xassert($sv->execute());
+
+        xassert_eqq($this->conf->option_by_id(DTYPE_SUBMISSION)->edit_title(), "Subterranean");
+        xassert_eqq($this->conf->option_by_id(PaperOption::ABSTRACTID)->edit_title(), "Blabstract");
+
+        $this->conf->save_setting("ioptions", null);
+        $this->conf->save_refresh_setting("opt.noAbstract", null);
+    }
+
+    function test_sf_condition_recursion_live() {
+        $old_options = $this->conf->setting_data("options");
+        $j = json_decode($this->conf->setting_data("options")) ?? [];
+        xassert_eqq($j[3]->id, 1);
+        xassert_eqq($j[3]->name, "Brownies");
+        xassert_eqq($j[3]->exists_if ?? null, null);
+        xassert_eqq($this->conf->setting("__sf_condition_recursion"), null);
+
+        $j[3]->exists_if = "#foobar && !has:brownies";
+        $this->conf->save_refresh_setting("options", $this->conf->setting("options") + 1, json_encode_db($j));
+
+        $pa = PaperInfo::make_new($this->u_chair, null);
+        $pa->set_prop("paperTags", " foobar#0");
+        xassert($this->u_chair->can_view_option($pa, $this->conf->option_by_id(1)));
+        xassert_eqq($this->conf->setting("__sf_condition_recursion"), 1);
+
+        $this->conf->save_refresh_setting("options", $this->conf->setting("options") + 1, $old_options);
+        $this->conf->save_setting("__sf_condition_recursion", null);
     }
 }

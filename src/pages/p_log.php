@@ -71,7 +71,7 @@ class Log_Page {
 
     private function add_user_clause() {
         $ids = [];
-        $accts = new SearchSplitter($this->qreq->u);
+        $accts = new SearchParser($this->qreq->u);
         while (($word = $accts->shift_balanced_parens()) !== "") {
             $flags = ContactSearch::F_TAG | ContactSearch::F_USER | ContactSearch::F_ALLOW_DELETED;
             if (substr($word, 0, 1) === "\"") {
@@ -194,7 +194,7 @@ class Log_Page {
         assert(Contact::ROLE_PC === 1 && Contact::ROLE_ADMIN === 2 && Contact::ROLE_CHAIR === 4);
         $role_map = ["", "pc", "sysadmin", "pc sysadmin", "chair", "chair", "chair", "chair"];
 
-        $csvg = $this->conf->make_csvg("log")->set_will_emit(true);
+        $csvg = $this->conf->make_csvg("log")->set_emit_live(true);
         $narrow = true;
         $headers = ["date", "ipaddr", "email"];
         if ($narrow) {
@@ -400,7 +400,7 @@ class Log_Page {
                 continue;
             }
             if ($all_pc
-                && (!isset($user->roles) || !($user->roles & Contact::ROLE_PCLIKE))) {
+                && (($user->roles ?? 0) & Contact::ROLE_PCLIKE) === 0) {
                 $all_pc = false;
             }
             if ($user->disabled_flags() & Contact::CF_DELETED) {
@@ -432,7 +432,7 @@ class Log_Page {
         if (count($ts) <= 3) {
             return join(", ", $ts);
         } else {
-            $fmt = $all_pc ? "%d PC users" : "%d users";
+            $fmt = $all_pc ? "{} PC users" : "{} users";
             return '<div class="has-fold foldc"><button type="button" class="q ui js-foldup">'
                 . expander(null, 0)
                 . '</button>'

@@ -61,30 +61,28 @@ abstract class SearchTerm {
 
     /** @param bool $negate
      * @return SearchTerm */
-    function negate_if($negate) {
+    final function negate_if($negate) {
         return $negate ? $this->negate() : $this;
     }
 
     /** @param string $command
      * @param SearchWord $sword
      * @return $this */
-    function add_view_anno($command, $sword) {
-        $this->float["view"][] = new SearchViewCommand($command, $sword);
+    final function add_view_anno($command, $sword) {
+        foreach (ViewCommand::parse($command, ViewCommand::ORIGIN_SEARCH, $sword) as $svc) {
+            $this->float["view"][] = $svc;
+        }
         return $this;
     }
 
-    /** @return list<SearchViewCommand> */
-    function view_commands() {
-        $v = $this->float["view"] ?? [];
-        if (!empty($v)) {
-            $v = SearchViewCommand::analyze($v);
-        }
-        return $v;
+    /** @return list<ViewCommand> */
+    final function view_commands() {
+        return $this->float["view"] ?? [];
     }
 
     /** @param string $field
-     * @return ?SearchViewCommand */
-    function find_view_command($field) {
+     * @return ?ViewCommand */
+    final function find_view_command($field) {
         foreach ($this->view_commands() as $svc) {
             if ($svc->keyword === $field)
                 return $svc;
@@ -140,7 +138,7 @@ abstract class SearchTerm {
 
     /** @param ?SearchStringContext $context
      * @return ?array{int,int} */
-    function strspan_in($context) {
+    final function strspan_in($context) {
         if ($this->pos1 === null) {
             return null;
         }
@@ -182,6 +180,10 @@ abstract class SearchTerm {
 
     /** @param array<string,mixed> &$options */
     function paper_requirements(&$options) {
+    }
+
+    /** @param array<int,true> &$oids */
+    function paper_options(&$oids) {
     }
 
 
@@ -293,17 +295,19 @@ abstract class SearchTerm {
         return null;
     }
 
-    const ABOUT_PAPER = 0;
-    const ABOUT_UNKNOWN = 1;
-    const ABOUT_REVIEW = 2;
-    const ABOUT_REVIEW_SET = 3;
-    /** @return 0|1|2|3 */
+    const ABOUT_PAPER = 1;
+    const ABOUT_UNKNOWN = 2;
+    const ABOUT_REVIEW = 4;
+    const ABOUT_REVIEW_SET = 8;
+    const ABOUT_NO_SHORT_CIRCUIT = 16;
+
+    /** @return 1|2|4|8 */
     function about() {
         return self::ABOUT_PAPER;
     }
 
 
-    /** @param 0|2 $about
+    /** @param int $about
      * @return null|bool|array{type:string} */
     function script_expression(PaperInfo $row, $about) {
         return $this->test($row, null);
@@ -380,7 +384,7 @@ abstract class Op_SearchTerm extends SearchTerm {
         foreach ($term->float as $k => $v) {
             if ($k === "view") {
                 if ($this->type === "then") {
-                    $v = SearchViewCommand::strip_sorts($v);
+                    $v = ViewCommand::strip_sorts($v);
                 }
                 $this->float[$k] = array_merge($this->float[$k] ?? [], $v);
             } else if ($k === "tags") {
@@ -461,6 +465,11 @@ abstract class Op_SearchTerm extends SearchTerm {
             $ch->paper_requirements($options);
         }
     }
+    function paper_options(&$oids) {
+        foreach ($this->child as $ch) {
+            $ch->paper_options($oids);
+        }
+    }
     function is_sqlexpr_precise() {
         foreach ($this->child as $ch) {
             if (!$ch->is_sqlexpr_precise())
@@ -493,10 +502,12 @@ abstract class Op_SearchTerm extends SearchTerm {
 
     /** @param 'and'|'or'|'not'|'xor' $op
      * @param list<null|bool|array{type:string}> $sexprs
+     * @param int $about
      * @return null|bool|array{type:string} */
-    static function combine_script_expressions($op, $sexprs) {
+    static function combine_script_expressions($op, $sexprs, $about = 0) {
         $ok = true;
         $bresult = $op === "and";
+        $xresult = null;
         $any = false;
         $ch = [];
         foreach ($sexprs as $sexpr) {
@@ -505,7 +516,7 @@ abstract class Op_SearchTerm extends SearchTerm {
             } else if (is_bool($sexpr)) {
                 $any = true;
                 if ($sexpr ? $op === "or" : $op === "and") {
-                    return $sexpr;
+                    $xresult = $sexpr;
                 } else if ($sexpr ? $op === "xor" : $op === "not") {
                     $bresult = !$bresult;
                 }
@@ -513,8 +524,10 @@ abstract class Op_SearchTerm extends SearchTerm {
                 $ch[] = $sexpr;
             }
         }
-        if (!$ok) {
+        if (!$ok && ($xresult === null || ($about & self::ABOUT_NO_SHORT_CIRCUIT) !== 0)) {
             return null;
+        } else if ($xresult !== null) {
+            return $xresult;
         } else if (empty($ch)) {
             return $any && $bresult;
         } else if ($op === "not" || ($bresult && $op === "xor" && count($ch) === 1)) {
@@ -533,7 +546,8 @@ abstract class Op_SearchTerm extends SearchTerm {
         foreach ($this->child as $ch) {
             $sexprs[] = $ch->script_expression($row, $about);
         }
-        return self::combine_script_expressions($this->type, $sexprs);
+        $type = $this->type === "space" ? "and" : $this->type;
+        return self::combine_script_expressions($type, $sexprs);
     }
 }
 
@@ -847,6 +861,7 @@ class Then_SearchTerm extends Op_SearchTerm {
         }
         return $this;
     }
+
     function visit($visitor) {
         // Only visit non-highlight terms
         $x = [];
@@ -854,6 +869,12 @@ class Then_SearchTerm extends Op_SearchTerm {
             $x[] = $this->child[$i]->visit($visitor);
         }
         return $visitor($this, ...$x);
+    }
+
+    function paper_options(&$oids) {
+        for ($i = 0; $i !== $this->nthen; ++$i) {
+            $this->child[$i]->paper_options($oids);
+        }
     }
 
     /** @return int */
@@ -993,12 +1014,17 @@ class Limit_SearchTerm extends SearchTerm {
     /** @var int
      * @readonly */
     public $lflag;
+    /** @var string */
+    private $limit_class;
+    /** @var ?list<int> */
+    private $xlist;
     /** @var Contact */
     private $user;
     /** @var Contact */
     private $reviewer;
 
     /* NB all named_limits must equal themselves when urlencoded */
+    /** @var array<string,string|array{string,string}> */
     static public $reqtype_map = [
         "a" => ["a", "author"],
         "acc" => "accepted",
@@ -1013,6 +1039,7 @@ class Limit_SearchTerm extends SearchTerm {
         "alladmin" => "alladmin",
         "ar" => "ar",
         "author" => ["a", "author"],
+        "dec:yes" => "accepted",
         "editpref" => "reviewable",
         "lead" => "lead",
         "manager" => "admin",
@@ -1040,6 +1067,7 @@ class Limit_SearchTerm extends SearchTerm {
     const LFLAG_ACTIVE = 1;
     const LFLAG_SUBMITTED = 2;
     const LFLAG_IMPLICIT = 4;
+    const LFLAG_ACCEPTED = 8;
 
     function __construct(Contact $user, Contact $reviewer, $limit, $implicit = false) {
         parent::__construct("in");
@@ -1057,11 +1085,25 @@ class Limit_SearchTerm extends SearchTerm {
         return new Limit_SearchTerm($srch->user, $srch->reviewer_user(), $word);
     }
 
+    /** @return ?array{string,string} */
+    static function canonical_names(Conf $conf, $limit) {
+        if ($limit === null) {
+            return null;
+        } else if (($rt = self::$reqtype_map[$limit] ?? null) !== null) {
+            return is_string($rt) ? [$rt, $rt] : $rt;
+        } else if (str_starts_with($limit, "dec:")
+                   && count($conf->decision_set()->matchexpr(substr($limit, 4), true)) > 0) {
+            return [$limit, $limit];
+        } else {
+            return null;
+        }
+    }
+
     /** @param string $limit
      * @suppress PhanAccessReadOnlyProperty */
     function set_limit($limit) {
-        $limit = PaperSearch::canonical_limit($limit) ?? "none";
-        $this->named_limit = $limit;
+        $limitpair = self::canonical_names($this->user->conf, $limit) ?? ["none", "none"];
+        $this->named_limit = $limit = $limitpair[0];
         $conf = $this->user->conf;
         // optimize SQL for some limits
         if ($limit === "viewable" && $this->user->can_view_all()) {
@@ -1069,15 +1111,27 @@ class Limit_SearchTerm extends SearchTerm {
         } else if ($limit === "reviewable" && !$this->reviewer->isPC) {
             $limit = "r";
         }
-        $this->limit = $limit;
+        $this->limit = $this->limit_class = $limit;
         // mark flags
-        if (in_array($limit, ["a", "ar", "r", "req", "viewable", "reviewable",
-                              "all", "none"], true)) {
+        if (str_starts_with($limit, "dec:")) {
+            $this->limit_class = "dec";
+            $this->xlist = $this->user->conf->decision_set()->matchexpr(substr($limit, 4), true);
+            $this->lflag = self::LFLAG_SUBMITTED | self::LFLAG_ACCEPTED;
+            foreach ($this->xlist as $dec) {
+                if ($dec <= 0) {
+                    $this->lflag = self::LFLAG_SUBMITTED;
+                    break;
+                }
+            }
+        } else if (in_array($limit, ["a", "ar", "r", "req", "viewable", "reviewable",
+                                     "all", "none"], true)) {
             $this->lflag = 0;
         } else if (in_array($limit, ["active", "unsub", "actadmin"], true)
                    || ($conf->can_pc_view_some_incomplete()
                        && !in_array($limit, ["s", "accepted"], true))) {
             $this->lflag = self::LFLAG_ACTIVE;
+        } else if ($limit === "accepted") {
+            $this->lflag = self::LFLAG_SUBMITTED | self::LFLAG_ACCEPTED;
         } else {
             $this->lflag = self::LFLAG_SUBMITTED;
         }
@@ -1090,7 +1144,7 @@ class Limit_SearchTerm extends SearchTerm {
 
     /** @return bool */
     function is_accepted() {
-        return $this->limit === "accepted";
+        return ($this->lflag & self::LFLAG_ACCEPTED) !== 0;
     }
 
     /** @return bool */
@@ -1117,7 +1171,7 @@ class Limit_SearchTerm extends SearchTerm {
         // otherwise go by limit
         $fin = $options["finalized"] = ($this->lflag & self::LFLAG_SUBMITTED) !== 0;
         $act = $options["active"] = ($this->lflag & self::LFLAG_ACTIVE) !== 0;
-        switch ($this->limit) {
+        switch ($this->limit_class) {
         case "all":
         case "viewable":
             return $this->user->privChair;
@@ -1157,6 +1211,10 @@ class Limit_SearchTerm extends SearchTerm {
             assert($fin);
             $options["dec:none"] = true;
             return $this->user->can_view_all_decision();
+        case "dec":
+            assert($fin);
+            $options[$this->limit] = true;
+            return $this->user->can_view_all_decision();
         case "unsub":
             assert($act);
             $options["unsub"] = true;
@@ -1188,7 +1246,7 @@ class Limit_SearchTerm extends SearchTerm {
         if (($this->user->dangerous_track_mask() & Track::BITS_VIEW) !== 0) {
             return false;
         }
-        switch ($this->limit) {
+        switch ($this->limit_class) {
         case "viewable":
         case "alladmin":
         case "actadmin":
@@ -1196,6 +1254,7 @@ class Limit_SearchTerm extends SearchTerm {
             return $this->user->allow_administer_all();
         case "active":
         case "accepted":
+        case "dec":
         case "undecided":
             // decision limits are precise only if user can see all decisions
             return $this->user->can_view_all_decision();
@@ -1231,7 +1290,7 @@ class Limit_SearchTerm extends SearchTerm {
             }
         }
 
-        switch ($this->limit) {
+        switch ($this->limit_class) {
         case "all":
         case "viewable":
         case "s":
@@ -1283,6 +1342,11 @@ class Limit_SearchTerm extends SearchTerm {
                 $ff[] = "Paper.outcome=0";
             }
             break;
+        case "dec":
+            if ($this->user->can_view_all_decision()) {
+                $ff[] = "Paper.outcome" . sql_in_int_list($this->xlist);
+            }
+            break;
         case "unsub":
             $ff[] = "Paper.timeSubmitted<=0";
             $ff[] = "Paper.timeWithdrawn<=0";
@@ -1320,7 +1384,7 @@ class Limit_SearchTerm extends SearchTerm {
             || (($this->lflag & self::LFLAG_ACTIVE) !== 0 && $row->timeWithdrawn > 0)) {
             return false;
         }
-        switch ($this->limit) {
+        switch ($this->limit_class) {
         case "all":
         case "viewable":
         case "s":
@@ -1339,18 +1403,18 @@ class Limit_SearchTerm extends SearchTerm {
             }
             return false;
         case "reviewable":
-            if (($this->reviewer !== $user && !$user->allow_administer($row))
-                || !$this->reviewer->can_accept_review_assignment_ignore_conflict($row)) {
+            if ($this->reviewer !== $user && !$user->allow_administer($row)) {
                 return false;
             } else if ($row->has_active_reviewer($this->reviewer)) {
                 return true;
-            } else {
-                return ($row->timeSubmitted > 0
-                        || ($row->timeWithdrawn <= 0
-                            && $row->submission_round()->incomplete_viewable))
-                    && ($row->outcome_sign !== -2
-                        || !$user->can_view_decision($row));
             }
+            return $this->reviewer->pc_track_assignable($row)
+                && !$row->has_conflict($this->reviewer)
+                && ($row->timeSubmitted > 0
+                    || ($row->timeWithdrawn <= 0
+                        && $row->submission_round()->incomplete_viewable))
+                && ($row->outcome_sign !== -2
+                    || !$user->can_view_decision($row));
         case "active":
             return $row->outcome_sign !== -2
                 || !$user->can_view_decision($row);
@@ -1360,6 +1424,9 @@ class Limit_SearchTerm extends SearchTerm {
         case "undecided":
             return $row->outcome === 0
                 || !$user->can_view_decision($row);
+        case "dec":
+            $outcome = $user->can_view_decision($row) ? $row->outcome : 0;
+            return in_array($outcome, $this->xlist);
         case "unsub":
             return $row->timeSubmitted <= 0 && $row->timeWithdrawn <= 0;
         case "lead":
@@ -1442,6 +1509,7 @@ class TextMatch_SearchTerm extends SearchTerm {
         return $this->trivial && !$this->authorish;
     }
     function test(PaperInfo $row, $xinfo) {
+        // XXX presence conditions
         $data = $row->{$this->field}();
         if ($this->authorish && !$this->user->allow_view_authors($row)) {
             $data = "";

@@ -105,12 +105,12 @@ class Keywords_HelpTopic {
             }
         }
         if (!empty($cm)) {
-            array_unshift($cm, "“{$cx->name}”");
+            array_unshift($cm, "“{$cx->style}”");
             $klass = "taghh tag-{$cx->style}";
-            if (($cx->sclass & TagStyle::BG) !== 0) {
+            if (($cx->styleflags & TagStyle::BG) !== 0) {
                 $klass .= $cx->dark() ? " dark tagbg" : " tagbg";
             }
-            echo $hth->search_trow("style:{$cx->name}", "tagged to appear <span class=\"{$klass}\">{$cx->name}</span> (tagged " . commajoin($cm, "or") . ")");
+            echo $hth->search_trow("style:{$cx->style}", "tagged to appear <span class=\"{$klass}\">{$cx->style}</span> (tagged " . commajoin($cm, "or") . ")");
         }
 
         $roundname = $hth->meaningful_review_round_name();
@@ -119,11 +119,11 @@ class Keywords_HelpTopic {
         echo $hth->search_trow("re:me", "you are a reviewer");
         echo $hth->search_trow("re:fdabek", "“fdabek” in reviewer name/email");
         if ($retag) {
-            echo $hth->search_trow("re:#$retag", "has a reviewer tagged “#" . $retag . "”");
+            echo $hth->search_trow("re:#{$retag}", "has a reviewer tagged “#{$retag}”");
         }
         echo $hth->search_trow("re:4", "four reviewers (assigned and/or completed)");
         if ($retag) {
-            echo $hth->search_trow("re:#$retag>1", "at least two reviewers (assigned and/or completed) tagged “#" . $retag . "”");
+            echo $hth->search_trow("re:#{$retag}>1", "at least two reviewers (assigned and/or completed) tagged “#{$retag}”");
         }
         echo $hth->search_trow("re:complete<3", "less than three completed reviews<br><div class=\"hint\">Use “cre:<3” for short.</div>");
         echo $hth->search_trow("re:incomplete>0", "at least one incomplete review");
@@ -144,7 +144,7 @@ class Keywords_HelpTopic {
         if ($hth->conf->setting("rev_tokens")) {
             echo $hth->search_trow("retoken:J88ADNAB", "has a review with token J88ADNAB");
         }
-        if ($hth->conf->setting("rev_ratings") != REV_RATINGS_NONE) {
+        if ($hth->conf->review_ratings() >= 0) {
             echo $hth->search_trow("rate:good", "has a positively-rated review (“rate:bad”, “rate:biased”, etc. also work)");
             echo $hth->search_trow("rate:good:me", "has a positively-rated review by you");
         }

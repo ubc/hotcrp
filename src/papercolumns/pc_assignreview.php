@@ -15,15 +15,11 @@ class AssignReview_PaperColumn extends PaperColumn {
             $this->contact = $conf->pc_member_by_email($cj->user);
         }
     }
-    function add_decoration($decor) {
-        if ($decor === "simple") {
-            $this->simple = true;
-            return $this->__add_decoration($decor);
-        } else {
-            return parent::add_decoration($decor);
-        }
+    function view_option_schema() {
+        return ["simple"];
     }
     function prepare(PaperList $pl, $visible) {
+        $this->simple = $this->view_option("simple") ?? false;
         $this->contact = $this->contact ?? $pl->reviewer_user();
         return $pl->user->is_manager();
     }
@@ -66,21 +62,22 @@ class AssignReview_PaperColumn extends PaperColumn {
     }
     function content(PaperList $pl, PaperInfo $row) {
         $ci = $row->contact_info($this->contact);
-        if ($ci->conflictType >= CONFLICT_AUTHOR) {
+        if ($ci->is_author()) {
             return '<span class="author">Author</span>';
         }
-        if ($ci->conflictType > CONFLICT_MAXUNCONFLICTED) {
+        $rtype = min(max($ci->reviewType, 0), REVIEW_META);
+        if ($rtype === 0 && $ci->conflicted()) {
             $rt = "conflict";
         } else {
-            $rt = ReviewInfo::unparse_type(min(max($ci->reviewType, 0), REVIEW_META));
+            $rt = ReviewInfo::unparse_type($rtype);
         }
-        $rs = $ci->review_submitted() ? " s" : "";
+        if ($ci->review_submitted()) {
+            $rt .= " rs";
+        }
+        if (!$this->contact->pc_track_assignable($row) || $ci->conflicted()) {
+            $rt .= " na";
+        }
         $pl->need_render = true;
-        $t = '<span class="need-assignment-selector';
-        if (!$this->contact->can_accept_review_assignment_ignore_conflict($row)
-            && $rt <= 0) {
-            $t .= " conflict";
-        }
-        return "{$t}\" data-assignment=\"{$this->contact->contactId} {$rt}{$rs}\"></span>";
+        return "<span class=\"need-assignment-selector\" data-assignment=\"{$this->contact->contactId} {$rt}\"></span>";
     }
 }

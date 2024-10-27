@@ -532,17 +532,17 @@ class AssignmentState extends MessageSet {
     }
     /** @param string $msg
      * @return void */
-    function warning($msg) {
-        $this->msg_near($this->landmark, $msg, 1);
-    }
-    /** @param string $msg
-     * @return void */
     function error($msg) {
         $this->msg_near($this->landmark, $msg, 2);
     }
     /** @param string $msg
      * @return void */
-    function user_error($msg) {
+    function warning($msg) {
+        $this->msg_near($this->landmark, $msg, 1);
+    }
+    /** @param ?string $msg
+     * @return void */
+    function user_error($msg = null) {
         $this->has_user_error = true;
         $this->error($msg);
     }
@@ -758,9 +758,9 @@ class AssignmentCsv {
 }
 
 class AssignmentError extends Exception {
-    /** @param string|PermissionProblem $message */
+    /** @param string|FailureReason $message */
     function __construct($message) {
-        if ($message instanceof PermissionProblem) {
+        if ($message instanceof FailureReason) {
             $message = "<5>" . $message->unparse_html();
         } else if ($message !== "" && !Ftext::is_ftext($message)) {
             error_log("not ftext {$message}: " . debug_string_backtrace());
@@ -1262,7 +1262,7 @@ class AssignmentSet {
     }
 
     private static function req_user_text($req) {
-        return Text::name($req["firstName"], $req["lastName"], $req["email"], NAME_E);
+        return Text::name($req["firstName"] ?? "", $req["lastName"] ?? "", $req["email"] ?? "", NAME_E);
     }
 
     private static function apply_user_parts($req, $a) {
@@ -1368,12 +1368,12 @@ class AssignmentSet {
         if ($cset) {
             $text = "";
             if ($first && $last) {
-                $text = "$last, $first";
+                $text = "{$last}, {$first}";
             } else if ($first || $last) {
-                $text = "$last$first";
+                $text = $first . $last;
             }
             if ($email) {
-                $text .= " <$email>";
+                $text = $text ? "{$text} <{$email}>" : "<{$email}>";
             }
             $ret = ContactSearch::make_cset($text, $this->astate->user, $cset);
             if (count($ret->user_ids()) === 1) {
@@ -1689,7 +1689,7 @@ class AssignmentSet {
     private function apply_paper(PaperInfo $prow, $contacts, AssignmentParser $aparser, $req) {
         $allow = $aparser->allow_paper($prow, $this->astate);
         if ($allow !== true) {
-            $allow = $allow ? : new AssignmentError($prow->make_whynot(["administer" => true]));
+            $allow = $allow ? : new AssignmentError($prow->failure_reason(["administer" => true]));
             $this->astate->paper_error($allow->getMessage());
             return 0;
         }

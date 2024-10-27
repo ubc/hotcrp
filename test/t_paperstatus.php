@@ -116,7 +116,7 @@ class PaperStatus_Tester {
 
     function test_paper_save_document() {
         $ps = new PaperStatus($this->u_estrin);
-        $doc = DocumentInfo::make_uploaded_file(new QrequestFile([
+        $doc = DocumentInfo::make_uploaded_file(QrequestFile::make_finfo([
                 "error" => UPLOAD_ERR_OK, "name" => "amazing-sample.pdf",
                 "tmp_name" => SiteLoader::find("etc/sample.pdf"),
                 "type" => "application/pdf"
@@ -331,7 +331,7 @@ class PaperStatus_Tester {
         xassert_eqq($aus[0]->firstName, "Bobby");
         xassert_eqq($aus[0]->lastName, "Flay");
         xassert_eqq($aus[0]->email, "flay@_.com");
-        xassert($newpaper->timeSubmitted == 0);
+        xassert($newpaper->timeSubmitted === 0);
         xassert($newpaper->timeWithdrawn <= 0);
         xassert_eqq($newpaper->conflict_type($this->u_estrin), CONFLICT_CONTACTAUTHOR);
     }
@@ -1374,7 +1374,7 @@ Phil Porras.");
         xassert($pr instanceof Redirection);
         xassert_eqq($pr->url, "/paper/14?r={$estrin_14_rid}");
         $pr = PaperRequest::make(TestRunner::make_qreq($this->u_nobody, "/paper?r={$estrin_14_rid}"), false);
-        xassert($pr instanceof PermissionProblem);
+        xassert($pr instanceof FailureReason);
         xassert($pr["missingId"]);
     }
 
@@ -1521,6 +1521,49 @@ Phil Porras.");
 
         $newprow = $this->conf->checked_paper_by_id($ps->paperId);
         xassert($this->conf->option_by_id(DTYPE_SUBMISSION)->test_editable($newprow));
+    }
+
+    function test_new_paper_random_pids() {
+        $this->conf->save_refresh_setting("random_pids", 1);
+        $next_pid = $this->conf->fetch_ivalue("select max(paperId)+1 from Paper");
+
+        $ntries = 0;
+        while ($ntries < 20) {
+            // Try 20 times to insert a paper. It's very unlikely all 20 random
+            // IDs will be sequentially assigned
+            $ps = new PaperStatus($this->u_estrin);
+            $title = "New paper with random ID #" . ($ntries + 1);
+
+            xassert($ps->prepare_save_paper_web((new Qrequest("POST", ["status:submit" => 1, "title" => $title, "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:1:name" => "Ethan Iverson", "authors:1:email" => "iverson@_.com", "has_submission" => 1]))->set_file_content("submission", "%PDF-2", null, "application/pdf"), null));
+            xassert_paper_status($ps);
+            xassert($ps->has_change_at("title"));
+            xassert($ps->has_change_at("abstract"));
+            xassert($ps->has_change_at("authors"));
+            xassert($ps->has_change_at("contacts"));
+            xassert($ps->execute_save());
+            xassert_paper_status_saved_nonrequired($ps);
+
+            $newpaper = $this->u_estrin->checked_paper_by_id($ps->paperId);
+            xassert($newpaper);
+            xassert_eqq($newpaper->title, $title);
+            xassert_eqq($newpaper->abstract, "This is an abstract");
+            xassert_eqq($newpaper->abstract(), "This is an abstract");
+            xassert_eqq(count($newpaper->author_list()), 1);
+            $aus = $newpaper->author_list();
+            xassert_eqq($aus[0]->firstName, "Ethan");
+            xassert_eqq($aus[0]->lastName, "Iverson");
+            xassert_eqq($aus[0]->email, "iverson@_.com");
+            xassert($newpaper->timeSubmitted > 0);
+            xassert($newpaper->timeWithdrawn <= 0);
+            xassert_eqq($newpaper->conflict_type($this->u_estrin), CONFLICT_CONTACTAUTHOR);
+
+            if ($ps->paperId !== $next_pid) {
+                break;
+            }
+            ++$next_pid;
+        }
+
+        xassert_lt($ntries, 20);
     }
 
     function test_invariants_last() {

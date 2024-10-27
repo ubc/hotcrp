@@ -19,10 +19,6 @@ const CONFLICT_PCMASK = 31;
 const CONFLICT_AUTHOR = 32;
 const CONFLICT_CONTACTAUTHOR = 64;
 
-const REV_RATINGS_PC = 0;
-const REV_RATINGS_PC_EXTERNAL = 1;
-const REV_RATINGS_NONE = 2;
-
 const DTYPE_SUBMISSION = 0;
 const DTYPE_FINAL = -1;
 const DTYPE_COMMENT = -2;
@@ -394,7 +390,8 @@ function initialize_request($kwarg = null) {
 
     // look up and activate user
     $muser = ($conf->fresh_user_by_email($uemail)
-              ?? Contact::make_email($conf, $uemail))->activate($qreq, true, $uindex);
+              ?? Contact::make_email($conf, $uemail, true))
+        ->activate($qreq, true, $uindex);
     Contact::set_main_user($muser);
     $qreq->set_user($muser);
 

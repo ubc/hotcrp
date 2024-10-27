@@ -69,7 +69,7 @@ class SavePapers_Batch {
         $this->conf = $conf;
         $this->user = $conf->root_user();
         $this->user->set_overrides(Contact::OVERRIDE_CONFLICT);
-        $this->tf = new ReviewValues($conf->review_form(), ["no_notify" => true]);
+        $this->tf = (new ReviewValues($conf))->set_notify(false);
     }
 
     /** @return $this */
@@ -267,13 +267,12 @@ class SavePapers_Batch {
             $prow = $this->conf->paper_by_id($pid, $this->user);
             foreach ($j->reviews as $reviewindex => $reviewj) {
                 if (!$this->tf->parse_json($reviewj)) {
-                    $this->tf->msg_at(null, "review #" . ($reviewindex + 1) . ": invalid review", MessageSet::ERROR);
+                    $this->tf->msg_at(null, "<0>review #" . ($reviewindex + 1) . ": invalid review", MessageSet::ERROR);
                 } else if (!isset($this->tf->req["reviewerEmail"])
                            || !validate_email($this->tf->req["reviewerEmail"])) {
-                    $this->tf->msg_at(null, "review #" . ($reviewindex + 1) . ": invalid reviewer email " . htmlspecialchars($this->tf->req["reviewerEmail"] ?? "<missing>"), MessageSet::ERROR);
+                    $this->tf->msg_at(null, "<0>review #" . ($reviewindex + 1) . ": invalid reviewer email " . ($this->tf->req["reviewerEmail"] ?? "<missing>"), MessageSet::ERROR);
                 } else {
-                    $this->tf->req["override"] = true;
-                    $this->tf->paperId = $pid;
+                    $this->tf->set_req_override(true);
                     $user = Contact::make_keyed($this->conf, [
                         "firstName" => $this->tf->req["reviewerFirst"] ?? "",
                         "lastName" => $this->tf->req["reviewerLast"] ?? "",
@@ -283,6 +282,7 @@ class SavePapers_Batch {
                     ])->store();
                     $this->tf->check_and_save($this->user, $prow, null);
                 }
+                $this->tf->clear_req();
             }
             if (!$this->silent) {
                 foreach ($this->tf->message_list() as $mi) {

@@ -21,7 +21,7 @@ class GetAuthors_ListAction extends ListAction {
             }
         }
         $texts = [];
-        $has_iscontact = $has_country = false;
+        $has_iscontact = $has_country = $has_orcid = false;
         foreach ($prows as $prow) {
             $admin = $user->allow_administer($prow);
             $aucid = [];
@@ -29,15 +29,17 @@ class GetAuthors_ListAction extends ListAction {
                 $line = [
                     "paper" => $prow->paperId,
                     "title" => $prow->title,
-                    "first" => $au->firstName,
-                    "last" => $au->lastName,
+                    "given_name" => $au->firstName,
+                    "family_name" => $au->lastName,
                     "email" => $au->email,
                     "affiliation" => $au->affiliation
                 ];
                 $lemail = strtolower($au->email);
                 if ($au->email !== ""
                     && ($u = $conf->user_by_email($au->email))) {
-                    $line["country"] = $u->country();
+                    $line["orcid"] = $u->decorated_orcid();
+                    $line["country"] = $u->country_code();
+                    $has_orcid = $has_orcid || $line["orcid"] !== "";
                     $has_country = $has_country || $line["country"] !== "";
                     if ($admin) {
                         $line["iscontact"] = "yes";
@@ -55,19 +57,24 @@ class GetAuthors_ListAction extends ListAction {
                     $texts[] = $line = [
                         "paper" => $prow->paperId,
                         "title" => $prow->title,
-                        "first" => $u->firstName,
-                        "last" => $u->lastName,
+                        "given_name" => $u->firstName,
+                        "family_name" => $u->lastName,
                         "email" => $u->email,
                         "affiliation" => $u->affiliation,
-                        "country" => $u->country(),
+                        "orcid" => $u->decorated_orcid(),
+                        "country" => $u->country_code(),
                         "iscontact" => "nonauthor"
                     ];
+                    $has_orcid = $has_orcid || $line["orcid"] !== "";
                     $has_country = $has_country || $line["country"] !== "";
                     $has_iscontact = true;
                 }
             }
         }
-        $header = ["paper", "title", "first", "last", "email", "affiliation"];
+        $header = ["paper", "title", "given_name", "family_name", "email", "affiliation"];
+        if ($has_orcid) {
+            $header[] = "orcid";
+        }
         if ($has_country) {
             $header[] = "country";
         }

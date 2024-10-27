@@ -102,10 +102,10 @@ class Completion_API {
 
         self::has_search_completion($user, $comp);
 
-        if ((!$category || $category === "ss")
-            && $user->isPC) {
-            foreach ($conf->named_searches() as $sj) {
-                $comp[] = "ss:" . $sj->name;
+        if (!$category || $category === "ss") {
+            foreach ($user->viewable_named_searches(false) as $sj) {
+                $twiddle = strpos($sj->name, "~");
+                $comp[] = "ss:" . ($twiddle > 0 ? substr($sj->name, $twiddle) : $sj->name);
             }
         }
 
@@ -149,13 +149,10 @@ class Completion_API {
 
         if ((!$category || $category === "style")
             && $user->can_view_tags()) {
-            $comp[] = ["pri" => -1, "nosort" => true, "i" => ["style:any", "style:none", "color:any", "color:none"]];
+            $comp[] = ["pri" => -1, "nosort" => true, "i" => ["style:any", "style:none"]];
             $tagmap = $conf->tags();
-            foreach ($tagmap->canonical_listed_styles(TagStyle::BG | TagStyle::TEXT) as $ks) {
-                $comp[] = "style:{$ks->style}";
-                if (($ks->sclass & TagStyle::BG) !== 0) {
-                    $comp[] = "color:{$ks->style}";
-                }
+            foreach ($tagmap->listed_style_names(TagStyle::BG | TagStyle::TEXT) as $name) {
+                $comp[] = "style:{$name}";
             }
         }
 
@@ -213,18 +210,24 @@ class Completion_API {
      * @return list<list<Contact|Author>> */
     static function mention_lists($user, $prow, $cvis, $reason) {
         $alist = $rlist = $pclist = [];
+        $is_author = $prow && $prow->has_author($user);
+        $saw_shepherd = false;
 
         if ($prow
             && $user->can_view_authors($prow)
             && $cvis >= CommentInfo::CTVIS_AUTHOR) {
-            $alist = $prow->contact_list();
+            foreach ($prow->contact_list() as $au) {
+                if ($au->contactId !== $user->contactId)
+                    $alist[] = $au;
+            }
         }
 
         if ($prow && $user->can_view_review_assignment($prow, null)) {
             $prow->ensure_reviewer_names();
             $xview = $user->conf->time_some_external_reviewer_view_comment();
             foreach ($prow->reviews_as_display() as $rrow) {
-                if ($rrow->reviewType < REVIEW_PC && !$xview) {
+                if (($rrow->reviewType < REVIEW_PC && !$xview)
+                    || $rrow->contactId === $user->contactId) {
                     continue;
                 }
                 $viewid = $user->can_view_review_identity($prow, $rrow);
@@ -237,17 +240,34 @@ class Completion_API {
                     $rlist[] = $au;
                 }
                 if ($viewid
-                    && $rrow->contactId !== $user->contactId
                     && ($cvis >= CommentInfo::CTVIS_REVIEWER || $rrow->reviewType >= REVIEW_PC)
                     && !$rrow->reviewer()->is_dormant()) {
                     $rlist[] = $rrow->reviewer();
+                    $saw_shepherd = $saw_shepherd || $rrow->contactId === $prow->shepherdContactId;
                 }
             }
             // XXX todo: list previous commentees in privileged position?
-            // XXX todo: list lead and shepherd?
+            // XXX todo: list lead?
         }
 
-        if ($user->can_view_pc()) {
+        if ($prow
+            && $prow->shepherdContactId > 0
+            && $prow->shepherdContactId !== $user->contactId) {
+            $viewid = $user->can_view_shepherd($prow);
+            $au = new Author;
+            $au->lastName = "Shepherd";
+            $au->contactId = $prow->shepherdContactId;
+            $au->status = $viewid ? Author::STATUS_REVIEWER : Author::STATUS_ANONYMOUS_REVIEWER;
+            $rlist[] = $au;
+            if ($viewid
+                && !$saw_shepherd
+                && ($shepherd = $user->conf->user_by_id($prow->shepherdContactId, USER_SLICE))
+                && !$shepherd->is_dormant()) {
+                $rlist[] = $shepherd;
+            }
+        }
+
+        if (!$is_author && $user->can_view_pc()) {
             if (!$prow
                 || $reason === self::MENTION_PARSE
                 || !$user->conf->check_track_view_sensitivity()) {

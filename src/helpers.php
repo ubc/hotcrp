@@ -129,10 +129,6 @@ class JsonResult implements JsonSerializable, ArrayAccess {
                 assert(!($a2 instanceof JsonResult));
                 $this->content = (array) $a2;
             }
-        } else if (is_string($a2)) {
-            error_log("bad JsonResult with string " . debug_string_backtrace());
-            assert($this->status && $this->status > 299);
-            $this->content = ["ok" => false, "error" => $a2];
         } else {
             assert(is_associative_array($a2));
             $this->content = $a2;
@@ -159,6 +155,21 @@ class JsonResult implements JsonSerializable, ArrayAccess {
         }
         return new JsonResult($status, [
             "ok" => false, "message_list" => [MessageItem::error($ftext)]
+        ]);
+    }
+
+    /** @param int|MessageItem|iterable<MessageItem>|MessageSet ...$mls
+     * @return JsonResult */
+    static function make_message_list(...$mls) {
+        $status = null;
+        if (!empty($mls) && is_int($mls[0])) {
+            $status = array_shift($mls);
+        }
+        $mlx = MessageSet::make_list(...$mls);
+        $status = $status ?? (MessageSet::list_status($mlx) > 1 ? 400 : 200);
+        return new JsonResult($status, [
+            "ok" => $status < 300,
+            "message_list" => $mlx
         ]);
     }
 
@@ -195,10 +206,25 @@ class JsonResult implements JsonSerializable, ArrayAccess {
     }
 
 
+    /** @param int $status
+     * @return $this */
+    function set_status($status) {
+        $this->status = $status;
+        return $this;
+    }
+
     /** @param bool $pp
      * @return $this */
-    function pretty_print($pp) {
+    function set_pretty_print($pp) {
         $this->pretty_print = $pp;
+        return $this;
+    }
+
+
+    /** @param MessageItem $mi
+     * @return $this */
+    function append_item($mi) {
+        $this->content["message_list"][] = $mi;
         return $this;
     }
 
@@ -235,15 +261,8 @@ class JsonResult implements JsonSerializable, ArrayAccess {
 
     /** @param ?Qrequest $qreq */
     function emit($qreq = null) {
-        if ($this->status && !$this->minimal) {
-            if (!isset($this->content["ok"])) {
-                $this->content["ok"] = $this->status <= 299;
-            }
-            if (!isset($this->content["status"])) {
-                $this->content["status"] = $this->status;
-            }
-        } else if (isset($this->content["status"])) {
-            $this->status = $this->content["status"];
+        if ($this->status && !$this->minimal && !isset($this->content["ok"])) {
+            $this->content["ok"] = $this->status <= 299;
         }
         if ($qreq && $qreq->valid_token()) {
             // Don’t set status on unvalidated requests, since that can leak
@@ -254,14 +273,14 @@ class JsonResult implements JsonSerializable, ArrayAccess {
             if (($origin = $qreq->header("Origin"))) {
                 header("Access-Control-Allow-Origin: {$origin}");
             }
+        } else if ($this->status > 299 && !isset($this->content["status_code"])) {
+            $this->content["status_code"] = $this->status;
         }
         header("Content-Type: application/json; charset=utf-8");
-        if ($qreq && isset($qreq->pprint)) {
-            $pprint = friendly_boolean($qreq->pprint);
-        } else if ($this->pretty_print !== null) {
-            $pprint = $this->pretty_print;
+        if ($qreq && isset($qreq->pretty)) {
+            $pprint = friendly_boolean($qreq->pretty);
         } else {
-            $pprint = $qreq && $qreq->user() && $qreq->user()->is_bearer_authorized();
+            $pprint = $this->pretty_print ?? true;
         }
         echo json_encode_browser($this->content, $pprint ? JSON_PRETTY_PRINT : 0), "\n";
     }

@@ -18,6 +18,8 @@ class ReviewDiffInfo {
     public $notify = false;
     /** @var bool */
     public $notify_author = false;
+    /** @var bool */
+    public $notify_requester = false;
     /** @var ?dmp\diff_match_patch */
     private $_dmp;
 
@@ -78,12 +80,12 @@ class ReviewDiffInfo {
         $this->_dmp->Line_Histogram = $line_histogram;
         try {
             $diffs = $this->_dmp->diff($s1, $s2);
-            $hcdelta = $this->_dmp->diff_toHCDelta($diffs, true);
+            $hcdelta = $this->_dmp->hcdelta_encode($diffs, true);
 
             if (self::VALIDATE_PATCH) {
                 // validate that applyHCDelta can create $s2
-                if ($this->_dmp->diff_applyHCDelta($s1, $hcdelta) !== $s2) {
-                    throw new dmp\diff_exception("incorrect diff_applyHCDelta");
+                if ($this->_dmp->hcdelta_apply($s1, $hcdelta) !== $s2) {
+                    throw new dmp\diff_exception("incorrect hcdelta_apply");
                 }
             }
 
@@ -102,36 +104,26 @@ class ReviewDiffInfo {
     /** @param 0|1 $dir
      * @return array */
     function make_patch($dir) {
-        $use_xdiff = $this->rrow->conf->opt("diffMethod") === "xdiff";
         $sfields = json_decode($this->_old_prop["sfields"] ?? "{}", true) ?? [];
         $tfields = json_decode($this->_old_prop["tfields"] ?? "{}", true) ?? [];
         $patch = [];
         foreach ($this->_fields as $i => $f) {
             $sn = $f->short_id;
             if ($f->main_storage) {
-                $oldv = $this->_old_prop[$f->main_storage];
+                $oldv = (int) $this->_old_prop[$f->main_storage];
                 $oldv = $oldv > 0 ? $oldv : ($oldv < 0 ? 0 : null);
             } else {
                 $oldv = ($f->is_sfield ? $sfields : $tfields)[$f->json_storage] ?? null;
             }
             $v = [$oldv, $this->rrow->finfoval($f)];
-            if (!($f instanceof Text_ReviewField)) {
-                $v[$dir] = (int) $v[$dir];
-            } else if (is_string($v[0]) && is_string($v[1])) {
-                if ($use_xdiff) {
-                    $bdiff = xdiff_string_bdiff($v[1 - $dir], $v[$dir]);
-                    if (strlen($bdiff) < strlen($v[$dir]) - 32) {
-                        $patch["{$sn}:x"] = $bdiff;
-                        continue;
-                    }
-                } else {
-                    $hcdelta = $this->dmp_hcdelta($v[1 - $dir], $v[$dir], false);
-                    $hcdelta = $this->dmp_hcdelta($v[1 - $dir], $v[$dir], true);
-                    if ($hcdelta !== null
-                        && strlen($hcdelta) < strlen($v[$dir]) - 32) {
-                        $patch["{$sn}:p"] = $hcdelta;
-                        continue;
-                    }
+            if (is_string($v[0])
+                && is_string($v[1])
+                && $f instanceof Text_ReviewField) {
+                $hcdelta = $this->dmp_hcdelta($v[1 - $dir], $v[$dir], true);
+                if ($hcdelta !== null
+                    && strlen($hcdelta) < strlen($v[$dir]) - 32) {
+                    $patch["{$sn}:p"] = $hcdelta;
+                    continue;
                 }
             }
             $patch[$sn] = $v[$dir];
@@ -151,6 +143,15 @@ class ReviewDiffInfo {
         }
     }
 
+    /** @param string $prop
+     * @return mixed */
+    private function base_prop($prop) {
+        if (array_key_exists($prop, $this->_old_prop)) {
+            return $this->_old_prop[$prop];
+        }
+        return $this->rrow->$prop;
+    }
+
     /** @param ?callable(?string,string|int|null...):void $stager */
     function save_history($stager = null) {
         assert($this->rrow->reviewId > 0);
@@ -166,20 +167,20 @@ class ReviewDiffInfo {
             reviewEditVersion=?, rflags=?,
             revdelta=?",
             $rrow->paperId, $rrow->reviewId,
-              $rrow->base_prop("reviewTime"), $rrow->reviewTime,
-            $rrow->base_prop("contactId"), $rrow->base_prop("reviewRound"),
-              $rrow->base_prop("reviewOrdinal"), $rrow->base_prop("reviewType"),
-              $rrow->base_prop("reviewBlind"),
-            $rrow->base_prop("reviewModified") ?? 0,
-              $rrow->base_prop("reviewSubmitted") ?? 0,
-              $rrow->base_prop("timeDisplayed") ?? 0,
-              $rrow->base_prop("timeApprovalRequested") ?? 0,
-            $rrow->base_prop("reviewAuthorSeen") ?? 0,
-              $rrow->base_prop("reviewAuthorModified") ?? 0,
-            $rrow->base_prop("reviewNotified") ?? 0,
-              $rrow->base_prop("reviewAuthorNotified") ?? 0,
-            $rrow->base_prop("reviewEditVersion") ?? 0,
-              $rrow->base_prop("rflags") ?? 0,
+              $this->base_prop("reviewTime"), $rrow->reviewTime,
+            $this->base_prop("contactId"), $this->base_prop("reviewRound"),
+              $this->base_prop("reviewOrdinal"), $this->base_prop("reviewType"),
+              $this->base_prop("reviewBlind"),
+            $this->base_prop("reviewModified") ?? 0,
+              $this->base_prop("reviewSubmitted") ?? 0,
+              $this->base_prop("timeDisplayed") ?? 0,
+              $this->base_prop("timeApprovalRequested") ?? 0,
+            $this->base_prop("reviewAuthorSeen") ?? 0,
+              $this->base_prop("reviewAuthorModified") ?? 0,
+            $this->base_prop("reviewNotified") ?? 0,
+              $this->base_prop("reviewAuthorNotified") ?? 0,
+            $this->base_prop("reviewEditVersion") ?? 0,
+              $this->base_prop("rflags") ?? 0,
             empty($patch) ? null : json_encode_db($patch));
         $result && $result->close();
     }
@@ -253,7 +254,7 @@ class ReviewDiffInfo {
                 $oldv = $rrow->finfoval($fi) ?? "";
                 if ($n[$nl - 1] === "p") {
                     $dmp = $dmp ?? new dmp\diff_match_patch;
-                    $rrow->_set_finfoval($fi, $dmp->diff_applyHCDelta($oldv, $v));
+                    $rrow->_set_finfoval($fi, $dmp->hcdelta_apply($oldv, $v));
                     continue;
                 }
                 if (($has_xpatch = $has_xpatch ?? function_exists("xdiff_string_bpatch"))) {

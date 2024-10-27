@@ -20,13 +20,15 @@ class GetJsonRQC_ListAction extends ListAction {
         $results["reviewform"] = $fj;
         $pj = [];
         $pex = new PaperExport($user);
+        $pex->set_include_permissions(false);
+        $pex->set_override_ratings(true);
         foreach ($ssel->paper_set($user, ["topics" => true, "options" => true]) as $prow) {
             if ($user->allow_administer($prow)) {
                 $pj[] = $j = $pex->paper_json($prow);
                 $prow->ensure_full_reviews();
                 foreach ($prow->viewable_reviews_as_display($user) as $rrow) {
                     if ($rrow->reviewSubmitted) {
-                        $j->reviews[] = $rf->unparse_review_json($user, $prow, $rrow, ReviewForm::RJ_NO_EDITABLE | ReviewForm::RJ_UNPARSE_RATINGS | ReviewForm::RJ_ALL_RATINGS | ReviewForm::RJ_NO_REVIEWERONLY);
+                        $j->reviews[] = $pex->review_json($prow, $rrow);
                     }
                 }
             } else {
@@ -35,9 +37,11 @@ class GetJsonRQC_ListAction extends ListAction {
         }
         $user->set_overrides($old_overrides);
         $results["papers"] = $pj;
-        header("Content-Type: application/json; charset=utf-8");
-        header("Content-Disposition: attachment; filename=" . mime_quote_string($user->conf->download_prefix . "rqc.json"));
-        echo json_encode($results, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . "\n";
-        exit();
+        $dopt = new Downloader;
+        $dopt->set_attachment(true);
+        $dopt->set_filename($user->conf->download_prefix . "rqc.json");
+        $dopt->set_mimetype(Mimetype::JSON_UTF8_TYPE);
+        $dopt->set_content(json_encode($results, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE) . "\n");
+        return $dopt;
     }
 }

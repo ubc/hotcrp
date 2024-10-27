@@ -107,7 +107,7 @@ class Review_AssignmentParser extends AssignmentParser {
             if ($prow->timeWithdrawn <= 0 || $this->rtype === 0) {
                 return true;
             } else {
-                return new AssignmentError($prow->make_whynot(["withdrawn" => true]));
+                return new AssignmentError($prow->failure_reason(["withdrawn" => 1]));
             }
         } else {
             return false;
@@ -172,7 +172,7 @@ class Review_AssignmentParser extends AssignmentParser {
         $rdata = $this->make_rdata($req, $state);
         if ($rdata->newtype >= REVIEW_PC && !$contact->is_pc_member()) {
             $uname = $contact->name(NAME_E);
-            return new AssignmentError("<0>{$uname} is not a PC member and cannot be assigned a PC review.");
+            return new AssignmentError("<0>{$uname} is not a PC member and cannot be assigned a PC review");
         }
         // Conflict allowed if we're not going to assign a new review
         if ($this->rtype == 0
@@ -181,21 +181,27 @@ class Review_AssignmentParser extends AssignmentParser {
             return true;
         }
         // Check whether review assignments are acceptable
+        // (conflicts are checked later)
+        // XXX this should use perm/can_create_review
         if ($contact->is_pc_member()
-            && !$contact->can_accept_review_assignment_ignore_conflict($prow)) {
+            && !$contact->pc_track_assignable($prow)
+            && !$contact->allow_administer($prow)
+            && $prow->review_type($contact) <= 0
+            && (!$state->user->can_administer($prow)
+                || !isset($req["override"])
+                || !friendly_boolean($req["override"]))) {
             $uname = $contact->name(NAME_E);
-            return new AssignmentError("<0>{$uname} cannot be assigned to review #{$prow->paperId}.");
+            return new AssignmentError("<0>{$uname} cannot be assigned to review #{$prow->paperId}");
         }
-        // Conflicts are checked later
         return true;
     }
-    function apply(PaperInfo $prow, Contact $contact, $req, AssignmentState $state) {
+    function apply(PaperInfo $prow, Contact $user, $req, AssignmentState $state) {
         $rdata = $this->make_rdata($req, $state);
         if ($rdata->error_ftext) {
             return new AssignmentError($rdata->error_ftext);
         }
 
-        $revmatch = new Review_Assignable($prow->paperId, $contact->contactId);
+        $revmatch = new Review_Assignable($prow->paperId, $user->contactId);
         $res = $state->remove($revmatch);
         assert(count($res) <= 1);
         $rev = empty($res) ? null : $res[0];
@@ -229,7 +235,7 @@ class Review_AssignmentParser extends AssignmentParser {
             $rev->_rtype = REVIEW_EXTERNAL;
         }
         if ($rev->_rtype === REVIEW_EXTERNAL
-            && $state->conf->pc_member_by_id($rev->cid)) {
+            && ($user->roles & Contact::ROLE_PC) !== 0) {
             $rev->_rtype = REVIEW_PC;
         }
         if ($rdata->newround !== null && $rdata->explicitround) {
@@ -238,7 +244,9 @@ class Review_AssignmentParser extends AssignmentParser {
         if ($rev->_rtype && isset($req["reason"])) {
             $rev->_reason = $req["reason"];
         }
-        if (isset($req["override"]) && friendly_boolean($req["override"])) {
+        if (isset($req["override"])
+            && friendly_boolean($req["override"])
+            && $state->user->can_administer($prow)) {
             $rev->_override = 1;
         }
         $state->add($rev);
@@ -266,11 +274,16 @@ class Review_Assigner extends Assigner {
     static function make(AssignmentItem $item, AssignmentState $state) {
         if (!$item->pre("_rtype") && $item->post("_rtype")) {
             Conflict_Assigner::check_unconflicted($item, $state);
+            // XXX should check can/perm_create_review
+            // XXX use $item["_override"] to determine override of tracks
+            // XXX check self assignment. Not necessary rn because the
+            // assignment parser doesn't work for self-assignment (it requires
+            // admin)
         } else if ($item->pre("_rtype")
                    && !$item->post("_rtype")
                    && ($item->pre_i("_rflags") & ReviewInfo::RFM_NONDRAFT) !== 0) {
             $uname = $state->user_by_id($item["cid"])->name(NAME_E);
-            throw new AssignmentError("<0>{$uname} has already modified their review for #" . $item->pid() . ", so it cannot be unassigned.");
+            throw new AssignmentError("<0>{$uname} has already modified their review for #" . $item->pid() . ", so it cannot be unassigned");
         }
         return new Review_Assigner($item, $state);
     }
@@ -365,7 +378,9 @@ class Review_Assigner extends Assigner {
         }
     }
     function add_locks(AssignmentSet $aset, &$locks) {
-        $locks["PaperReview"] = $locks["PaperReviewRefused"] = $locks["Settings"] = "write";
+        $locks["PaperReview"] = $locks["PaperReviewRefused"] =
+            $locks["PaperReviewHistory"] = $locks["ReviewRating"] =
+            $locks["Settings"] = "write";
     }
     function execute(AssignmentSet $aset) {
         $extra = ["no_autosearch" => true];
@@ -380,12 +395,16 @@ class Review_Assigner extends Assigner {
                 $aset->conf->update_rev_tokens_setting(min($vals));
             }, $this->item->existed() ? 0 : 1);
         }
-        $reviewId = $aset->user->assign_review($this->pid, $this->cid, $this->rtype, $extra);
+        $reviewId = $aset->user->assign_review($this->pid, $this->contact, $this->rtype, $extra);
         if ($this->unsubmit && $reviewId) {
             assert($this->item->after !== null);
-            /** @phan-suppress-next-line PhanUndeclaredMethod */
-            $rrow = $this->item->after->make_reviewinfo($aset->conf, $reviewId);
-            $aset->user->unsubmit_review_row($rrow, ["no_autosearch" => true]);
+            $prow = $aset->prow($this->pid);
+            $rrow = $prow->fresh_review_by_id($reviewId);
+            $rv = (new ReviewValues($aset->conf))
+                ->set_autosearch(false)
+                ->set_can_unsubmit(true)
+                ->set_req_ready(false);
+            $rv->check_and_save($aset->user, $prow, $rrow);
         }
         if (($extra["token"] ?? false) && $reviewId) {
             $this->token = $aset->conf->fetch_ivalue("select reviewToken from PaperReview where paperId=? and reviewId=?", $this->pid, $reviewId);
@@ -397,9 +416,8 @@ class Review_Assigner extends Assigner {
     }
     function cleanup(AssignmentSet $aset) {
         if ($this->notify) {
-            $reviewer = $aset->conf->user_by_id($this->cid);
-            $prow = $aset->conf->paper_by_id($this->pid, $reviewer);
-            HotCRPMailer::send_to($reviewer, $this->notify, [
+            $prow = $aset->conf->paper_by_id($this->pid, $this->contact);
+            HotCRPMailer::send_to($this->contact, $this->notify, [
                 "prow" => $prow, "rrow" => $prow->fresh_review_by_user($this->cid),
                 "requester_contact" => $aset->user, "reason" => $this->item["_reason"]
             ]);

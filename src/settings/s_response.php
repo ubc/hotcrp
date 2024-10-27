@@ -178,9 +178,10 @@ class Response_SettingParser extends SettingParser {
     }
 
     function print_wordlimit(SettingValues $sv) {
-        $sv->print_entry_group("response/{$this->ctr}/wordlimit", "Word limit", [
+        $sv->print_entry_group("response/{$this->ctr}/wordlimit", "Word limit", ["horizontal" => true]);
+        $sv->print_entry_group("response/{$this->ctr}/hard_wordlimit", "Hard word limit", [
             "horizontal" => true,
-            "hint" => is_int($this->ctr) && $this->ctr > 1 ? null : "This is a soft limit: authors may submit longer responses. 0 means no limit."
+            "hint" => is_int($this->ctr) && $this->ctr > 1 ? null : "Words beyond the soft limit are hidden from reviewers by default. Reviewers can’t see words beyond the hard limit."
         ]);
     }
 
@@ -302,7 +303,7 @@ class Response_SettingParser extends SettingParser {
     function store_value(Si $si, SettingValues $sv) {
         if (!empty($this->round_delete)) {
             $sv->conf->qe("update PaperComment set commentRound=0, commentType=(commentType&~?)|? where commentType>=? and (commentType&?)!=0 and commentRound?a",
-                CommentInfo::CT_RESPONSE | CommentInfo::CTVIS_MASK,
+                CommentInfo::CT_RESPONSE | CommentInfo::CTM_VIS,
                 CommentInfo::CT_FROZEN | CommentInfo::CTVIS_ADMINONLY,
                 CommentInfo::CTVIS_AUTHOR,
                 CommentInfo::CT_RESPONSE,

@@ -1,8 +1,8 @@
 <?php
-// searchsplitter.php -- HotCRP helper class for splitting search strings
+// searchparser.php -- HotCRP helper class for splitting search strings
 // Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
-class SearchSplitter {
+class SearchParser {
     /** @var string */
     private $str;
     /** @var bool */
@@ -21,6 +21,14 @@ class SearchSplitter {
         $this->str = $str;
         $this->pos = $pos1;
         $this->len = $pos2 ?? strlen($str);
+
+        // unlikely: passed a substring that ends mid-word; need to be careful
+        if ($this->len < strlen($str)
+            && !SearchOperatorSet::safe_terminator($str, $this->len)
+            && ($this->len === 0 || !SearchOperatorSet::safe_terminator($str, $this->len - 1))) {
+            $this->str = substr($str, 0, $this->len);
+        }
+
         $this->utf8q = strpos($str, chr(0xE2)) !== false && is_valid_utf8($str);
         $this->set_span_and_pos(0);
     }
@@ -59,12 +67,6 @@ class SearchSplitter {
 
     /** @return string */
     function shift_keyword() {
-        // XXX warning about quoted keywords should be removed soon
-        if ($this->pos < $this->len
-            && ($this->str[$this->pos] === "\"" || $this->str[$this->pos] === "\xE2")
-            && preg_match('/\G["“”][^"“”]+["“”]:/su', $this->str, $m, 0, $this->pos)) {
-            error_log("Unexpected quoted search keyword in “{$this->str}”");
-        }
         if (preg_match('/\G[_a-zA-Z0-9][-_.a-zA-Z0-9]*(?=:)/s', $this->str, $m, 0, $this->pos)
             && $this->pos + strlen($m[0]) < $this->len) {
             $this->set_span_and_pos(strlen($m[0]) + 1);
@@ -102,7 +104,7 @@ class SearchSplitter {
         $pos0 = $this->pos;
         $pos1 = self::span_balanced_parens($this->str, $pos0, $endchars, $allow_empty);
         $this->set_span_and_pos($pos1 - $pos0);
-        return substr($this->str, $pos0, $pos1 - $pos0);
+        return substr($this->str, $pos0, $this->last_pos - $pos0);
     }
 
     /** @param string $re
@@ -117,21 +119,15 @@ class SearchSplitter {
             && $this->pos + strlen($substr) <= $this->len;
     }
 
-    /** @return ?SearchOperator */
-    function shift_operator() {
-        if (!$this->match('/\G(?:[-+!()]|\&\&|\|\||\^\^|(?:AND|and|OR|or|NOT|not|XOR|xor|THEN|then|HIGHLIGHT(?::\w+)?)(?=[\s\(\)]|\z))/s', $m)
+    /** @param SearchOperatorSet $opset
+     * @return ?SearchOperator */
+    private function shift_operator($opset) {
+        if (!$this->match($opset->regex(), $m)
             || $this->pos + strlen($m[0]) > $this->len) {
             return null;
         }
-        $op = SearchOperator::get(strtoupper($m[0]));
-        if (!$op) {
-            $colon = strpos($m[0], ":");
-            $op = clone SearchOperator::get(strtoupper(substr($m[0], 0, $colon)));
-            /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
-            $op->subtype = substr($m[0], $colon + 1);
-        }
         $this->set_span_and_pos(strlen($m[0]));
-        return $op;
+        return $opset->lookup($m[0]);
     }
 
     /** @param string $str
@@ -204,7 +200,7 @@ class SearchSplitter {
     static function split_balanced_parens($s) {
         $w = [];
         if ($s !== "") {
-            $splitter = new SearchSplitter($s);
+            $splitter = new SearchParser($s);
             while ($splitter->skip_whitespace()) {
                 $w[] = $splitter->shift_balanced_parens();
             }
@@ -212,17 +208,19 @@ class SearchSplitter {
         return $w;
     }
 
-    /** @param 'SPACE'|'SPACEOR' $spaceop
+    /** @param ?SearchOperatorSet $opset
+     * @param 'SPACE'|'SPACEOR' $spaceop
      * @param int $max_ops
-     * @return ?SearchAtom */
-    function parse_expression($spaceop = "SPACE", $max_ops = 2048) {
+     * @return ?SearchExpr */
+    function parse_expression($opset = null, $spaceop = "SPACE", $max_ops = 2048) {
+        $opset = $opset ?? SearchOperatorSet::paper_search_operators();
         $cura = null;
-        '@phan-var-force ?SearchAtom $cura';
+        '@phan-var-force ?SearchExpr $cura';
         $parens = 0;
         $nops = 0;
         while (!$this->is_empty()) {
             $pos1 = $this->pos;
-            $op = $this->shift_operator();
+            $op = $this->shift_operator($opset);
             $pos2 = $this->last_pos;
             if (!$op && (!$cura || !$cura->is_complete())) {
                 $kwpos1 = $this->pos;
@@ -230,7 +228,7 @@ class SearchSplitter {
                 $pos1 = $this->pos;
                 $text = $this->shift_balanced_parens(null, true);
                 $pos2 = $this->last_pos;
-                $cura = SearchAtom::make_keyword($kw, $text, $kwpos1, $pos1, $pos2, $cura);
+                $cura = SearchExpr::make_keyword($kw, $text, $kwpos1, $pos1, $pos2, $cura);
                 continue;
             }
 
@@ -243,15 +241,15 @@ class SearchSplitter {
                 continue;
             }
 
-            if (!$op || ($op && $op->unary && $cura && $cura->is_complete())) {
-                $op = SearchOperator::get($parens > 0 ? "SPACE" : $spaceop);
+            if (!$op || ($op && $op->unary() && $cura && $cura->is_complete())) {
+                $op = $opset->lookup($parens > 0 ? "SPACE" : $spaceop);
                 $this->set_pos($pos1);
                 $pos2 = $pos1;
             }
 
-            if (!$op->unary) {
+            if (!$op->unary()) {
                 if (!$cura || $cura->is_incomplete_paren()) {
-                    $cura = SearchAtom::make_simple("", $pos1, $cura);
+                    $cura = SearchExpr::make_simple("", $pos1, $cura);
                 }
                 while ($cura->parent && $cura->parent->op->precedence >= $op->precedence) {
                     $cura = $cura->complete($pos1);
@@ -262,7 +260,7 @@ class SearchSplitter {
                 return null;
             }
 
-            $cura = SearchAtom::make_op($op, $pos1, $pos2, $cura);
+            $cura = SearchExpr::make_op_start($op, $pos1, $pos2, $cura);
             if ($op->type === "(") {
                 ++$parens;
             }
@@ -276,3 +274,5 @@ class SearchSplitter {
         return $cura;
     }
 }
+
+class_alias("SearchParser", "SearchSplitter"); // XXX compat

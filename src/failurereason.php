@@ -1,22 +1,35 @@
 <?php
-// permissionproblem.php -- HotCRP helper class for permission errors
+// failurereason.php -- HotCRP helper class for permission errors
 // Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
-class PermissionProblem extends Exception
+class FailureReason extends Exception
     implements ArrayAccess, IteratorAggregate, Countable, JsonSerializable {
-    /** @var Conf */
+    /** @var Conf
+     * @readonly */
     public $conf;
-    /** @var bool */
+    /** @var ?PaperInfo
+     * @readonly */
+    public $prow;
+    /** @var bool
+     * @readonly */
     public $secondary;
     /** @var array<string,mixed> */
     private $_a;
 
     /** @param ?array<string,mixed> $a */
     function __construct(Conf $conf, $a = null) {
-        parent::__construct("HotCRP permission problem");
+        parent::__construct("HotCRP failure reason");
         $this->conf = $conf;
         $this->_a = $a ?? [];
         $this->secondary = !!($this->_a["secondary"] ?? false);
+    }
+
+    /** @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_prow(PaperInfo $prow) {
+        $this->prow = $prow;
+        $this->_a["paperId"] = $prow->paperId;
+        return $this;
     }
 
     #[\ReturnTypeWillChange]
@@ -71,7 +84,7 @@ class PermissionProblem extends Exception
      * @return $this */
     function merge($a) {
         foreach ($a as $k => $v) {
-            $this->_a[$k] =$v;
+            $this->_a[$k] = $v;
         }
         return $this;
     }
@@ -104,14 +117,18 @@ class PermissionProblem extends Exception
     }
 
     /** @param list<string> $offsets
-     * @return PermissionProblem */
+     * @return FailureReason
+     * @suppress PhanAccessReadOnlyProperty */
     function filter($offsets) {
-        $pp = new PermissionProblem($this->conf);
+        $fr = new FailureReason($this->conf);
+        if ($this->prow) {
+            $fr->prow = $this->prow;
+        }
         foreach ($this->_a as $k => $v) {
             if ($k === "paperId" || in_array($k, $offsets))
-                $pp->_a[$k] = $v;
+                $fr->_a[$k] = $v;
         }
-        return $pp;
+        return $fr;
     }
 
     /** @return array{string,int,string,int} */
@@ -360,14 +377,17 @@ class PermissionProblem extends Exception
      * @param 1|2|3 $status
      * @return Iterable<MessageItem> */
     function message_list($field, $status) {
-        return [new MessageItem(null, "<5>" . $this->unparse_html(), $status)];
+        return [new MessageItem($field, "<5>" . $this->unparse_html(), $status)];
     }
 
-    /** @param ?string $field
+    /** @param MessageSet|JsonResult $ms
+     * @param ?string $field
      * @param 1|2|3 $status */
-    function append_to(MessageSet $ms, $field, $status) {
+    function append_to($ms, $field, $status) {
         foreach ($this->message_list($field, $status) as $mi) {
             $ms->append_item($mi);
         }
     }
 }
+
+class_alias("FailureReason", "PermissionProblem"); // XXX compat

@@ -212,8 +212,10 @@ src/api/api_search.php
 src/api/api_searchconfig.php
 src/api/api_session.php
 src/api/api_settings.php
+src/api/api_specvalidator.php
 src/api/api_taganno.php
 src/api/api_tags.php
+src/api/api_trackerconfig.php
 src/api/api_upload.php
 src/api/api_user.php
 src/apihelpers.php
@@ -245,6 +247,7 @@ src/capabilities/cap_authorview.php
 src/capabilities/cap_bearer.php
 src/capabilities/cap_job.php
 src/capabilities/cap_reviewaccept.php
+src/cdbuserupdate.php
 src/checkformat.php
 src/commentinfo.php
 src/componentset.php
@@ -257,6 +260,7 @@ src/contactcountmatcher.php
 src/contactlist.php
 src/contactsearch.php
 src/contactset.php
+src/databaseidrandomizer.php
 src/decisioninfo.php
 src/decisionset.php
 src/documentfiletree.php
@@ -264,6 +268,7 @@ src/documentinfo.php
 src/documentinfoset.php
 src/documenthashmatcher.php
 src/documentrequest.php
+src/failurereason.php
 src/fieldchangeset.php
 src/fieldrender.php
 src/filefilter.php
@@ -421,7 +426,6 @@ src/paperstatus.php
 src/papertable.php
 src/paperrank.php
 src/papervalue.php
-src/permissionproblem.php
 src/quicklinksrenderer.php
 src/responseround.php
 src/reviewdiffinfo.php
@@ -438,6 +442,7 @@ src/reviewrefusalinfo.php
 src/reviewrequestinfo.php
 src/reviewsearchmatcher.php
 src/reviewtimes.php
+src/reviewvalues.php
 src/schema.sql
 src/search/st_admin.php
 src/search/st_author.php
@@ -452,6 +457,7 @@ src/search/st_documentname.php
 src/search/st_editfinal.php
 src/search/st_emoji.php
 src/search/st_formula.php
+src/search/st_namedsearch.php
 src/search/st_option.php
 src/search/st_optionpresent.php
 src/search/st_optiontext.php
@@ -471,13 +477,13 @@ src/search/st_revpref.php
 src/search/st_sclass.php
 src/search/st_tag.php
 src/search/st_topic.php
-src/searchatom.php
 src/searchexample.php
+src/searchexpr.php
 src/searchoperator.php
+src/searchoperatorset.php
+src/searchparser.php
 src/searchselection.php
-src/searchsplitter.php
 src/searchterm.php
-src/searchviewcommand.php
 src/searchword.php
 src/sessionlist.php
 src/settinginfoset.php
@@ -485,6 +491,7 @@ src/settingparser.php
 src/settings/s_automatictag.php
 src/settings/s_banal.php
 src/settings/s_basics.php
+src/settings/s_comment.php
 src/settings/s_decision.php
 src/settings/s_decisionvisibility.php
 src/settings/s_finalversions.php
@@ -529,6 +536,9 @@ src/useractions.php
 src/userinfo/u_developer.php
 src/userinfo/u_security.php
 src/userstatus.php
+src/viewcommand.php
+src/viewoptionlist.php
+src/viewoptionschema.php
 src/xtparams.php
 
 devel/hotcrp.vim

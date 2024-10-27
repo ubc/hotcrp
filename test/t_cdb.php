@@ -433,16 +433,17 @@ class Cdb_Tester {
     }
 
     function test_pc_json() {
-        $pc_json = $this->conf->hotcrp_pc_json($this->user_chair);
-        xassert_eqq($pc_json[$pc_json["__order__"][0]]->email, "anne1@dudfield.org");
+        $pc_json = $this->conf->hotcrp_pc_json($this->user_chair, Conf::PCJM_UI);
+        xassert_eqq($pc_json->pc[0]->email, "anne1@dudfield.org");
         $this->conf->sort_by_last = true;
         $this->conf->invalidate_caches(["pc" => true]);
-        $pc_json = $this->conf->hotcrp_pc_json($this->user_chair);
-        xassert_eqq($pc_json[$pc_json["__order__"][0]]->email, "mgbaker@cs.stanford.edu");
-        xassert_eqq($pc_json["12"]->email, "mgbaker@cs.stanford.edu");
-        xassert_eqq($pc_json["12"]->lastpos, 5);
-        xassert_eqq($pc_json["21"]->email, "vera@bombay.com");
-        xassert_eqq($pc_json["21"]->lastpos, 5);
+        $pc_json = $this->conf->hotcrp_pc_json($this->user_chair, Conf::PCJM_UI);
+        xassert_eqq($pc_json->pc[0]->email, "mgbaker@cs.stanford.edu");
+        xassert_eqq($pc_json->pc[0]->uid, 12);
+        xassert_eqq($pc_json->pc[0]->lastpos, 5);
+        xassert_eqq($pc_json->pc[5]->email, "vera@bombay.com");
+        xassert_eqq($pc_json->pc[5]->uid, 21);
+        xassert_eqq($pc_json->pc[5]->lastpos, 5);
     }
 
     function test_cdb_update() {
@@ -512,7 +513,7 @@ class Cdb_Tester {
 
         // Cengiz gets a review
         $user_cengiz = $this->conf->checked_user_by_email("cengiz@isi.edu");
-        $rrid = $this->user_chair->assign_review(3, $user_cengiz->contactId, REVIEW_EXTERNAL);
+        $rrid = $this->user_chair->assign_review(3, $user_cengiz, REVIEW_EXTERNAL);
         xassert($rrid > 0);
         $paper3 = $this->conf->checked_paper_by_id(3);
         $rrow = $paper3->fresh_review_by_id($rrid);
@@ -808,7 +809,7 @@ class Cdb_Tester {
         xassert(!$u);
 
         $this->conf->set_opt("disableNonPC", 1);
-        $this->conf->refresh_options();
+        $this->conf->refresh_settings();
 
         $p = PaperInfo::make_new($this->conf->root_user(), null);
         $ps = (new PaperStatus($this->conf->root_user()))->set_disable_users(true);
@@ -859,7 +860,7 @@ class Cdb_Tester {
         xassert_eqq($d & ~Contact::CF_PLACEHOLDER, 0);
 
         $this->conf->set_opt("disableNonPC", null);
-        $this->conf->refresh_options();
+        $this->conf->refresh_settings();
     }
 
     function check_disablement($email, $want) {
@@ -896,6 +897,12 @@ class Cdb_Tester {
         $this->check_disablement("fuzzle@cat.com", 0);
         $this->check_disablement("gussie@cat.com", Contact::CF_PLACEHOLDER);
 
+        // fuzzle has cdb roles
+        $u = $this->conf->fresh_cdb_user_by_email("fuzzle@cat.com");
+        xassert(!!$u);
+        $roles = Dbl::fetch_ivalue($this->cdb, "select roles from Roles where confid=? and contactDbId=?", $this->conf->cdb_confid(), $u->contactDbId);
+        xassert_eqq($roles, Contact::ROLE_AUTHOR);
+
         // reset gussie's password
         $gussie = $this->conf->fresh_user_by_email("gussie@cat.com");
         $qreq = TestRunner::make_qreq($gussie, "newaccount?email=gussie@cat.com", "POST");
@@ -918,14 +925,45 @@ class Cdb_Tester {
         } catch (Redirection $r) {
         }
 
+        // now gussie is no longer disabled and has cdb roles
         $this->check_disablement("gussie@cat.com", 0);
+        $u = $this->conf->fresh_cdb_user_by_email("gussie@cat.com");
+        xassert(!!$u);
+        $roles = Dbl::fetch_ivalue($this->cdb, "select roles from Roles where confid=? and contactDbId=?", $this->conf->cdb_confid(), $u->contactDbId);
+        xassert_eqq($roles, Contact::ROLE_AUTHOR);
     }
 
     function test_cdb_example_user() {
+        // users with example email addresses are not saved to cdb
         xassert(!$this->conf->fresh_cdb_user_by_email("wonderful@example.edu"));
         $acct = $this->us1->save_user((object) ["email" => "wonderful@example.edu"]);
         xassert(!!$acct);
         xassert(!$acct->cdb_user());
         xassert(!$this->conf->fresh_cdb_user_by_email("wonderful@example.edu"));
+    }
+
+    function test_cdb_user_update() {
+        $gussie = $this->conf->user_by_email("gussie@cat.com");
+        xassert_eqq($gussie->firstName, "");
+        xassert_eqq($gussie->lastName, "");
+
+        // update CDB user name, add fake role
+        Dbl::qe($this->conf->contactdb(), "update ContactInfo set firstName='Gussie', lastName='Onufryk', orcid='XXXX-9999-CATK-ITTY', updateTime=? where email='gussie@cat.com'", Conf::$now);
+        Dbl::qe($this->conf->contactdb(), "insert into ConferenceUpdates (confid, user_update_at) values (?,?) on duplicate key update user_update_at=greatest(?,user_update_at)", $this->conf->cdb_confid(), Conf::$now, Conf::$now);
+
+        // if requested fields already present, CdbUserUpdate does nothing
+        $nq = Dbl::$nqueries;
+        (new CdbUserUpdate($this->conf))->add("floyd@ee.lbl.gov")->check("firstName");
+        xassert_le(Dbl::$nqueries, $nq + 2);
+
+        // does something
+        Conf::advance_current_time(Conf::$now + 5);
+        (new CdbUserUpdate($this->conf))->add("gussie@cat.com")->check();
+
+        $gussie = $this->conf->user_by_email("gussie@cat.com");
+        xassert_eqq($gussie->firstName, "Gussie");
+        xassert_eqq($gussie->lastName, "Onufryk");
+        xassert_eqq($gussie->unaccentedName, "gussie onufryk");
+        xassert_ge($this->conf->setting("__cdb_user_update_at"), Conf::$now - 3);
     }
 }

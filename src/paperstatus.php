@@ -28,8 +28,6 @@ class PaperStatus extends MessageSet {
     public $paperId;
     /** @var ?string */
     public $title;
-    /** @var ?list<int> */
-    private $_potential_pids;
     /** @var ?list<string> */
     private $_unknown_fields;
     /** @var list<PaperOption> */
@@ -606,7 +604,7 @@ class PaperStatus extends MessageSet {
             if (isset($xpj->$k)
                 || isset($ikeys[$k])
                 || isset($xstatus->$k)
-                || in_array($k, ["pid", "id", "options", "status", "decision", "reviews", "comments", "tags", "submission_class"])
+                || in_array($k, ["object", "pid", "id", "options", "status", "decision", "reviews", "comments", "tags", "submission_class"])
                 || $k[0] === "_"
                 || $k[0] === "\$") {
                 continue;
@@ -1059,54 +1057,13 @@ class PaperStatus extends MessageSet {
         $this->_update_pid_dids = $this->_joindocs = $this->_tags_changed = [];
         $this->_save_status = 0;
         if ($prow->is_new()) {
-            $this->allocate_pid($pid);
+            $pid = $this->conf->id_randomizer()->insert("Paper", "paperId", [
+                "paperId" => $pid, "title" => "", "abstract" => "", "authorInformation" => ""
+            ]);
+            $this->prow->set_prop("paperId", $pid);
             foreach (Tagger::split_unpack($prow->all_tags_text()) as $tv) {
                 $this->_tags_changed[] = $tv;
             }
-        }
-    }
-
-    /** @return int */
-    private function potential_random_pid() {
-        $this->_potential_pids = $this->_potential_pids ?? [];
-        while (true) {
-            if (!empty($this->_potential_pids)) {
-                return array_pop($this->_potential_pids);
-            }
-
-            $n = max(100, 3 * $this->conf->fetch_ivalue("select count(*) from Paper"));
-            for ($i = 0; $i !== 20; ++$i) {
-                $this->_potential_pids[] = mt_rand(1, $n);
-            }
-
-            $result = $this->conf->qe("select paperId from Paper where paperId?a", $this->_potential_pids);
-            while (($row = $result->fetch_row())) {
-                $pid = (int) $row[0];
-                while (($i = array_search($pid, $this->_potential_pids, true)) !== false) {
-                    array_splice($this->_potential_pids, $i, 1);
-                }
-            }
-            $result->close();
-        }
-    }
-
-    /** @param ?int $pid */
-    private function allocate_pid($pid) {
-        $random = $this->conf->setting("random_pids");
-        while (true) {
-            if ($pid === null && $random) {
-                $pid = $this->potential_random_pid();
-            }
-            if ($pid === null) {
-                $result = $this->conf->qe("insert into Paper set title='', abstract='', authorInformation=''");
-            } else {
-                $result = $this->conf->qe("insert into Paper set paperId=?, title='', abstract='', authorInformation='' on duplicate key update timeSubmitted=timeSubmitted", $pid);
-            }
-            if ($result->affected_rows > 0) {
-                $this->prow->set_prop("paperId", $result->insert_id);
-                return;
-            }
-            $pid = null;
         }
     }
 
@@ -1163,6 +1120,10 @@ class PaperStatus extends MessageSet {
     function prepare_save_paper_json($pj) {
         assert(is_object($pj));
 
+        if (($pj->object ?? "paper") !== "paper") {
+            $this->error_at("object", $this->_("<0>JSON does not represent a {submission}"));
+            return false;
+        }
         $pid = $pj->pid ?? $pj->id ?? null;
         if ($pid !== null && !is_int($pid) && $pid !== "new") {
             $key = isset($pj->pid) ? "pid" : "id";
@@ -1216,9 +1177,9 @@ class PaperStatus extends MessageSet {
         if ($this->has_error()) {
             return false;
         }
-        $this->prow->set_want_submitted($pj->status->submitted && !$pj->status->withdrawn);
 
         // check fields
+        $this->prow->set_updating($pj->status->submitted && !$pj->status->withdrawn);
         foreach ($this->prow->form_fields() as $opt) {
             $this->_check_field($pj, $opt);
         }
@@ -1227,6 +1188,7 @@ class PaperStatus extends MessageSet {
             $this->warning_at("options", $this->_("<0>Ignoring unknown fields {:list}", $this->_unknown_fields));
         }
         if ($this->problem_status() >= MessageSet::ESTOP) {
+            $this->prow->clear_updating();
             return false;
         }
 
@@ -1239,6 +1201,7 @@ class PaperStatus extends MessageSet {
         $this->_prepare_status($pj);
         $this->_prepare_decision($pj);
         $this->_prepare_final_status($pj);
+        $this->prow->clear_updating();
 
         // correct blindness setting
         if ($this->conf->submission_blindness() !== Conf::BLIND_OPTIONAL) {
@@ -1252,7 +1215,8 @@ class PaperStatus extends MessageSet {
         // don't save if transaction required
         if (isset($pj->status->if_unmodified_since)
             && $pj->status->if_unmodified_since < $this->prow->timeModified) {
-            $this->estop_at("status:if_unmodified_since", $this->_("<5><strong>Edit conflict</strong>: You were editing an old version of the {submission}, so your changes have not been saved."));
+            $this->estop_at("status:if_unmodified_since", $this->_("<5><strong>Edit conflict</strong>: The {submission} changed since you last loaded this page"));
+            $this->inform_at("status:if_unmodified_since", $this->_("<0>Your changes were not saved, but you can check the form and save again."));
         }
 
         // don't save if not allowed

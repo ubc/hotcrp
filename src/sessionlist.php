@@ -1,23 +1,28 @@
 <?php
 // sessionlist.php -- HotCRP helper class for lists carried across pageloads
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class SessionList {
-    /** @var string */
+    /** @var string
+     * @readonly */
     public $listid;
-    /** @var list<int> */
+    /** @var list<int>
+     * @readonly */
     public $ids;
-    /** @var ?string */
+    /** @var ?string
+     * @readonly */
     public $description;
-    /** @var ?string */
-    public $url;
-    /** @var ?string */
+    /** @var ?string
+     * @readonly */
     public $urlbase;
+    /** @var ?bool
+     * @readonly */
     public $highlight;
-    /** @var ?string */
+    /** @var ?string
+     * @readonly */
     public $digest;
     /** @var ?int */
-    public $curid;
+    private $curid;
     /** @var ?int */
     private $previd;
     /** @var ?int */
@@ -34,18 +39,19 @@ class SessionList {
         $this->description = $description;
     }
 
-    /** @param string $url
-     * @return $this */
-    function set_url($url) {
-        $this->url = $url;
-        $this->urlbase = null;
+    /** @param string $urlbase
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_urlbase($urlbase) {
+        $this->urlbase = $urlbase;
         return $this;
     }
 
-    /** @param string $urlbase
-     * @return $this */
-    function set_urlbase($urlbase) {
-        $this->urlbase = $urlbase;
+    /** @param bool $highlight
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_highlight($highlight) {
+        $this->highlight = !!$highlight;
         return $this;
     }
 
@@ -255,57 +261,15 @@ class SessionList {
         return join("", $a);
     }
 
-    /** @param string $info
+    /** @param Contact $user
+     * @param string $info
      * @param string $type
      * @return ?SessionList */
     static function decode_info_string($user, $info, $type) {
         if (($j = json_decode($info))
             && is_object($j)
             && (!isset($j->listid) || is_string($j->listid))) {
-            $listid = $j->listid ?? $type;
-            if ($listid !== $type && !str_starts_with($listid, "{$type}/")) {
-                return null;
-            }
-
-            $ids = $j->ids ?? null;
-            if (is_string($ids)) {
-                if (($ids = self::decode_ids($ids)) === null)
-                    return null;
-            } else if ($ids !== null && !is_int_list($ids)) {
-                return null;
-            }
-            '@phan-var-force ?list<int> $ids';
-
-            $digest = is_string($j->digest ?? null) ? $j->digest : null;
-            '@phan-var-force ?string $digest';
-
-            if ($ids !== null || $digest !== null) {
-                $list = new SessionList($listid, $ids);
-                if (isset($j->description) && is_string($j->description)) {
-                    $list->description = $j->description;
-                }
-                if (isset($j->url) && is_string($j->url)) {
-                    $list->url = $j->url;
-                } else if (isset($j->urlbase) && is_string($j->urlbase)) {
-                    $list->urlbase = $j->urlbase;
-                }
-                if (isset($j->highlight)) {
-                    $list->highlight = $j->highlight;
-                }
-                $list->digest = $digest;
-                if (isset($j->curid) && is_int($j->curid)) {
-                    $list->curid = $j->curid;
-                }
-                if (isset($j->previd) && is_int($j->previd)) {
-                    $list->previd = $j->previd;
-                }
-                if (isset($j->nextid) && is_int($j->nextid)) {
-                    $list->nextid = $j->nextid;
-                }
-                return $list;
-            } else {
-                return null;
-            }
+            return self::decode_hotlist($user, $j, $type);
         }
 
         if ($type === "p"
@@ -319,26 +283,74 @@ class SessionList {
     }
 
     /** @param Contact $user
+     * @param object $j
+     * @param string $type
+     * @return ?SessionList
+     * @suppress PhanAccessReadOnlyProperty */
+    static private function decode_hotlist($user, $j, $type) {
+        $listid = $j->listid ?? $type;
+        if ($listid !== $type && !str_starts_with($listid, "{$type}/")) {
+            return null;
+        }
+
+        $ids = $j->ids ?? null;
+        if (is_string($ids)) {
+            if (($ids = self::decode_ids($ids)) === null)
+                return null;
+        } else if ($ids !== null && !is_int_list($ids)) {
+            return null;
+        }
+        '@phan-var-force ?list<int> $ids';
+
+        $digest = is_string($j->digest ?? null) ? $j->digest : null;
+        '@phan-var-force ?string $digest';
+
+        if ($ids === null && $digest === null) {
+            return null;
+        }
+
+        $list = new SessionList($listid, $ids);
+        if (isset($j->description) && is_string($j->description)) {
+            /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
+            $list->description = $j->description;
+        }
+        if (isset($j->urlbase) && is_string($j->urlbase)) {
+            $list->urlbase = $j->urlbase;
+        }
+        if ($j->highlight ?? false) {
+            $list->highlight = true;
+        }
+        $list->digest = $digest;
+        if (isset($j->curid) && is_int($j->curid)) {
+            $list->curid = $j->curid;
+        }
+        if (isset($j->previd) && is_int($j->previd)) {
+            $list->previd = $j->previd;
+        }
+        if (isset($j->nextid) && is_int($j->nextid)) {
+            $list->nextid = $j->nextid;
+        }
+        return $list;
+    }
+
+    /** @param Contact $user
      * @return ?string */
     function full_site_relative_url($user) {
+        if ($this->urlbase === null) {
+            return null;
+        }
         $args = $user->hoturl_defaults();
-        if ($this->url !== null) {
-            $url = $this->url;
-        } else if ($this->urlbase !== null) {
-            $url = $this->urlbase;
-            if (preg_match('/\Ap\/[^\/]*\/([^\/]*)(?:|\/([^\/]*))\z/', $this->listid, $m)) {
-                if ($m[1] !== "" || str_starts_with($url, "search")) {
-                    $url .= (strpos($url, "?") ? "&" : "?") . "q=" . $m[1];
-                }
-                if (isset($m[2]) && $m[2] !== "") {
-                    foreach (explode("&", $m[2]) as $kv) {
-                        $eq = strpos($kv, "=");
-                        $args[substr($kv, 0, $eq)] = substr($kv, $eq + 1);
-                    }
+        $url = $this->urlbase;
+        if (preg_match('/\Ap\/[^\/]*\/([^\/]*)(?:|\/([^\/]*))\z/', $this->listid, $m)) {
+            if ($m[1] !== "" || str_starts_with($url, "search")) {
+                $url .= (strpos($url, "?") ? "&" : "?") . "q=" . $m[1];
+            }
+            if (isset($m[2]) && $m[2] !== "") {
+                foreach (explode("&", $m[2]) as $kv) {
+                    $eq = strpos($kv, "=");
+                    $args[substr($kv, 0, $eq)] = substr($kv, $eq + 1);
                 }
             }
-        } else {
-            return null;
         }
         foreach ($args as $k => $v) {
             if (!preg_match('/[&?]' . preg_quote($k) . '=/', $url)) {
@@ -358,12 +370,10 @@ class SessionList {
         if ($this->description !== null) {
             $j["description"] = $this->description;
         }
-        if ($this->url !== null) {
-            $j["url"] = $this->url;
-        } else if ($this->urlbase !== null) {
+        if ($this->urlbase !== null) {
             $j["urlbase"] = $this->urlbase;
         }
-        if ($this->highlight !== null) {
+        if ($this->highlight) {
             $j["highlight"] = $this->highlight;
         }
         if ($this->digest !== null) {
@@ -373,11 +383,6 @@ class SessionList {
         // of the sessionlist object, currently `ids` and `sorted_ids`.
         if ($this->ids !== null) {
             $j["ids"] = self::encode_ids($this->ids);
-            if (strlen($j["ids"]) > 160) {
-                $x = $this->ids;
-                sort($x);
-                $j["sorted_ids"] = self::encode_ids($x);
-            }
         }
         return json_encode_browser($j);
     }
@@ -425,6 +430,7 @@ class SessionList {
             return $this->nextid;
         } else if (isset($this->curid) && $this->set_current_id($this->curid)) {
             $pos = $this->id_index + $delta;
+            /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
             if ($pos >= 0 && isset($this->ids[$pos])) {
                 return $this->ids[$pos];
             }

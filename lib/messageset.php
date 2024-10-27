@@ -121,13 +121,6 @@ class MessageItem implements JsonSerializable {
     }
 
     /** @param ?string $msg
-     * @return array{ok:false,message_list:list<MessageItem>}
-     * @deprecated */
-    static function make_error_json($msg) {
-        return ["ok" => false, "message_list" => [new MessageItem(null, $msg ?? "", 2)]];
-    }
-
-    /** @param ?string $msg
      * @return MessageItem */
     static function error($msg) {
         return new MessageItem(null, $msg, 2);
@@ -209,11 +202,6 @@ class MessageSet {
     const ERROR = 2;
     const ESTOP = 3;
 
-    /** @deprecated */
-    const INFO = 0;
-    /** @deprecated */
-    const NOTE = -1;
-
     /** @param 0|1|2|3|6|7 $flags */
     function __construct($flags = 0) {
         $this->_ms_flags = $flags;
@@ -222,6 +210,19 @@ class MessageSet {
     function clear_messages() {
         $this->errf = $this->msgs = [];
         $this->problem_status = 0;
+    }
+
+    /** @param int $message_count */
+    function clear_messages_since($message_count) {
+        assert($message_count >= 0 && $message_count <= count($this->msgs));
+        if ($message_count < count($this->msgs)) {
+            array_splice($this->msgs, $message_count);
+            $this->errf = [];
+            $this->problem_status = 0;
+            foreach ($this->msgs as $mi) {
+                $this->_account_item($mi);
+            }
+        }
     }
 
     function clear() {
@@ -233,6 +234,7 @@ class MessageSet {
     private function change_ms_flags($clearf, $wantf) {
         $this->_ms_flags = ($this->_ms_flags & ~$clearf) | $wantf;
     }
+
     /** @param bool $x
      * @return bool */
     function swap_ignore_messages($x) {
@@ -240,6 +242,7 @@ class MessageSet {
         $this->change_ms_flags(self::IGNORE_MSGS, $x ? self::IGNORE_MSGS : 0);
         return $oim;
     }
+
     /** @param bool|0|2|6 $x
      * @return $this */
     function set_ignore_duplicates($x) {
@@ -247,6 +250,7 @@ class MessageSet {
         $this->change_ms_flags(self::IGNORE_DUPS | self::IGNORE_DUPS_FIELD_FLAG, $f);
         return $this;
     }
+
     /** @param bool $x
      * @param ?int $default_format
      * @return $this */
@@ -259,11 +263,13 @@ class MessageSet {
         }
         return $this;
     }
+
     /** @param string $field
      * @param -5|-4|-3|-2|-1|0|1|2|3 $status */
     function set_status_for_problem_at($field, $status) {
         $this->pstatus_at[$field] = $status;
     }
+
     /** @return void */
     function clear_status_for_problem_at() {
         $this->pstatus_at = [];
@@ -288,6 +294,14 @@ class MessageSet {
                 return $i;
         }
         return false;
+    }
+
+    /** @param MessageItem $mi */
+    private function _account_item($mi) {
+        if ($mi->field !== null) {
+            $this->errf[$mi->field] = max($this->errf[$mi->field] ?? 0, $mi->status);
+        }
+        $this->problem_status = max($this->problem_status, $mi->status);
     }
 
     /** @param int $pos
@@ -319,10 +333,7 @@ class MessageSet {
                 array_splice($this->msgs, $pos, 0, [$mi]);
             }
         }
-        if ($mi->field !== null) {
-            $this->errf[$mi->field] = max($this->errf[$mi->field] ?? 0, $mi->status);
-        }
-        $this->problem_status = max($this->problem_status, $mi->status);
+        $this->_account_item($mi);
         return $mi;
     }
 
@@ -692,6 +703,26 @@ class MessageSet {
         }
     }
 
+    /** @param MessageItem|iterable<MessageItem>|MessageSet ...$mls
+     * @return list<MessageItem> */
+    static function make_list(...$mls) {
+        $mlx = [];
+        foreach ($mls as $ml) {
+            if ($ml instanceof MessageItem) {
+                $mlx[] = $ml;
+            } else if ($ml instanceof MessageSet) {
+                if ($ml->has_message()) { // old PHPs require at least 2 args
+                    array_push($mlx, ...$ml->message_list());
+                }
+            } else {
+                foreach ($ml as $mi) {
+                    $mlx[] = $mi;
+                }
+            }
+        }
+        return $mlx;
+    }
+
     /** @param iterable<MessageItem> $message_list
      * @return int */
     static function list_status($message_list) {
@@ -715,12 +746,14 @@ class MessageSet {
     static function feedback_html_items($message_list) {
         $ts = [];
         $t = "";
-        $last_landmark = null;
+        $last_mi = $last_landmark = null;
         foreach ($message_list as $mi) {
             if ($mi->message === ""
                 && ($mi->pos1 === null || $mi->context === null)) {
                 continue;
             }
+
+            // render message
             $s = $mi->message_as(5);
             $pstart = $pstartclass = "";
             if (str_starts_with($s, "<p")) {
@@ -733,6 +766,23 @@ class MessageSet {
                     $s = substr($s, strlen($m[0]));
                 }
             }
+
+            // close previous message
+            // (special case: avoid duplicate messages if adding context)
+            if ($last_mi
+                && $last_mi->status === $mi->status
+                && $last_mi->message === $mi->message
+                && ($last_mi->landmark ?? "") === ""
+                && ($mi->landmark ?? "") === ""
+                && $mi->pos1 !== null
+                && $mi->context !== null) {
+                $s = "";
+            } else if ($mi->status !== self::INFORM && $t !== "") {
+                $ts[] = $t;
+                $t = "";
+            }
+
+            // render landmark
             if ($mi->landmark !== null
                 && $mi->landmark !== ""
                 && ($mi->status !== self::INFORM || $mi->landmark !== $last_landmark)) {
@@ -752,10 +802,8 @@ class MessageSet {
             } else {
                 $lm = "";
             }
-            if ($mi->status !== self::INFORM && $t !== "") {
-                $ts[] = $t;
-                $t = "";
-            }
+
+            // add message
             if ($s === "") {
                 // Do not report message
             } else if ($mi->status !== self::INFORM) {
@@ -769,11 +817,16 @@ class MessageSet {
             } else {
                 $t .= "<div class=\"msg-inform\">{$pstart}{$lm}{$s}</div>";
             }
+
+            // add context
             if ($mi->pos1 !== null && $mi->context !== null) {
                 $mark = Ht::mark_substring($mi->context, $mi->pos1, $mi->pos2, $mi->status);
                 $lmx = $s === "" ? $lm : "";
                 $t .= "<div class=\"msg-context\">{$lmx}{$mark}</div>";
             }
+
+            // cleanup
+            $last_mi = $mi;
             if ($mi->status !== self::INFORM) {
                 $last_landmark = $mi->landmark;
             }

@@ -498,7 +498,7 @@ if (defined("JSON_UNESCAPED_LINE_TERMINATORS")) {
 
 /** @return string */
 function json_encode_db($x, $flags = 0) {
-    return json_encode($x, $flags | JSON_UNESCAPED_UNICODE);
+    return json_encode($x, $flags | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
 /** @param ?string $x
@@ -745,6 +745,16 @@ function tempdir($mode = 0700) {
     return false;
 }
 
+
+/** @param string $filename
+ * @return string */
+function safe_filename($filename) {
+    $colon = strpos($filename, ":");
+    if ($colon !== false && ctype_alnum(substr($filename, 0, $colon))) {
+        return "file://{$filename}";
+    }
+    return $filename;
+}
 
 /** @return Exception */
 function error_get_last_as_exception($prefix) {

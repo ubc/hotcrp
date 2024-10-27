@@ -1,8 +1,8 @@
 <?php
-// searchatom.php -- HotCRP class holding information about search words
+// searchexpr.php -- HotCRP class holding information about search words
 // Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
-class SearchAtom {
+class SearchExpr {
     /** @var ?string */
     public $kword;
     /** @var string */
@@ -15,17 +15,17 @@ class SearchAtom {
     public $pos2;
     /** @var ?SearchOperator */
     public $op;
-    /** @var ?list<SearchAtom> */
+    /** @var ?list<SearchExpr> */
     public $child;
-    /** @var ?SearchAtom */
+    /** @var ?SearchExpr */
     public $parent;
 
     /** @param string $text
      * @param int $pos1
-     * @param ?SearchAtom $parent
-     * @return SearchAtom */
+     * @param ?SearchExpr $parent
+     * @return SearchExpr */
     static function make_simple($text, $pos1, $parent = null) {
-        $sa = new SearchAtom;
+        $sa = new SearchExpr;
         $sa->text = $text;
         $sa->kwpos1 = $sa->pos1 = $pos1;
         $sa->pos2 = $pos1 + strlen($text);
@@ -38,10 +38,10 @@ class SearchAtom {
      * @param int $kwpos1
      * @param int $pos1
      * @param int $pos2
-     * @param ?SearchAtom $parent
-     * @return SearchAtom */
+     * @param ?SearchExpr $parent
+     * @return SearchExpr */
     static function make_keyword($kword, $text, $kwpos1, $pos1, $pos2, $parent = null) {
-        $sa = new SearchAtom;
+        $sa = new SearchExpr;
         $sa->kword = $kword === "" ? null : $kword;
         $sa->text = $text;
         $sa->kwpos1 = $kwpos1;
@@ -52,30 +52,40 @@ class SearchAtom {
     }
 
     /** @param SearchOperator $op
-     * @param int $kwpos1
-     * @param int $kwpos2
-     * @param ?SearchAtom $reference
-     * @return SearchAtom */
-    static function make_op($op, $kwpos1, $kwpos2, $reference) {
-        $sa = new SearchAtom;
+     * @param int $pos1
+     * @param int $pos2
+     * @param ?SearchExpr $reference
+     * @return SearchExpr */
+    static function make_op_start($op, $pos1, $pos2, $reference) {
+        $sa = new SearchExpr;
         $sa->op = $op;
-        if ($op->unary) {
-            $sa->kwpos1 = $sa->pos1 = $kwpos1;
-            $sa->pos2 = $kwpos2;
+        if ($op->unary()) {
+            $sa->kwpos1 = $sa->pos1 = $pos1;
+            $sa->pos2 = $pos2;
             $sa->child = [];
             $sa->parent = $reference;
         } else {
             $sa->kwpos1 = $sa->pos1 = $reference->pos1;
-            $sa->pos2 = $kwpos2;
+            $sa->pos2 = $pos2;
             $sa->child = [$reference];
             $sa->parent = $reference->parent;
         }
         return $sa;
     }
 
+    /** @param 'and'|'or'|'xor'|'not' $opname
+     * @param SearchExpr ...$child
+     * @return SearchExpr */
+    static function combine($opname, ...$child) {
+        $sa = new SearchExpr;
+        $sa->op = SearchOperatorSet::simple_operator($opname);
+        $sa->child = $child;
+        return $sa;
+    }
+
     /** @return bool */
     function is_complete() {
-        return !$this->op || count($this->child) > ($this->op->unary ? 0 : 1);
+        return !$this->op || count($this->child) > ($this->op->unary() ? 0 : 1);
     }
 
     /** @return bool */
@@ -84,7 +94,7 @@ class SearchAtom {
     }
 
     /** @param int $pos
-     * @return SearchAtom */
+     * @return SearchExpr */
     function complete($pos) {
         if (!$this->is_complete()) {
             $this->pos2 = $pos;
@@ -101,7 +111,7 @@ class SearchAtom {
 
     /** @param int $pos1
      * @param int $pos2
-     * @return SearchAtom */
+     * @return SearchExpr */
     function complete_paren($pos1, $pos2) {
         $a = $this;
         $first = $a->op && $a->op->type === "(" && !empty($a->child);
@@ -116,9 +126,9 @@ class SearchAtom {
         return $a;
     }
 
-    /** @return list<SearchAtom> */
+    /** @return list<SearchExpr> */
     function flattened_children() {
-        if (!$this->op || $this->op->unary) {
+        if (!$this->op || $this->op->unary()) {
             return $this->child ?? [];
         }
         $a = [];
@@ -178,5 +188,35 @@ class SearchAtom {
             }
             return (object) $a;
         }
+    }
+
+    /** @param callable(SearchExpr):bool $f
+     * @return bool
+     * @suppress PhanTypeArraySuspiciousNullable */
+    function evaluate_simple($f) {
+        if (!$this->op) {
+            $ok = $f($this);
+        } else if (($this->op->flags & SearchOperator::F_AND) !== 0) {
+            $ok = true;
+            foreach ($this->child as $ch) {
+                $ok = $ok && $ch->evaluate_simple($f);
+            }
+        } else if (($this->op->flags & SearchOperator::F_OR) !== 0) {
+            $ok = false;
+            foreach ($this->child as $ch) {
+                $ok = $ok || $ch->evaluate_simple($f);
+            }
+        } else if (($this->op->flags & SearchOperator::F_XOR) !== 0) {
+            $ok = false;
+            foreach ($this->child as $ch) {
+                if ($ch->evaluate_simple($f))
+                    $ok = !$ok;
+            }
+        } else if (($this->op->flags & SearchOperator::F_NOT) !== 0) {
+            $ok = !$this->child[0] || !$this->child[0]->evaluate_simple($f);
+        } else {
+            throw new ErrorException("unknown operator");
+        }
+        return $ok;
     }
 }

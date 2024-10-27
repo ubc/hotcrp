@@ -329,7 +329,9 @@ class TagAnno implements JsonSerializable {
         if ($this->pos !== null) {
             $j["pos"] = $this->pos;
         }
-        $j["annoid"] = $this->annoId;
+        if ($this->annoId !== null) {
+            $j["annoid"] = $this->annoId;
+        }
         if ($this->tag) {
             $j["tag"] = $this->tag;
         }
@@ -360,46 +362,65 @@ class TagAnno implements JsonSerializable {
 }
 
 class TagStyle {
-    /** @var string */
-    public $name;
-    /** @var string */
+    /** @var string
+     * @readonly */
     public $style;
-    /** @var int */
-    public $sclass;
-    /** @var ?bool */
-    private $dark;
+    /** @var int
+     * @readonly */
+    public $styleflags;
+    /** @var ?int
+     * @readonly */
+    public $rgb;
     /** @var ?OklchColor */
     private $oklch;
 
-    const DYNAMIC = 1;
-    const UNLISTED = 2;
-    const BADGE = 4;
-    const BG = 8;
-    const TEXT = 16;
-    const STYLE = 24; // BG | TEXT
+    const DYNAMIC = 0x1;
+    const UNLISTED = 0x2;
+    const BADGE = 0x4;
+    const BG = 0x8;
+    const TEXT = 0x10;
+    const STYLE = 0x18; // BG | TEXT
+    const IMAGE = 0x20;
+    const DARK = 0x40;
+    const NEEDDARK = 0x80;
 
-    // see also style.css
-    const KNOWN_COLORS = " red:ffd8d8 orange:fdebcc yellow:fdffcb green:d8ffd8 blue:d8d8ff purple:f2d8f8 gray:e2e2e2 white:ffffff";
+
+    /** @param string $style
+     * @param int $styleflags
+     * @param ?int $rgb */
+    function __construct($style, $styleflags, $rgb = null) {
+        $this->style = $style;
+        $this->styleflags = $styleflags;
+        $this->rgb = $rgb;
+    }
+
+    /** @param string $style
+     * @return TagStyle */
+    static function make_dynamic($style) {
+        $first = $style[0];
+        if ($first === "r") { // `rgb-`
+            $sf = self::BG | self::NEEDDARK;
+        } else if ($first === "d") { // `dot-`
+            $sf = self::BG | self::IMAGE;
+        } else if ($first === "b") { // `badge-`
+            $sf = self::BADGE;
+        } else {
+            $sf = self::TEXT;
+        }
+        return new TagStyle($style, self::DYNAMIC | $sf);
+    }
 
     /** @param string $s
+     * @param TagMap $tm
      * @return ?string */
-    static function dynamic_style($s) {
-        if (str_starts_with($s, "rgb-")
-            && (strlen($s) === 7 || strlen($s) === 10)
-            && ctype_xdigit(substr($s, 4))) {
-            if (strlen($s) === 7) {
-                return "rgb-{$s[4]}{$s[4]}{$s[5]}{$s[5]}{$s[6]}{$s[6]}";
-            } else {
-                return $s;
-            }
-        } else if (str_starts_with($s, "text-rgb-")
-                   && (strlen($s) === 12 || strlen($s) === 15)
-                   && ctype_xdigit(substr($s, 9))) {
-            if (strlen($s) === 12) {
-                return "text-rgb-{$s[9]}{$s[9]}{$s[10]}{$s[10]}{$s[11]}{$s[11]}";
-            } else {
-                return $s;
-            }
+    static function dynamic_style($s, $tm) {
+        $len = strlen($s);
+        if (str_starts_with($s, "rgb-")) {
+            return self::expand_color($s, 4, null);
+        } else if (str_starts_with($s, "text-rgb-")) {
+            return self::expand_color($s, 9, null);
+        } else if (str_starts_with($s, "dot-")) {
+            return self::expand_color($s, 4, $tm);
         } else if (str_starts_with($s, "font-")
                    || str_starts_with($s, "weight-")) {
             return $s;
@@ -408,62 +429,37 @@ class TagStyle {
         }
     }
 
-    /** @param string $text */
-    function __construct($text) {
-        // $text format: [name=]style[^][@][#][-][*]
-        // ^ text, # background, @ badge (default is background);
-        // - means unlisted (do not show in settings by default);
-        // * means dark mode (light mode by default unless dynamic)
-        $sclass = 0;
-        $p0 = 0;
-        $p1 = strlen($text);
-        while (true) {
-            $lch = $text[$p1 - 1];
-            if ($lch === "^") {
-                $sclass |= self::TEXT;
-            } else if ($lch === "#") {
-                $sclass |= self::BG;
-            } else if ($lch === "@") {
-                $sclass |= self::BADGE;
-            } else if ($lch === "-") {
-                $sclass |= self::UNLISTED;
-            } else if ($lch === "*") {
-                $this->dark = true;
-            } else {
-                break;
+    /** @param string $color
+     * @param int $pfxlen
+     * @param ?TagMap $tm
+     * @return string */
+    static function expand_color($color, $pfxlen, $tm) {
+        if ($tm && substr($color, $pfxlen, 4) === "rgb-") {
+            $tm = null;
+            $pfxlen += 4;
+        }
+        if ($tm) {
+            if (($ts = $tm->find_style(strtolower(substr($color, $pfxlen))))
+                && $ts->rgb !== null) {
+                return substr($color, 0, $pfxlen) . "rgb-" . sprintf("%06x", $ts->rgb);
             }
-            --$p1;
-        }
-        if (($eq = strpos($text, "=")) !== false) {
-            $this->name = substr($text, 0, $eq);
-            $p0 = $eq + 1;
-        }
-        $this->style = substr($text, $p0, $p1 - $p0);
-        $this->name = $this->name ?? $this->style;
-        if ($p1 === strlen($text)
-            && ($dstyle = self::dynamic_style($this->style)) !== null) {
-            $this->style = $dstyle;
-            $sclass |= self::DYNAMIC;
-            if ($dstyle[0] === "r") { // `rgb-`
-                $sclass |= self::BG | self::BADGE;
-            } else {
-                $sclass |= self::TEXT;
+        } else if (ctype_xdigit(substr($color, $pfxlen))) {
+            if (strlen($color) === $pfxlen + 3) {
+                $r = $color[$pfxlen];
+                $g = $color[$pfxlen + 1];
+                $b = $color[$pfxlen + 2];
+                return substr($color, 0, $pfxlen) . "{$r}{$r}{$g}{$g}{$b}{$b}";
+            } else if (strlen($color) === $pfxlen + 6) {
+                return $color;
             }
         }
-        if (($sclass & (self::STYLE | self::BADGE)) === 0) {
-            $sclass |= self::BG;
-        }
-        $this->sclass = $sclass;
-        if ($this->dark === null
-            && (($sclass & self::DYNAMIC) === 0 || ($sclass & self::BG) === 0)) {
-            $this->dark = false;
-        }
+        return null;
     }
 
     /** @return bool */
     function dark() {
-        if ($this->dark === null) {
-            $rgb = intval(substr($this->style, 4), 16);
+        if (($this->styleflags & self::NEEDDARK) !== 0) {
+            $rgb = intval(substr($this->style, -6), 16);
             $r = $rgb >> 16;
             $g = ($rgb >> 8) & 255;
             $b = $rgb & 255;
@@ -471,22 +467,24 @@ class TagStyle {
             $gx = $g <= 10.31475 ? $g / 3294.60 : pow(($g + 14.025) / 269.025, 2.4);
             $bx = $b <= 10.31475 ? $b / 3294.60 : pow(($b + 14.025) / 269.025, 2.4);
             $l = 0.2126 * $rx + 0.7152 * $gx + 0.0722 * $bx;
-            $this->dark = $l < 0.3;
+            /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
+            $this->styleflags = ($this->styleflags & ~self::NEEDDARK)
+                | ($l < 0.3 ? self::DARK : 0);
         }
-        return $this->dark;
+        return ($this->styleflags & self::DARK) !== 0;
     }
 
     /** @return ?OklchColor
      * @suppress PhanParamSuspiciousOrder */
     function oklch() {
-        if (($this->sclass & self::BG) === 0) {
+        if (($this->styleflags & (self::BG | self::IMAGE)) !== self::BG) {
             return null;
         }
         if ($this->oklch === null) {
-            if (($this->sclass & self::DYNAMIC) !== 0) {
-                $rgb = intval(substr($this->style, 4), 16);
-            } else if (($p = strpos(self::KNOWN_COLORS, " {$this->style}:")) !== false) {
-                $rgb = intval(substr(self::KNOWN_COLORS, $p + 2 + strlen($this->style), 6), 16);
+            if ($this->rgb !== null) {
+                $rgb = $this->rgb;
+            } else if (($this->styleflags & self::DYNAMIC) !== 0) {
+                $rgb = intval(substr($this->style, -6), 16);
             } else {
                 return null;
             }
@@ -533,20 +531,90 @@ class TagMap {
         $this->conf = $conf;
         $this->flags = TagInfo::TF_CHAIR | TagInfo::TF_READONLY;
 
-        $known_styles = ["black@ red@# orange@# yellow@# green@# blue@# purple@# gray@# white@# pink@ bold^ italic^ underline^ strikethrough^ big^ small^ dim^ violet=purple@# grey=gray@# normal=black@ default=black@"];
-        $opt = $conf->opt("tagKnownStyles") ?? null;
-        if (!empty($opt)) {
-            $known_styles = array_merge($known_styles, is_array($opt) ? $opt : [$opt]);
-        }
-        foreach ($known_styles as $ks) {
-            foreach (explode(" ", $ks) as $s) {
-                if ($s !== "") {
-                    $ts = new TagStyle($s);
-                    $this->style_lmap[$ts->name] = $ts;
-                }
-            }
+        // RGB colors taken from style.css
+        $this->define_style("red", new TagStyle("red", TagStyle::BG | TagStyle::BADGE, 0xffd8d8));
+        $this->define_style("orange", new TagStyle("orange", TagStyle::BG | TagStyle::BADGE, 0xfdebcc));
+        $this->define_style("yellow", new TagStyle("yellow", TagStyle::BG | TagStyle::BADGE, 0xfdffcb));
+        $this->define_style("green", new TagStyle("green", TagStyle::BG | TagStyle::BADGE, 0xd8ffd8));
+        $this->define_style("blue", new TagStyle("blue", TagStyle::BG | TagStyle::BADGE, 0xd8d8ff));
+        $this->define_style("purple", new TagStyle("purple", TagStyle::BG | TagStyle::BADGE, 0xf2d8f8));
+        $this->define_style("violet", new TagStyle("purple", TagStyle::BG | TagStyle::BADGE | TagStyle::UNLISTED, 0xf2d8f8));
+        $this->define_style("gray", new TagStyle("gray", TagStyle::BG | TagStyle::BADGE, 0xe2e2e2));
+        $this->define_style("grey", new TagStyle("gray", TagStyle::BG | TagStyle::BADGE | TagStyle::UNLISTED, 0xe2e2e2));
+        $this->define_style("white", new TagStyle("white", TagStyle::BG | TagStyle::BADGE, 0xffffff));
+
+        $this->define_style("black", new TagStyle("black", TagStyle::BADGE));
+        $this->define_style("default", new TagStyle("black", TagStyle::BADGE | TagStyle::UNLISTED));
+        $this->define_style("normal", new TagStyle("black", TagStyle::BADGE | TagStyle::UNLISTED));
+        $this->define_style("pink", new TagStyle("pink", TagStyle::BADGE));
+
+        $this->define_style("bold", new TagStyle("bold", TagStyle::TEXT));
+        $this->define_style("italic", new TagStyle("italic", TagStyle::TEXT));
+        $this->define_style("underline", new TagStyle("underline", TagStyle::TEXT));
+        $this->define_style("strikethrough", new TagStyle("strikethrough", TagStyle::TEXT));
+        $this->define_style("big", new TagStyle("big", TagStyle::TEXT));
+        $this->define_style("small", new TagStyle("small", TagStyle::TEXT));
+        $this->define_style("dim", new TagStyle("dim", TagStyle::TEXT));
+
+        if (($styles = $conf->opt("tagStyles"))) {
+            expand_json_includes_callback($styles, [$this, "_add_style_json"]);
         }
     }
+
+    /** @param string $name
+     * @param TagStyle $ts */
+    private function define_style($name, $ts) {
+        $this->style_lmap[$name] = $ts;
+    }
+
+    /** @param object $x */
+    function _add_style_json($x) {
+        $name = $x->name ?? null;
+        if (!is_string($name) || $name === "") {
+            return false;
+        }
+        $sf = 0;
+        if ($x->text ?? false) {
+            $sf |= TagStyle::TEXT;
+        }
+        if ($x->bg ?? false) {
+            $sf |= TagStyle::BG;
+        }
+        if ($x->badge ?? false) {
+            $sf |= TagStyle::BADGE;
+        }
+        if ($x->image ?? false) {
+            $sf |= TagStyle::BG | TagStyle::IMAGE;
+        }
+        if ($sf === 0) {
+            $sf = TagStyle::BG;
+        }
+        if ($x->hidden ?? false) {
+            $sf |= TagStyle::UNLISTED;
+        }
+        $rgb = null;
+        if (isset($x->color)
+            && is_string($x->color)
+            && strlen($x->color) === 7
+            && $x->color[0] === "#"
+            && ctype_xdigit(($s = substr($x->color, 1)))) {
+            $rgb = intval($s, 16);
+        }
+        if (property_exists($x, "dark")) {
+            if ($x->dark === null && $rgb !== null) {
+                $sf |= TagStyle::NEEDDARK;
+            } else if ($x->dark) {
+                $sf |= TagStyle::DARK;
+            }
+        }
+        $style = $name;
+        if (isset($x->style) && is_string($x->style)) {
+            $style = $x->style;
+        }
+        $this->style_lmap[strtolower($name)] = new TagStyle($style, $sf, $rgb);
+        return true;
+    }
+
 
     /** @param int $flags
      * @return bool */
@@ -609,10 +677,7 @@ class TagMap {
             && $ltag !== ""
             && (($ltag[0] === ":" && $this->check_emoji_code($ltag))
                 || isset($this->style_lmap[$ltag])
-                || (str_starts_with($ltag, "rgb-") && ctype_xdigit(substr($ltag, 4)))
-                || (str_starts_with($ltag, "text-rgb-") && ctype_xdigit(substr($ltag, 9)))
-                || str_starts_with($ltag, "font-")
-                || str_starts_with($ltag, "weight-"))) {
+                || TagStyle::dynamic_style($ltag, $this))) {
             $ti = $this->ensure($tag);
         }
         if ($this->pattern_version > 0
@@ -849,38 +914,43 @@ class TagMap {
     }
 
 
-    /** @param string $s
-     * @param 4|8|12|16|20|24|28 $sclassmatch
+    /** @param string $lname
      * @return ?TagStyle */
-    function known_style($s, $sclassmatch = TagStyle::STYLE) {
-        $s = strtolower($s);
-        $ks = $this->style_lmap[$s] ?? null;
+    function find_style($lname) {
+        return $this->style_lmap[$lname] ?? null;
+    }
+
+    /** @param string $name
+     * @param 4|8|12|16|20|24|28 $stylematch
+     * @return ?TagStyle */
+    function known_style($name, $stylematch = TagStyle::STYLE) {
+        $name = strtolower($name);
+        $ks = $this->style_lmap[$name] ?? null;
         if ($ks === null
-            && ($dstyle = TagStyle::dynamic_style($s)) !== null) {
-            $ks = new TagStyle($dstyle);
+            && ($dstyle = TagStyle::dynamic_style($name, $this)) !== null) {
+            $ks = TagStyle::make_dynamic($dstyle);
         }
-        if ($ks && ($ks->sclass & $sclassmatch) !== 0) {
+        if ($ks && ($ks->styleflags & $stylematch) !== 0) {
             return $ks;
         } else {
             return null;
         }
     }
 
-    /** @param string $s
+    /** @param string $name
      * @return ?TagStyle */
-    function known_badge($s) {
-        return $this->known_style($s, TagStyle::BADGE);
+    function known_badge($name) {
+        return $this->known_style($name, TagStyle::BADGE);
     }
 
-    /** @param 4|8|12|16|20|24|28 $sclassmatch
-     * @return list<TagStyle> */
-    function canonical_listed_styles($sclassmatch) {
+    /** @param 4|8|12|16|20|24|28 $stylematch
+     * @return list<string> */
+    function listed_style_names($stylematch) {
         $kss = [];
         foreach ($this->style_lmap as $ltag => $ks) {
-            if (($ks->sclass & $sclassmatch) !== 0
-                && ($ks->sclass & TagStyle::UNLISTED) === 0
-                && $ks->style === $ltag)
-                $kss[] = $ks;
+            if (($ks->styleflags & $stylematch) !== 0
+                && ($ks->styleflags & TagStyle::UNLISTED) === 0)
+                $kss[] = $ltag;
         }
         return $kss;
     }
@@ -890,10 +960,10 @@ class TagMap {
     private function color_regex() {
         if (!$this->color_re) {
             $rex = [
-                "{(?:\\A| )(?:(?:\\d*~|~~|)(font-[^\s#]+|weight-(?:[a-z]+|\d+)|(?:text-|)rgb-[0-9a-f]{3}(?:|[0-9a-f]{3})"
+                "{(?:\\A| )(?:(?:\\d*~|~~|)(font-[^\s#]+|weight-(?:[a-z]+|\d+)|dot-[-0-9a-z]+|(?:text-|)rgb-[0-9a-f]{3}(?:|[0-9a-f]{3})"
             ];
             foreach ($this->style_lmap as $style => $ks) {
-                if (($ks->sclass & TagStyle::STYLE) !== 0)
+                if (($ks->styleflags & TagStyle::STYLE) !== 0)
                     $rex[] = $style;
             }
             $any = false;
@@ -909,9 +979,9 @@ class TagMap {
     }
 
     /** @param string|list<string> $tags
-     * @param 0|8|16|24 $sclassmatch
+     * @param 0|8|16|24 $stylematch
      * @return list<TagStyle> */
-    function unique_tagstyles($tags, $sclassmatch = 0) {
+    function unique_tagstyles($tags, $stylematch = 0) {
         if (is_array($tags)) {
             $tags = join(" ", $tags);
         }
@@ -920,7 +990,7 @@ class TagMap {
             || !preg_match_all($this->color_regex(), $tags, $ms)) {
             return [];
         }
-        $sclassmatch = $sclassmatch ? : TagStyle::STYLE;
+        $stylematch = $stylematch ? : TagStyle::STYLE;
         $kss = [];
         $sclass = 0;
         foreach ($ms[1] as $m) {
@@ -929,7 +999,7 @@ class TagMap {
                 continue;
             }
             foreach ($t->styles as $ks) {
-                if (($ks->sclass & $sclassmatch) !== 0
+                if (($ks->styleflags & $stylematch) !== 0
                     && !in_array($ks, $kss))
                     $kss[] = $ks;
             }
@@ -938,20 +1008,20 @@ class TagMap {
     }
 
     /** @param string|list<string> $tags
-     * @param 0|8|16|24 $sclassmatch
+     * @param 0|8|16|24 $stylematch
      * @param bool $no_ensure_pattern
      * @return ?list<string> */
-    function styles($tags, $sclassmatch = 0, $no_ensure_pattern = false) {
-        $kss = $this->unique_tagstyles($tags, $sclassmatch);
+    function styles($tags, $stylematch = 0, $no_ensure_pattern = false) {
+        $kss = $this->unique_tagstyles($tags, $stylematch);
         if (empty($kss)) {
             return null;
         }
         $classes = [];
-        $sclass = $nbg = $ndarkbg = 0;
+        $sf = $nbg = $ndarkbg = 0;
         foreach ($kss as $ks) {
             $classes[] = "tag-{$ks->style}";
-            $sclass |= $ks->sclass;
-            if (($ks->sclass & TagStyle::BG) !== 0) {
+            $sf |= $ks->styleflags;
+            if (($ks->styleflags & TagStyle::BG) !== 0) {
                 ++$nbg;
                 if ($ks->dark())
                     ++$ndarkbg;
@@ -966,8 +1036,8 @@ class TagMap {
         // This seems out of place---it's redundant if we're going to
         // generate JSON, for example---but it is convenient.
         if (!$no_ensure_pattern
-            && ($sclass & TagStyle::BG) !== 0
-            && (($sclass & TagStyle::DYNAMIC) !== 0 || count($classes) > 2)) {
+            && ($sf & TagStyle::BG) !== 0
+            && (($sf & TagStyle::DYNAMIC) !== 0 || count($classes) > 2)) {
             self::stash_ensure_pattern($classes);
         }
         return $classes;
@@ -1093,8 +1163,9 @@ class TagMap {
         // go tag by tag
         $strip_hidden = ($this->flags & TagInfo::TF_HIDDEN) !== 0
             && !$user->can_view_hidden_tags($prow);
-        $mine_tw = $user->contactId > 0 ? strlen((string) $user->contactId) : 0;
-        $p = 0;
+        $my_uid = $user->contactId > 0 ? (string) $user->contactId : "";
+        $my_tw = strlen($my_uid);
+        $p = $ip = 0;
         $l = strlen($tags);
         while ($p < $l) {
             $np = strpos($tags, " ", $p + 1) ? : $l;
@@ -1110,8 +1181,8 @@ class TagMap {
                     $ok = $dt && ($dt->flags & $conflict_free) !== 0;
                 }
             } else if ($tw !== false) {
-                if ($tw === $mine_tw
-                    && str_starts_with($t, (string) $user->contactId)) {
+                if ($tw === $my_tw
+                    && str_starts_with($t, $my_uid)) {
                     $ok = true;
                 } else if ($ctype === self::CENSOR_VIEW) {
                     $ok = false;
@@ -1137,15 +1208,17 @@ class TagMap {
             } else {
                 $ok = true;
             }
-            if ($ok) {
-                $p = $np;
+            if ($ok && $ip < $p) {
+                $tags = substr($tags, 0, $ip) . substr($tags, $p);
+                $l -= $p - $ip;
+                $p = $ip = $np - ($p - $ip);
+            } else if ($ok) {
+                $p = $ip = $np;
             } else {
-                $tags = substr($tags, 0, $p) . substr($tags, $np);
-                $l -= $np - $p;
+                $p = $np;
             }
         }
-
-        return $tags;
+        return $ip < $p ? substr($tags, 0, $ip) : $tags;
     }
 
     /** @param array<string,mixed> &$tagmap */
@@ -1443,13 +1516,6 @@ class Tagger {
     }
 
     /** @param string $tv
-     * @return string
-     * @deprecated */
-    static function base($tv) {
-        return self::tv_tag($tv);
-    }
-
-    /** @param string $tv
      * @return array{false|string,?float} */
     static function unpack($tv) {
         if (!$tv) {
@@ -1510,7 +1576,7 @@ class Tagger {
             if ($this->contact->privChair) {
                 return "<0>Invalid tag{$t} (chair tags aren’t allowed here)";
             } else {
-                return "<0>Invalid tag{$t} (tag reserved for chair)";
+                return "<0>Tag{$t} reserved for chairs";
             }
         case self::NOPRIVATE:
             return "<0>Private tags aren’t allowed here";

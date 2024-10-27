@@ -4,6 +4,7 @@
 "use strict";
 var siteinfo, hotcrp;
 hotcrp = {};
+hotcrp.text = {};
 
 function $$(id) {
     return document.getElementById(id);
@@ -140,6 +141,12 @@ if ("classList" in document.createElement("span")
         return k === "" ? [] : k.split(/\s+/);
     };
 }
+hotcrp.classes = {
+    has: hasClass,
+    add: addClass,
+    remove: removeClass,
+    toggle: toggleClass
+};
 
 if (!Element.prototype.closest) {
     Element.prototype.closest = function (s) {
@@ -256,34 +263,39 @@ function lower_bound_index(a, v) {
     return l;
 }
 
-function string_utf8_index(str, index) {
-    var r = 0, m, n;
-    while (str && index > 0) {
-        // eslint-disable-next-line no-control-regex
-        m = str.match(/^([\x00-\x7F]*)([\u0080-\u07FF]*)([\u0800-\uD7FF\uE000-\uFFFF]*)((?:[\uD800-\uDBFF][\uDC00-\uDFFF])*)/);
-        if (!m)
+// eslint-disable-next-line no-control-regex
+const string_utf8_index_re = /([\x00-\x7F]*)([\u0080-\u07FF]*)([\u0800-\uD7FF\uE000-\uFFFF]*)((?:[\uD800-\uDBFF][\uDC00-\uDFFF])*)/y;
+
+function string_utf8_index(str, index, pos) {
+    let r = 0;
+    const len = str.length;
+    string_utf8_index_re.lastIndex = pos = pos || 0;
+    while (pos < len && index > 0) {
+        const m = string_utf8_index_re.exec(str);
+        if (!m) {
             break;
+        }
         if (m[1].length) {
-            n = Math.min(index, m[1].length);
+            const n = Math.min(index, m[1].length);
             r += n;
             index -= n;
         }
         if (m[2].length) {
-            n = Math.min(index, m[2].length * 2);
+            const n = Math.min(index, m[2].length * 2);
             r += n / 2;
             index -= n;
         }
         if (m[3].length) {
-            n = Math.min(index, m[3].length * 3);
+            const n = Math.min(index, m[3].length * 3);
             r += n / 3;
             index -= n;
         }
         if (m[4].length) {
-            n = Math.min(index, m[4].length * 2);
+            const n = Math.min(index, m[4].length * 2);
             r += n / 2; // surrogate pairs
             index -= n;
         }
-        str = str.substring(m[0].length);
+        pos += m[0].length;
     }
     return r;
 }
@@ -422,7 +434,7 @@ function check_message_list(data, options) {
 }
 
 function check_sessioninfo(data, options) {
-    if (siteinfo.user.uid == data.sessioninfo.uid) {
+    if (siteinfo.user.email == data.sessioninfo.email) {
         siteinfo.postvalue = data.sessioninfo.postvalue;
         let myuri = hoturl_absolute_base();
         $("form").each(function () {
@@ -452,7 +464,7 @@ function check_sessioninfo(data, options) {
 $(document).ajaxError(function (evt, jqxhr, options, httperror) {
     if (jqxhr.readyState != 4)
         return;
-    var data;
+    let data;
     if (jqxhr.responseText && jqxhr.responseText.charAt(0) === "{") {
         try {
             data = JSON.parse(jqxhr.responseText);
@@ -969,10 +981,11 @@ unparse_time_relative.NO_PREP = 2;
 unparse_time_relative.SHORT = 4;
 
 function unparse_duration(d, include_msec) {
-    var neg = d < 0, t;
+    const neg = d < 0;
     if (neg)
         d = -d;
-    var p = Math.floor(d);
+    const p = Math.floor(d);
+    let t;
     if (p >= 3600)
         t = sprintf("%d:%02d:%02d", p/3600, (p/60)%60, p%60)
     else
@@ -1026,10 +1039,48 @@ try {
 }
 })();
 
+function apply_hcdiff(s, hcdiff) {
+    const hcre = /[-=](\d*)|\+([^|]*)|\|/y, hclen = hcdiff.length;
+    hcre.lastIndex = 0;
+    let hcpos = 0, spos = 0, r = "";
+    while (hcpos < hclen) {
+        const m = hcre.exec(hcdiff);
+        if (!m) {
+            return null;
+        } else if (m[1] != null) {
+            const slen = string_utf8_index(s, m[1] === "" ? 1 : +m[1], spos);
+            if (hcdiff.charCodeAt(hcpos) === 61 /* `=` */) {
+                r += s.substr(spos, slen);
+            }
+            spos += slen;
+        } else if (m[2] != null) {
+            r += decodeURIComponent(m[2]);
+        }
+        hcpos += m[0].length;
+    }
+    if (spos < s.length) {
+        r += s.substr(spos);
+    }
+    return r;
+}
+
+Object.assign(hotcrp.text, {
+    apply_hcdiff: apply_hcdiff,
+    escape_html: escape_html,
+    plural: plural,
+    plural_word: plural_word,
+    pluralize: pluralize,
+    sprintf: sprintf,
+    strftime: strftime,
+    string_utf8_index: string_utf8_index,
+    text_eq: text_eq,
+    urldecode: urldecode,
+    urlencode: urlencode
+});
 
 // events
 var event_key = (function () {
-var key_map = {"Spacebar": " ", "Esc": "Escape"},
+const key_map = {"Spacebar": " ", "Esc": "Escape"},
     charCode_map = {"9": "Tab", "13": "Enter", "27": "Escape"},
     keyCode_map = {
         "9": "Tab", "13": "Enter", "16": "ShiftLeft", "17": "ControlLeft",
@@ -1100,20 +1151,19 @@ event_key.is_submit_enter = function (evt, allow_none) {
         && (allow_none || evt.metaKey || evt.ctrlKey)
         && event_key(evt) === "Enter";
 };
+event_key.modcode = function (evt) {
+    return (evt.shiftKey ? 1 : 0) + (evt.ctrlKey ? 2 : 0) + (evt.altKey ? 4 : 0) + (evt.metaKey ? 8 : 0);
+};
+event_key.SHIFT = 1;
+event_key.CTRL = 2;
+event_key.ALT = 4;
+event_key.META = 8;
 return event_key;
 })();
 
-function event_modkey(evt) {
-    return (evt.shiftKey ? 1 : 0) + (evt.ctrlKey ? 2 : 0) + (evt.altKey ? 4 : 0) + (evt.metaKey ? 8 : 0);
-}
-event_modkey.SHIFT = 1;
-event_modkey.CTRL = 2;
-event_modkey.ALT = 4;
-event_modkey.META = 8;
-
 function make_onkey(key, f) {
     return function (evt) {
-        if (!event_modkey(evt) && event_key(evt) === key) {
+        if (!event_key.modcode(evt) && event_key(evt) === key) {
             evt.preventDefault();
             handle_ui.stopImmediatePropagation(evt);
             f.call(this, evt);
@@ -1696,54 +1746,66 @@ return {
 
 // message list functions
 
-function message_list_status(ml) {
-    var i, status = 0;
-    for (i = 0; i !== (ml || []).length; ++i) {
-        if (ml[i].status === -3 /*MessageSet::SUCCESS*/ && status === 0) {
-            status = -3 /*MessageSet::SUCCESS*/;
-        } else if (ml[i].status >= 1 && ml[i].status > status) {
-            status = ml[i].status;
-        }
+const feedback = (function () {
+
+function message_list_status(ml, field) {
+    let status = 0;
+    for (const mi of ml || []) {
+        if (((mi.status === -3 /*MessageSet::SUCCESS*/ && status === 0)
+             || (mi.status >= 1 && mi.status > status))
+            && (!field || mi.field === field))
+            status = mi.status;
     }
     return status;
 }
 
-function render_message_list(ml) {
-    var status = message_list_status(ml),
-        div = document.createElement("div");
-    if (status === -3 /*MessageSet::SUCCESS*/) {
-        div.className = "msg msg-success";
-    } else if (status >= 2) {
-        div.className = "msg msg-error";
-    } else if (status === 1) {
-        div.className = "msg msg-warning";
-    } else {
-        div.className = "msg msg-info";
-    }
-    div.appendChild(render_feedback_list(ml));
-    return div;
-}
-
-function render_feedback_list(ml) {
+function render_list(ml) {
     const ul = document.createElement("ul");
     ul.className = "feedback-list";
     for (const mi of ml || []) {
-        append_feedback_to(ul, mi);
+        append_item(ul, mi);
     }
     return ul;
 }
 
-function maybe_render_feedback_list(ml) {
-    const ul = render_feedback_list(ml);
+function maybe_render_list(ml) {
+    const ul = render_list(ml);
     return ul.firstChild ? ul : null;
 }
 
-function append_feedback_to(ul, mi) {
-    var sklass, li, div;
-    if (mi.message != null && mi.message !== "") {
-        if (ul.tagName !== "UL")
-            throw new Error("bad append_feedback");
-        sklass = "";
+function render_alert_onto(elt, ml) {
+    addClass(elt, "msg");
+    elt.className = elt.className.replace(/(?:^| )msg-(?:success|error|warning|info)(?= |$)/, "");
+    const status = message_list_status(ml);
+    if (status === -3 /*MessageSet::SUCCESS*/) {
+        addClass(elt, "msg-success");
+    } else if (status >= 2) {
+        addClass(elt, "msg-error");
+    } else if (status === 1) {
+        addClass(elt, "msg-warning");
+    } else {
+        addClass(elt, "msg-info");
+    }
+    elt.replaceChildren(render_list(ml));
+    return elt;
+}
+
+function render_alert(ml) {
+    return render_alert_onto(document.createElement("div"), ml);
+}
+
+function redundant_item(mi, ul) {
+    return mi.message == null
+        || mi.message === ""
+        || (!mi.landmark
+            && mi.context
+            && ul.getAttribute("data-last-mi") === mi.status + " " + mi.message);
+}
+
+function append_item(ul, mi) {
+    let li, div;
+    if (!redundant_item(mi, ul)) {
+        let sklass = "";
         if (mi.status != null && mi.status >= -4 /*MessageSet::MARKED_NOTE*/ && mi.status <= 3)
             sklass = ["note", "success", "warning-note", "urgent-note", "", "warning", "error", "error"][mi.status + 4];
         div = document.createElement("div");
@@ -1757,24 +1819,29 @@ function append_feedback_to(ul, mi) {
         }
         li.appendChild(div);
         render_text.ftext_onto(div, mi.message, 5);
+        if (!mi.landmark) {
+            ul.setAttribute("data-last-mi", mi.status + " " + mi.message);
+        } else {
+            ul.removeAttribute("data-last-mi");
+        }
     }
     if (mi.context) {
-        div = document.createElement("div");
-        div.className = "msg-context";
-        var s = mi.context[0],
+        const s = mi.context[0],
             p1 = string_utf8_index(s, mi.context[1]),
-            p2 = string_utf8_index(s, mi.context[2]),
-            span = document.createElement("span");
-        sklass = mi.status > 1 ? "is-error" : "is-warning";
-        span.className = (p2 > p1 + 2 ? "context-mark " : "context-caret-mark ") +
-            (mi.status > 1 ? "is-error" : "is-warning");
-        span.append(s.substring(p1, p2));
-        div.append(s.substring(0, p1), span, s.substring(p2));
-        ul.lastChild.appendChild(div);
+            p2 = string_utf8_index(s, mi.context[2]);
+        let sklass = p2 > p1 + 2 ? "context-mark" : "context-caret-mark";
+        if (mi.status > 0)
+            sklass += mi.status > 1 ? " is-error" : " is-warning";
+        ul.lastChild || ul.appendChild(document.createElement("li"));
+        ul.lastChild.appendChild($e("div", "msg-context",
+            s.substring(0, p1), $e("span", sklass, s.substring(p1, p2)), s.substring(p2)));
     }
 }
 
-function append_feedback_near(elt, mi) {
+function append_item_near(elt, mi) {
+    if (elt instanceof RadioNodeList) {
+        elt = elt.item(0);
+    }
     if (mi.status === 1 && !hasClass(elt, "has-error")) {
         addClass(elt, "has-warning");
     } else if (mi.status >= 2) {
@@ -1784,25 +1851,37 @@ function append_feedback_near(elt, mi) {
     if (mi.message == null || mi.message === "") {
         return true;
     }
-    var ctr = elt.closest(".entry, .entryi, fieldset"), fl, owner;
-    if (ctr && hasClass(ctr, "entryi")) {
-        ctr = ctr.querySelector(".entry");
+    let owner = elt && elt.closest(".f-i, .entry, .entryi, fieldset");
+    if (owner && hasClass(owner, "entryi")) {
+        owner = owner.querySelector(".entry");
     }
-    if (!ctr) {
+    if (!owner) {
         return false;
     }
-    owner = ctr;
-    fl = owner.firstElementChild;
+    let fl = owner.firstElementChild;
     while (fl && (fl.tagName === "LABEL" || fl.tagName === "LEGEND" || hasClass(fl, "feedback"))) {
         fl = fl.nextElementSibling;
     }
-    if (fl && hasClass(fl, "feedback-list")) {
-        append_feedback_to(fl, mi);
-    } else {
-        owner.insertBefore(render_feedback_list([mi]), fl);
+    if (!fl || !hasClass(fl, "feedback-list")) {
+        let nfl = render_list();
+        owner.insertBefore(nfl, fl);
+        fl = nfl;
     }
+    append_item(fl, mi);
     return true;
 }
+
+return {
+    append_item: append_item,
+    append_item_near: append_item_near,
+    list_status: message_list_status,
+    render_list: render_list,
+    maybe_render_list: maybe_render_list,
+    render_alert: render_alert,
+    render_alert_onto: render_alert_onto
+};
+
+})();
 
 
 // ui
@@ -1986,21 +2065,22 @@ function input_set_default_value(elt, val) {
 }
 
 function input_differs(elt) {
-    var type = elt.type, i;
+    const type = elt.type;
     if (!type) {
         if (elt instanceof RadioNodeList) {
-            for (i = 0; i !== elt.length; ++i) {
+            for (let i = 0; i !== elt.length; ++i) {
                 if (input_differs(elt[i]))
                     return true;
             }
         }
         return false;
-    } else if (type === "button" || type === "submit" || type === "reset")
+    } else if (type === "button" || type === "submit" || type === "reset") {
         return false;
-    else if (type === "checkbox" || type === "radio")
+    } else if (type === "checkbox" || type === "radio") {
         return elt.checked !== input_default_value(elt);
-    else
+    } else {
         return !text_eq(elt.value, input_default_value(elt));
+    }
 }
 
 function form_differs(form) {
@@ -2026,14 +2106,12 @@ function form_differs(form) {
 
 function check_form_differs(form, elt) {
     (form instanceof HTMLElement) || (form = $(form)[0]);
-    var differs = (elt && form_differs(elt)) || form_differs(form);
+    const differs = (elt && form_differs(elt)) || form_differs(form);
     toggleClass(form, "differs", !!differs);
     if (form.hasAttribute("data-differs-toggle")) {
         $("." + form.getAttribute("data-differs-toggle")).toggleClass("hidden", !differs);
     }
 }
-
-window.form_highlight = check_form_differs; /* XXX */
 
 function hidden_input(name, value, attr) {
     const e = document.createElement("input");
@@ -2080,6 +2158,10 @@ handle_ui.on("js-ignore-unload-protection", function (evt) {
     if (event_key.is_default_a(evt)) {
         $("form").addClass("submitting");
     }
+});
+
+handle_ui.on("js-reload", function () {
+    location.reload();
 });
 
 var focus_at = (function () {
@@ -2158,7 +2240,7 @@ handle_ui.on("js-range-click", function (evt) {
     f.jsRangeClick = rangeclick_state;
 
     var key = false;
-    if (evt.type === "keydown" && !event_modkey(evt)) {
+    if (evt.type === "keydown" && !event_key.modcode(evt)) {
         key = event_key(evt);
     }
     if (rangeclick_state.__clicking__
@@ -2940,9 +3022,9 @@ return function () {
 function $popup(options) {
     options = options || {};
     const near = options.near || options.anchor || window,
-        forme = $e("form", {enctype: "multipart/form-data", "accept-charset": "UTF-8", "class": options.form_class || null}),
-        modale = $e("div", {"class": "modal hidden", role: "dialog"},
-            $e("div", {"class": "modal-dialog".concat(near === window ? " modal-dialog-centered" : "", options.className ? " " + options.className : ""), role: "document"},
+        forme = $e("form", {enctype: "multipart/form-data", "accept-charset": "UTF-8", class: options.form_class || null}),
+        modale = $e("div", {class: "modal hidden", role: "dialog"},
+            $e("div", {class: "modal-dialog".concat(near === window ? " modal-dialog-centered" : "", options.className ? " " + options.className : ""), role: "document"},
                 $e("div", "modal-content", forme)));
     if (options.action) {
         if (options.action instanceof HTMLFormElement) {
@@ -2967,19 +3049,17 @@ function $popup(options) {
     document.body.addEventListener("keydown", dialog_keydown);
     let prior_focus, actionse;
 
-    function show_errors(data) {
+    function show_errors(data, filter_fields) {
         $(forme).find(".msg-error, .feedback, .feedback-list").remove();
         const gmlist = [];
-        let e;
-        for (let mx of data.message_list || []) {
-            if (!mx.field
-                || !(e = forme.elements[mx.field])
-                || !append_feedback_near(e, mx)) {
-                gmlist.push(mx);
+        for (const mi of data.message_list || []) {
+            const e = mi.field && forme.elements[mi.field];
+            if (e ? !feedback.append_item_near(e, mi) : !filter_fields || !mi.field) {
+                gmlist.push(mi);
             }
         }
         if (gmlist.length) {
-            $(forme).find("h2").after(render_message_list(gmlist));
+            $(forme).find("h2").after(feedback.render_alert(gmlist));
         }
     }
     function close() {
@@ -2991,7 +3071,7 @@ function $popup(options) {
         }
         hotcrp.tooltip.close();
         $(modale).find("textarea, input").unautogrow();
-        $(modale).trigger("closedialog");
+        $(forme).trigger("closedialog");
         modale.remove();
         if (prior_focus) {
             prior_focus.focus({preventScroll: true});
@@ -3006,7 +3086,7 @@ function $popup(options) {
     }
     function dialog_keydown(evt) {
         if (event_key(evt) === "Escape"
-            && event_modkey(evt) === 0
+            && event_key.modcode(evt) === 0
             && !hasClass(modale, "hidden")
             && !form_differs(forme)) {
             close();
@@ -3068,121 +3148,6 @@ function $popup(options) {
     return self;
 }
 
-function popup_skeleton(options) {
-    var hc = new HtmlCollector,
-        $d = null,
-        form = null,
-        prior_focus = null;
-    options = options || {};
-    var near = options.near || options.anchor;
-    hc.push('<div class="modal hidden" role="dialog"><div class="modal-dialog'.concat(
-        !near || near === window ? " modal-dialog-centered" : "",
-        options.className ? " " + options.className : "",
-        options.style ? '" style="' + escape_html(options.style) : "",
-        '" role="document"><div class="modal-content"><form enctype="multipart/form-data" accept-charset="UTF-8"',
-        options.form_class ? ' class="' + options.form_class + '"' : '',
-        '>'), '</form></div></div></div>');
-    hc.push_actions = function (actions) {
-        hc.push('<div class="popup-actions">', '</div>');
-        if (actions)
-            hc.push(actions.join("")).pop();
-        return hc;
-    };
-    function show_errors(data) {
-        var dbody = $d.find(".popup-body"),
-            i, mlist = data.message_list, gmlist = [], mx, e, x;
-        $d.find(".msg-error, .feedback, .feedback-list").remove();
-        for (i in mlist || []) {
-            mx = mlist[i];
-            if (mx.field && (e = form.elements[mx.field])) {
-                if (append_feedback_near(e, mx)) {
-                    continue;
-                }
-            }
-            gmlist.push(mx);
-        }
-        if (gmlist.length) {
-            x = render_message_list(gmlist);
-            dbody.length ? dbody.prepend(x) : $d.find("h2").after(x);
-        }
-        return $d;
-    }
-    function close() {
-        removeClass(document.body, "modal-open");
-        document.body.removeEventListener("keydown", dialog_keydown);
-        if (document.activeElement
-            && $d[0].contains(document.activeElement)) {
-            document.activeElement.blur();
-        }
-        hotcrp.tooltip.close();
-        $d.find("textarea, input").unautogrow();
-        $d.trigger("closedialog");
-        $d.remove();
-        if (prior_focus) {
-            prior_focus.focus({preventScroll: true});
-        }
-    }
-    function dialog_click(evt) {
-        if (evt.target === $d[0]
-            && evt.button === 0
-            && (!form || !form_differs(form))) {
-            close();
-        }
-    }
-    function dialog_keydown(evt) {
-        if (event_key(evt) === "Escape"
-            && event_modkey(evt) === 0
-            && (!form || !form_differs(form))) {
-            close();
-            evt.preventDefault();
-        }
-    }
-    function show() {
-        $d = $(hc.render()).appendTo(document.body);
-        form = $d[0].querySelector("form");
-        $d.on("click", dialog_click);
-        $d.find("button[name=cancel]").on("click", close);
-        document.body.addEventListener("keydown", dialog_keydown);
-        if (options.action && form) {
-            if (options.action instanceof HTMLFormElement) {
-                form.setAttribute("action", options.action.action);
-                form.setAttribute("method", options.action.method);
-            } else {
-                form.setAttribute("action", options.action);
-                form.setAttribute("method", options.method || "post");
-            }
-            if (form.getAttribute("method") === "post"
-                && !/post=/.test(form.getAttribute("action"))
-                && !/^(?:[a-z][-a-z0-9+.]*:|\/\/)/i.test(form.getAttribute("action"))) {
-                form.prepend(hidden_input("post", siteinfo.postvalue));
-            }
-        }
-        for (var k in {minWidth: 1, maxWidth: 1, width: 1}) {
-            if (options[k] != null)
-                $d.children().css(k, options[k]);
-        }
-        $d.show_errors = show_errors;
-        $d.close = close;
-    }
-    hc.show = function (visible) {
-        if (!$d) {
-            show();
-        }
-        if (visible !== false) {
-            var e = document.activeElement;
-            $d.awaken();
-            popup_near($d, near || window);
-            if (e && document.activeElement !== e) {
-                prior_focus = e;
-            }
-            hotcrp.tooltip.close();
-            // XXX also close down suggestions
-        }
-        return $d;
-    };
-    return hc;
-}
-
 function popup_near(elt, near) {
     hotcrp.tooltip.close();
     if (elt.jquery)
@@ -3222,7 +3187,11 @@ function override_deadlines(callback) {
     let self = this, $pu;
     function default_callback() {
         self.form.hotcrpSubmitter = null;
-        for (let v of (self.getAttribute("data-override-submit") || "").split("&")) {
+        let osv = self.getAttribute("data-override-submit") || "";
+        if (osv === "" && self.name !== "") {
+            osv = self.name + "=" + self.value;
+        }
+        for (let v of osv.split("&")) {
             if (v !== "") {
                 const eq = v.indexOf("="),
                     key = eq < 0 ? v : v.substring(0, eq),
@@ -3237,7 +3206,7 @@ function override_deadlines(callback) {
     }
     const p = $e("p");
     p.innerHTML = this.getAttribute("data-override-text") || "Are you sure you want to override the deadline?";
-    const bu = $e("button", {type: "button", name: "bsubmit", "class": "btn-primary"});
+    const bu = $e("button", {type: "button", name: "bsubmit", class: "btn-primary"});
     if (this.getAttribute("aria-label")) {
         bu.textContent = this.getAttribute("aria-label");
     } else if (this.innerHTML) {
@@ -3268,7 +3237,7 @@ handle_ui.on("js-confirm-override-conflict", function () {
     const self = this;
     $popup({near: this})
         .append($e("p", null, "Are you sure you want to override your conflict?"))
-        .append_actions($e("button", {type: "button", name: "bsubmit", "class": "btn-primary"}, "Override conflict"), "Cancel")
+        .append_actions($e("button", {type: "button", name: "bsubmit", class: "btn-primary"}, "Override conflict"), "Cancel")
         .show().on("click", "button", function () {
             if (this.name === "bsubmit") {
                 document.location = self.href;
@@ -3420,35 +3389,26 @@ function display_main(is_initial) {
 
     elt = $$("h-deadline");
     if (dlname) {
-        var impending = !dltime || dltime - now < 180.5,
-            s = '<a href="' + hoturl_html("deadlines");
-        if (impending)
-            s += '" class="impending';
-        s += '">' + dlname + ' deadline</a> ';
-        if (!dltime || dltime - now < 0.5)
-            s += "is NOW";
-        else
-            s += unparse_time_relative(dltime, now, 8);
-        if (impending)
-            s = '<span class="impending">' + s + '</span>';
         if (!elt) {
-            var hdrelt = $$("h-right"), divelt, sepelt;
+            const hdrelt = $$("h-right");
             if (!hdrelt)
                 return;
-            divelt = document.createElement("div");
-            divelt.className = "d-inline-block";
             elt = document.createElement("span");
             elt.id = "h-deadline";
-            divelt.appendChild(elt);
+            const divelt = $e("div", "d-inline-block", elt);
             if (hdrelt.firstChild) {
-                sepelt = document.createElement("span");
-                sepelt.className = "barsep ml-1 mr-1";
-                sepelt.textContent = "·";
-                divelt.append(sepelt);
+                divelt.append($e("span", "barsep ml-1 mr-1", "·"));
             }
             hdrelt.insertBefore(divelt, hdrelt.firstChild);
         }
-        elt.innerHTML = s;
+        const ax = $e("a", {href: hoturl("deadlines")}, dlname + " deadline"),
+            tx = dltime && dltime - now >= 0.5 ? " " + unparse_time_relative(dltime, now, 8) : " is NOW";
+        if (!dltime || dltime - now < 180.5) {
+            ax.className = "impending";
+            elt.replaceChildren($e("span", "impending", ax, tx));
+        } else {
+            elt.replaceChildren(ax, tx);
+        }
     } else {
         if (elt && elt.parentElement.className === "d-inline-block")
             elt.parentElement.remove();
@@ -3659,9 +3619,9 @@ function display_tracker() {
 }
 
 function tracker_refresh() {
-    if (dl.tracker_here) {
-        var ts = wstor.site_json(true, "hotcrp-tracking"),
-            param = {track: ts[1]};
+    let ts = dl.tracker_here && wstor.site_json(true, "hotcrp-tracking");
+    if (ts) {
+        let param = {track: ts[1]};
         if (siteinfo.paperid) {
             param.track += " " + siteinfo.paperid;
             param.p = siteinfo.paperid;
@@ -3680,15 +3640,15 @@ function tracker_refresh() {
 handle_ui.on("js-tracker", function (evt) {
     let $pu, trno = 1, elapsed_timer;
     function make_tracker(tr) {
-        const trp = "tr" + trno, ktrp = "k-tr" + trno,
-            $t = $e("fieldset", {"class": "tracker-group", "data-index": trno, "data-trackerid": tr.trackerid},
+        const trp = "tr/" + trno, ktrp = "k-tr/" + trno,
+            $t = $e("fieldset", {class: "tracker-group", "data-index": trno, "data-trackerid": tr.trackerid},
                 $e("legend", "mb-1",
-                    $e("input", {id: ktrp + "-name", type: "text", name: trp + "-name", size: 24, "class": "want-focus need-autogrow", value: tr.name || "", placeholder: tr.is_new ? "New tracker" : "Unnamed tracker"})),
-                hidden_input(trp + "-id", tr.trackerid));
+                    $e("input", {id: ktrp + "/name", type: "text", name: trp + "/name", size: 24, class: "want-focus need-autogrow", value: tr.name || "", placeholder: tr.is_new ? "New tracker" : "Unnamed tracker"})),
+                hidden_input(trp + "/id", tr.trackerid));
         if (tr.trackerid === "new" && siteinfo.paperid)
-            $t.append(hidden_input(trp + "-p", siteinfo.paperid));
+            $t.append(hidden_input(trp + "/p", siteinfo.paperid));
         if (tr.listinfo)
-            $t.append(hidden_input(trp + "-listinfo", tr.listinfo));
+            $t.append(hidden_input(trp + "/listinfo", tr.listinfo));
         let vis = tr.visibility || "", vistype;
         if (vis === "+none" || vis === "none") {
             vistype = "none";
@@ -3700,17 +3660,17 @@ handle_ui.on("js-tracker", function (evt) {
         }
         const gvis = (dl.tracker && dl.tracker.global_visibility) || "",
             vismap = [["", "Whole PC"], ["+", "PC members with tag"], ["-", "PC members without tag"]],
-            vissel = $e("select", {id: ktrp + "-vistype", name: trp + "-vistype", "class": "uich js-foldup", "data-default-value": vistype});
+            vissel = $e("select", {id: ktrp + "/visibility_type", name: trp + "/visibility_type", class: "uich js-foldup", "data-default-value": vistype});
         if (hotcrp.status.is_admin) {
             vismap.push(["none", "Administrators only"]);
         }
         for (const v of vismap) {
             vissel.append($e("option", {value: v[0], selected: v[0] === vistype, disabled: gvis === "+none" && v[0] !== "none"}, v[1]));
         }
-        $t.append($e("div", {"class": "entryi has-fold fold" + (vistype === "+" || vistype === "-" ? "o" : "c"), "data-fold-values": "+ -"},
-            $e("label", {"for": ktrp + "-vistype"}, "PC visibility"),
+        $t.append($e("div", {class: "entryi has-fold fold" + (vistype === "+" || vistype === "-" ? "o" : "c"), "data-fold-values": "+ -"},
+            $e("label", {for: ktrp + "/visibility_type"}, "PC visibility"),
             $e("div", "entry", $e("span", "select", vissel),
-                $e("input", {type: "text", name: trp + "-vis", value: vis.substring(1), placeholder: "(tag)", "class": "need-suggest need-autogrow pc-tags fx ml-2"}))));
+                $e("input", {type: "text", name: trp + "/visibility", value: vis.substring(1), placeholder: "(tag)", class: "need-suggest need-autogrow pc-tags fx ml-2"}))));
         if (gvis) {
             let gvist;
             if (gvis === "+none")
@@ -3721,16 +3681,16 @@ handle_ui.on("js-tracker", function (evt) {
                 gvist = "PC members without tag " + gvis.substring(1);
             $t.append($e("div", "entryi",
                 $e("label", null, "Global visibility"),
-                $e("div", "entry", gvist, $e("div", "f-h", "This ", $e("a", {href: hoturl("settings", "group=tracks")}, "setting"), " restricts all trackers."))));
+                $e("div", "entry", gvist, $e("div", "f-d", "This ", $e("a", {href: hoturl("settings", "group=tracks")}, "setting"), " restricts all trackers."))));
         }
         $t.append($e("div", "entryi", $e("label"),
             $e("div", "entry", $e("label", "checki",
-                $e("span", "checkc", hidden_input("has_" + trp + "-hideconflicts", 1),
-                    $e("input", {name: trp + "-hideconflicts", value: 1, type: "checkbox", checked: !!tr.hide_conflicts})),
+                $e("span", "checkc", hidden_input("has_" + trp + "/hideconflicts", 1),
+                    $e("input", {name: trp + "/hideconflicts", value: 1, type: "checkbox", checked: !!tr.hide_conflicts})),
                 "Hide conflicted papers"))));
         if (tr.start_at) {
             $t.append($e("div", "entryi", $e("label", null, "Elapsed time"),
-                $e("span", {"class": "trackerdialog-elapsed", "data-start-at": tr.start_at})));
+                $e("span", {class: "trackerdialog-elapsed", "data-start-at": tr.start_at})));
         }
         try {
             let j = JSON.parse(tr.listinfo || "null"), a = [], ids, pos;
@@ -3746,7 +3706,7 @@ handle_ui.on("js-tracker", function (evt) {
                     a.push(ids.join(" "));
                 }
                 $t.append($e("div", "entryi", $e("label", null, "Order"),
-                    $e("div", "entry", hidden_input(trp + "-p", "", {disabled: true}), ...a)));
+                    $e("div", "entry", hidden_input(trp + "/p", "", {disabled: true}), ...a)));
             }
         } catch (e) {
         }
@@ -3754,10 +3714,10 @@ handle_ui.on("js-tracker", function (evt) {
             $t.append($e("div", "entryi", $e("label"),
                 $e("div", "entry",
                     $e("label", "checki d-inline-block mr-3",
-                        $e("span", "checkc", $e("input", {name: trp + "-hide", value: 1, type: "checkbox", checked: !!wstor.site(true, "hotcrp-tracking-hide-" + tr.trackerid)})),
+                        $e("span", "checkc", $e("input", {name: trp + "/hide", value: 1, type: "checkbox", checked: !!wstor.site(true, "hotcrp-tracking-hide-" + tr.trackerid)})),
                         "Hide on this tab"),
                     $e("label", "checki d-inline-block",
-                        $e("span", "checkc", $e("input", {name: trp + "-stop", value: 1, type: "checkbox"})),
+                        $e("span", "checkc", $e("input", {name: trp + "/stop", value: 1, type: "checkbox"})),
                         "Stop"))));
         }
         ++trno;
@@ -3817,7 +3777,7 @@ handle_ui.on("js-tracker", function (evt) {
         $pu.find(".tracker-group").each(function () {
             var trno = this.getAttribute("data-index"),
                 id = this.getAttribute("data-trackerid"),
-                e = f["tr" + trno + "-hide"];
+                e = f["tr/" + trno + "/hide"];
             if (e)
                 hiding[id] = e.checked;
         });
@@ -3825,12 +3785,12 @@ handle_ui.on("js-tracker", function (evt) {
         // mark differences
         var trd = {};
         $pu.find("input, select, textarea").each(function () {
-            var m = this.name.match(/^tr(\d+)/);
+            var m = this.name.match(/^tr\/(\d+)/);
             if (m && input_differs(this))
                 trd[m[1]] = true;
         });
         for (var i in trd) {
-            f.appendChild(hidden_input("tr" + i + "-changed", "1", {"class": "tracker-changemark"}));
+            f.appendChild(hidden_input("tr/" + i + "/changed", "1", {class: "tracker-changemark"}));
         }
 
         $.post(hoturl("=api/trackerconfig"),
@@ -3865,15 +3825,15 @@ handle_ui.on("js-tracker", function (evt) {
             if (!hotcrp.status.tracker_here) {
                 $pu.append($e("div", "lg", $e("button", {type: "button", name: "new"}, "Start new tracker")));
             } else {
-                $pu.append($e("div", "lg", $e("button", {type: "button", "class": "need-tooltip disabled", tabindex: -1, "aria-label": "This browser tab is already running a tracker."}, "Start new tracker")));
+                $pu.append($e("div", "lg", $e("button", {type: "button", class: "need-tooltip disabled", tabindex: -1, "aria-label": "This browser tab is already running a tracker."}, "Start new tracker")));
             }
         } else {
-            $pu.append($e("div", "lg", $e("button", {type: "button", "class": "need-tooltip disabled", tabindex: -1, "aria-label": "To start a new tracker, open a tab on a submission page."}, "Start new tracker")));
+            $pu.append($e("div", "lg", $e("button", {type: "button", class: "need-tooltip disabled", tabindex: -1, "aria-label": "To start a new tracker, open a tab on a submission page."}, "Start new tracker")));
         }
-        $pu.append_actions($e("button", {type: "submit", name: "save", "class": "btn-primary"}, "Save changes"), "Cancel");
+        $pu.append_actions($e("button", {type: "submit", name: "save", class: "btn-primary"}, "Save changes"), "Cancel");
         if (nshown) {
-            $pu.append_actions($e("button", {type: "button", name: "stopall", "class": "btn-danger float-left"}, "Stop all"),
-                $e("a", {"class": "btn float-left", target: "_blank", rel: "noopener", href: hoturl("buzzer")}, "Tracker status page"));
+            $pu.append_actions($e("button", {type: "button", name: "stopall", class: "btn-danger float-left"}, "Stop all"),
+                $e("a", {class: "btn float-left", target: "_blank", rel: "noopener", href: hoturl("buzzer")}, "Tracker status page"));
         }
         $pu.show();
         show_elapsed();
@@ -3891,7 +3851,7 @@ handle_ui.on("js-tracker", function (evt) {
         start();
     } else {
         $.post(hoturl("=api/trackerconfig"),
-               {"tr1-id": "new", "tr1-listinfo": document.body.getAttribute("data-hotlist"), "tr1-p": siteinfo.paperid, "tr1-vis": wstor.site(false, "hotcrp-tracking-visibility")},
+               {"tr/1/id": "new", "tr/1/listinfo": document.body.getAttribute("data-hotlist"), "tr/1/p": siteinfo.paperid, "tr/1/visibility": wstor.site(false, "hotcrp-tracking-visibility")},
                make_submit_success({}, "new"));
     }
 });
@@ -3908,7 +3868,7 @@ handle_ui.on("js-tracker-stop", function (evt) {
     var e = evt.target.closest(".has-tracker");
     if (e && e.hasAttribute("data-trackerid"))
         $.post(hoturl("=api/trackerconfig"),
-            {"tr1-id": e.getAttribute("data-trackerid"), "tr1-stop": 1},
+            {"tr/1/id": e.getAttribute("data-trackerid"), "tr/1/stop": 1},
             streload);
 });
 
@@ -4490,6 +4450,31 @@ $(function () {
 });
 
 
+function $svg(tag, attr) {
+    const e = document.createElementNS("http://www.w3.org/2000/svg", tag);
+    if (!attr) {
+        // nothing
+    } else if (typeof attr === "string") {
+        e.setAttribute("class", attr);
+    } else {
+        for (const i in attr) {
+            if (attr[i] == null) {
+                // skip
+            } else if (typeof attr[i] === "boolean") {
+                attr[i] ? e.setAttribute(i, "") : e.removeAttribute(i);
+            } else {
+                e.setAttribute(i, attr[i]);
+            }
+        }
+    }
+    for (let i = 2; i < arguments.length; ++i) {
+        if (arguments[i] != null) {
+            e.append(arguments[i]);
+        }
+    }
+    return e;
+}
+
 function svge() {
     var e = document.createElementNS("http://www.w3.org/2000/svg", arguments[0]), i, t;
     for (i = 1; i < arguments.length; ) {
@@ -4506,10 +4491,8 @@ function svge() {
 }
 
 function svge_use_licon(name) {
-    var e = svge("svg", "class", "licon", "width", "1em", "height", "1em",
-                 "viewBox", "0 0 64 64", "preserveAspectRatio", "none");
-    e.appendChild(svge("use", "href", "#i-def-" + name));
-    return e;
+    return $svg("svg", {class: "licon", width: "1em", height: "1em", viewBox: "0 0 64 64", preserveAspectRatio: "none"},
+        $svg("use", {href: "#i-def-" + name}));
 }
 
 function $e(tag, attr) {
@@ -4523,7 +4506,7 @@ function $e(tag, attr) {
             if (attr[i] == null) {
                 // skip
             } else if (typeof attr[i] === "boolean") {
-                e[i] = attr[i];
+                attr[i] ? e.setAttribute(i, "") : e.removeAttribute(i);
             } else {
                 e.setAttribute(i, attr[i]);
             }
@@ -4549,10 +4532,7 @@ function $frag() {
 
 function make_expander_element(foldnum) {
     function mksvgp(d) {
-        var sv = svge("svg", "class", "licon", "width", "0.75em", "height", "0.75em", "viewBox", "0 0 16 16", "preserveAspectRatio", "none"),
-            p = svge("path", "d", d);
-        sv.appendChild(p);
-        return sv;
+        return $svg("svg", {class: "licon", width: "0.75em", height: "0.75em", viewBox: "0 0 16 16", preserveAspectRatio: "none"}, $svg("path", {d: d}));
     }
     return $e("span", "expander",
         $e("span", "in0 fx" + foldnum, mksvgp("M1 1L8 15L15 1z")),
@@ -4632,22 +4612,32 @@ handle_ui.on("lla", function () {
 });
 
 $(function () {
-    $(".linelink.active").trigger($.Event("foldtoggle", {which: {open: true, linelink: true}}));
+    $(".linelink.active").trigger($.Event("foldtoggle", {which: {open: true}}));
 });
 
 
 // tla, focus history
 
-handle_ui.on("tla", function () {
-    var hash = this.href.replace(/^[^#]*#*/, "");
-    var e = $$(hash || "default");
-    $(".is-tla, .tll, .papmode").removeClass("active");
-    $(".tll").removeClass("active").attr("aria-selected", "false");
+function tla_select(self, focus) {
+    const e = $$(this.getAttribute("aria-controls")
+        || (this.nodeName === "A" && this.hash.replace(/^#/, ""))
+        || "default");
+    if (!e) {
+        return;
+    }
+    $(".is-tla, .tll").removeClass("active");
+    $(".tll").attr("aria-selected", "false");
     addClass(e, "active");
-    $(this).closest(".papmode").addClass("active");
-    $(this).closest(".tll").addClass("active").attr("aria-selected", "true");
+    const tll = this.closest(".tll");
+    addClass(tll, "active");
+    tll.setAttribute("aria-selected", "true");
     push_history_state(this.href);
-    focus_within(e);
+    $(e).trigger($.Event("foldtoggle", {which: {open: true}}));
+    focus && focus_within(e);
+}
+
+handle_ui.on("tla", function () {
+    tla_select.call(this, true);
 });
 
 function jump_hash(hash, focus) {
@@ -4718,16 +4708,8 @@ handle_ui.on("hashjump.js-hash", function (hashc, focus) {
     // tabbed UI
     if (hasClass(e, "is-tla")) {
         if (!hasClass(e, "active")) {
-            $(".is-tla, .papmode").removeClass("active");
-            $(".tll").removeClass("active").attr("aria-selected", "false");
-            addClass(e, "active");
-            $(".tla").each(function () {
-                if ((hash === "" && this.href.indexOf("#") === -1)
-                    || this.href.endsWith("#" + hash)) {
-                    $(this).closest(".papmode").addClass("active");
-                    $(this).closest(".tll").addClass("active").attr("aria-selected", "true");
-                }
-            });
+            const tab = $$(e.getAttribute("aria-labelledby"));
+            tab && tla_select.call(tab, false);
         }
         focus && focus_within(e);
         return true;
@@ -4736,7 +4718,7 @@ handle_ui.on("hashjump.js-hash", function (hashc, focus) {
     // highlight destination
     if ((p = e.closest(".pfe, .rfe, .f-i, .form-g, .form-section, .entryi, .checki"))
         && hashjump_destination(e, p)) {
-        $(p).find("label, .field-title").first().addClass("hashtarget");
+        $(p).find("label, .field-title, .label").first().addClass("hashtarget");
         return true;
     }
 
@@ -4780,25 +4762,26 @@ $(function () {
 // dropdown menus
 
 (function ($) {
-var builders = {};
+const builders = {};
 
 function dropmenu_close() {
-    var modal = $$("dropmenu-modal");
+    const modal = $$("dropmenu-modal");
     modal && modal.remove();
     $("details.dropmenu-details").each(function () { this.open = false; });
 }
 
 handle_ui.on("click.js-dropmenu-open", function (evt) {
-    var modal = $$("dropmenu-modal"), esummary = this, edetails;
+    let modal = $$("dropmenu-modal"), esummary = this;
     if (hasClass(esummary, "need-dropmenu")) {
         $.each(classList(esummary), function (i, c) {
             if (builders[c])
                 builders[c].call(esummary, evt);
         });
     }
-    if (esummary.nodeName === "BUTTON")
+    if (esummary.nodeName === "BUTTON") {
         esummary = esummary.closest("summary");
-    edetails = esummary.parentElement;
+    }
+    const edetails = esummary.parentElement;
     hotcrp.tooltip.close();
     if (!edetails.open) {
         if (!modal) {
@@ -5142,7 +5125,8 @@ handle_ui.on("input.js-email-populate", function () {
     }
 
     function success(data) {
-        if (data) {
+        data = data || {};
+        if (data.ok) {
             if (data.email) {
                 data.lemail = data.email.toLowerCase();
             } else {
@@ -5159,22 +5143,24 @@ handle_ui.on("input.js-email-populate", function () {
                 email_info.push(v, data);
             }
         }
-        if (!data || !data.email || data.lemail !== v) {
+        if (!data.ok || data.lemail !== v) {
             data = {};
         }
         if (self.value.trim() !== v
             && self.getAttribute("data-populated-email") === v) {
             return;
         }
-        fn && populate(fn, data.firstName || "", placeholder);
-        ln && populate(ln, data.lastName || "", placeholder);
-        if (nn && !data.name) {
-            if (data.firstName && data.lastName) {
-                data.name = data.firstName + " " + data.lastName;
-            } else if (data.lastName) {
-                data.name = data.lastName;
+        if (data.given_name == null && data.family_name == null) { // XXX backward compat
+            data.given_name = data.firstName;
+            data.family_name = data.lastName;
+        }
+        fn && populate(fn, data.given_name || "", placeholder);
+        ln && populate(ln, data.last_name || "", placeholder);
+        if (nn && data.name == null) {
+            if (data.given_name && data.family_name) {
+                data.name = data.given_name + " " + data.family_name;
             } else {
-                data.name = data.firstName;
+                data.name = data.family_name || data.given_name;
             }
         }
         nn && populate(nn, data.name || "", placeholder);
@@ -5252,10 +5238,10 @@ function render_mail_preview(e, mp, fields) {
 }
 
 handle_ui.on("js-request-review-preview-email", function (evt) {
-    var f = this.closest("form"),
-        a = {p: siteinfo.paperid, template: "requestreview"};
+    const f = this.closest("form"),
+        a = {template: "requestreview", p: siteinfo.paperid};
     function fv(field, defaultv) {
-        var x = f.elements[field] && f.elements[field].value.trim();
+        let x = f.elements[field] && f.elements[field].value.trim();
         if (x === "")
             x = f.elements[field].getAttribute("placeholder");
         if (x === false || x === "" || x == null)
@@ -5264,18 +5250,18 @@ handle_ui.on("js-request-review-preview-email", function (evt) {
             a[field] = x;
     }
     fv("email", "<EMAIL>");
-    fv("firstName", "");
-    fv("lastName", "");
+    fv("given_name", "");
+    fv("family_name", "");
     fv("affiliation", "Affiliation");
     fv("reason", "");
-    if (a.firstName == null && a.lastName == null)
-        a.lastName = "<NAME>";
+    if (a.given_name == null && a.family_name == null)
+        a.family_name = "<NAME>";
     $.ajax(hoturl("api/mailtext", a), {
         method: "GET", success: function (data) {
             if (data.ok && data.subject && data.body) {
                 const mp = $e("div", "mail-preview");
                 const $pu = $popup().append($e("h2", null, "External review request email preview"), mp)
-                    .append_actions($e("button", {type: "button", "class": "btn-primary no-focus", name: "cancel"}, "Close"));
+                    .append_actions($e("button", {type: "button", class: "btn-primary no-focus", name: "cancel"}, "Close"));
                 render_mail_preview(mp, data, ["subject", "body"]);
                 $pu.show();
             }
@@ -5305,7 +5291,7 @@ hotcrp.monitor_job = function (jobid, statuselt) {
                     statuselt.insertBefore(ee, ex);
                     ex = ee;
                 }
-                ex.replaceChildren(render_feedback_list(data.message_list));
+                ex.replaceChildren(feedback.render_list(data.message_list));
             }
             if (data.progress != null || data.status === "done") {
                 let ex = statuselt.firstElementChild;
@@ -5414,7 +5400,7 @@ handle_ui.on("js-mail-set-template", function () {
             .append($e("h2", null, "Mail templates"));
         templatelist = tl;
         if (tl.length) {
-            const tmpl = $e("select", {name: "template", "class": "w-100 want-focus ignore-diff", size: 5});
+            const tmpl = $e("select", {name: "template", class: "w-100 want-focus ignore-diff", size: 5});
             for (let i = 0; tl[i]; ++i) {
                 tmpl.append($e("option", {value: tl[i].name, selected: !i}, tl[i].title));
             }
@@ -5426,7 +5412,7 @@ handle_ui.on("js-mail-set-template", function () {
             preview = $e("div", "mail-preview");
             $(tmpl).on("input", render);
             $pu.append(tmpl, $e("fieldset", "mt-4 modal-demo-fieldset", preview))
-                .append_actions($e("button", {type: "submit", name: "go", "class": "btn-primary"}, "Use template"), "Cancel")
+                .append_actions($e("button", {type: "submit", name: "go", class: "btn-primary"}, "Use template"), "Cancel")
                 .on("submit", submitter);
             render();
         } else {
@@ -5779,23 +5765,23 @@ $(function () {
 
 
 function minifeedback(e, rv) {
-    var ul = document.createElement("ul"), status = 0, i, mx;
+    var ul = document.createElement("ul"), status = 0;
     ul.className = "feedback-list";
     if (rv && rv.message_list) {
-        for (i = 0; i !== rv.message_list.length; ++i) {
-            mx = rv.message_list[i];
-            append_feedback_to(ul, rv.message_list[i]);
+        for (let mx of rv.message_list) {
+            feedback.append_item(ul, mx);
             status = Math.max(status, mx.status);
         }
     } else if (rv && rv.error) {
-        append_feedback_to(ul, {status: 2, message: "<5>" + rv.error});
+        log_jserror("rv has error: " + JSON.stringify(rv));
+        feedback.append_item(ul, {status: 2, message: "<5>" + rv.error});
         status = 2;
     }
     if (!ul.firstChild && (!rv || !rv.ok)) {
         if (rv && (rv.error || rv.warning)) {
             log_jserror("rv has error/warning: " + JSON.stringify(rv));
         }
-        append_feedback_to(ul, {status: 2, message: "Error"});
+        feedback.append_item(ul, {status: 2, message: "Error"});
         status = 2;
     }
     removeClass(e, "has-error");
@@ -6057,7 +6043,7 @@ function update_time_points() {
 hotcrp.make_time_point = function (ts, ttext, className) {
     const tsdate = new Date(ts * 1000), nowdate = new Date, nowts = nowdate.getTime() / 1000,
         e = $e("time", {
-            "class": className, datetime: tsdate.toISOString(),
+            class: className, datetime: tsdate.toISOString(),
             "data-ts": ts,
             title: strftime("%b %#e, %Y " + (strftime.is24 ? "%H:%M" : "%#l:%M %p"), tsdate)
         }, ttext);
@@ -6078,8 +6064,8 @@ hotcrp.make_time_point = function (ts, ttext, className) {
 handle_ui.on("js-review-tokens", function () {
     const $pu = $popup().append($e("h2", null, "Review tokens"),
             $e("p", null, "Review tokens implement fully anonymous reviewing. If you have been given review tokens, enter them here to view the corresponding papers and edit the reviews."),
-            $e("input", {type: "text", size: 60, name: "token", value: this.getAttribute("data-review-tokens"), placeholder: "Review tokens", "class": "w-99"}))
-        .append_actions($e("button", {type: "submit", name: "save", "class": "btn-primary"}, "Save tokens"), "Cancel")
+            $e("input", {type: "text", size: 60, name: "token", value: this.getAttribute("data-review-tokens"), placeholder: "Review tokens", class: "w-99"}))
+        .append_actions($e("button", {type: "submit", name: "save", class: "btn-primary"}, "Save tokens"), "Cancel")
         .on("submit", function (evt) {
             $pu.find(".msg").remove();
             $.post(hoturl("=api/reviewtoken"), $($pu.form()).serialize(),
@@ -6201,62 +6187,55 @@ function render_review_body_in(rrow, bodye) {
     }
 }
 
-function ratings_counts(ratings) {
-    var ct = [0, 0, 0, 0, 0, 0, 0];
-    for (var i = 0; i < ratings.length; ++i) {
-        for (var j = 0; ratings[i] >= (1 << j); ++j) {
-            ct[j] += ratings[i] & (1 << j) ? 1 : 0;
+const ratings_info = [
+    {index: 0, bit: 1, name: "good", title: "Good review", sign: 1},
+    {index: 1, bit: 2, name: "needswork", title: "Needs work", sign: -1, want_expand: true},
+    {index: 2, bit: 4, name: "short", title: "Too short", sign: -1, collapse: true},
+    {index: 3, bit: 8, name: "vague", title: "Too vague", sign: -1, collapse: true},
+    {index: 4, bit: 16, name: "narrow", title: "Too narrow", sign: -1, collapse: true},
+    {index: 5, bit: 32, name: "disrespectful", title: "Disrespectful", sign: -1, collapse: true},
+    {index: 6, bit: 64, name: "wrong", title: "Not correct", sign: -1, collapse: true}
+];
+
+function rating_info_by_name(name) {
+    for (const ri of ratings_info) {
+        if (ri.name === name)
+            return ri;
+    }
+    return null;
+}
+
+function rating_compatibility(r) {
+    if (r == null || r === 0 || r === "none") {
+        return [];
+    }
+    if (typeof r !== "object") {
+        r = [r];
+    }
+    if (r.length === 0 || typeof r[0] === "string") {
+        return r;
+    }
+    const x = [];
+    for (const rb of r) {
+        for (const ri of ratings_info) {
+            if ((rb & ri.bit) !== 0)
+                x.push(ri.name);
         }
+    }
+    return x;
+}
+
+function rating_counts(ratings) {
+    const ct = {};
+    for (const r of ratings) {
+        ct[r] = (ct[r] || 0) + 1;
     }
     return ct;
 }
 
-function unparse_ratings(ratings, user_rating, editable) {
-    if (!editable && !ratings.length) {
-        return "";
-    }
-    var ct = ratings_counts(ratings);
-
-    var rating_names = ["Good review", "Needs work", "Too short", "Too vague",
-                        "Too narrow", "Disrespectful", "Not correct"];
-    var t = [];
-    t.push('<span class="revrating-flag fn">');
-    if (editable)
-        t.push('<button type="button" class="q ui js-revrating-unfold">&#x2691;</button>');
-    else
-        t.push('<a href="'.concat(hoturl("help", {t: "revrate"}), '" class="q">&#x2691;</a>'));
-    t.push('</span>');
-    for (var i = 0; i < rating_names.length; ++i) {
-        if (editable) {
-            var klass = "revrating-choice", bklass = "";
-            if (!ct[i] && (i >= 2 || ratings.length))
-                klass += " fx";
-            if (ct[i])
-                klass += " revrating-used";
-            else
-                klass += " revrating-unused";
-            if (user_rating && (user_rating & (1 << i)))
-                klass += " revrating-active";
-            if (user_rating
-                ? (user_rating & ((1 << (i + 1)) - 1)) === (1 << i)
-                : !i)
-                bklass += " want-focus";
-            t.push('<span class="' + klass + '" data-revrating-bit="' + i + '"><button class="ui js-revrating' + bklass + '">' + rating_names[i] + '</button><span class="ct">' + (ct[i] ? ' ' + ct[i] : '') + '</span></span>');
-        } else if (ct[i]) {
-            t.push('<span class="revrating-group">' + rating_names[i] + '<span class="ct"> ' + ct[i] + '</span></span>');
-        }
-    }
-
-    if (editable) {
-        t.push('<span class="revrating-group fn"><button class="ui js-foldup">…</button></span>');
-        return '<div class="revrating editable has-fold foldc ui js-revrating-unfold' + (user_rating === 2 ? ' want-revrating-generalize' : '') + '">'
-            + '<div class="f-c fx"><a href="' + hoturl("help", {t: "revrate"}) + '" class="q">Review ratings <span class="n">(anonymous reviewer feedback)</span></a></div>'
-            + t.join(" ") + '</div>';
-    } else if (t) {
-        return '<div class="revrating">' + t.join(" ") + '</div>';
-    } else {
-        return "";
-    }
+function closest_rating_url(e) {
+    const card = e.closest(".revcard");
+    return hoturl("=api", {p: card.getAttribute("data-pid"), r: card.getAttribute("data-rid"), fn: "reviewrating"});
 }
 
 handle_ui.on("js-revrating-unfold", function (evt) {
@@ -6265,87 +6244,183 @@ handle_ui.on("js-revrating-unfold", function (evt) {
 });
 
 handle_ui.on("js-revrating", function () {
-    var off = 0, on = 0, current = 0, $rr = $(this).closest(".revrating");
-    $rr.find(".revrating-choice").each(function () {
-        if (hasClass(this, "revrating-active"))
-            current |= 1 << this.getAttribute("data-revrating-bit");
-    });
-    var mygrp = this.parentNode;
-    if (hasClass(mygrp, "revrating-active")) {
-        off = 1 << mygrp.getAttribute("data-revrating-bit");
-    } else {
-        on = 1 << mygrp.getAttribute("data-revrating-bit");
-        off = on === 1 ? 126 : 1;
-        if (on >= 4 && $rr.hasClass("want-revrating-generalize"))
-            off |= 2;
+    // modified rating
+    const modrrg = this.parentNode,
+        modri = rating_info_by_name(modrrg.getAttribute("data-revrating-name")),
+        modon = !hasClass(modrrg, "revrating-active");
+    // current ratings
+    const rre = this.closest(".revrating");
+    let haveri = [];
+    for (const rrg of rre.querySelectorAll(".revrating-choice.revrating-active")) {
+        if (rrg !== modrrg)
+            haveri.push(rating_info_by_name(rrg.getAttribute("data-revrating-name")));
     }
-    if (current <= 1 && on === 2)
-        $rr.addClass("want-revrating-generalize");
-    else
-        $rr.removeClass("want-revrating-generalize");
-    if (on === 2) {
-        $rr.find(".want-focus").removeClass("want-focus");
-        addClass(mygrp, "want-focus");
-        fold($rr[0], false);
+    // if turning on a rating, maybe turn off others
+    if (modon) {
+        if (modri.sign) {
+            haveri = haveri.filter(function (ri) {
+                return !ri.sign || ri.sign === modri.sign;
+            });
+        }
+        if (haveri.length === 1
+            && modri.collapse
+            && haveri[0].sign
+            && !haveri[0].collapse) {
+            haveri = [];
+        }
+        haveri.push(modri);
     }
-    var $card = $(this).closest(".revcard");
-    $.post(hoturl("=api", {p: $card.attr("data-pid"), r: $card.data("rid"),
-                           fn: "reviewrating"}),
-        {user_rating: (current & ~off) | on},
-        function (data) {
-            if (data && "user_rating" in data) {
-                $rr.find(".revrating-choice").each(function () {
-                    var bit = this.getAttribute("data-revrating-bit");
-                    toggleClass(this, "revrating-active", (data.user_rating & (1 << bit)) !== 0);
-                    if (bit < 2 && data.user_rating <= 2)
-                        removeClass(this, "fx");
-                });
-            }
-            if (data && "ratings" in data) {
-                var ct = ratings_counts(data.ratings);
-                $rr.find(".revrating-choice").each(function () {
-                    var bit = this.getAttribute("data-revrating-bit");
-                    if (ct[bit]) {
-                        this.lastChild.textContent = " " + ct[bit];
-                        removeClass(this, "fx");
-                        removeClass(this, "revrating-unused");
-                        addClass(this, "revrating-used");
-                    } else {
-                        this.lastChild.textContent = "";
-                        bit >= 2 && addClass(this, "fx");
-                        addClass(this, "revrating-unused");
-                        removeClass(this, "revrating-used");
-                    }
-                });
-            }
+    // maybe expand to all ratings
+    if (modon && haveri.length === 1 && modri.want_expand) {
+        $(rre).find(".want-focus").removeClass("want-focus");
+        addClass(modrrg, "want-focus");
+        fold(rre, false);
+    }
+    $.post(closest_rating_url(rre),
+        {user_rating: haveri.map(function (ri) { return ri.name; }).join(" ")},
+        function (rv) {
+            apply_review_ratings(rre, rv);
         });
 });
 
-function revrating_key(evt) {
-    var k = event_key(evt);
-    if ((k === "ArrowLeft" || k === "ArrowRight") && !event_modkey(evt)) {
-        foldup.call(this, null, {open: true});
-        var wantbit = $(this).closest(".revrating-choice").attr("data-revrating-bit");
-        if (wantbit != null) {
-            if (k === "ArrowLeft" && wantbit > 0)
-                --wantbit;
-            else if (k === "ArrowRight" && wantbit < 6)
-                ++wantbit;
-            $(this).closest(".revrating").find(".revrating-choice").each(function () {
-                if (this.getAttribute("data-revrating-bit") == wantbit)
-                    this.firstChild.focus();
+handle_ui.on("js-revrating-clearall", function (evt) {
+    const rre = this.closest(".revrating");
+    function go() {
+        $.post(closest_rating_url(rre), {user_rating: "clearall"},
+            function (rv) {
+                apply_review_ratings(rre, rv);
             });
-        }
-        evt.preventDefault();
     }
+    if (evt.shiftKey) {
+        go();
+    } else {
+        this.setAttribute("data-override-text", "Are you sure you want to reset all ratings for this review?");
+        override_deadlines.call(this, go);
+    }
+});
+
+function apply_review_ratings(rre, rv) {
+    if (rv && "user_rating" in rv) {
+        const user_rating = rating_compatibility(rv.user_rating),
+            simple = user_rating.length === 0
+                || (user_rating.length === 1 && !rating_info_by_name(user_rating[0]).collapse);
+        for (let rrg = rre.firstChild; rrg; rrg = rrg.nextSibling) {
+            if (rrg.nodeType !== 1 || !hasClass(rrg, "revrating-choice"))
+                continue;
+            const ri = rating_info_by_name(rrg.getAttribute("data-revrating-name"));
+            toggleClass(rrg, "revrating-active", user_rating.indexOf(ri.name) >= 0);
+            !ri.collapse && simple && removeClass(rrg, "fx");
+        }
+    }
+    if (rv && "ratings" in rv) {
+        const ct = rating_counts(rating_compatibility(rv.ratings));
+        for (let rrg = rre.firstChild; rrg; rrg = rrg.nextSibling) {
+            if (rrg.nodeType !== 1 || !hasClass(rrg, "revrating-choice"))
+                continue;
+            const rn = rrg.getAttribute("data-revrating-name"),
+                ri = rating_info_by_name(rn);
+            if (ct[rn]) {
+                rrg.lastChild.textContent = " " + ct[rn];
+                removeClass(rrg, "fx");
+            } else {
+                rrg.lastChild.textContent = "";
+                ri.collapse && addClass(rrg, "fx");
+            }
+            toggleClass(rrg, "revrating-used", ct[rn] > 0);
+            toggleClass(rrg, "revrating-unused", !ct[rn]);
+        }
+    }
+
+}
+
+function revrating_key(evt) {
+    const k = event_key(evt);
+    if ((k !== "ArrowLeft" && k !== "ArrowRight")
+        || event_key.modcode(evt) !== 0) {
+        return;
+    }
+    foldup.call(this, null, {open: true});
+    let rrg = this.closest(".revrating-choice");
+    if (rrg) {
+        const direction = k === "ArrowLeft" ? "previousSibling" : "nextSibling";
+        rrg = rrg[direction];
+        while (rrg && (rrg.nodeType !== 1 || !hasClass(rrg, "revrating-choice"))) {
+            rrg = rrg[direction];
+        }
+        rrg && rrg.firstChild.focus();
+    }
+    evt.preventDefault();
+}
+
+function render_ratings(ratings, user_rating, editable) {
+    ratings = rating_compatibility(ratings || 0);
+    if (!editable && ratings.length === 0) {
+        return null;
+    }
+    user_rating = rating_compatibility(user_rating || 0);
+    const ct = rating_counts(ratings);
+
+    let flage;
+    if (editable) {
+        flage = $e("button", {type: "button", class: "q ui js-revrating-unfold"}, "⚑");
+    } else {
+        flage = $e("a", {href: hoturl("help", {t: "revrate"}), class: "q"}, "⚑");
+    }
+    const es = [$e("span", "revrating-flag fn", flage)];
+
+    let focused = false;
+    for (const ri of ratings_info) {
+        if (editable) {
+            let klass = "revrating-choice", bklass = "";
+            if (!ct[ri.name] && (ri.collapse || ratings.length)) {
+                klass += " fx";
+            }
+            klass += ct[ri.name] ? " revrating-used" : " revrating-unused";
+            const active = user_rating.indexOf(ri.name) >= 0;
+            if (active) {
+                klass += " revrating-active";
+            }
+            if (!focused && (user_rating.length === 0 || active)) {
+                bklass += " want-focus";
+                focused = true;
+            }
+            es.push($e("span", {class: klass, "data-revrating-name" : ri.name},
+                $e("button", {type: "button", class: "ui js-revrating" + bklass}, ri.title),
+                $e("span", "ct", ct[ri.name] ? " " + ct[ri.name] : "")));
+        } else if (ct[ri.name]) {
+            es.push($e("span", "revrating-group",
+                ri.title,
+                $e("span", "ct", ct[ri.name])));
+        }
+    }
+
+    let edit_fold = editable;
+    if (hotcrp.status.myperm.can_administer
+        && ratings.length > user_rating.length) {
+        edit_fold = true;
+        es.push($e("span", "revrating-group revrating-admin fx",
+            $e("button", {type: "button", class: "ui js-revrating-clearall"}, "Clear all")));
+    }
+
+    let ex;
+    if (edit_fold) {
+        es.push($e("span", "revrating-group fn", $e("button", {type: "button", class: "ui js-foldup"}, "…")));
+        ex = $e("div", "revrating has-fold foldc" + (editable ? " ui js-revrating-unfold" : ""),
+            $e("div", "f-c fx", $e("a", {href: hoturl("help", {t: "revrate"}), class: "q"}, "Review ratings ", $e("span", "n", "(anonymous reviewer feedback)"))),
+            ...es);
+        $(ex).on("keydown", "button.js-revrating", revrating_key);
+    } else {
+        ex = $e("div", "revrating", ...es);
+    }
+    return $e("div", "revcard-rating fx20", ex);
 }
 
 function make_review_h2(rrow, rlink, rdesc) {
     let h2 = $e("h2"), ma, rd = $e("span");
     if (rrow.collapsed) {
-        ma = $e("button", {type: "button", "class": "qo ui js-foldup", "data-fold-target": 20}, make_expander_element(20));
+        ma = $e("button", {type: "button", class: "qo ui js-foldup", "data-fold-target": 20}, make_expander_element(20));
     } else {
-        ma = $e("a", {href: hoturl("review", rlink), "class": "qo"});
+        ma = $e("a", {href: hoturl("review", rlink), class: "qo"});
     }
     rd.className = "revcard-header-name";
     rd.append(rdesc);
@@ -6353,7 +6428,7 @@ function make_review_h2(rrow, rlink, rdesc) {
     h2.append(ma);
     if (rrow.editable) {
         if (rrow.collapsed) {
-            ma = $e("a", {href: hoturl("review", rlink), "class": "qo"});
+            ma = $e("a", {href: hoturl("review", rlink), class: "qo"});
             h2.append(" ", ma);
         } else {
             ma.append(" ");
@@ -6375,7 +6450,7 @@ function append_review_id(rrow, eheader) {
     }
     function add_ad(s) {
         if (!ad) {
-            ad = $e("address", {"class": "revname", itemprop: "author"});
+            ad = $e("address", {class: "revname", itemprop: "author"});
             add_rth(ad);
         }
         ad.append(s);
@@ -6391,14 +6466,14 @@ function append_review_id(rrow, eheader) {
             xc = " rtghost"
         } else {
             xc = rrow.subreview ? " rtsubrev" : "";
-            if (!rrow.submitted && !rrow.approved) {
+            if (rrow.status !== "complete" && rrow.status !== "approved") {
                 xc += " rtinc";
             }
         }
         ad && ad.append(" ");
         add_ad(review_types.make_icon(rrow.rtype, xc));
         if (rrow.round) {
-            ad.append($e("span", {"class": "revround", title: "Review round"}, rrow.round));
+            ad.append($e("span", {class: "revround", title: "Review round"}, rrow.round));
         }
     }
     if (rrow.modified_at) {
@@ -6408,7 +6483,6 @@ function append_review_id(rrow, eheader) {
 
 hotcrp.add_review = function (rrow) {
     var rid = rrow.pid + (rrow.ordinal || "r" + rrow.rid), rlink, rdesc,
-        has_user_rating = false,
         e, earticle, eheader;
 
     // review link and description
@@ -6420,12 +6494,10 @@ hotcrp.add_review = function (rrow) {
         rdesc = "Draft " + rdesc;
     if (rrow.ordinal)
         rdesc += " #" + rid;
-    if (rrow.folded && rrow.collapsed == null) /* XXX */
-        rrow.collapsed = rrow.folded;
 
     earticle = document.createElement("article");
     earticle.id = "r" + rid;
-    earticle.className = "pcard revcard need-anchor-unfold has-fold fold20" + (rrow.collapsed ? "c" : "o");
+    earticle.className = "pcard revcard " + (rrow.subreview || rrow.draft ? "" : "revsubmitted ") + "need-anchor-unfold has-fold fold20" + (rrow.collapsed ? "c" : "o");
     earticle.setAttribute("data-pid", rrow.pid);
     earticle.setAttribute("data-rid", rrow.rid);
     rrow.ordinal && earticle.setAttribute("data-review-ordinal", rrow.ordinal);
@@ -6439,7 +6511,7 @@ hotcrp.add_review = function (rrow) {
 
     // messages
     if (rrow.message_list) {
-        earticle.appendChild($e("div", "revcard-feedback fx20", render_feedback_list(rrow.message_list)));
+        earticle.appendChild($e("div", "revcard-feedback fx20", feedback.render_list(rrow.message_list)));
     }
 
     // body
@@ -6453,18 +6525,11 @@ hotcrp.add_review = function (rrow) {
     }
 
     // ratings
-    has_user_rating = "user_rating" in rrow;
-    if ((rrow.ratings && rrow.ratings.length) || has_user_rating) {
-        e = document.createElement("div");
-        e.className = "revcard-rating fx20";
+    if ((e = render_ratings(rrow.ratings, rrow.user_rating, "user_rating" in rrow))) {
         earticle.appendChild(e);
-        e.innerHTML = unparse_ratings(rrow.ratings || [], rrow.user_rating || 0, has_user_rating);
     }
 
     // complete render
-    if (has_user_rating) {
-        $(earticle).find(".revrating.editable").on("keydown", "button.js-revrating", revrating_key);
-    }
     score_header_tooltips($(earticle));
     navsidebar.set("r" + rid, rdesc);
 };
@@ -6763,18 +6828,20 @@ hotcrp.set_review_form = function (j) {
 
 // comments
 (function ($) {
-var vismap = {
+const vismap = {
         rev: "hidden from authors",
         pc: "hidden from authors and external reviewers",
         admin: "shown only to administrators"
     },
     emojiregex = /^(?:(?:\ud83c[\udde6-\uddff]\ud83c[\udde6-\uddff]|(?:(?:[\u231a\u231b\u23e9-\u23ec\u23f0\u23f3\u25fd\u25fe\u2614\u2615\u2648-\u2653\u267f\u2693\u26a1\u26aa\u26ab\u26bd\u26be\u26c4\u26c5\u26ce\u26d4\u26ea\u26f2\u26f3\u26f5\u26fa\u26fd\u2705\u270a\u270b\u2728\u274c\u274e\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55]|\ud83c[\udc04\udccf\udd8e\udd91-\udd9a\udde6-\uddff\ude01\ude1a\ude2f\ude32-\ude36\ude38-\ude3a\ude50\ude51\udf00-\udf20\udf2d-\udf35\udf37-\udf7c\udf7e-\udf93\udfa0-\udfca\udfcf-\udfd3\udfe0-\udff0\udff4\udff8-\udfff]|\ud83d[\udc00-\udc3e\udc40\udc42-\udcfc\udcff-\udd3d\udd4b-\udd4e\udd50-\udd67\udd7a\udd95\udd96\udda4\uddfb-\ude4f\ude80-\udec5\udecc\uded0-\uded2\uded5-\uded7\udedd-\udedf\udeeb\udeec\udef4-\udefc\udfe0-\udfeb\udff0]|\ud83e[\udd0c-\udd3a\udd3c-\udd45\udd47-\uddff\ude70-\ude74\ude78-\ude7c\ude80-\ude86\ude90-\udeac\udeb0-\udeba\udec0-\udec5\uded0-\uded9\udee0-\udee7\udef0-\udef6])\ufe0f?|(?:[\u0023\u002a\u0030-\u0039\u00a9\u00ae\u203c\u2049\u2122\u2139\u2194-\u2199\u21a9\u21aa\u2328\u23cf\u23ed-\u23ef\u23f1\u23f2\u23f8-\u23fa\u24c2\u25aa\u25ab\u25b6\u25c0\u25fb\u25fc\u2600-\u2604\u260e\u2611\u2618\u261d\u2620\u2622\u2623\u2626\u262a\u262e\u262f\u2638-\u263a\u2640\u2642\u265f\u2660\u2663\u2665\u2666\u2668\u267b\u267e\u2692\u2694-\u2697\u2699\u269b\u269c\u26a0\u26a7\u26b0\u26b1\u26c8\u26cf\u26d1\u26d3\u26e9\u26f0\u26f1\u26f4\u26f7-\u26f9\u2702\u2708\u2709\u270c\u270d\u270f\u2712\u2714\u2716\u271d\u2721\u2733\u2734\u2744\u2747\u2763\u2764\u27a1\u2934\u2935\u2b05-\u2b07\u3030\u303d\u3297\u3299]|\ud83c[\udd70\udd71\udd7e\udd7f\ude02\ude37\udf21\udf24-\udf2c\udf36\udf7d\udf96\udf97\udf99-\udf9b\udf9e\udf9f\udfcb-\udfce\udfd4-\udfdf\udff3\udff5\udff7]|\ud83d[\udc3f\udc41\udcfd\udd49\udd4a\udd6f\udd70\udd73-\udd79\udd87\udd8a-\udd8d\udd90\udda5\udda8\uddb1\uddb2\uddbc\uddc2-\uddc4\uddd1-\uddd3\udddc-\uddde\udde1\udde3\udde8\uddef\uddf3\uddfa\udecb\udecd-\udecf\udee0-\udee5\udee9\udef0\udef3])\ufe0f)\u20e3?(?:\ud83c[\udffb-\udfff]|(?:\udb40[\udc20-\udc7e])+\udb40\udc7f)?(?:\u200d(?:(?:[\u231a\u231b\u23e9-\u23ec\u23f0\u23f3\u25fd\u25fe\u2614\u2615\u2648-\u2653\u267f\u2693\u26a1\u26aa\u26ab\u26bd\u26be\u26c4\u26c5\u26ce\u26d4\u26ea\u26f2\u26f3\u26f5\u26fa\u26fd\u2705\u270a\u270b\u2728\u274c\u274e\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55]|\ud83c[\udc04\udccf\udd8e\udd91-\udd9a\udde6-\uddff\ude01\ude1a\ude2f\ude32-\ude36\ude38-\ude3a\ude50\ude51\udf00-\udf20\udf2d-\udf35\udf37-\udf7c\udf7e-\udf93\udfa0-\udfca\udfcf-\udfd3\udfe0-\udff0\udff4\udff8-\udfff]|\ud83d[\udc00-\udc3e\udc40\udc42-\udcfc\udcff-\udd3d\udd4b-\udd4e\udd50-\udd67\udd7a\udd95\udd96\udda4\uddfb-\ude4f\ude80-\udec5\udecc\uded0-\uded2\uded5-\uded7\udedd-\udedf\udeeb\udeec\udef4-\udefc\udfe0-\udfeb\udff0]|\ud83e[\udd0c-\udd3a\udd3c-\udd45\udd47-\uddff\ude70-\ude74\ude78-\ude7c\ude80-\ude86\ude90-\udeac\udeb0-\udeba\udec0-\udec5\uded0-\uded9\udee0-\udee7\udef0-\udef6])\ufe0f?|(?:[\u0023\u002a\u0030-\u0039\u00a9\u00ae\u203c\u2049\u2122\u2139\u2194-\u2199\u21a9\u21aa\u2328\u23cf\u23ed-\u23ef\u23f1\u23f2\u23f8-\u23fa\u24c2\u25aa\u25ab\u25b6\u25c0\u25fb\u25fc\u2600-\u2604\u260e\u2611\u2618\u261d\u2620\u2622\u2623\u2626\u262a\u262e\u262f\u2638-\u263a\u2640\u2642\u265f\u2660\u2663\u2665\u2666\u2668\u267b\u267e\u2692\u2694-\u2697\u2699\u269b\u269c\u26a0\u26a7\u26b0\u26b1\u26c8\u26cf\u26d1\u26d3\u26e9\u26f0\u26f1\u26f4\u26f7-\u26f9\u2702\u2708\u2709\u270c\u270d\u270f\u2712\u2714\u2716\u271d\u2721\u2733\u2734\u2744\u2747\u2763\u2764\u27a1\u2934\u2935\u2b05-\u2b07\u3030\u303d\u3297\u3299]|\ud83c[\udd70\udd71\udd7e\udd7f\ude02\ude37\udf21\udf24-\udf2c\udf36\udf7d\udf96\udf97\udf99-\udf9b\udf9e\udf9f\udfcb-\udfce\udfd4-\udfdf\udff3\udff5\udff7]|\ud83d[\udc3f\udc41\udcfd\udd49\udd4a\udd6f\udd70\udd73-\udd79\udd87\udd8a-\udd8d\udd90\udda5\udda8\uddb1\uddb2\uddbc\uddc2-\uddc4\uddd1-\uddd3\udddc-\uddde\udde1\udde3\udde8\uddef\uddf3\uddfa\udecb\udecd-\udecf\udee0-\udee5\udee9\udef0\udef3])\ufe0f)\u20e3?(?:\ud83c[\udffb-\udfff]|(?:\udb40[\udc20-\udc7e])+\udb40\udc7f)?)*)*[ \t]*){1,3}$/,
-    cmts = {}, has_unload = false, resp_rounds = {},
-    editor_observer, editing_list,
+    cmts = {}, resp_rounds = {},
     twiddle_start = siteinfo.user && siteinfo.user.uid ? siteinfo.user.uid + "~" : "###";
+let has_unload = false, last_visibility = null,
+    last_topic = null, my_last_topic = false,
+    editor_observer, editing_list;
 
 function unparse_tag(tag, strip_value) {
-    var pos;
+    let pos;
     if (tag.startsWith(twiddle_start)) {
         tag = tag.substring(twiddle_start.length - 1);
     }
@@ -6828,7 +6895,7 @@ function cmt_identity_time(frag, cj, editing) {
     } else if (cj.is_new) {
         // no identity
     } else if (cj.editable) {
-        const ae = $e("a", {href: "#" + cj_cid(cj), "class": "qo ui hover-child cmteditor"});
+        const ae = $e("a", {href: "#" + cj_cid(cj), class: "qo ui hover-child cmteditor"});
         if (cj.ordinal) {
             ae.append($e("div", "cmtnum", $e("span", "cmtnumat", "@"),
                 $e("span", "cmtnumnum", cj.ordinal)), " ");
@@ -6839,11 +6906,11 @@ function cmt_identity_time(frag, cj, editing) {
         frag.appendChild($e("div", "cmtnumid", ae));
     } else if (cj.ordinal) {
         frag.appendChild($e("div", "cmtnumid cmtnum",
-            $e("a", {href: "#" + cj_cid(cj), "class": "q"},
+            $e("a", {href: "#" + cj_cid(cj), class: "q"},
                 $e("span", "cmtnumat", "@"), $e("span", "cmtnumnum", cj.ordinal))));
     }
     if (cj.author && cj.author_hidden) {
-        const aue = $e("span", {"class": "fx9", title: cj.author_email});
+        const aue = $e("span", {class: "fx9", title: cj.author_email});
         aue.innerHTML = cj.author + " (deanonymized)";
         const ane = $e("span", "fn9");
         if (cj.author_pseudonym) {
@@ -6851,8 +6918,8 @@ function cmt_identity_time(frag, cj, editing) {
         } else {
             ane.append("+ ", $e("i", null, "Hidden"));
         }
-        frag.appendChild($e("address", {"class": "has-fold cmtname fold9c", itemprop: "author"},
-            $e("button", {type: "button", "class": "q ui js-foldup", "data-fold-target": 9, "title": "Toggle author"},
+        frag.appendChild($e("address", {class: "has-fold cmtname fold9c", itemprop: "author"},
+            $e("button", {type: "button", class: "q ui js-foldup", "data-fold-target": 9, "title": "Toggle author"},
                 ane, aue)));
     } else if (cj.author) {
         let x = cj.author;
@@ -6863,12 +6930,12 @@ function cmt_identity_time(frag, cj, editing) {
         } else if (cj.author_pseudonymous) {
             x = "[".concat(cj.author, "]");
         }
-        const aue = $e("address", {"class": "cmtname", itemprop: "author", title: cj.author_email});
+        const aue = $e("address", {class: "cmtname", itemprop: "author", title: cj.author_email});
         aue.innerHTML = x;
         frag.appendChild(aue);
     } else if (cj.author_pseudonym
                && (!cj.response || cj.text === false || cj.author_pseudonym !== "Author")) {
-        frag.appendChild($e("address", {"class": "cmtname", itemprop: "author"}, cj.author_pseudonym));
+        frag.appendChild($e("address", {class: "cmtname", itemprop: "author"}, cj.author_pseudonym));
     }
     if (cj.modified_at) {
         cmt_header_dotsep(frag);
@@ -6880,11 +6947,18 @@ function cmt_identity_time(frag, cj, editing) {
             cmt_header_dotsep(frag);
             frag.appendChild($e("div", "cmtvis", v));
         }
+        if (cj.topic === "paper") {
+            cmt_header_dotsep(frag);
+            frag.appendChild($e("div", {class: "cmtvis", title: "Visible when reviews are hidden"}, "submission thread"));
+        } else if (cj.topic === "dec") {
+            cmt_header_dotsep(frag);
+            frag.appendChild($e("div", {class: "cmtvis", title: "Visible when decision is visible"}, "decision thread"));
+        }
         if (cj.tags) {
             const tage = $e("div", "cmttags");
             for (let t of cj.tags) {
                 tage.firstChild && tage.append(" ");
-                tage.appendChild($e("a", {href: hoturl("search", {q: "cmt:#" + unparse_tag(t, true)}), "class": "q"}, "#" + unparse_tag(t)));
+                tage.appendChild($e("a", {href: hoturl("search", {q: "cmt:#" + unparse_tag(t, true)}), class: "q"}, "#" + unparse_tag(t)));
             }
             cmt_header_dotsep(frag);
             frag.appendChild(tage);
@@ -6893,154 +6967,209 @@ function cmt_identity_time(frag, cj, editing) {
 }
 
 function cmt_is_editable(cj, override) {
-    var p = hotcrp.status.myperm;
-    if (cj.response)
-        p = p.can_responds && p.can_responds[cj.response];
-    else
+    let p = hotcrp.status.myperm;
+    if (cj.response) {
+        p = p.can_respond && p.response_rounds[cj.response];
+    } else {
         p = p.can_comment;
+    }
     return override ? !!p : p === true;
 }
 
-
 function cmt_render_form(cj) {
-    var x, btnbox = [], cid = cj_cid(cj), bnote, hc = new HtmlCollector;
+    const cid = cj_cid(cj),
+        btnbox = $e("div", "btnbox"),
+        eform = $e("form", "cmtform");
+    cj.review_token && eform.append(hidden_input("review_token", cj.review_token));
+    cj.by_author && eform.append(hidden_input("by_author", 1));
+    cj.response && eform.append(hidden_input("response", cj.response));
 
-    hc.push('<form class="cmtform">', '</form>');
-    if (cj.review_token) {
-        hc.push('<input type="hidden" name="review_token" value="' + escape_html(cj.review_token) + '">');
+    const fmt = render_text.format(cj.format);
+    let efmtdesc = null;
+    if (fmt.description || fmt.has_preview) {
+        efmtdesc = $e("div", "formatdescription");
+        if (fmt.description) {
+            efmtdesc.innerHTML = fmt.description;
+            fmt.has_preview && efmtdesc.append(" ", $e("span", "barsep", "·"), " ");
+        }
+        if (fmt.has_preview) {
+            efmtdesc.append($e("button", {type: "button", class: "link ui js-togglepreview", "data-format": fmt.format || 0}, "Preview"));
+        }
     }
-    if (cj.by_author) {
-        hc.push('<input type="hidden" name="by_author" value="1">');
-    }
-    hc.push('<div class="f-i">', '</div>');
-    var fmt = render_text.format(cj.format), fmtnote = fmt.description || "";
-    if (fmt.has_preview) {
-        fmtnote += (fmtnote ? ' <span class="barsep">·</span> ' : "") + '<button type="button" class="link ui js-togglepreview" data-format="' + (fmt.format || 0) + '">Preview</button>';
-    }
-    fmtnote && hc.push('<div class="formatdescription">' + fmtnote + '</div>');
-    hc.push_pop('<textarea name="text" class="w-text cmttext suggest-emoji mentions need-suggest c" rows="5" cols="60" placeholder="Leave a comment"></textarea>');
+    eform.append($e("div", "f-i", efmtdesc, $e("textarea", {
+        name: "text", class: "w-text cmttext suggest-emoji mentions need-suggest c",
+        rows: 5, cols: 60, placeholder: "Leave a comment"
+    })));
 
-    hc.push('<div class="cmteditinfo fold3c">', '</div>');
+    // attachments, visibility, tags, readiness
+    eform.append(cmt_render_form_prop(cj, cid, btnbox));
+
+    // actions: [btnbox], [wordcount] || cancel, save/submit
+    const eaa = $e("div", "w-text aabig aab mt-3");
+    btnbox.firstChild && eaa.append($e("div", "aabut", btnbox));
+    if (cj.response && resp_rounds[cj.response].wl > 0) {
+        eaa.append($e("div", "aabut", $e("div", "words")));
+    }
+    const btext = cj.response ? "Submit" : "Save",
+        bnote = cmt_is_editable(cj) ? null : $e("div", "hint", "(admin only)");
+    eaa.append($e("div", "aabr",
+        $e("div", "aabut", $e("button", {type: "button", name: "cancel"}, "Cancel")),
+        $e("div", "aabut", $e("button", {type: "button", name: "bsubmit", class: "btn-primary"}, btext), bnote)));
+    eform.append(eaa);
+
+    return eform;
+}
+
+function cmt_render_form_prop(cj, cid, btnbox) {
+    const einfo = $e("div", "cmteditinfo fold3c fold4c");
 
     // attachments
-    hc.push('<div class="entryi has-editable-attachments hidden" id="'.concat(cid, '-attachments" data-dtype="-2" data-document-prefix="attachment"><span class="label">Attachments</span></div>'));
-    btnbox.push('<button type="button" name="attach" class="btn-licon need-tooltip ui js-add-attachment" aria-label="Attach file" data-editable-attachments="'.concat(cid, '-attachments">', $("#i-attachment").html(), '</button>'));
-
-    // visibility
-    if (!cj.response && (!cj.by_author || cj.by_author_visibility)) {
-        hc.push('<div class="entryi"><label for="' + cid + '-visibility">Visibility</label><div class="entry">', '</div></div>');
-        hc.push('<span class="select"><select id="' + cid + '-visibility" name="visibility">', '</select></span>');
-        if (!cj.by_author) {
-            hc.push('<option value="au">Author discussion</option>');
-            hc.push('<option value="rev">Reviewer discussion</option>');
-            hc.push('<option value="pc">PC discussion</option>');
-            hc.push_pop('<option value="admin">Administrators only</option>');
-        } else {
-            hc.push('<option value="au">Reviewer discussion</option>');
-            hc.push_pop('<option value="admin">Administrators only</option>');
-        }
-        hc.push('<span class="visibility-topic"><span class="d-inline-block ml-2 mr-2">about</span>');
-        hc.push('<span class="select"><select id="' + cid + '-topic" name="topic">', '</select></span></span>');
-        hc.push('<option value="paper">' + siteinfo.snouns[0] + '</option>');
-        hc.push_pop('<option value="rev" selected>reviews</option>');
-        hc.push('<p class="visibility-hint f-h text-break-line"></p>');
-        if (!cj.by_author && hotcrp.status.rev.blind && hotcrp.status.rev.blind !== true) {
-            hc.push('<div class="visibility-au-blind checki"><label><span class="checkc"><input type="checkbox" name="blind" value="1"></span>Anonymous to authors</label></div>');
-        }
-        hc.pop();
-    }
+    einfo.append($e("div", {id: cid + "-attachments", class: "entryi has-editable-attachments hidden", "data-dtype": -2, "data-document-prefix": "attachment"}, $e("span", "label", "Attachments")));
+    btnbox.append($e("button", {type: "button", name: "attach", class: "btn-licon need-tooltip ui js-add-attachment", "aria-label": "Attach file", "data-editable-attachments": cid + "-attachments"}, svge_use_licon("attachment")));
 
     // tags
     if (!cj.response && !cj.by_author) {
-        hc.push('<div class="entryi fx3"><label for="' + cid + '-tags">Tags</label>', '</div>')
-        hc.push_pop('<input id="' + cid + '-tags" name="tags" type="text" size="50" placeholder="Comment tags">');
-        btnbox.push('<button type="button" name="showtags" class="btn-licon need-tooltip" aria-label="Tags">' + $("#i-tag").html() + '</button>');
+        einfo.append($e("div", "entryi fx3",
+            $e("label", {for: cid + "-tags"}, "Tags"),
+            $e("input", {id: cid + "-tags", name: "tags", type: "text", size: 50, placeholder: "Comment tags"})));
+        btnbox.append($e("button", {type: "button", name: "showtags", class: "btn-licon need-tooltip", "aria-label": "Tags"}, svge_use_licon("tag")));
+    }
+
+    // visibility
+    if (!cj.response && (!cj.by_author || cj.by_author_visibility)) {
+        const evsel = $e("select", {id: cid + "-visibility", name: "visibility"});
+        if (cj.by_author) {
+            evsel.append($e("option", {value: "au"}, "Reviewers and PC"));
+        } else {
+            evsel.append($e("option", {value: "au"}, "Authors and reviewers"),
+                $e("option", {value: "rev"}, "Reviewers"),
+                $e("option", {value: "pc"}, "PC only"));
+        }
+        evsel.append($e("option", {value: "admin"}, "Administrators only"));
+
+        const evis = $e("div", "entry",
+            $e("span", "select", evsel),
+            $e("p", "f-d text-break-line hidden"));
+        if (!cj.by_author && hotcrp.status.rev.blind && hotcrp.status.rev.blind !== true) {
+            evis.append($e("div", "checki",
+                $e("label", null,
+                    $e("span", "checkc", $e("input", {type: "checkbox", name: "blind", value: 1})),
+                    "Anonymous to authors")));
+        }
+        einfo.append($e("div", "entryi",
+            $e("label", {for: cid + "-visibility"}, "Visibility"),
+            evis));
+    }
+
+    // topic/thread
+    if (!cj.response) {
+        const etsel = $e("select", {id: cid + "-thread", name: "topic"}),
+            tlist = hotcrp.status.myperm.comment_topics || ["paper", "rev"];
+        if (tlist.indexOf("paper") >= 0) {
+            etsel.append($e("option", {value: "paper"}, siteinfo.snouns[2] + " (not reviews)"));
+        }
+        if (tlist.indexOf("rev") >= 0) {
+            etsel.append($e("option", {value: "rev", selected: true}, "Reviews"));
+        }
+        /*if (tlist.indexOf("dec") >= 0) {
+            etsel.append($e("option", {value: "dec"}, "Decision"));
+        }*/
+        einfo.append($e("div", "entryi fx4",
+            $e("label", {for: cid + "-thread"}, "Thread"),
+            $e("div", "entry",
+                $e("span", "select", etsel),
+                $e("p", "f-d text-break-line"))));
+        btnbox.append($e("button", {type: "button", name: "showthread", class: "btn-licon need-tooltip", "aria-label": "Thread", "data-editable-attachments": cid + "-attachments"}, svge_use_licon("thread")));
     }
 
     // delete
     if (!cj.is_new) {
-        x = cj.response ? "response" : "comment";
+        const x = cj.response ? "response" : "comment";
+        let bnote;
         if (cmt_is_editable(cj)) {
             bnote = "Are you sure you want to delete this " + x + "?";
         } else {
             bnote = "Are you sure you want to override the deadline and delete this " + x + "?";
         }
-        btnbox.push('<button type="button" name="delete" class="btn-licon need-tooltip" aria-label="Delete ' + x + '" data-override-text="' + bnote + '">' + $("#i-trash").html() + '</button>');
+        btnbox.append($e("button", {type: "button", name: "delete", class: "btn-licon need-tooltip", "aria-label": "Delete " + x, "data-override-text": bnote}, svge_use_licon("trash")));
     }
 
     // response ready
     if (cj.response) {
-        x = !cj.is_new && !cj.draft;
-        hc.push('<div class="checki has-fold fold' + (x ? "o" : "c") + '"><label><span class="checkc"><input type="checkbox" class="uich js-foldup" name="ready" value="1"' + (x ? " checked" : "") + '></span><strong>The response is ready for review</strong><div class="f-h fx">Reviewers will be notified when you submit the response.</div></div>');
-        hc.push('<input type="hidden" name="response" value="' + cj.response + '">');
+        const ready = !cj.is_new && !cj.draft;
+        einfo.append($e("label", "checki has-fold fold" + (ready ? "o" : "c"),
+            $e("span", "checkc", $e("input", {type: "checkbox", class: "uich js-foldup", name: "ready", value: 1, checked: ready})),
+            $e("strong", null, "The response is ready for review"),
+            $e("div", "f-d fx", "Reviewers will be notified when you submit the response.")));
     }
 
-    // close .cmteditinfo
-    hc.pop();
-
-    // actions: [btnbox], [wordcount] || cancel, save/submit
-    hc.push('<div class="w-text aabig aab mt-3">', '</div>');
-    bnote = cmt_is_editable(cj) ? "" : '<div class="hint">(admin only)</div>';
-    if (btnbox.length)
-        hc.push('<div class="aabut"><div class="btnbox">' + btnbox.join("") + '</div></div>');
-    if (cj.response && resp_rounds[cj.response].wl > 0)
-        hc.push('<div class="aabut"><div class="words"></div></div>');
-    hc.push('<div class="aabr">', '</div>');
-    hc.push('<div class="aabut"><button type="button" name="cancel">Cancel</button></div>');
-    if (cj.response) {
-        // XXX allow_administer
-        hc.push('<div class="aabut"><button type="button" name="bsubmit" class="btn-primary">Submit</button>' + bnote + "</div>");
-    } else {
-        hc.push('<div class="aabut"><button type="button" name="bsubmit" class="btn-primary">Save</button>' + bnote + "</div>");
-    }
-    return $(hc.render())[0];
+    return einfo;
 }
 
 function cmt_visibility_change() {
-    var form = this.closest("form"),
+    const form = this.closest("form"),
         vis = form.elements.visibility,
         topic = form.elements.topic,
-        entryi = vis.closest(".entryi"),
-        hint = entryi.querySelector(".visibility-hint"),
-        blind = entryi.querySelector(".visibility-au-blind"),
-        topicspan = entryi.querySelector(".visibility-topic"),
-        is_paper = topic && topic.value === "paper" && vis.value !== "admin",
-        would_auvis = is_paper || hotcrp.status.myperm.some_author_can_view_review;
-    if (would_auvis) {
-        vis.firstChild.textContent = "Author discussion";
-    } else {
-        vis.firstChild.textContent = "Future author discussion";
-    }
-    if (hint) {
-        var m = [];
-        if (vis.value === "au" && !form.elements.by_author) {
+        is_paper = topic && topic.value === "paper" && (!vis || vis.value !== "admin");
+    if (vis && vis.type === "select-one" && !form.elements.by_author) {
+        const vishint = vis.closest(".entryi").querySelector(".f-d"),
+            would_auvis = is_paper
+                || hotcrp.status.myperm[topic && topic.value === "dec" ? "some_author_can_view_decision" : "some_author_can_view_review"],
+            m = [];
+        if (vis.value === "au") {
             if (would_auvis) {
                 m.length && m.push("\n");
                 m.push($e("span", "is-diagnostic is-warning", "Authors will be notified immediately."));
+            } else if (topic.value === "dec") {
+                m.length && m.push("\n");
+                m.push("Authors cannot currently view the decision or comments about the decision.");
             } else {
                 m.length && m.push("\n");
-                m.push('Authors cannot currently view reviews or comments about reviews.');
+                m.push("Authors cannot currently view reviews or comments about reviews.");
             }
             if (hotcrp.status.rev.blind === true) {
                 m.length && m.push("\n");
-                m.push(would_auvis ? 'The comment will be anonymous to authors.' : 'When visible, the comment will be anonymous to authors.');
+                m.push(would_auvis ? "The comment will be anonymous to authors." : "When visible, the comment will be anonymous to authors.");
             }
         } else if (vis.value === "pc") {
             m.length && m.push("\n");
-            m.push('The comment will be hidden from authors and external reviewers.');
-        } else if (vis.value === "rev" && hotcrp.status.myperm.default_comment_visibility === "pc") {
+            m.push("The comment will be hidden from authors and external reviewers.");
+        } else if (vis.value === "rev"
+                   && hotcrp.status.myperm.some_external_reviewer_can_view_comment === false) {
             m.length && m.push("\n");
             m.push($e("span", "is-diagnostic is-warning", "External reviewers cannot view comments at this time."));
         }
-        if (is_paper) {
-            m.length && m.push("\n");
-            m.push('The comment will be visible independent of the reviews.');
+        vishint.replaceChildren(...m);
+        toggleClass(vishint, "hidden", m.length === 0);
+        if (would_auvis) {
+            vis.firstChild.textContent = "Authors and reviewers";
+        } else {
+            vis.firstChild.textContent = "Authors (eventually) and reviewers";
         }
-        hint.replaceChildren.apply(hint, m);
-        toggleClass(hint, "hidden", m.length === 0);
-        topicspan && toggleClass(topicspan, "hidden", vis.value === "admin");
+        if (vis.value === "au" && would_auvis) {
+            form.elements.bsubmit.textContent = "Save and notify authors";
+        } else if (vis.value === "au") {
+            form.elements.bsubmit.textContent = "Save for authors";
+        } else {
+            form.elements.bsubmit.textContent = "Save";
+        }
+        if (form.elements.blind) {
+            toggleClass(form.elements.blind.closest(".checki"), "hidden", vis.value !== "au");
+        }
     }
-    blind && toggleClass(blind, "hidden", vis.value !== "au");
+    if (topic) {
+        const topichint = topic.closest(".entryi").querySelector(".f-d");
+        if (is_paper) {
+            topichint.replaceChildren("The comment will appear even when reviews are hidden.");
+        } else if (topic.value === "dec") {
+            topichint.replaceChildren("The comment will appear when the decision is visible.");
+        } else {
+            topichint.replaceChildren("The comment will appear when reviews are visible.");
+            if (!document.querySelector("article.revsubmitted")) {
+                topichint.append("\n", $e("span", "is-diagnostic is-warning", "Reviews are not visible now."));
+            }
+        }
+    }
 }
 
 function cmt_ready_change() {
@@ -7048,7 +7177,7 @@ function cmt_ready_change() {
 }
 
 function make_update_words(celt, wlimit) {
-    var wce = $(celt).find(".words")[0];
+    var wce = celt.querySelector(".words");
     function setwc() {
         var wc = count_words(this.value);
         wce.className = "words" + (wlimit < wc ? " wordsover" :
@@ -7068,22 +7197,22 @@ function cmt_edit_messages(cj, form) {
     if (cj.response
         && resp_rounds[cj.response].instrux
         && resp_rounds[cj.response].instrux !== "none") {
-        append_feedback_to(ul, {message: '<5>' + resp_rounds[cj.response].instrux, status: 0});
+        feedback.append_item(ul, {message: '<5>' + resp_rounds[cj.response].instrux, status: 0});
     }
     if (cj.response) {
         if (resp_rounds[cj.response].done > now_sec()) {
-            append_feedback_to(ul, {message: strftime("<0>The response deadline is %X your time.", new Date(resp_rounds[cj.response].done * 1000)), status: -2 /*MessageSet::WARNING_NOTE*/});
+            feedback.append_item(ul, {message: strftime("<0>The response deadline is %X your time.", new Date(resp_rounds[cj.response].done * 1000)), status: -2 /*MessageSet::WARNING_NOTE*/});
         } else if (cj.draft) {
-            append_feedback_to(ul, {message: "<0>The response deadline has passed and this draft response will not be shown to reviewers.", status: 2});
+            feedback.append_item(ul, {message: "<0>The response deadline has passed and this draft response will not be shown to reviewers.", status: 2});
         }
     }
     if (cj.response
         && !hotcrp.status.myperm.is_author) {
-        append_feedback_to(ul, {message: '<0>You aren’t a contact for this paper, but as an administrator you can edit the authors’ response.', status: -4 /*MessageSet::MARKED_NOTE*/});
+        feedback.append_item(ul, {message: '<0>You aren’t a contact for this paper, but as an administrator you can edit the authors’ response.', status: -4 /*MessageSet::MARKED_NOTE*/});
     } else if (cj.review_token
                && hotcrp.status.myperm.review_tokens
                && hotcrp.status.myperm.review_tokens.indexOf(cj.review_token) >= 0) {
-        append_feedback_to(ul, {message: '<0>You have a review token for this application, so your comment will be anonymous.', status: -4 /*MessageSet::MARKED_NOTE*/});
+        feedback.append_item(ul, {message: '<0>You have a review token for this application, so your comment will be anonymous.', status: -4 /*MessageSet::MARKED_NOTE*/});
     } else if (!cj.response
                && cj.author_email
                && siteinfo.user.email
@@ -7092,11 +7221,11 @@ function cmt_edit_messages(cj, form) {
             msg = "<0>You didn’t write this comment, but as a fellow author you can edit it.";
         else
             msg = "<0>You didn’t write this comment, but as an administrator you can edit it.";
-        append_feedback_to(ul, {message: msg, status: -4 /*MessageSet::MARKED_NOTE*/});
+        feedback.append_item(ul, {message: msg, status: -4 /*MessageSet::MARKED_NOTE*/});
     } else if (cj.is_new
                && siteinfo.user
                && (siteinfo.user.is_actas || (siteinfo.user.session_users || []).length > 1)) {
-        append_feedback_to(ul, {message: "<0>Commenting as " + siteinfo.user.email, status: -2 /*MessageSet::WARNING_NOTE*/});
+        feedback.append_item(ul, {message: "<0>Commenting as " + siteinfo.user.email, status: -2 /*MessageSet::WARNING_NOTE*/});
     }
     if (ul.firstChild) {
         form.parentElement.insertBefore(ul, form);
@@ -7112,14 +7241,21 @@ function cmt_start_edit(celt, cj) {
         .on("hotcrprenderpreview", cmt_render_preview)
         .autogrow();
 
-    var vis = cj.visibility
-        || hotcrp.status.myperm.default_comment_visibility
-        || (cj.by_author ? "au" : "rev");
+    const vis = cj.visibility
+        || last_visibility
+        || (cj.by_author && "au")
+        || (hotcrp.status.myperm.some_external_reviewer_can_view_comment === false && "pc")
+        || "rev";
     $(form.elements.visibility).val(vis)
         .attr("data-default-value", vis)
         .on("change", cmt_visibility_change);
 
-    var topic = (cj.is_new ? cj.topic || hotcrp.status.myperm.default_comment_topic : cj.topic) || "rev";
+    const any_rev = !!document.querySelector("article.revsubmitted"),
+        new_topic = any_rev ? last_topic || "rev" : "paper",
+        topic = cj.is_new ? new_topic : cj.topic || "rev";
+    if (topic !== "rev" || new_topic !== "rev") {
+        fold(celt.querySelector(".cmteditinfo"), false, 4);
+    }
     $(form.elements.topic).val(topic)
         .attr("data-default-value", topic)
         .on("change", cmt_visibility_change);
@@ -7132,14 +7268,15 @@ function cmt_start_edit(celt, cj) {
         tags.push(unparse_tag(cj.tags[i]));
     }
     if (tags.length) {
-        fold($(celt).find(".cmteditinfo")[0], false, 3);
+        fold(celt.querySelector(".cmteditinfo"), false, 3);
     }
     $(form.elements.tags).val(tags.join(" ")).autogrow();
 
     if (cj.docs && cj.docs.length) {
-        $(celt).find(".has-editable-attachments").removeClass("hidden").append('<div class="entry"></div>');
+        const entry = $e("div", "entry");
+        $(celt).find(".has-editable-attachments").removeClass("hidden").append(entry);
         for (i in cj.docs || [])
-            $(celt).find(".has-editable-attachments .entry").append(cmt_render_attachment_input(+i + 1, cj.docs[i]));
+            entry.append(cmt_render_attachment_input(+i + 1, cj.docs[i]));
     }
 
     if (!cj.visibility || cj.blind) {
@@ -7165,19 +7302,19 @@ function cmt_start_edit(celt, cj) {
 }
 
 function cmt_render_attachment_input(ctr, doc) {
-    return $e("div", {"class": "has-document compact", "data-dtype": "-2", "data-document-name": "attachment:" + ctr},
+    return $e("div", {class: "has-document", "data-dtype": "-2", "data-document-name": "attachment:" + ctr},
         $e("div", "document-file", cmt_render_attachment(doc)),
         $e("div", "document-actions",
-            $e("button", {type: "button", "class": "link ui js-remove-document"}, "Delete"),
+            $e("button", {type: "button", class: "link ui js-remove-document"}, "Delete"),
             hidden_input("attachment:" + ctr, doc.docid)));
 }
 
 function cmt_render_attachment(doc) {
-    const a = $e("a", {href: siteinfo.site_relative + doc.siteurl, "class": "qo"});
+    const a = $e("a", {href: siteinfo.site_relative + doc.siteurl, class: "qo"});
     if (doc.mimetype === "application/pdf") {
-        a.append($e("img", {src: siteinfo.assets + "images/pdf.png", alt: "[PDF]", "class": "sdlimg"}));
+        a.append($e("img", {src: siteinfo.assets + "images/pdf.png", alt: "[PDF]", class: "sdlimg"}));
     } else {
-        a.append($e("img", {src: siteinfo.assets + "images/generic.png", alt: "[Attachment]", "class": "sdlimg"}));
+        a.append($e("img", {src: siteinfo.assets + "images/generic.png", alt: "[Attachment]", class: "sdlimg"}));
     }
     a.append(" ", $e("u", "x", doc.unique_filename || doc.filename || "Attachment"));
     if (doc.size != null) {
@@ -7269,7 +7406,8 @@ function cmt_toggle_editing(celt, editing) {
         editor_observer.observe(e);
         editor_observer.observe(celt);
     }
-    toggleClass(celt, "is-editing", !!editing);
+    toggleClass(celt, "view", !editing);
+    toggleClass(celt, "edit", !!editing);
     if (!editing) {
         removeClass(celt, "popout");
     } else if (editing === 2) {
@@ -7279,7 +7417,7 @@ function cmt_toggle_editing(celt, editing) {
 }
 
 function cmt_save_callback(cj) {
-    var cid = cj_cid(cj), celt = $$(cid), form = $(celt).find("form")[0];
+    var cid = cj_cid(cj), celt = $$(cid), form = celt.querySelector("form");
     return function (data) {
         if (!data.ok) {
             if (data.loggedout) {
@@ -7290,23 +7428,24 @@ function cmt_save_callback(cj) {
                 form.action = hoturl("=paper", arg);
                 form.submit();
             }
-            $(celt).find(".cmtmsg").html(render_message_list(data.message_list));
+            $(celt).find(".cmtmsg").html(feedback.render_alert(data.message_list));
             $(celt).find("button, input[type=file]").prop("disabled", false);
             $(form.elements.draft).remove();
             return;
         }
         cmt_toggle_editing(celt, false);
-        var editing_response = cj.response
-            && cmt_is_editable(cj, true)
-            && (!data.cmt || data.cmt.draft);
-        if (!data.cmt && editing_response) {
-            data.cmt = {is_new: true, response: cj.response, editable: true};
+        if (!data.comment && data.cmt) {
+            data.comment = data.cmt;
         }
-        if (data.cmt && data.cmt.folded && data.cmt.collapsed == null) /* XXX */
-            data.cmt.collapsed = data.cmt.folded;
-        var new_cid = data.cmt ? cj_cid(data.cmt) : null;
+        const editing_response = cj.response
+            && cmt_is_editable(cj, true)
+            && (!data.comment || data.comment.draft);
+        if (!data.comment && editing_response) {
+            data.comment = {is_new: true, response: cj.response, editable: true};
+        }
+        var new_cid = data.comment ? cj_cid(data.comment) : null;
         if (new_cid) {
-            cmts[new_cid] = data.cmt;
+            cmts[new_cid] = data.comment;
         }
         if (new_cid !== cid) {
             if (!cj.is_new) {
@@ -7315,24 +7454,26 @@ function cmt_save_callback(cj) {
             if (new_cid) {
                 celt.id = new_cid;
                 navsidebar.redisplay(celt);
+                last_visibility = data.comment.visibility;
+                last_topic = data.comment.topic || "rev";
             } else {
                 celt.removeAttribute("id");
-                celt.innerHTML = '<div class="cmtmsg"></div>';
+                celt.replaceChildren($e("div", "cmtmsg"));
                 removeClass(celt, "cmtid");
                 navsidebar.remove(celt);
             }
         }
-        if (data.cmt) {
-            cmt_render(data.cmt, editing_response);
+        if (data.comment) {
+            cmt_render(data.comment, editing_response);
         }
         if (data.message_list) {
-            $(celt).find(".cmtmsg").html(render_message_list(data.message_list));
+            $(celt).find(".cmtmsg").html(feedback.render_alert(data.message_list));
         }
     };
 }
 
 function cmt_save(elt, action, really) {
-    var cj = cj_find(elt), cid = cj_cid(cj), form = $("#" + cid).find("form")[0];
+    var cj = cj_find(elt), cid = cj_cid(cj), form = $$(cid).querySelector("form");
     if (!really) {
         if (!cmt_is_editable(cj)) {
             var submitter = form.elements.bsubmit || elt;
@@ -7361,12 +7502,11 @@ function cmt_save(elt, action, really) {
         if (this.files.length === 0)
             this.disabled = true;
     });
-    var arg = {p: siteinfo.paperid};
-    cj.cid && (arg.c = cj.cid);
+    var arg = {p: siteinfo.paperid, c: cj.cid || "new"};
     really && (arg.override = 1);
     siteinfo.want_override_conflict && (arg.forceShow = 1);
     action === "delete" && (arg.delete = 1);
-    var url = hoturl("=api/comment", arg),
+    const url = hoturl("=api/comment", arg),
         callback = cmt_save_callback(cj);
     if (window.FormData) {
         $.ajax(url, {
@@ -7402,8 +7542,11 @@ function cmt_button_click(evt) {
             cmt_save(self, self.name, true);
         });
     } else if (this.name === "showtags") {
-        fold($(this.form).find(".cmteditinfo")[0], false, 3);
+        fold(this.form.querySelector(".cmteditinfo"), false, 3);
         this.form.elements.tags.focus();
+    } else if (this.name === "showthread") {
+        fold(this.form.querySelector(".cmteditinfo"), false, 4);
+        this.form.elements.topic.focus();
     }
 }
 
@@ -7455,15 +7598,15 @@ function cmt_render(cj, editing) {
         const h2 = $e("h2");
         let cnc = h2;
         if (cj.collapsed && !editing) {
-            cnc = $e("button", {type: "button", "class": "qo ui js-foldup", "data-fold-target": 20}, make_expander_element(20));
+            cnc = $e("button", {type: "button", class: "qo ui js-foldup", "data-fold-target": 20}, make_expander_element(20));
         } else if (cj.editable && !editing) {
-            cnc = $e("button", {type: "button", "class": "qo ui cmteditor"});
+            cnc = $e("button", {type: "button", class: "qo ui cmteditor"});
         }
         h2 === cnc || h2.append(cnc);
         cnc.append($e("span", "cmtcard-header-name", cj_name(cj)));
         if (cj.editable && !editing) {
             if (cj.collapsed) {
-                cnc = $e("button", {type: "button", "class": "qo ui cmteditor"});
+                cnc = $e("button", {type: "button", class: "qo ui cmteditor"});
                 h2.append(" ", cnc);
             }
             cnc.append(" ", $e("span", "t-editor", "✎"));
@@ -7524,6 +7667,26 @@ function cmt_render(cj, editing) {
     return $(article);
 }
 
+function overlong_truncation_site(e) {
+    let t = e;
+    while (t.nodeType === 1) {
+        let ch = t.lastChild;
+        while (ch && ch.nodeType === 3 && ch.data.trimEnd() === "") {
+            ch = ch.previousSibling;
+        }
+        const nn = ch ? ch.nodeName : null;
+        if (nn === "P"
+            || (nn === "LI" && ch.lastChild.nodeType === 3)) {
+            return ch;
+        } else if (nn === "DIV" || nn === "BLOCKQUOTE" || nn === "UL" || nn === "OL") {
+            t = ch;
+        } else {
+            break;
+        }
+    }
+    return e;
+}
+
 function cmt_render_text(format, value, response, texte, article) {
     const rrd = response && resp_rounds[response];
     let aftertexte = null;
@@ -7535,24 +7698,21 @@ function cmt_render_text(format, value, response, texte, article) {
             cth.append($e("div", "cmtwords words" + (wc > rrd.wl ? " wordsover" : ""), plural(wc, "word")));
         }
         if ((rrd.hwl || 0) > 0
-            && wc > rrd.hwl
-            && !hotcrp.status.myperm.allow_administer) {
+            && wc > rrd.hwl) {
             const wcx = count_words_split(value, rrd.hwl);
-            value = wcx[0].trimEnd() + "…";
-            aftertexte = $e("div", "overlong-expander",
-                $e("button", {type: "button", "class": "ui js-overlong-expand", disabled: true}, "Truncated for length"));
+            value = wcx[0].trimEnd() + "… ";
+            aftertexte = $e("span", {class: "overlong-truncation", title: "Truncated for length"}, "✖");
         }
         if (wc > rrd.wl
             && ((rrd.hwl || 0) <= 0
-                || rrd.wl < rrd.hwl
-                || hotcrp.status.myperm.allow_administer)) {
+                || rrd.wl < rrd.hwl)) {
             const wcx = count_words_split(value, rrd.wl),
                 allowede = $e("div", "overlong-allowed"),
                 dividere = $e("div", "overlong-divider",
                     allowede,
                     $e("div", "overlong-mark",
                         $e("div", "overlong-expander",
-                            $e("button", {type: "button", "class": "ui js-overlong-expand", "aria-expanded": "false"}, "Show more")))),
+                            $e("button", {type: "button", class: "ui js-overlong-expand", "aria-expanded": "false"}, "Show more")))),
                 contente = $e("div", "overlong-content");
             addClass(texte, "has-overlong");
             addClass(texte, "overlong-collapsed");
@@ -7562,7 +7722,7 @@ function cmt_render_text(format, value, response, texte, article) {
         }
     }
     render_text.onto(texte, format, value);
-    aftertexte && texte.append(aftertexte);
+    aftertexte && overlong_truncation_site(texte).append(aftertexte);
     toggleClass(texte, "emoji-only", emojiregex.test(value));
 }
 
@@ -7574,8 +7734,6 @@ function cmt_render_preview(evt, format, value, dest) {
 
 function add_comment(cj, editing) {
     var cid = cj_cid(cj), celt = $$(cid);
-    if (cj.folded && cj.collapsed == null) /* XXX */
-        cj.collapsed = cj.folded;
     cmts[cid] = cj;
     if (editing == null
         && cj.response
@@ -7604,29 +7762,45 @@ function add_comment(cj, editing) {
 }
 
 function add_new_comment_button(cj, cid) {
-    var actions = $$("k-comment-actions");
-    if (!actions) {
-        actions = $e("div", "pcard cmtcard", $e("div", "aab aabig"));
-        actions.id = "k-comment-actions";
-        $(".pcontainer").append(actions);
+    if ($$("k-comment-edit-" + cid)) {
+        return;
     }
-    if (!$(actions).find("a[href='#" + cid + "']").length) {
-        var rname = cj.response && (cj.response == "1" ? "response" : cj.response + " response"),
-            $b = $('<div class="aabut"><a href="#'.concat(cid, '" class="uic js-edit-comment btn">Add ', rname || "comment", '</a></div>'));
-        if (cj.response && cj.author_editable === false) {
-            if (!hasClass(actions, "has-fold")) {
-                $(actions).addClass("has-fold foldc").find(".aabig").append('<div class="aabut fn"><button type="button" class="link ui js-foldup ulh need-tooltip" aria-label="Show more comment options">…</button></div>');
-            }
-            $b.addClass("fx").append('<div class="hint">(admin only)</div>');
+    let eactions = $$("k-comment-actions");
+    if (!eactions) {
+        eactions = $e("div", {id: "k-comment-actions", class: "pcard cmtcard"}, $e("div", "aab aabig"));
+        $(".pcontainer").append(eactions);
+    }
+    const rname = cj.response && (cj.response == "1" ? "response" : cj.response + " response"),
+        ebutton = $e("div", "aabut",
+            $e("a", {href: "#" + cid, id: "k-comment-edit-" + cid, class: "uic js-edit-comment btn"}, "Add " + (rname || "comment")));
+    if (cj.response && cj.author_editable === false) {
+        if (!hasClass(eactions, "has-fold")) {
+            addClass(eactions, "has-fold");
+            addClass(eactions, "foldc");
+            eactions.firstChild.append($e("div", "aabut fn",
+                $e("button", {type: "button", class: "link ui js-foldup ulh need-tooltip", "aria-label": "Show more comment options"}, "…")));
         }
-        $b.appendTo($(actions).find(".aabig"));
+        addClass(ebutton, "fx");
+        ebutton.append($e("div", "hint", "(admin only)"));
     }
+    eactions.firstChild.append(ebutton);
 }
 
 function add_new_comment(cj, cid) {
     document.querySelector(".pcontainer").insertBefore($e("article", {
-        id: cid, "class": "pcard cmtcard cmtid comment need-anchor-unfold has-fold ".concat(cj.collapsed ? "fold20c" : "fold20o", cj.editable ? " editable" : "")
+        id: cid, class: "pcard cmtcard cmtid comment view need-anchor-unfold has-fold ".concat(cj.collapsed ? "fold20c" : "fold20o", cj.editable ? " editable" : "")
     }), $$("k-comment-actions"));
+    if (!cj.is_new && !cj.response) {
+        if (!my_last_topic || cj.viewer_owned) {
+            last_topic = cj.topic || "rev";
+            my_last_topic = cj.viewer_owned;
+        }
+        if (cj.viewer_owned) {
+            last_visibility = cj.visibility;
+        } else if (cj.visibility !== "au") {
+            last_visibility = cj.visibility === "admin" ? "rev" : cj.visibility;
+        }
+    }
 }
 
 function cmt_sidebar_content(item) {
@@ -7924,9 +8098,28 @@ demand_load.make = function (executor) {
 };
 
 demand_load.pc = demand_load.make(function (resolve, reject) {
-    $.get(hoturl("api/pc", {p: siteinfo.paperid}), null, function (v) {
-        var pc = v && v.ok && v.pc;
+    $.get(hoturl("api/pc", {p: siteinfo.paperid, ui: 1}), null, function (v) {
+        const pc = v && v.ok ? v : null;
         (pc ? resolve : reject)(pc);
+    });
+});
+
+demand_load.pc_map = demand_load.make(function (resolve) {
+    demand_load.pc().then(function (v) {
+        v.umap = {};
+        v.pc_uids = [];
+        for (const u of v.pc) {
+            if (u.uid) {
+                v.umap[u.uid] = u;
+                v.pc_uids.push(u.uid);
+            }
+        }
+        for (const pid in v.p || {}) {
+            for (const u of v.p[pid].extrev || []) {
+                u.uid && (v.umap[u.uid] = u);
+            }
+        }
+        resolve(v);
     });
 });
 
@@ -7996,14 +8189,11 @@ demand_load.mail_templates = demand_load.make(function (resolve) {
 })();
 
 demand_load.mentions = demand_load.make(function (resolve) {
-    if (siteinfo.user.is_pclike)
-        $.get(hoturl("api/mentioncompletion", {p: siteinfo.paperid}), null, function (v) {
-            var tlist = ((v && v.mentioncompletion) || []).map(completion_item);
-            tlist.sort(function (a, b) { return strnatcasecmp(a.s, b.s); });
-            resolve(tlist);
-        });
-    else
-        resolve([]);
+    $.get(hoturl("api/mentioncompletion", {p: siteinfo.paperid}), null, function (v) {
+        var tlist = ((v && v.mentioncompletion) || []).map(completion_item);
+        tlist.sort(function (a, b) { return strnatcasecmp(a.s, b.s); });
+        resolve(tlist);
+    });
 });
 
 demand_load.emoji_codes = demand_load.make(function (resolve) {
@@ -8137,7 +8327,7 @@ hotcrp.tooltip.add_builder("votereport", function (info) {
     if (pid && tag)
         info.content = demand_load.make(function (resolve) {
             $.get(hoturl("api/votereport", {p: pid, tag: tag}), function (rv) {
-                resolve(rv.ok ? rv.result || "" : rv.error);
+                resolve(rv.vote_report || "");
             });
         })();
 });
@@ -8396,7 +8586,7 @@ function suggest() {
             addClass(div.childNodes[cinfo.best], "s9y");
         }
 
-        var $elt = jQuery(elt),
+        let $elt = jQuery(elt),
             shadow = textarea_shadow($elt, elt.tagName === "INPUT" ? 2000 : 0),
             positionpos = precaretpos;
         if (cinfo.prefix
@@ -8404,12 +8594,11 @@ function suggest() {
             && elt.value.substring(positionpos - cinfo.prefix.length, positionpos) === cinfo.prefix) {
             positionpos -= cinfo.prefix.length;
         }
-        shadow.text(elt.value.substring(0, positionpos))
-            .append("<span>&#x2060;</span>")
-            .append(document.createTextNode(elt.value.substring(positionpos)));
-        var $pos = shadow.find("span").geometry(), soff = shadow.offset();
-        $pos = geometry_translate($pos, -soff.left - $elt.scrollLeft(), -soff.top + 4 - $elt.scrollTop());
-        hintdiv.near($pos, elt);
+        const wj = $e("span", null, "⁠");
+        shadow[0].replaceChildren(elt.value.substring(0, positionpos), wj, elt.value.substring(positionpos));
+        const soff = shadow.offset(),
+            pos = geometry_translate($(wj).geometry(), -soff.left - $elt.scrollLeft(), -soff.top + 4 - $elt.scrollTop());
+        hintdiv.near(pos, elt);
         shadow.remove();
         if (autocomplete === null) {
             autocomplete = elt.autocomplete;
@@ -8543,7 +8732,7 @@ function suggest() {
     }
 
     function kp(evt) {
-        var k = event_key(evt), m = event_modkey(evt),
+        var k = event_key(evt), m = event_key.modcode(evt),
             pspacestate = spacestate;
         if (k === "Escape" && !m) {
             if (hintinfo) {
@@ -8657,7 +8846,7 @@ hotcrp.suggest.add_builder("papersearch", function (elt) {
     if (x && (m = x[0].match(/.*?(?:^|[^\w:])((?:tag|r?order):\s*#?|#|(?:show|hide):\s*(?:#|tag:|tagval:|tagvalue:))([^#\s()]*)$/))) {
         n = x[1].match(/^([^#\s()]*)/);
         return demand_load.tags().then(make_suggestions(m[2], n[1], {prefix: m[1]}));
-    } else if (x && (m = x[0].match(/.*?\b((?:[A-Za-z0-9]{3,10}):(?:[^"\s()]*|"[^"]*))$/))) {
+    } else if (x && (m = x[0].match(/.*?\b((?:[A-Za-z0-9]{1,10}):(?:[^"\s()]*|"[^"]*))$/))) {
         n = x[1].match(/^([^\s()]*)/);
         return demand_load.search_completion().then(make_suggestions(m[1], n[1], {ml: m[1].indexOf(":") + 1}));
     }
@@ -8668,7 +8857,7 @@ hotcrp.suggest.add_builder("pc-tags", function (elt) {
     if (x && (m = x[0].match(/(?:^|\s)(#?)([^#\s]*)$/))) {
         n = x[1].match(/^(\S*)/);
         return demand_load.pc().then(function (pc) {
-            return make_suggestions(m[2], n[1])(pc.__tags__ || []);
+            return make_suggestions(m[2], n[1])(pc.tags || []);
         });
     }
 });
@@ -8790,19 +8979,21 @@ function encode_session_list_ids(ids) {
 }
 
 function decode_session_list_ids(str) {
-    if ($.isArray(str))
+    if ($.isArray(str)) {
         return str;
-    var a = [], l = str.length, next = null, sign = 1, include_after = false;
-    for (var i = 0; i !== l; ) {
-        var ch = str.charCodeAt(i);
+    }
+    const a = [], l = str.length;
+    let next = null, sign = 1, include_after = false;
+    for (let i = 0; i !== l; ) {
+        let ch = str.charCodeAt(i);
         if (ch >= 48 && ch <= 57) {
-            var n1 = 0;
+            let n1 = 0;
             while (ch >= 48 && ch <= 57) {
                 n1 = 10 * n1 + ch - 48;
                 ++i;
                 ch = i !== l ? str.charCodeAt(i) : 0;
             }
-            var n2 = n1;
+            let n2 = n1;
             if (ch === 45
                 && i + 1 < l
                 && (ch = str.charCodeAt(i + 1)) >= 48
@@ -8825,7 +9016,7 @@ function decode_session_list_ids(str) {
         }
 
         ++i;
-        var add0 = 0, skip = 0;
+        let add0 = 0, skip = 0;
         if (ch >= 97 && ch <= 104) {
             add0 = ch - 96;
         } else if (ch >= 105 && ch <= 112) {
@@ -8834,7 +9025,7 @@ function decode_session_list_ids(str) {
             next += (ch - 116) * 8 * sign;
             continue;
         } else if (ch === 113 || ch === 114 || ch === 116) {
-            var j = 0, ch2;
+            let j = 0, ch2;
             while (i !== l && (ch2 = str.charCodeAt(i)) >= 48 && ch2 <= 57) {
                 j = 10 * j + ch2 - 48;
                 ++i;
@@ -8980,10 +9171,14 @@ Hotlist.prototype.cookie_at = function (pid) {
 Hotlist.prototype.reorder = function (tbody) {
     if (this.obj) {
         this.resolve();
-        var p0 = -100, p1 = -100, pid, l = [];
-        for (var cur = tbody.firstChild; cur; cur = cur.nextSibling)
-            if (cur.nodeName === "TR" && /^pl(?:\s|$)/.test(cur.className)
-                && (pid = +cur.getAttribute("data-pid"))) {
+        let p0 = -100, p1 = -100;
+        const l = [];
+        for (let cur = tbody.firstChild; cur; cur = cur.nextSibling) {
+            if (cur.nodeName !== "TR" || !/^pl(?:\s|$)/.test(cur.className)) {
+                continue;
+            }
+            const pid = +cur.getAttribute("data-pid");
+            if (pid) {
                 if (pid != p1 + 1) {
                     if (p0 > 0)
                         l.push(p0 == p1 ? p0 : p0 + "-" + p1);
@@ -8991,11 +9186,32 @@ Hotlist.prototype.reorder = function (tbody) {
                 }
                 p1 = pid;
             }
-        if (p0 > 0)
+        }
+        if (p0 > 0) {
             l.push(p0 == p1 ? p0 : p0 + "-" + p1);
+        }
         this.obj.ids = l.join("'");
         this.str = JSON.stringify(this.obj);
     }
+};
+Hotlist.prototype.id_search = function () {
+    if (this.obj.sorted_ids) {
+        return "pidcode:" + this.obj.sorted_ids;
+    }
+    if (typeof this.obj.ids === "string") {
+        if (this.obj.ids.length <= 200) {
+            return "pidcode:" + this.obj.ids;
+        }
+    } else if (this.obj.ids.length <= 60) {
+        return this.obj.ids.join(" ");
+    }
+    let ids = this.ids();
+    if (ids === this.obj.ids) {
+        ids = ids.slice();
+    }
+    ids.sort(function (a, b) { return a - b; });
+    this.obj.sorted_ids = encode_session_list_ids(ids);
+    return "pidcode:" + this.obj.sorted_ids;
 };
 function set_cookie(info, pid) {
     let p = siteinfo.cookie_params, m;
@@ -9013,7 +9229,7 @@ function is_listable(sitehref) {
     return /^(?:paper|review|assign|profile)(?:|\.php)\//.test(sitehref);
 }
 function handle_list(e, href) {
-    var hl, sitehref, info;
+    let sitehref, hl, info;
     if (href
         && href.substring(0, siteinfo.site_relative.length) === siteinfo.site_relative
         && is_listable((sitehref = href.substring(siteinfo.site_relative.length)))
@@ -9025,12 +9241,12 @@ function handle_list(e, href) {
             && document.getElementById("footer"))
             // Existence of `#footer` checks that the table is fully loaded
             info.reorder(hl.tBodies[0]);
-        var m = /^[^/]*\/(\d+)(?:$|[a-zA-Z]*\/|\?)/.exec(sitehref);
+        let m = /^[^/]*\/(\d+)(?:$|[a-zA-Z]*\/|\?)/.exec(sitehref);
         set_cookie(info, m ? +m[1] : null);
     }
 }
 function unload_list() {
-    var hl = Hotlist.at(document.body);
+    let hl = Hotlist.at(document.body);
     if (hl.str && (!cookie_set_at || cookie_set_at + 3 < now_msec()))
         set_cookie(hl);
 }
@@ -9148,11 +9364,11 @@ $(function () {
                 && (pos = $.inArray(siteinfo.paperid, ids)) >= 0) {
                 if (pos > 0) {
                     mode.p = ids[pos - 1];
-                    $(this).prepend('<a id="n-prev" class="ulh" href="'.concat(hoturl_html(page, mode), '">&lt; #', ids[pos - 1], '</a> '));
+                    this.prepend($e("a", {id: "n-prev", class: "ulh", href: hoturl(page, mode)}, "< #" + ids[pos - 1]), " ");
                 }
                 if (pos < ids.length - 1) {
                     mode.p = ids[pos + 1];
-                    $(this).append(' <a id="n-next" class="ulh" href="'.concat(hoturl_html(page, mode), '">#', ids[pos + 1], ' &gt;</a>'));
+                    this.append(" ", $e("a", {id: "n-next", class: "ulh", href: hoturl(page, mode)}, "#" + ids[pos + 1] + " >"));
                 }
             }
         });
@@ -9162,26 +9378,17 @@ $(function () {
 
 function hotlist_search_params(x, ids) {
     x = x instanceof HTMLElement ? Hotlist.at(x) : new Hotlist(x);
-    var m;
-    if (!x || !x.obj || !x.obj.ids || !(m = x.obj.listid.match(/^p\/(.*?)\/(.*?)(?:$|\/)(.*)/)))
+    let m;
+    if (!x || !x.obj || !x.obj.ids
+        || !(m = x.obj.listid.match(/^p\/(.*?)\/(.*?)(?:$|\/)(.*)/))) {
         return false;
-    var idv;
-    if (ids) {
-        if (x.obj.sorted_ids)
-            idv = "pidcode:" + x.obj.sorted_ids;
-        else if ($.isArray(x.obj.ids))
-            idv = x.obj.ids.join(" ");
-        else
-            idv = "pidcode:" + x.obj.ids;
-    } else {
-        idv = urldecode(m[2]);
     }
-    var q = {q: idv, t: m[1] || "s"};
+
+    const q = {q: ids ? x.id_search() : urldecode(m[2]), t: m[1] || "s"};
     if (m[3]) {
-        var args = m[3].split(/[&;]/);
-        for (var i = 0; i < args.length; ++i) {
-            var pos = args[i].indexOf("=");
-            q[args[i].substr(0, pos)] = urldecode(args[i].substr(pos + 1));
+        for (const arg of m[3].split(/[&;]/)) {
+            const pos = arg.indexOf("=");
+            q[arg.substr(0, pos)] = urldecode(arg.substr(pos + 1));
         }
     }
     return q;
@@ -9394,31 +9601,31 @@ function tagannorow_add(tfacet, tbody, before, anno) {
     let tr;
     if (anno.blank) {
         tr = $e("tr", "plheading-blank",
-            $e("td", {"class": "plheading", colspan: ncol}));
+            $e("td", {class: "plheading", colspan: ncol}));
     } else {
         tr = $e("tr", {
-            "class": "plheading",
+            class: "plheading",
             "data-anno-tag": anno.tag || null,
             "data-anno-id": anno.annoid || null,
             "data-tags": anno.tag && anno.annoid ? anno.tag + "#" + anno.tagval : null
         });
         if (selcol > 0) {
-            tr.appendChild($e("td", {"class": "plheading-spacer", colspan: selcol}));
+            tr.appendChild($e("td", {class: "plheading-spacer", colspan: selcol}));
         }
         if (selcol >= 0) {
             tr.appendChild($e("td", "pl plheading pl_sel",
                 $e("input", {
                     type: "checkbox",
-                    "class": "uic uikd js-range-click ignore-diff is-range-group",
+                    class: "uic uikd js-range-click ignore-diff is-range-group",
                     "data-range-type": "pap[]",
                     "data-range-group": "auto",
                     "aria-label": "Select group"
                 })));
         }
         if (titlecol > 0 && titlecol > selcol + 1) {
-            tr.appendChild($e("td", {"class": "plheading-spacer", colspan: titlecol - selcol - 1}));
+            tr.appendChild($e("td", {class: "plheading-spacer", colspan: titlecol - selcol - 1}));
         }
-        tr.appendChild($e("td", {"class": "plheading", colspan: ncol - Math.max(0, titlecol)},
+        tr.appendChild($e("td", {class: "plheading", colspan: ncol - Math.max(0, titlecol)},
             $e("span", "plheading-group"),
             $e("span", "plheading-count")));
     }
@@ -9673,7 +9880,7 @@ function search_sort_click(evt) {
 
 function scoresort_change() {
     var tbl = mainlist();
-    $.post(hoturl("=api/session"), {v: "scoresort=" + this.value});
+    $.post(hoturl("=api/session", {v: "scoresort=" + this.value}));
     tbl && tablelist_load(tbl, "scoresort", this.value);
 }
 
@@ -9717,7 +9924,7 @@ function add_draghandle(tr) {
     var td = tr.cells[0], e;
     if (!td.firstChild || !hasClass(td.firstChild, "draghandle")) {
         addClass(tr, "has-draghandle");
-        e = $e("button", {"type": "button", "class": "uimd draghandle js-drag-tag mr-1", title: "Drag to change order"});
+        e = $e("button", {"type": "button", class: "uimd draghandle js-drag-tag mr-1", title: "Drag to change order"});
         td.insertBefore(e, td.firstElementChild);
     }
 }
@@ -9844,7 +10051,7 @@ handle_ui.on("js-annotate-order", function () {
             content = fs.querySelector(".taganno-content");
         addClass(content, "hidden");
         fs.appendChild(hidden_input("ta/" + n + "/delete", "1"));
-        fs.appendChild(render_feedback_list([{message: "<0>This annotation will be deleted.", status: 1}]));
+        fs.appendChild(feedback.render_list([{message: "<0>This annotation will be deleted.", status: 1}]));
         addClass(fs.querySelector("legend > input"), "text-decoration-line-through");
         this.disabled = true;
         hotcrp.tooltip.close(this);
@@ -9901,7 +10108,7 @@ handle_ui.on("js-annotate-order", function () {
             ide.id = HtmlCollector.next_input_id();
         }
         return $e("div", ide && hasClass(ide, "if-session") ? "entryi if-session hidden" : "entryi",
-            $e("label", {"for": ide ? ide.id : null}, label),
+            $e("label", {for: ide ? ide.id : null}, label),
             $e("div", "entry", entry));
     }
     function add_anno(anno) {
@@ -9938,14 +10145,14 @@ handle_ui.on("js-annotate-order", function () {
             }
             return e;
         }
-        let tagval = inpute("tagval", {size: 5, placeholder: "(value)", "class": "ml-1", value: tagvalue_unparse(anno.tagval)}),
+        let tagval = inpute("tagval", {size: 5, placeholder: "(value)", class: "ml-1", value: tagvalue_unparse(anno.tagval)}),
             legend = inpute("legend", {placeholder: "none"}),
             session_title = inpute("session_title", null, "session"),
             time = inpute("time", null, "session"),
-            session_chair = $e("span", "select", inpute("session_chair", {type: "select", "class": "need-pcselector", "data-pcselector-options": "0 *", "data-default-value": anno.session_chair || "none"}, "session")),
+            session_chair = $e("span", "select", inpute("session_chair", {type: "select", class: "need-pcselector", "data-pcselector-options": "0 *", "data-default-value": anno.session_chair || "none"}, "session")),
             deleter = $e("button", {
                 type: "button",
-                "class": "ml-2 need-tooltip js-delete-ta",
+                class: "ml-2 need-tooltip js-delete-ta",
                 "aria-label": "Delete annotation"
             }, svge_use_licon("trash")),
             fieldset = $e("fieldset", "mt-3 mb-2",
@@ -9953,7 +10160,7 @@ handle_ui.on("js-annotate-order", function () {
                     "#" + dtag + "#",
                     tagval,
                     deleter),
-                hidden_input(namepfx + "id", anno.annoid == null ? "new" : anno.annoid),
+                hidden_input(namepfx + "id", anno.annoid || "new"),
                 $e("div", "taganno-content",
                     entryi("Legend", legend),
                     entryi("Session title", session_title),
@@ -9974,7 +10181,7 @@ handle_ui.on("js-annotate-order", function () {
                 $e("p", null, $e("span", "select", $e("select", {name: "ta/type"}, $e("option", {value: "generic", selected: true}, "Generic order"), $e("option", {value: "session"}, "Session order")))),
                 $e("div", "tagannos"),
                 $e("div", "mt-3", $e("button", {type: "button", name: "add"}, "Add group")))
-            .append_actions($e("button", {type: "submit", name: "save", "class": "btn-primary"}, "Save changes"), "Cancel");
+            .append_actions($e("button", {type: "submit", name: "save", class: "btn-primary"}, "Save changes"), "Cancel");
         form = $pu.form();
         etagannos = form.querySelector(".tagannos");
         annos = rv.anno;
@@ -10008,7 +10215,7 @@ function make_tag_save_callback(elt) {
 
 handle_ui.on("edittag", function (evt) {
     var key = null, m, ch, newval;
-    if (evt.type === "keydown" && event_modkey(evt) === 0) {
+    if (evt.type === "keydown" && event_key.modcode(evt) === 0) {
         key = event_key(evt);
     }
     if (evt.type === "click"
@@ -10244,7 +10451,7 @@ Tagval_DraggableTable.prototype.commit = function () {
     }
     if (saves.length) {
         e = srcra.front.querySelector("input[name='tag:".concat(this.dragtag, " ", srcra.id, "']"));
-        $.post(hoturl("=api/tags", {forceShow: 1}),
+        $.post(hoturl("=api/assigntags", {forceShow: 1}),
             {tagassignment: saves.join(","), search: tablelist_search(this.tablelist)},
             make_tag_save_callback(e));
     }
@@ -10740,12 +10947,12 @@ function pattrnear(e, attr) {
 
 function render_allpref() {
     var pctr = this;
-    demand_load.pc().then(function (pcs) {
+    demand_load.pc_map().then(function (pcs) {
         var allpref = pattrnear(pctr, "data-allpref") || "",
             atomre = /(\d+)([PT])(\S+)/g, t = [], m, pref, ul, i, e, u;
         while ((m = atomre.exec(allpref)) !== null) {
             pref = parseInt(m[3]);
-            t.push([m[2] === "P" ? pref : 0, pref, t.length, pcs[m[1]], m[2]]);
+            t.push([m[2] === "P" ? pref : 0, pref, t.length, pcs.umap[m[1]], m[2]]);
         }
         if (t.length === 0) {
             pctr.closest(".ple, .pl").replaceChildren();
@@ -10777,24 +10984,31 @@ function render_allpref() {
 }
 
 function render_assignment_selector() {
-    var prow = prownear(this),
-        conflict = hasClass(this, "conflict"),
-        sel = document.createElement("select"),
+    const prow = prownear(this),
         rts = ["none", "primary", "secondary", "pc", "meta", "conflict"],
         asstext = this.getAttribute("data-assignment"),
-        m = asstext.match(/^(\S+) (\S+)(.*)$/);
-    m[2] = review_types.parse(m[2]);
-    sel.name = "assrev" + prow.getAttribute("data-pid") + "u" + m[1];
-    sel.setAttribute("data-default-value", m[2]);
+        words = asstext.split(/\s+/),
+        rt = review_types.parse(words[1]);
+    let rsub = false, assignable = true;
+    for (let i = 2; i < words.length; ++i) {
+        if (words[i] === "rs") {
+            rsub = true;
+        } else if (words[i] === "na" && (rt === "none" || rt === "conflict")) {
+            assignable = false;
+        }
+    }
+    const sel = document.createElement("select");
+    sel.name = "assrev" + prow.getAttribute("data-pid") + "u" + words[0];
+    sel.setAttribute("data-default-value", rt);
     sel.className = "uich js-assign-review";
     sel.tabIndex = 2;
-    for (var i = 0; i < rts.length; ++i) {
-        if (!conflict || rts[i] === "none" || rts[i] === "conflict") {
-            var opt = document.createElement("option");
-            opt.value = rts[i];
-            opt.text = review_types.unparse_selector(rts[i]);
-            opt.defaultSelected = opt.selected = m[2] === rts[i];
-            if (m[3] && rts[i] === "none")
+    for (const rtopt of rts) {
+        if (assignable || rtopt === "none" || rtopt === "conflict") {
+            const opt = document.createElement("option");
+            opt.value = rtopt;
+            opt.text = review_types.unparse_selector(rtopt);
+            opt.defaultSelected = opt.selected = rtopt === rt;
+            if (rsub && rtopt === "none")
                 opt.disabled = true;
             sel.add(opt, null);
         }
@@ -10827,7 +11041,10 @@ function set_pidfield(f, elt, text, classes) {
     if (f.as_row) {
         elt.className = add_tokens("ple", f.className || "pl_" + f.name, "fx" + f.foldnum, classes);
         if (!elt.firstChild) {
-            elt.append($e("em", "plet", f.title ? f.title + ":" : null), $e("div", "pled"));
+            let em = $e("em", "plet");
+            if (f.title)
+                em.innerHTML = f.title + ":";
+            elt.append(em, $e("div", "pled"));
         }
         elt = elt.lastChild;
     } else if (classes) {
@@ -10852,9 +11069,9 @@ handle_ui.on("js-plinfo-edittags", function () {
             return;
         const elt = $e("div", "d-inline-flex",
             $e("div", "mf mf-text w-text",
-                $e("textarea", {name: "tags " + rv.pid, cols: 120, rows: 1, "class": "want-focus need-suggest tags w-text", style: "vertical-align:-0.5rem", "data-tooltip-anchor": "v", "id": "tags " + rv.pid, "spellcheck": "false"})),
-            $e("button", {type: "button", name: "tagsave " + rv.pid, "class": "btn-primary ml-2"}, "Save"),
-            $e("button", {type: "button", name: "tagcancel " + rv.pid, "class": "ml-2"}, "Cancel"));
+                $e("textarea", {name: "tags " + rv.pid, cols: 120, rows: 1, class: "want-focus need-suggest tags w-text", style: "vertical-align:-0.5rem", "data-tooltip-anchor": "v", "id": "tags " + rv.pid, "spellcheck": "false"})),
+            $e("button", {type: "button", name: "tagsave " + rv.pid, class: "btn-primary ml-2"}, "Save"),
+            $e("button", {type: "button", name: "tagcancel " + rv.pid, class: "ml-2"}, "Cancel"));
         set_pidfield(plistui.fields.tags, pidfe, elt);
         ta = pidfe.querySelector("textarea");
         hotcrp.suggest.call(ta);
@@ -10882,7 +11099,7 @@ handle_ui.on("js-plinfo-edittags", function () {
         if (focused)
             focus_within(pidfe.closest("tr"));
     }
-    $.post(hoturl("=api/tags", {p: pid, forceShow: 1}), start); // XXX should be GET
+    $.get(hoturl("api/tags", {p: pid, forceShow: 1}), start);
 });
 
 
@@ -10944,7 +11161,7 @@ function render_row_tags(pidfe) {
         }
         t.append(" ", $e("span", "hoveronly",
             $e("span", "barsep", "·"), " ",
-            $e("button", {type: "button", "class": "link ui js-plinfo-edittags"}, "Edit")));
+            $e("button", {type: "button", class: "link ui js-plinfo-edittags"}, "Edit")));
     }
     $(pidfe).find("textarea").unautogrow();
     set_pidfield(plistui.fields.tags, pidfe, t, t && !ct ? "fx5" : null);
@@ -11354,7 +11571,6 @@ var fmap = {},
         "badge-green": true, "badge-blue": true, "badge-purple": true, "badge-gray": true,
         "badge-pink": true
     },
-    colormap = {},
     params = {
         "": {prefix: "", size: 34, incr: 8, type: 0},
         "gdot": {prefix: "gdot ", size: 12, incr: 3, type: 1},
@@ -11365,6 +11581,7 @@ var fmap = {},
     stylesheet = null,
     svgdef = null,
     testdiv = null;
+
 function ensure_stylesheet() {
     if (stylesheet === null) {
         var selt = document.createElement("style");
@@ -11407,41 +11624,61 @@ function make_color(k, r, g, b, a) {
         s: s,
         l: l,
         has_graph: false,
-        gfill: null
+        gfill: null,
+        type: null
     };
 }
-function class_color(k) {
-    var value, m, c;
-    if (k in colormap) {
-        return colormap[k];
+function color_compare(a, b) {
+    if (a.s < 0.1 && b.s >= 0.1)
+        return a.l >= 0.9 ? -1 : 1;
+    else if (b.s < 0.1 && a.s >= 0.1)
+        return b.l >= 0.9 ? 1 : -1;
+    else if (a.h != b.h)
+        return a.h < b.h ? -1 : 1;
+    else if (a.l != b.l)
+        return a.l < b.l ? 1 : -1;
+    else
+        return a.s < b.s ? 1 : (a.s == b.s ? 0 : -1);
+}
+const class_analyses = {tagbg: null, dark: null, badge: null};
+function analyze_class(k) {
+    if (k in class_analyses) {
+        return class_analyses[k];
     }
+    function set(type, c) {
+        type && (c.type = type);
+        return (class_analyses[k] = type ? c : null);
+    }
+    let m;
     if (k.startsWith("tag-rgb-")
         && (m = k.match(/^tag-rgb-([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/))) {
-        colormap[k] = c = make_color(k, parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), 1.0);
+        const c = make_color(k, parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), 1.0);
         ensure_stylesheet().insertRule(".".concat(k, " { background-color: rgb(", c.r, ", ", c.g, ", ", c.b, "); }"), 0);
-        return c;
+        return set("bg", c);
     }
     if (k.startsWith("tag-text-rgb-")
         && (m = k.match(/^tag-text-rgb-([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/))) {
-        colormap[k] = c = make_color(k, parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), 1.0);
+        const c = make_color(k, parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), 1.0);
         ensure_stylesheet().insertRule(".".concat(k, " { color: rgb(", c.r, ", ", c.g, ", ", c.b, "); }"), 0);
-        return c;
+        return set("text", c);
+    }
+    if (k.startsWith("tag-dot-rgb-")
+        && (m = k.match(/^tag-dot-rgb-([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/))) {
+        return set("dot", make_color(k, parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), 1.0));
     }
     if (k.startsWith("tag-font-")) {
         m = k.substring(9).replace(/_/g, " ");
-        c = /^(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-(?:serif|sans-serif|monospace|rounded)|math|emoji|fangsong)$/.test(m) ? "" : "\"";
-        ensure_stylesheet().insertRule(".".concat(k, ".taghh, .", k, " .taghl { font-family: ", c, m, c, "; }"), 0);
-        colormap[k] = null;
-        return null;
+        const ff = /^(?:serif|sans-serif|monospace|cursive|fantasy|system-ui|ui-(?:serif|sans-serif|monospace|rounded)|math|emoji|fangsong)$/.test(m) ? "" : "\"";
+        ensure_stylesheet().insertRule(".".concat(k, ".taghh, .", k, " .taghl { font-family: ", ff, m, ff, "; }"), 0);
+        return set();
     }
     if (k.startsWith("tag-weight-")) {
         ensure_stylesheet().insertRule(".".concat(k, ".taghh, .", k, " .taghl { font-weight: ", k.substring(11), "; }"), 0);
-        colormap[k] = null;
-        return null;
+        return set();
     }
     if (k.startsWith("badge-rgb-")
         && (m = k.match(/^badge-rgb-([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/))) {
-        colormap[k] = c = make_color(k, parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), 1.0);
+        const c = make_color(k, parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16), 1.0);
         var rules = ["background-color: rgb(".concat(c.r, ", ", c.g, ", ", c.b, ");")];
         if (c.l < 0.3)
             rules.push("color: white;");
@@ -11455,7 +11692,7 @@ function class_color(k) {
         ensure_stylesheet().insertRule(".".concat(k, " { ", rules.join(" "), " }"), 0);
         if (c.l >= 0.3)
             ensure_stylesheet().insertRule("a.".concat(k, ":hover { color: #c45500; border-color: #c45500; }"), 0);
-        return c;
+        return set("badge", c);
     }
     if (testdiv === null) {
         testdiv = document.createElement("div");
@@ -11463,17 +11700,15 @@ function class_color(k) {
         document.body.appendChild(testdiv);
     }
     testdiv.className = k;
-    value = window.getComputedStyle(testdiv).backgroundColor;
+    const value = window.getComputedStyle(testdiv).backgroundColor;
     if ((m = value.match(/^rgb\(([\d.]+), ([\d.]+), ([\d.]+)\)$/))) {
-        c = make_color(k, +m[1], +m[2], +m[3], 1.0);
+        return set("bg", make_color(k, +m[1], +m[2], +m[3], 1.0));
     } else if ((m = value.match(/^rgba\(([\d.]+), ([\d.]+), ([\d.]+), ([\d.]+)\)$/))
                && +m[4] > 0) {
-        c = make_color(k, +m[1], +m[2], +m[3], +m[4]);
+        return set("bg", make_color(k, +m[1], +m[2], +m[3], +m[4]));
     } else {
-        c = null;
+        return set();
     }
-    colormap[k] = c;
-    return c;
 }
 function bgcolor(color) {
     return "rgba(".concat(color.r, ", ", color.g, ", ", color.b, ", ", color.a, ")");
@@ -11503,16 +11738,19 @@ function gfillcolor(color) {
     return color.gfill;
 }
 function fillcolor(color) {
-    var gf = gfillcolor(color);
+    const gf = gfillcolor(color);
     return "rgba(".concat(gf[0], ", ", gf[1], ", ", gf[2], ", ", gf[3], ")");
 }
 function strokecolor(color) {
-    var gf = gfillcolor(color);
+    let gf = gfillcolor(color);
     if (color.l > 0.75) {
-        var f = 0.75 / color.l;
+        const f = 0.75 / color.l;
         gf = [gf[0] * f, gf[1] * f, gf[2] * f, gf[3]];
     }
     return "rgba(".concat(gf[0], ", ", gf[1], ", ", gf[2], ", 0.8)");
+}
+function paramcolor(param, color) {
+    return (param.type === 1 ? fillcolor : bgcolor)(color);
 }
 function ensure_graph_rules(color) {
     if (!color.has_graph) {
@@ -11527,73 +11765,73 @@ return function (classes, type) {
         || (type === "" && classes.endsWith(" tagbg") && knownmap[classes.substr(0, -6)]))
         return null;
     // quick check on classes in input order
-    var param = params[type || ""] || params[""],
+    const param = params[type || ""] || params[""],
         index = param.prefix + classes;
     if (index in fmap)
         return fmap[index];
     // canonicalize classes, sort by color and luminance
-    var xtags = classes.split(/\s+/), i, k, color, colors = [];
-    for (i = 0; i !== xtags.length; ++i) {
-        k = xtags[i];
-        if (k !== "tagbg"
-            && k !== "dark"
-            && k !== "badge"
-            && (color = class_color(k))
-            && colors.indexOf(color) < 0) {
-            colors.push(color);
-            param.type === 1 && ensure_graph_rules(color);
+    const xtags = classes.split(/\s+/), colors = [], dots = [];
+    for (const k of xtags) {
+        const ka = analyze_class(k);
+        if (ka && ka.type === "bg" && colors.indexOf(ka) < 0) {
+            colors.push(ka);
+            param.type === 1 && ensure_graph_rules(ka);
+        } else if (ka && ka.type === "dot" && dots.indexOf(ka) < 0) {
+            dots.push(ka);
         }
     }
-    colors.sort(function (a, b) {
-        if (a.s < 0.1 && b.s >= 0.1)
-            return a.l >= 0.9 ? -1 : 1;
-        else if (b.s < 0.1 && a.s >= 0.1)
-            return b.l >= 0.9 ? 1 : -1;
-        else if (a.h != b.h)
-            return a.h < b.h ? -1 : 1;
-        else if (a.l != b.l)
-            return a.l < b.l ? 1 : -1;
-        else
-            return a.s < b.s ? 1 : (a.s == b.s ? 0 : -1);
-    });
+    colors.sort(color_compare);
+    dots.sort(color_compare);
     // check on classes in canonical order
-    var tags = [];
-    for (i = 0; i !== colors.length; ++i) {
-        tags.push(colors[i].k);
+    const tags = [];
+    for (const c of colors) {
+        tags.push(c.k);
     }
-    var cindex = param.prefix + tags.join(" ");
-    if (cindex in fmap || tags.length < 2) {
+    for (const c of dots) {
+        tags.push(c.k);
+    }
+    const cindex = param.prefix + tags.join(" ");
+    if (cindex in fmap || (tags.length < 2 && dots.length === 0)) {
         fmap[index] = fmap[cindex] || null;
         return fmap[index];
     }
     // create pattern
-    var id = "svgpat__" + cindex.replace(/\s+/g, "__"),
-        size = param.size + Math.max(0, tags.length - 2) * param.incr,
-        sw = size / tags.length,
+    const id = "svgpat__" + cindex.replace(/\s+/g, "__"),
+        size = param.size + Math.max(0, colors.length - 2) * param.incr,
+        sw = size / colors.length,
         svgns = "http://www.w3.org/2000/svg",
         pathsfx = " 0l".concat(-size, " ", size, "l", sw, " 0l", size, " ", -size, "z"),
-        dxs = [],
-        pelt;
-    for (i = 0; i !== colors.length; ++i) {
-        k = param.type === 1 ? fillcolor(colors[i]) : bgcolor(colors[i]);
-        dxs.push("M".concat(sw * i, pathsfx), k, "M".concat(sw * i + size, pathsfx), k);
+        dxs = [];
+    for (let i = 0; i !== colors.length; ++i) {
+        dxs.push("M".concat(sw * i, pathsfx, "M", sw * i + size, pathsfx), paramcolor(param, colors[i]));
+    }
+    if (dots.length > 0) {
+        const d = size * 0.125, r = d * 0.75, pds = [],
+            dither = [0, 10, 8, 2, 5, 15, 7, 13, 1, 11, 3, 9, 4, 14, 6, 12],
+            max = dots.length === 1 ? 8 : 16;
+        for (let i = 0; i !== max; ++i) {
+            const ci = (i * dots.length) >> 4, x = dither[i] % 4, y = dither[i] >> 2;
+            pds[ci] = (pds[ci] || "") + `M${(2*x+1)*d},${(2*y+1)*d-r}a${r},${r} 0,0,1 ${r},${r} ${r},${r} 0,1,1 ${-r},${-r}z`;
+        }
+        for (let i = 0; i < pds.length; ++i) {
+            dxs.push(pds[i], paramcolor(param, dots[i]));
+        }
     }
     if (param.type === 1) {
         if (svgdef === null) {
-            var svg = svge("svg", "width", 0, "height", 0);
+            svgdef = $svg("defs");
+            let svg = $svg("svg", {width: 0, height: 0}, svgdef);
             svg.style.position = "absolute";
             document.body.insertBefore(svg, document.body.firstChild);
-            svgdef = svge("defs");
-            svg.appendChild(svgdef);
         }
-        pelt = svge("pattern", "id", id, "patternUnits", "userSpaceOnUse", "width", size, "height", size);
-        for (i = 0; i !== dxs.length; i += 2) {
-            pelt.appendChild(svge("path", "d", dxs[i], "fill", dxs[i + 1]));
+        const pelt = $svg("pattern", {id: id, patternUnits: "userSpaceOnUse", width: size, height: size});
+        for (let i = 0; i !== dxs.length; i += 2) {
+            pelt.appendChild($svg("path", {d: dxs[i], fill: dxs[i + 1]}));
         }
         svgdef.appendChild(pelt);
     } else if (window.btoa) {
-        var t = ['<svg xmlns="', svgns, '" width="', size, '" height="', size, '">'];
-        for (i = 0; i !== dxs.length; i += 2) {
+        const t = ['<svg xmlns="', svgns, '" width="', size, '" height="', size, '">'];
+        for (let i = 0; i !== dxs.length; i += 2) {
             t.push('<path d="', dxs[i], '" fill="', dxs[i + 1], '"></path>');
         }
         t.push('</svg>');
@@ -11667,7 +11905,7 @@ handle_ui.on("js-check-format", function () {
     if (this && "tagName" in this && this.tagName === "A")
         $self.addClass("hidden");
     var running = setTimeout(function () {
-        $cf.html(render_message_list([{message: "<0>Checking format (this can take a while)...", status: -4 /*MessageSet::MARKED_NOTE*/}]));
+        $cf.html(feedback.render_alert([{message: "<0>Checking format (this can take a while)...", status: -4 /*MessageSet::MARKED_NOTE*/}]));
     }, 1000);
     $.ajax(hoturl("=api/formatcheck", {p: siteinfo.paperid}), {
         timeout: 20000, data: {
@@ -11675,8 +11913,8 @@ handle_ui.on("js-check-format", function () {
         },
         success: function (data) {
             clearTimeout(running);
-            if (data.ok || data.result)
-                $cf.html(data.result);
+            if (data.message_list && data.message_list.length)
+                $cf.html(feedback.render_alert(data.message_list));
         }
     });
 });
@@ -11785,7 +12023,7 @@ handle_ui.on("js-add-attachment", function () {
     // this hidden_input cannot be in the document-uploader: the uploader
     // might be removed later, but we need to hold the place
     if (!f.elements[name]) {
-        f.appendChild(hidden_input(name, "new", {"class": "ignore-diff"}));
+        f.appendChild(hidden_input(name, "new", {class: "ignore-diff"}));
     }
     filee.click();
 });
@@ -11811,7 +12049,7 @@ handle_ui.on("js-replace-document", function () {
         $(u).trigger("hotcrp-change-document");
     }
     if (!actions.querySelector(".js-cancel-document")) {
-        actions.append($e("button", {type: "button", "class": "link ui js-cancel-document hidden"}, "Cancel"));
+        actions.append($e("button", {type: "button", class: "link ui js-cancel-document hidden"}, "Cancel"));
     }
     u.click();
 });
@@ -11895,7 +12133,7 @@ handle_ui.on("document-uploader", function (event) {
     var self = {cancel: cancel},
         token = false, cancelled = false, size = file.size,
         pos = 0, uploading = 0, sprogress0 = 0, sprogress1 = size,
-        progresselt = $e("progress", {"class": "mr-2", max: size + sprogress1, value: "0"});
+        progresselt = $e("progress", {class: "mr-2", max: size + sprogress1, value: "0"});
     that.hotcrpUploader = self;
     that.after(progresselt, $e("span", null, "Uploading" + (file.name ? " " + escape_html(file.name) : "") + "…"));
 
@@ -11914,7 +12152,7 @@ handle_ui.on("document-uploader", function (event) {
     function ajax(r) {
         if (!r.ok) {
             if (cancel() && r.message_list) {
-                doce.appendChild(render_message_list(r.message_list));
+                doce.appendChild(feedback.render_alert(r.message_list));
             }
             return;
         }
@@ -11943,7 +12181,6 @@ handle_ui.on("document-uploader", function (event) {
             }
         } else if (!r.hash) {
             var fd = new FormData, myxhr;
-            fd.append("size", size);
             fd.append("mimetype", file.type);
             fd.append("filename", file.name);
             var endpos = Math.min(size, pos + blob_limit);
@@ -11952,6 +12189,7 @@ handle_ui.on("document-uploader", function (event) {
                 args.offset = pos;
                 fd.append("blob", file.slice(pos, endpos), "blob");
             }
+            args.size = size;
             if (endpos === size)
                 args.finish = 1;
             pos = endpos;
@@ -11975,7 +12213,7 @@ handle_ui.on("document-uploader", function (event) {
                 fn = that.name.replace(/:file$/, "");
             e.className = "is-success";
             e.textContent = "NEW ";
-            that.after(hidden_input(fn + ":upload", token, {"data-default-value": "", "class": "document-upload-helper"}), e, file.name);
+            that.after(hidden_input(fn + ":upload", token, {"data-default-value": "", class: "document-upload-helper"}), e, file.name);
         }
     }
 
@@ -12017,7 +12255,7 @@ handle_ui.on("js-remove-document", function () {
         $doc.find(".document-stamps, .document-shortformat").removeClass("hidden");
         $(this).removeClass("undelete").html("Delete");
     } else {
-        $(hidden_input(doce.getAttribute("data-document-name") + ":delete", "1", {"class": "document-remover", "data-default-value": ""})).appendTo($doc.find(".document-actions")).trigger("change");
+        $(hidden_input(doce.getAttribute("data-document-name") + ":delete", "1", {class: "document-remover", "data-default-value": ""})).appendTo($doc.find(".document-actions")).trigger("change");
         if (!$en.find("del").length)
             $en.wrapInner("<del></del>");
         $doc.find(".document-uploader").trigger("hotcrp-change-document");
@@ -12028,12 +12266,12 @@ handle_ui.on("js-remove-document", function () {
 
 handle_ui.on("js-withdraw", function () {
     const f = this.form, $pu = $popup({near: this, action: f});
-    $pu.append($e("p", null, "Are you sure you want to with draw this " + siteinfo.snouns[0] + " from consideration and/or publication?" + (this.hasAttribute("data-revivable") ? "" : " Only administrators can undo this step.")),
-        $e("textarea", {name: "reason", rows: 3, cols: 40, placeholder: "Optional explanation", spellcheck: "true", "class": "w-99 need-autogrow"}));
+    $pu.append($e("p", null, "Are you sure you want to withdraw this " + siteinfo.snouns[0] + " from consideration and/or publication?" + (this.hasAttribute("data-revivable") ? "" : " Only administrators can undo this step.")),
+        $e("textarea", {name: "reason", rows: 3, cols: 40, placeholder: "Optional explanation", spellcheck: "true", class: "w-99 need-autogrow"}));
     if (!this.hasAttribute("data-withdrawable")) {
         $pu.append($e("label", "checki", $e("span", "checkc", $e("input", {type: "checkbox", name: "override", value: 1})), "Override deadlines"));
     }
-    $pu.append_actions($e("button", {type: "submit", name: "withdraw", value: 1, "class": "btn-danger"}, "Withdraw"), "Cancel");
+    $pu.append_actions($e("button", {type: "submit", name: "withdraw", value: 1, class: "btn-danger"}, "Withdraw"), "Cancel");
     $pu.show();
     transfer_form_values($pu.form(), f, ["status:notify", "status:notify_reason"]);
     $pu.on("submit", function () { addClass(f, "submitting"); });
@@ -12042,7 +12280,7 @@ handle_ui.on("js-withdraw", function () {
 handle_ui.on("js-delete-paper", function () {
     const f = this.form, $pu = $popup({near: this, action: f});
     $pu.append($e("p", null, "Be careful: This will permanently delete all information about this " + siteinfo.snouns[0] + " from the database and ", $e("strong", null, "cannot be undone"), "."));
-    $pu.append_actions($e("button", {type: "submit", name: "delete", value: 1, "class": "btn-danger"}, "Delete"), "Cancel");
+    $pu.append_actions($e("button", {type: "submit", name: "delete", value: 1, class: "btn-danger"}, "Delete"), "Cancel");
     $pu.show();
     transfer_form_values($pu.form(), f, ["status:notify", "status:notify_reason"]);
     $pu.on("submit", function () { addClass(f, "submitting"); });
@@ -12053,15 +12291,15 @@ handle_ui.on("js-clickthrough", function () {
         $container = $(this).closest(".js-clickthrough-container");
     if (!$container.length)
         $container = $(this).closest(".pcontainer");
-    $.post(hoturl("=api/clickthrough", {accept: 1, p: siteinfo.paperid}),
-        $(this.form).serialize(),
+    $.post(hoturl("=api/clickthrough", {p: siteinfo.paperid}),
+        $(this.form).serialize() + "&accept=1",
         function (data) {
             if (data && data.ok) {
                 $container.find(".need-clickthrough-show").removeClass("need-clickthrough-show hidden");
                 $container.find(".need-clickthrough-enable").prop("disabled", false).removeClass("need-clickthrough-enable");
                 $container.find(".js-clickthrough-terms").slideUp();
             } else {
-                make_bubble((data && data.error) || "You can’t continue to review until you accept these terms.", "errorbubble")
+                make_bubble("You can’t continue to review until you accept these terms.", "errorbubble")
                     .anchor("w").near(self);
             }
         });
@@ -12069,9 +12307,11 @@ handle_ui.on("js-clickthrough", function () {
 
 handle_ui.on("js-follow-change", function () {
     var self = this;
-    $.post(hoturl("=api/follow",
-        {p: $(self).attr("data-pid") || siteinfo.paperid}),
-        {following: this.checked, reviewer: $(self).data("reviewer") || siteinfo.user.email},
+    $.post(hoturl("=api/follow", {
+            p: this.getAttribute("data-pid") || siteinfo.paperid,
+            u: this.getAttribute("data-reviewer") || siteinfo.user.email
+        }),
+        {following: this.checked},
         function (rv) {
             minifeedback(self, rv);
             rv.ok && (self.checked = rv.following);
@@ -12103,10 +12343,10 @@ function prepare_paper_select() {
         return function (data) {
             minifeedback(ctl, data);
             if (data.ok) {
-                ctl.setAttribute("data-default-value", data.value);
+                ctl.setAttribute("data-default-value", data[ctl.name] || data.value);
                 close && foldup.call(self, null, {open: false});
                 var $p = $(self).find(".js-psedit-result").first();
-                $p.html(data.result || ctl.options[ctl.selectedIndex].innerHTML);
+                $p.html(data[ctl.name + "_html"] || data.result || ctl.options[ctl.selectedIndex].innerHTML);
                 if (data.color_classes) {
                     ensure_pattern(data.color_classes);
                     $p.html('<span class="taghh ' + data.color_classes + '">' + $p.html() + '</span>');
@@ -12152,8 +12392,8 @@ function render_tag_messages(message_list) {
     t1.replaceChildren();
     for (i = 0; i !== message_list.length; ++i) {
         var mi = message_list[i];
-        append_feedback_to(t0, mi);
-        mi.status > 0 && append_feedback_to(t1, mi);
+        feedback.append_item(t0, mi);
+        mi.status > 0 && feedback.append_item(t1, mi);
     }
     toggleClass(t0, "hidden", !t0.firstChild);
     toggleClass(t1, "hidden", !t1.firstChild);
@@ -12229,7 +12469,7 @@ function save_pstags(evt) {
         success: function (data) {
             $f.find("input").prop("disabled", false);
             if (data.ok) {
-                if (message_list_status(data.message_list) < 2) {
+                if (feedback.list_status(data.message_list) < 2) {
                     foldup.call($f[0], null, {open: false});
                     minifeedback(f.elements.tags, {ok: true});
                 }
@@ -12729,7 +12969,7 @@ function set_tag_index(e, taglist) {
     let a = e.lastChild;
     if (!a || a.nodeName !== "A") {
         const sort = vtype === "rank" ? "#" : "-#";
-        a = $e("a", {"class": "q", href: hoturl("search", {q: "show:#".concat(btag, " sort:", sort, btag)})});
+        a = $e("a", {class: "q", href: hoturl("search", {q: "show:#".concat(btag, " sort:", sort, btag)})});
         e.appendChild(a);
         if (hasClass(e, "is-tag-report")) {
             e.setAttribute("data-tooltip-anchor", "h");
@@ -12800,15 +13040,16 @@ handle_ui.on("js-delete-user", function () {
         $pu.append($e("p", null, "Deleting this account will also delete:"), ul);
     }
     $pu.append($e("p", null, "Be careful: Account deletion ", $e("strong", null, "cannot be undone"), "."))
-        .append_actions($e("button", {type: "submit", name: "delete", value: 1, "class": "btn-danger"}, "Delete user"), "Cancel")
+        .append_actions($e("button", {type: "submit", name: "delete", value: 1, class: "btn-danger"}, "Delete user"), "Cancel")
         .on("submit", function () { addClass(f, "submitting"); }).show();
 });
 
 handle_ui.on("js-disable-user", function () {
     var disabled = hasClass(this, "btn-success"), self = this;
     self.disabled = true;
-    $.post(hoturl("=api/account", {u: this.getAttribute("data-user") || this.form.getAttribute("data-user")}),
-        disabled ? {enable: 1} : {disable: 1},
+    const param = {email: this.getAttribute("data-user") || this.form.getAttribute("data-user")};
+    param[disabled ? "enable" : "disable"] = 1;
+    $.post(hoturl("=api/account", param), {},
         function (data) {
             self.disabled = false;
             if (data.ok) {
@@ -12839,8 +13080,7 @@ handle_ui.on("js-disable-user", function () {
 handle_ui.on("js-send-user-accountinfo", function () {
     var self = this;
     self.disabled = true;
-    $.post(hoturl("=api/account", {u: this.getAttribute("data-user") || this.form.getAttribute("data-user")}),
-        {sendinfo: 1},
+    $.post(hoturl("=api/account", {email: this.getAttribute("data-user") || this.form.getAttribute("data-user"), sendinfo: 1}), {},
         function (data) {
             minifeedback(self, data);
         });
@@ -12904,8 +13144,8 @@ handle_ui.on("js-acceptish-review", function (evt) {
 handle_ui.on("js-deny-review-request", function () {
     const f = this.form, $pu = $popup({near: this, action: f})
         .append($e("p", null, "Select “Deny request” to deny this review request."),
-            $e("textarea", {name: "reason", rows: 3, cols: 60, placeholder: "Optional explanation", spellcheck: "true", "class": "w-99 need-autogrow"}))
-        .append_actions($e("button", {type: "submit", name: "denyreview", value: 1, "class": "btn-danger"}, "Deny request"), "Cancel")
+            $e("textarea", {name: "reason", rows: 3, cols: 60, placeholder: "Optional explanation", spellcheck: "true", class: "w-99 need-autogrow"}))
+        .append_actions($e("button", {type: "submit", name: "denyreview", value: 1, class: "btn-danger"}, "Deny request"), "Cancel")
         .show();
     transfer_form_values($pu.form(), f, ["firstName", "lastName", "affiliation", "reason"]);
 });
@@ -12913,7 +13153,7 @@ handle_ui.on("js-deny-review-request", function () {
 handle_ui.on("js-delete-review", function () {
     $popup({near: this, action: this.form})
         .append($e("p", null, "Be careful: This will permanently delete all information about this review assignment from the database and ", $e("strong", null, "cannot be undone"), "."))
-        .append_actions($e("button", {type: "submit", name: "deletereview", value: 1, "class": "btn-danger"}, "Delete review"), "Cancel")
+        .append_actions($e("button", {type: "submit", name: "deletereview", value: 1, class: "btn-danger"}, "Delete review"), "Cancel")
         .show();
 });
 
@@ -12921,22 +13161,22 @@ handle_ui.on("js-approve-review", function (evt) {
     const self = this, grid = $e("div", "grid-btn-explanation");
     let subreviewClass = "";
     if (hasClass(self, "can-adopt")) {
-        grid.append($e("button", {type: "button", name: "adoptsubmit", "class": "btn-primary big"}, "Adopt and submit"),
+        grid.append($e("button", {type: "button", name: "adoptsubmit", class: "btn-primary big"}, "Adopt and submit"),
             $e("p", null, "Submit a copy of this review under your own name. You can make changes afterwards."),
-            $e("button", {type: "button", name: "adoptdraft", "class": "bug"}, "Adopt as draft"),
+            $e("button", {type: "button", name: "adoptdraft", class: "bug"}, "Adopt as draft"),
             $e("p", null, "Save a copy of this review as a draft review under your name."));
     } else if (hasClass(self, "can-adopt-replace")) {
-        grid.append($e("button", {type: "button", name: "adoptsubmit", "class": "btn-primary big"}, "Adopt and submit"),
+        grid.append($e("button", {type: "button", name: "adoptsubmit", class: "btn-primary big"}, "Adopt and submit"),
             $e("p", null, "Replace your draft review with a copy of this review and submit it. You can make changes afterwards."),
-            $e("button", {type: "button", name: "adoptdraft", "class": "big"}, "Adopt as draft"),
+            $e("button", {type: "button", name: "adoptdraft", class: "big"}, "Adopt as draft"),
             $e("p", null, "Replace your draft review with a copy of this review."));
     } else {
         subreviewClass = " btn-primary";
     }
-    grid.append($e("button", {type: "button", name: "approvesubreview", "class": "big" + subreviewClass}, "Approve subreview"),
+    grid.append($e("button", {type: "button", name: "approvesubreview", class: "big" + subreviewClass}, "Approve subreview"),
         $e("p", null, "Approve this review as a subreview. It will not be shown to authors and its scores will not be counted in statistics."));
     if (hasClass(self, "can-approve-submit")) {
-        grid.append($e("button", {type: "button", name: "submitreview", "class": "big"}, "Submit as full review"),
+        grid.append($e("button", {type: "button", name: "approvesubmit", class: "big"}, "Submit as full review"),
             $e("p", null, "Submit this review as an independent review. It will be shown to authors and its scores will be counted in statistics."));
     }
     const $pu = $popup({near: evt.sidebarTarget || self}).append(grid)
@@ -12962,19 +13202,19 @@ handle_ui.on("js-edit-formulas", function () {
         const nei = $e("legend"), xei = $e("div", "entry");
         if (f.editable) {
             nei.className = "mb-1";
-            nei.append($e("input", {type: "text", id: "k-formula/" + count + "/name", "class": "editformulas-name need-autogrow", name: "formula/" + count + "/name", size: 30, value: f.name, placeholder: "Formula name"}),
-                $e("button", {type: "button", "class": "ml-2 delete-link need-tooltip btn-licon-s", "aria-label": "Delete formula"}, svge_use_licon("trash")));
-            xei.append($e("textarea", {"class": "editformulas-expression need-autogrow w-99", id: "k-formula/" + count + "/expression", name: "formula/" + count + "/expression", rows: 1, cols: 64, placeholder: "Formula definition"}, f.expression));
+            nei.append($e("input", {type: "text", id: "k-formula/" + count + "/name", class: "editformulas-name need-autogrow", name: "formula/" + count + "/name", size: 30, value: f.name, placeholder: "Formula name"}),
+                $e("button", {type: "button", class: "ml-2 delete-link need-tooltip btn-licon-s", "aria-label": "Delete formula"}, svge_use_licon("trash")));
+            xei.append($e("textarea", {class: "editformulas-expression need-autogrow w-99", id: "k-formula/" + count + "/expression", name: "formula/" + count + "/expression", rows: 1, cols: 64, placeholder: "Formula definition"}, f.expression));
         } else {
             nei.append(f.name);
             xei.append(f.expression);
         }
-        const e = $e("fieldset", {"class": "editformulas-formula", "data-formula-number": count},
+        const e = $e("fieldset", {class: "editformulas-formula", "data-formula-number": count},
             nei,
-            $e("div", "entryi", $e("label", {"for": "k-formula/" + count + "/expression"}, "Expression"), xei),
+            $e("div", "entryi", $e("label", {for: "k-formula/" + count + "/expression"}, "Expression"), xei),
             hidden_input("formula/" + count + "/id", f.id));
         if (f.message_list) {
-            e.append(render_feedback_list(f.message_list));
+            e.append(feedback.render_list(f.message_list));
         }
         return e;
     }
@@ -12998,7 +13238,7 @@ handle_ui.on("js-edit-formulas", function () {
             $x.find(".editformulas-expression").closest(".entryi").addClass("hidden");
             $x.find(".editformulas-name").prop("disabled", true).css("text-decoration", "line-through");
             $x.find(".delete-link").prop("disabled", true);
-            $x.append(render_feedback_list([{status: 1, message: "<0>This named formula will be deleted."}]));
+            $x.append(feedback.render_list([{status: 1, message: "<0>This named formula will be deleted."}]));
         }
         $x.append(hidden_input("formula/" + $x.data("formulaNumber") + "/delete", 1));
     }
@@ -13022,7 +13262,7 @@ handle_ui.on("js-edit-formulas", function () {
             .append($e("h2", null, "Named formulas"),
                 $e("p", null, $e("a", {href: hoturl("help", "t=formulas"), target: "_blank", rel: "noopener"}, "Formulas"), ", such as “sum(OveMer)”, are calculated from review statistics and paper information. Named formulas are shared with the PC and can be used in other formulas. To view an unnamed formula, use a search term like “show:(sum(OveMer))”."),
                 ef, $e("button", {type: "button", name: "add"}, "Add named formula"))
-            .append_actions($e("button", {type: "submit", name: "saveformulas", value: 1, "class": "btn-primary"}, "Save"), "Cancel")
+            .append_actions($e("button", {type: "submit", name: "saveformulas", value: 1, class: "btn-primary"}, "Save"), "Cancel")
             .on("click", "button", click).on("submit", submit).show();
     }
     $.get(hoturl("=api/namedformula"), function (data) {
@@ -13047,7 +13287,7 @@ handle_ui.on("js-edit-view-options", function () {
                         ta.previousElementSibling.remove();
                     }
                     addClass(ta, "has-error");
-                    ta.before(render_feedback_list(data.message_list));
+                    ta.before(feedback.render_list(data.message_list));
                     ta.focus();
                 }
             }
@@ -13058,110 +13298,229 @@ handle_ui.on("js-edit-view-options", function () {
         $pu = $popup({className: "modal-dialog-w40", form_class: "need-diff-check"})
             .append($e("h2", null, "View options"),
                 $e("div", "f-i", $e("div", "f-c", "Default view options"),
-                    maybe_render_feedback_list(data.display_default_message_list),
+                    feedback.maybe_render_list(data.display_default_message_list),
                     $e("div", "reportdisplay-default", data.display_default || "(none)")),
                 $e("div", "f-i", $e("div", "f-c", "Current view options"),
-                    maybe_render_feedback_list(data.message_list),
-                    $e("textarea", {"class": "reportdisplay-current w-99 need-autogrow uikd js-keydown-enter-submit", name: "display", rows: 1, cols: 60}, data.display_current || "")))
-            .append_actions($e("button", {type: "submit", name: "save", "class": "btn-primary"}, "Save options as default"), "Cancel")
+                    feedback.maybe_render_list(data.message_list),
+                    $e("textarea", {class: "reportdisplay-current w-99 need-autogrow uikd js-keydown-enter-submit", name: "display", rows: 1, cols: 60}, data.display_current || "")))
+            .append_actions($e("button", {type: "submit", name: "save", class: "btn-primary"}, "Save options as default"), "Cancel")
             .on("submit", submit).show();
     }
     $.get(hoturl("=api/viewoptions", {q: $$("f-search").getAttribute("data-lquery")}), function (data) {
-        data.ok && create(data);
-    });
+            data.ok && create(data);
+        });
 });
 
-handle_ui.on("js-edit-namedsearches", function () {
-    let $pu, count = 0;
-    function render1(f) {
-        ++count;
-        const nentry = $e("legend"), qentry = $e("div", "entry");
-        if (f.editable) {
-            nentry.className = "mb-1";
-            nentry.append($e("input", {
-                    id: "k-named_search/" + count + "/name",
-                    type: "text", name: "named_search/" + count + "/name",
-                    "class": "editsearches-name need-autogrow",
-                    size: 30, value: f.name, placeholder: "Name of search"
-                }), $e("button", {
-                    type: "button", "class": "ui btn-licon-s delete-link ml-2 need-tooltip",
-                    "aria-label": "Delete search"
-                }, svge_use_licon("trash")));
-            qentry.append($e("textarea", {
-                    id: "k-named_search/" + count + "/search",
-                    name: "named_search/" + count + "/search",
-                    "class": "editsearches-query need-autogrow w-99",
-                    rows: 1, cols: 64, placeholder: "(All)"
-                }, f.q))
-        } else {
-            nentry.append(f.name);
-            qentry.append(f.q);
-        }
-        return $e("fieldset", {"class": "editsearches-search", "data-search-number": count},
-            nentry,
-            $e("div", "entryi",
-                $e("label", {"for": "k-named_search/" + count + "/search"}, "Search"),
-                qentry),
-            hidden_input("named_search/" + count + "/id", f.id || f.name));
+
+// named searches
+
+(function ($) {
+let named_search_info = null;
+
+function visible_name(si) {
+    const name = si.name || "", tw = name.indexOf("~");
+    if (tw <= 0) {
+        return name;
     }
+    const uidpfx = siteinfo.user.uid + "~";
+    return name.startsWith(uidpfx) ? name.substring(tw) : "";
+}
+
+function render_named_searches(data) {
+    named_search_info = data;
+    const es = [];
+    let i = 0, maxnamelen = 0;
+    for (const si of data.searches || []) {
+        const name = visible_name(si);
+        if (name === ""
+            || (si.display === "none" && !si.editable)) {
+            continue;
+        }
+        ++i;
+        const linke = $e("a", {href: hoturl("search", {q: "ss:" + name}), class: "noul uic js-named-search", "data-search-name": si.name}),
+            edite = $e("button", {type: "button", class: "ml-1 link noul ui js-named-search need-tooltip", "data-search-name": si.name, "aria-label": si.editable ? "Edit search" : "Expand search"}, $e("span", "t-editor transparent", "✎")),
+            status = feedback.list_status(data.message_list, "named_search/" + i + "/search");
+        if (si.display === "highlight") {
+            linke.append($e("span", "mr-1", "⭐️"));
+        }
+        linke.append($e("u", null, "ss:" + name));
+        if (status > 0 && si.editable) {
+            addClass(linke, status > 1 ? "is-error" : "is-warning");
+            edite.prepend($e("span", status > 1 ? "error-mark mr-1" : "warning-mark mr-1"));
+        }
+        es.push($e("div", "ctelt pb-0 js-click-child", linke, edite,
+            si.description ? $e("div", "hint", si.description) : null));
+        maxnamelen = Math.max(maxnamelen, name.length);
+    }
+    const sstab = $$("saved-searches");
+    if (es.length) {
+        sstab.replaceChildren($e("div", "ctable search-ctable column-count-" + (maxnamelen > 35 ? "2" : "3"), ...es));
+    } else {
+        sstab.replaceChildren();
+    }
+    sstab.append($e("button", {type: "button", class: "ui js-named-search mt-3 small", "data-search-name": "new"}, "Add named search"));
+    $(sstab).awaken();
+}
+
+handle_ui.on("js-named-search", function (evt) {
+    let self = this, si, $pu;
     function click() {
-        if (this.name === "add") {
-            const q = $$("f-search");
-            $.get(hoturl("=api/viewoptions", {q: q ? q.getAttribute("data-lquery") : ""}), function (data) {
-                const a = [];
-                if (q && q.getAttribute("data-lquery")) {
-                    a.push(q.getAttribute("data-lquery"));
-                }
-                if (data && data.ok && data.display_difference) {
-                    a.push(data.display_difference);
-                }
-                const div = render1({name: "", q: a.join(" "), editable: true, id: "new"});
-                $(div).appendTo($pu.find(".editsearches")).awaken();
-                div.setAttribute("data-search-new", "");
-                focus_at($(div).find(".editsearches-name"));
-                $pu.find(".modal-dialog").scrollIntoView({atBottom: true, marginBottom: "auto"});
-            });
-        } else if (hasClass(this, "delete-link")) {
-            ondelete.call(this);
+        if (this.name === "delete") {
+            $.post(hoturl("=api/namedsearch"),
+                {"named_search/1/id": si.id || si.name, "named_search/1/delete": true},
+                postresult);
         }
-    }
-    function ondelete() {
-        var fs = this.closest("fieldset");
-        if (fs.hasAttribute("data-search-new")) {
-            addClass(fs, "hidden");
-        } else {
-            $(fs).find(".editsearches-query").closest(".entryi").addClass("hidden");
-            $(fs).find(".editsearches-name").prop("disabled", true).css("text-decoration", "line-through");
-            $(fs).find(".delete-link").prop("disabled", true);
-            fs.append(render_feedback_list([{status: 1, message: "<0>This named search will be deleted."}]));
-        }
-        fs.append(hidden_input("named_search/" + fs.getAttribute("data-search-number") + "/delete", 1));
     }
     function submit(evt) {
         evt.preventDefault();
-        $.post(hoturl("=api/namedsearch"),
-            $($pu.form()).serialize(),
-            function (data) {
-                data.ok ? location.reload(true) : $pu.show_errors(data);
+        if (si && si.editable) {
+            $.post(hoturl("=api/namedsearch"),
+                $($pu.form()).serialize(),
+                postresult);
+        } else {
+            $pu.close();
+        }
+    }
+    function postresult(data) {
+        if (data.ok) {
+            $pu.close();
+            render_named_searches(data);
+        } else {
+            $pu.show_errors(data);
+        }
+    }
+    function create1(ctr, data) {
+        $pu = $popup({className: "modal-dialog-w40", form_class: "need-diff-check"})
+            .append(hidden_input("named_search/first_index", ctr));
+        if (si.editable) {
+            const namee = $e("input", {
+                id: "k-named_search/" + ctr + "/name",
+                type: "text", name: "named_search/" + ctr + "/name",
+                class: "editsearches-name need-autogrow ml-1",
+                size: 30, value: visible_name(si), placeholder: "Name of search"
             });
+            if (si.id === "new") {
+                $pu.append($e("h2", null, "New named search"),
+                    $e("p", "w-text", "Save a search for later, then refer to it with a query such as “ss:NAME”. You can combine named searches with other search queries (e.g., “ss:NAME OR #tag”) and highlight named searches on the home page. Named searches are visible to the whole PC."),
+                    $e("div", "f-i",
+                        $e("label", {for: "k-named_search/" + ctr + "/name"}, "Name"),
+                        "ss:", namee,
+                        $e("div", "f-d w-text",
+                            "Searches named like “ss:~NAME” are visible only to you.",
+                            hotcrp.status.is_admin ? " Searches named like “ss:~~NAME” are visible only to site administrators." : null)));
+            } else {
+                $pu.append($e("h2", null, "Search ss:", namee));
+            }
+            $pu.append(hidden_input("named_search/" + ctr + "/id", si.id || si.name));
+        } else {
+            $pu.append($e("h2", null,
+                si.display === "highlight" ? $e("span", "mr-1", "⭐️") : null,
+                "Search ss:" + si.name));
+        }
+        $pu.append($e("div", "f-i",
+                    $e("label", {for: "k-named_search/" + ctr + "/search"}, "Search"),
+                    $e("textarea", {
+                        id: "k-named_search/" + ctr + "/search",
+                        name: "named_search/" + ctr + "/search",
+                        class: "need-autogrow w-99" + (si.id === "new" ? "" : " want-focus"),
+                        rows: 1, cols: 64, placeholder: "(All)",
+                        readonly: !si.editable
+                    }, si.q)));
+        if (si.editable) {
+            $pu.append($e("div", "f-i",
+                    $e("label", {for: "k-named_search/" + ctr + "/description"}, "Description"),
+                    $e("textarea", {
+                        id: "k-named_search/" + ctr + "/description",
+                        name: "named_search/" + ctr + "/description",
+                        class: "need-autogrow w-99",
+                        rows: 1, cols: 64, placeholder: "Optional description"
+                    }, si.description || "")),
+                $e("div", "f-i",
+                    $e("label", "checki",
+                        $e("span", "checkc",
+                            $e("input", {
+                                type: "checkbox",
+                                name: "named_search/" + ctr + "/highlight",
+                                value: 1,
+                                checked: si.display === "highlight"
+                            })),
+                        "Highlight on home page ⭐️"),
+                    hidden_input("has-named_search/" + ctr + "/highlight", 1)))
+                .append_actions($e("button", {type: "submit", name: "savesearches", value: 1, class: "btn-primary"}, "Save"), "Cancel");
+            if (si.id !== "new") {
+                $pu.append_actions($e("button", {type: "button", name: "delete", class: "btn-danger float-left"}, "Delete search"));
+            }
+        } else {
+            if (si.description) {
+                $pu.append($e("div", "f-i",
+                    $e("label", {for: "k-named_search/" + ctr + "/description"}, "Description"),
+                    $e("div", {id: "k-named_search/" + ctr + "/description"}, si.description)));
+            }
+            $pu.append_actions($e("button", {type: "submit", class: "btn-primary"}, "OK"));
+        }
+        $pu.show().on("click", "button", click).on("submit", submit);
+        si.id === "new" || $pu.show_errors(data, true);
+    }
+    function create_new() {
+        const qe = $$("f-search");
+        $.get(hoturl("=api/viewoptions", {q: qe ? qe.getAttribute("data-lquery") : ""}), function (data) {
+            const a = [];
+            if (qe && qe.getAttribute("data-lquery")) {
+                a.push(qe.getAttribute("data-lquery"));
+            }
+            if (data && data.ok && data.display_difference) {
+                a.push(data.display_difference);
+            }
+            si = {id: "new", editable: true, name: "", q: a.join(" ")};
+            create1(1, {});
+        });
     }
     function create(data) {
-        $pu = $popup({className: "modal-dialog-w40", form_class: "need-diff-check"})
-            .append($e("h2", null, "Named searches"),
-                $e("p", null, "Invoke a named search with “ss:NAME”. Named searches are shared with the PC."),
-                $e("div", "editsearches"),
-                $e("button", {type: "button", name: "add"}, "Add named search"))
-            .append_actions($e("button", {type: "submit", name: "savesearches", value: 1, "class": "btn-primary"}, "Save"), "Cancel");
-        const ns = $pu.querySelector(".editsearches");
-        for (const s of data.searches || []) {
-            ns.append(render1(s));
+        const want = self.getAttribute("data-search-name");
+        if (want === "new") {
+            return create_new();
         }
-        $pu.show().on("click", "button", click).on("submit", submit).show_errors(data);
+        let i = 0;
+        for (const xsi of data.searches || []) {
+            ++i;
+            if (xsi.name === want) {
+                si = xsi;
+                return create1(i, data);
+            }
+        }
+        $pu = $popup({near: evt.target});
+        $pu.append($e("p", null, "That search has been deleted."))
+            .append_actions($e("button", {type: "button", class: "btn-primary"}, "OK"))
+            .on("click", "button", $pu.close)
+            .on("closedialog", function () { render_named_searches(data); })
+            .show();
     }
+    if (this.tagName === "BUTTON" || evt.shiftKey || evt.metaKey) {
+        named_search_info ? create(named_search_info) : $.get(hoturl("=api/namedsearch"), function (data) {
+            data.ok && create(data);
+        });
+        evt.preventDefault();
+    }
+});
+
+handle_ui.on("foldtoggle.js-named-search-tabpanel", function (evt) {
+    const self = this;
+    if (!evt.which.open) {
+        return;
+    }
+    removeClass(this, "js-named-search-tabpanel");
+    self.replaceChildren($e("span", "spinner", "Loading…"));
     $.get(hoturl("=api/namedsearch"), function (data) {
-        data.ok && create(data);
+        if (data.ok) {
+            render_named_searches(data);
+        } else {
+            self.replaceChildren(feedback.render_list(data.message_list));
+        }
     });
 });
+
+})(jQuery);
+
 
 handle_ui.on("js-select-all", function () {
     const tbl = this.closest(".pltable"), time = now_msec();
@@ -13170,7 +13529,6 @@ handle_ui.on("js-select-all", function () {
         handle_ui.trigger.call(this, "js-range-click", new CustomEvent("updaterange", {detail: time}));
     });
 });
-
 
 handle_ui.on("js-tag-list-action", function (evt) {
     if (evt.type === "foldtoggle" && !evt.which.open)
@@ -13219,7 +13577,7 @@ function handle_list_submit_bulkwarn(table, chkval, bgform, evt) {
     if (n >= 4) {
         const ctr = $e("div", "container"),
             $pu = $popup({near: evt.target}).append(ctr)
-                .append_actions($e("button", {type: "button", name: "bsubmit", "class": "btn-primary"}, "Download"), "Cancel");
+                .append_actions($e("button", {type: "button", name: "bsubmit", class: "btn-primary"}, "Download"), "Cancel");
         let m = table.getAttribute("data-bulkwarn-ftext");
         if (m === null || m === "") {
             m = "<5><p>Some program committees discourage reviewers from downloading " + siteinfo.snouns[1] + " in bulk. Are you sure you want to continue?</p>";
@@ -13484,66 +13842,72 @@ $(".js-radio-focus").on("click keypress", "input, select", function () {
 function populate_pcselector() {
     const self = this;
     removeClass(self, "need-pcselector");
-    let optids = self.getAttribute("data-pcselector-options") || "*";
-    optids = optids.startsWith("[") ? JSON.parse(optids) : optids.split(/[\s,]+/);
-    let selected, selindex = -1;
+    let options = self.getAttribute("data-pcselector-options") || "*";
+    options = options.startsWith("[") ? JSON.parse(options) : options.split(/[\s,]+/);
+    let selected;
     if (self.hasAttribute("data-pcselector-selected")) {
         selected = self.getAttribute("data-pcselector-selected");
     } else {
         selected = self.getAttribute("data-default-value");
     }
 
-    demand_load.pc().then(function (pcs) {
-        let last_first = pcs.__sort__ === "last", used = {}, opt, p, curgroup = self;
+    demand_load.pc_map().then(function (pcs) {
+        const last_first = pcs.sort === "last", used = {};
+        let selindex = -1, noptions = 0;
 
-        for (let i = 0; i < optids.length; ++i) {
-            let cid = optids[i];
-            if (cid === "" || cid === "*") {
-                optids.splice.apply(optids, [i + 1, 0].concat(pcs.__order__));
-            } else if (cid === "assignable") {
-                optids.splice.apply(optids, [i + 1, 0].concat(pcs.__assignable__[siteinfo.paperid] || []));
-            } else if (cid === "selected") {
-                if (selected != null)
-                    optids.splice.apply(optids, [i + 1, 0, selected]);
-            } else if (cid === "extrev") {
-                let extrevs = pcs.__extrev__ ? pcs.__extrev__[siteinfo.paperid] : null;
-                if (extrevs && extrevs.length) {
-                    optids.splice.apply(optids, [i + 1, 0].concat(extrevs));
-                    optids.splice(i + 1 + extrevs.length, 0, "endgroup");
-                    curgroup = document.createElement("optgroup");
-                    curgroup.setAttribute("label", "External reviewers");
-                    self.appendChild(curgroup);
+        for (const opt of options) {
+            let want, mygroup = self;
+            if (opt === "" || opt === "*") {
+                want = pcs.pc_uids;
+            } else if (opt === "assignable") {
+                want = pcs.p[siteinfo.paperid].assignable;
+            } else if (opt === "selected") {
+                want = selected != null ? [selected] : [];
+            } else if (opt === "extrev") {
+                mygroup = document.createElement("optgroup");
+                mygroup.setAttribute("label", "External reviewers");
+                want = [];
+                for (const u of pcs.p[siteinfo.paperid].extrev || []) {
+                    want.push(u.uid);
                 }
-            } else if (cid === "endgroup") {
-                curgroup = self;
             } else {
-                cid = +cid;
+                want = [+opt || 0];
+            }
+            for (const uid of want) {
+                if (used[uid]) {
+                    continue;
+                }
+                const p = pcs.umap[uid];
                 let email, name;
-                if (!cid) {
-                    email = "none";
-                    name = optids[i];
-                    if (name === "" || name === 0 || name === "0")
-                        name = "None";
-                } else if ((p = pcs[cid])
-                           || (pcs.__other__ && (p = pcs.__other__[cid]))) {
+                if (p) {
                     email = p.email;
                     name = p.name;
                     if (last_first && p.lastpos) {
-                        var nameend = p.emailpos ? p.emailpos - 1 : name.length;
+                        const nameend = p.emailpos ? p.emailpos - 1 : name.length;
                         name = name.substring(p.lastpos, nameend) + ", " + name.substring(0, p.lastpos - 1) + name.substring(nameend);
+                    }
+                } else if (!uid) {
+                    email = "none";
+                    if (opt === "" || opt === 0 || opt === "0") {
+                        name = "None";
+                    } else {
+                        name = opt;
                     }
                 } else {
                     continue;
                 }
-                if (!used[email]) {
-                    used[email] = true;
-                    opt = document.createElement("option");
-                    opt.setAttribute("value", email);
-                    opt.text = name;
-                    curgroup.appendChild(opt);
-                    if (email === selected || (email !== "none" && cid == selected))
-                        selindex = self.options.length - 1;
+                used[uid] = true;
+                const e = document.createElement("option");
+                e.setAttribute("value", email);
+                e.text = name;
+                mygroup.appendChild(e);
+                if (email === selected || (uid && uid == selected)) {
+                    selindex = noptions;
                 }
+                ++noptions;
+            }
+            if (mygroup !== self && mygroup.firstChild) {
+                self.appendChild(mygroup);
             }
         }
 
@@ -13551,12 +13915,12 @@ function populate_pcselector() {
             if (selected == 0 || selected == null) {
                 selindex = 0;
             } else {
-                opt = document.createElement("option");
-                const p = pcs[selected];
+                const p = pcs.umap[selected],
+                    opt = document.createElement("option");
                 opt.setAttribute("value", p ? p.email : selected);
                 opt.text = p ? p.name + " (not assignable)" : "[removed from PC]";
                 self.appendChild(opt);
-                selindex = self.options.length - 1;
+                selindex = noptions;
             }
         }
         self.selectedIndex = selindex;
@@ -13724,20 +14088,14 @@ function scorechart1_s1(sc) {
         cheight = blockfull * Math.max(anal.max, 1) + blockpad + 1,
         gray = color_unparse(graycolor);
 
-    var svg = svge("svg", "class", "scorechart-s1", "width", cwidth, "height", cheight),
-        path = svge("path", "stroke", gray, "fill", "none", "d", "M0.5 ".concat(cheight - blockfull - 1, "v", blockfull + 0.5, "h", cwidth - 1, "v", -(blockfull + 0.5))),
-        text;
-    svg.appendChild(path);
+    var svg = $svg("svg", {class: "scorechart-s1", width: cwidth, height: cheight},
+        $svg("path", {stroke: gray, fill: "none", d: "M0.5 ".concat(cheight - blockfull - 1, "v", blockfull + 0.5, "h", cwidth - 1, "v", -(blockfull + 0.5))}));
 
     if (!anal.v[anal.flip ? n - 1 : 0]) {
-        text = svge("text", "x", blockpad, "y", cheight - 2, "fill", gray);
-        text.append(anal.lo);
-        svg.appendChild(text);
+        svg.appendChild($svg("text", {x: blockpad, y: cheight - 2, fill: gray}, anal.lo));
     }
     if (!anal.v[anal.flip ? 0 : n - 1]) {
-        text = svge("text", "x", cwidth - 1.75, "y", cheight - 2, "text-anchor", "end", "fill", gray);
-        text.append(anal.hi);
-        svg.appendChild(text);
+        svg.appendChild($svg("text", {x: cwidth - 1.75, y: cheight - 2, fill: gray, "text-anchor": "end"}, anal.hi));
     }
 
     function rectd(x, y) {
@@ -13751,12 +14109,12 @@ function scorechart1_s1(sc) {
         var color = anal.fx.rgb_array(vindex + 1), t,
             y = anal.h && anal.h.indexOf(vindex + 1) >= 0 ? 2 : 1;
         if (y === 2)
-            svg.appendChild(svge("path", "fill", color_unparse(rgb_interp(blackcolor, color, 0.5)), "d", rectd(x, 1)));
+            svg.appendChild($svg("path", {d: rectd(x, 1), fill: color_unparse(rgb_interp(blackcolor, color, 0.5))}));
         if (y <= anal.v[vindex]) {
             t = "";
             for (; y <= anal.v[vindex]; ++y)
                 t += rectd(x, y);
-            svg.appendChild(svge("path", "fill", color_unparse(color), "d", t));
+            svg.appendChild($svg("path", {d: t, fill: color_unparse(color)}));
         }
     }
 
@@ -13829,24 +14187,29 @@ function load_more_events() {
 }
 
 function render_events(e, rows) {
-    var j = $(e).find("tbody");
-    if (!j.length) {
-        $(e).append("<div class=\"eventtable\"><table class=\"pltable\"><tbody class=\"pltable-tbody\"></tbody></table></div><div class=\"g eventtable-more\"><button type=\"button\">More</button></div>");
-        $(e).find("button").on("click", load_more_events);
-        j = $(e).find("tbody");
+    let tb = e.querySelector("tbody");
+    if (!tb) {
+        tb = $e("tbody", "pltable-tbody");
+        let button = $e("button", {type: "button"}, "More");
+        e.append($e("div", "eventtable", $e("table", "pltable", tb)),
+            $e("div", "g eventtable-more", button));
+        $(button).on("click", load_more_events);
     }
-    for (var i = 0; i < rows.length; ++i)
-        j.append(rows[i]);
-    if (events_more === false)
+    for (let i = 0; i !== rows.length; ++i) {
+        $(tb).append(rows[i]);
+    }
+    if (events_more === false) {
         $(e).find(".eventtable-more").addClass("hidden");
-    if (events_more === false && !events.length)
-        j.append("<tr><td>No recent activity in applications you’re following</td></tr>");
+        if (!events.length) {
+            tb.append($e("tr", null, $e("td", null, "No recent activity in application you’re following")));
+        }
+    }
 }
 
 handle_ui.on("js-open-activity", function (evt) {
     if (evt.which.open) {
         removeClass(this, "js-open-activity");
-        $("<div class=\"fx20 has-events\"></div>").appendTo(this);
+        this.append($e("div", "fx20 has-events"));
         events ? render_events(this, events) : load_more_events();
     }
 });
@@ -13964,7 +14327,7 @@ function make_input_autogrower(e) {
             sh = make_shadow(e),
             ws = sh.scrollWidth + borderPadding;
         if (Math.max(e.scrollWidth, ws) > Math.min(minWidth, ww)) {
-            e.style.width = Math.min(ww, Math.max(ws, minWidth)) + "px";
+            e.style.width = Math.min(ww, Math.max(minWidth, ws)) + "px";
         }
     }
     return f;
@@ -14047,7 +14410,7 @@ $(function () {
         return p.join(">");
     }
     var err = [], elt = [];
-    $(".xinfo,.xconfirm,.xwarning,.xmerror,.aa,.strong,td.textarea,button.btn-link,button.btn-qlink,button.btn-qolink,.btn-xlink,.btn-disabled,a.btn[href=''],.p,.mg").each(function () {
+    $(".xinfo,.xconfirm,.xwarning,.xmerror,.aa,.strong,td.textarea,a.btn[href=''],.p,.mg,.editor").each(function () {
         err.push(locator(this));
         elt.push(this);
     });
@@ -14067,8 +14430,8 @@ $(function () {
     }
     if (document.documentMode || window.attachEvent) {
         var msg = $('<div class="msg msg-error"></div>').appendTo("#h-messages");
-        append_feedback_near(msg[0], {message: "<0>This site no longer supports Internet Explorer", status: 2});
-        append_feedback_near(msg[0], {message: "<5>Please use <a href=\"https://browsehappy.com/\">a modern browser</a> if you can.", status: -5 /*MessageSet::INFORM*/});
+        feedback.append_item_near(msg[0], {message: "<0>This site no longer supports Internet Explorer", status: 2});
+        feedback.append_item_near(msg[0], {message: "<5>Please use <a href=\"https://browsehappy.com/\">a modern browser</a> if you can.", status: -5 /*MessageSet::INFORM*/});
         err.push("Internet Explorer");
     }
     if (err.length > 0) {
@@ -14084,38 +14447,51 @@ $(function () {
 
 
 Object.assign(window.hotcrp, {
+    $$: $$,
     $e: $e,
+    $frag: $frag,
     $popup: $popup,
+    $svg: $svg,
     // add_comment
     // add_diff_check
     // add_review
     // add_preference_ajax
     // banner
+    check_form_differs: check_form_differs,
     check_version: check_version,
+    // classes
     demand_load: demand_load,
     // drag_block_reorder
     // dropmenu
     // edit_comment
     ensure_pattern: ensure_pattern,
-    escape_html: escape_html,
+    ensure_pattern_here: ensure_pattern_here,
+    escape_html: escape_html, // XXX deprecated
     // evaluate_edit_condition
+    event_key: event_key,
+    feedback: feedback,
+    focus_at: focus_at,
     focus_within: focus_within,
     fold: fold,
     fold_storage: fold_storage,
     foldup: foldup,
+    form_differs: form_differs,
     handle_ui: handle_ui,
     hidden_input: hidden_input,
     hoturl: hoturl,
     // init_deadlines
+    input_default_value: input_default_value,
     // load_editable_paper
     // load_editable_review
     // load_paper_sidebar
+    log_jserror: log_jserror,
+    make_bubble: make_bubble,
+    make_color_scheme: make_color_scheme,
     // make_review_field
     // make_time_point
     // monitor_autoassignment
     // monitor_job
     // onload
-    popup_skeleton: popup_skeleton,
     // render_list
     render_text: render_text,
     render_text_page: render_text.on_page,
@@ -14126,6 +14502,8 @@ Object.assign(window.hotcrp, {
     // set_scoresort
     // shortcut
     // suggest
+    svge: svge,
+    // text
     // tooltip
     // tracker_show_elapsed
     // update_tag_decoration

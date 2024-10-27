@@ -38,119 +38,110 @@ class Column {
     public $is_visible = false;
     /** @var bool */
     public $has_content = false;
-    /** @var ?list<string> */
-    protected $decorations;
+    /** @var ?ViewOptionList */
+    protected $view_options;
 
-    /** @param object $arg */
+    /** @param object|array $arg */
     function __construct($arg) {
-        $this->name = $arg->name;
-        if (isset($arg->title)) {
-            $this->title = $arg->title;
+        if (is_object($arg)) {
+            $arg = (array) $arg;
         }
-        if (isset($arg->title_html)) {
-            $this->title_html = $arg->title_html;
-        }
-        if (isset($arg->className)) {
-            $this->className = $arg->className;
+        $this->name = $arg["name"];
+        $this->title = $arg["title"] ?? null;
+        $this->title_html = $arg["title_html"] ?? null;
+        if (isset($arg["className"])) {
+            $this->className = $arg["className"];
         } else {
             $this->className = "pl_" . $this->name;
         }
-        if ($arg->prefer_row ?? false) {
+        if ($arg["prefer_row"] ?? false) {
             $this->prefer_row = true;
         }
         $this->as_row = $this->prefer_row;
-        $s = $arg->sort ?? false;
+        $s = $arg["sort"] ?? false;
         if ($s === "desc" || $s === "descending") {
             $this->sort = 2;
         } else if ($s) {
             $this->sort = 1;
         }
         $this->sort_descending = $this->default_sort_descending();
-        if (isset($arg->completion)) {
-            $this->completion = $arg->completion;
+        $this->fold = $arg["fold"] ?? null;
+        if (isset($arg["completion"])) {
+            $this->completion = $arg["completion"];
         }
-        if (isset($arg->order)) {
-            $this->order = $arg->order;
-        }
-        if (isset($arg->__source_order)) {
-            $this->__source_order = $arg->__source_order;
-        }
+        $this->order = $arg["order"] ?? null;
+        $this->__source_order = $arg["__source_order"] ?? null;
     }
 
-    /** @return list<string> */
-    function decorations() {
-        return $this->decorations ?? [];
+    /** @return ?ViewOptionList */
+    function view_options() {
+        return $this->view_options;
     }
 
-    /** @param string $decor
-     * @return int|false */
-    function decoration_index($decor) {
-        $l = strlen($decor);
-        foreach ($this->decorations ?? [] as $i => $s) {
-            if (str_starts_with($s, $decor)
-                && (strlen($s) === $l || $s[$l] === "=")) {
-                return $i;
+    /** @param string $n
+     * @return mixed */
+    function view_option($n) {
+        return $this->view_options ? $this->view_options->get($n) : null;
+    }
+
+    /** @return list<string|object> */
+    function view_option_schema() {
+        return [];
+    }
+
+    /** @var ViewOptionSchema */
+    static private $base_schema;
+
+    /** @param ?ViewOptionlist $volist
+     * @return $this */
+    function add_view_options($volist) {
+        if (!$volist || $volist->is_empty()) {
+            return $this;
+        }
+
+        // get schema
+        if (self::$base_schema === null) {
+            self::$base_schema = new ViewOptionSchema;
+            self::$base_schema->define("display=row col,column");
+            self::$base_schema->define("sort=asc,ascending,up desc,descending,down forward reverse");
+        }
+        $schema = self::$base_schema;
+        foreach ($this->view_option_schema() as $x) {
+            if ($schema === self::$base_schema) {
+                $schema = clone $schema;
+            }
+            $schema->define($x);
+        }
+
+        // add options
+        $this->view_options = $this->view_options ?? new ViewOptionList;
+        $this->view_options->append_validate($volist, $schema);
+
+        // analyze options
+        if (($v = $this->view_option("display")) !== null) {
+            /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
+            $this->as_row = $v === "row";
+            if ($this->as_row === $this->prefer_row) {
+                $this->view_options->remove("display");
             }
         }
-        return false;
-    }
-
-    /** @return bool */
-    function has_decoration($decor) {
-        return $this->decoration_index($decor) !== false;
-    }
-
-    /** @return ?string */
-    function decoration_value($decor) {
-        if (($i = $this->decoration_index($decor)) !== false) {
-            /** @phan-suppress-next-line PhanTypeArraySuspiciousNullable */
-            $s = $this->decorations[$i];
-            $l = strlen($decor);
-            return strlen($s) === $l ? "" : substr($s, $l + 1);
-        } else {
-            return null;
-        }
-    }
-
-    /** @param string $decor
-     * @return bool */
-    function add_decoration($decor) {
-        if ($decor === "row" || $decor === "column") {
-            /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
-            $this->as_row = $decor === "row";
-            $dd = $this->prefer_row !== $this->as_row ? $decor : null;
-            return $this->__add_decoration($dd, ["column", "row"]);
-        }
-
-        $sp = array_search($decor, [
-            "up", "asc", "ascending", "down", "desc", "descending", "forward", "reverse"
-        ]);
-        if ($sp !== false) {
-            if ($sp < 3) {
+        if (($v = $this->view_option("sort")) !== null) {
+            if ($v === "asc") {
                 $this->sort_descending = false;
-            } else if ($sp < 6) {
+            } else if ($v === "desc") {
                 $this->sort_descending = true;
-            } else if ($sp === 6) {
+            } else if ($v === "forward") {
                 $this->sort_descending = $this->default_sort_descending();
             } else {
                 $this->sort_descending = !$this->default_sort_descending();
             }
-            return $this->__add_decoration($this->sort_decoration(), ["asc", "desc"]);
+            if (($ss = $this->sort_option())) {
+                $this->view_options->add("sort", $ss);
+            } else {
+                $this->view_options->remove("sort");
+            }
         }
 
-        if ($decor === "by") {
-            return true;
-        } else {
-            return false;
-        }
-    }
-
-    /** @param ?list<string> $decors
-     * @return $this */
-    function add_decorations($decors) {
-        foreach ($decors ?? [] as $decor) {
-            $this->add_decoration($decor);
-        }
         return $this;
     }
 
@@ -160,33 +151,10 @@ class Column {
     }
 
     /** @return string */
-    function sort_decoration() {
+    function sort_option() {
         if ($this->sort_descending === $this->default_sort_descending()) {
             return "";
         }
         return $this->sort_descending ? "desc" : "asc";
-    }
-
-    /** @param ?string $add
-     * @param ?list<?string> $remove
-     * @return true */
-    protected function __add_decoration($add, $remove = []) {
-        foreach ($remove as $s) {
-            if ($s !== null && ($i = $this->decoration_index($s)) !== false) {
-                array_splice($this->decorations, $i, 1);
-            }
-        }
-        if ($add !== null && $add !== "") {
-            $addx = $add;
-            if (($eq = strpos($add, "=")) !== false) {
-                $addx = substr($add, 0, $eq);
-            }
-            if (($i = $this->decoration_index($addx)) !== false) {
-                $this->decorations[$i] = $add;
-            } else {
-                $this->decorations[] = $add;
-            }
-        }
-        return true;
     }
 }

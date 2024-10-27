@@ -13,6 +13,9 @@ class Attachments_PaperOption extends PaperOption {
     function has_attachments() {
         return true;
     }
+    function view_option_schema() {
+        return ["type"];
+    }
 
     function attachment(PaperValue $ov, $name) {
         return $ov->document_set()->document_by_filename($name);
@@ -82,8 +85,8 @@ class Attachments_PaperOption extends PaperOption {
             $name = "{$prefix}:{$ctr}";
             $did = $qreq[$name];
             $thisdoc = null;
-            if (ctype_digit($did)) {
-                $did = intval($did);
+            if (is_int($did) || ctype_digit($did)) {
+                $did = is_int($did) ? $did : intval($did);
                 for ($idx = 0; $idx !== count($dlist); ++$idx) {
                     $d = $dlist[$idx];
                     if ($d === $did
@@ -94,7 +97,7 @@ class Attachments_PaperOption extends PaperOption {
                     }
                 }
             }
-            if ($qreq["{$name}:delete"] || $qreq["{$name}:remove"] /* compat */) {
+            if ($qreq["{$name}:delete"]) {
                 continue;
             }
             if (DocumentInfo::has_request_for($qreq, $name)) {
@@ -109,7 +112,7 @@ class Attachments_PaperOption extends PaperOption {
                 $dxlist[] = $thisdoc;
             }
         }
-        return $dxlist;
+        return array_merge($dlist, $dxlist);
     }
 
     function parse_qreq(PaperInfo $prow, Qrequest $qreq) {
@@ -165,13 +168,13 @@ class Attachments_PaperOption extends PaperOption {
             }
             echo '</div><div class="document-actions">', Ht::button("Delete", ["class" => "link ui js-remove-document"]), '</div></div>';
         }
-        echo '</div>',
+        echo '</div><div class="mt-2">',
             Ht::button("Add attachment", ["class" => "ui js-add-attachment", "data-editable-attachments" => "{$this->formid}:attachments"]),
-            "</div>\n\n";
+            "</div></div>\n\n";
     }
 
     function render(FieldRender $fr, PaperValue $ov) {
-        $want_mimetype = $fr->column && $fr->column->has_decoration("type");
+        $want_mimetype = $fr->column && $fr->column->view_option("type");
         $ts = [];
         foreach ($ov->document_set() as $d) {
             if ($want_mimetype) {

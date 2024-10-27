@@ -181,7 +181,7 @@ class Tag_AssignmentParser extends UserlessAssignmentParser {
             if ($tag === "") {
                 break;
             }
-            $span = SearchSplitter::span_balanced_parens($tag, 0, " \n\r\t\v\f,;");
+            $span = SearchParser::span_balanced_parens($tag, 0, " \n\r\t\v\f,;");
             $ok = $this->apply1(substr($tag, 0, $span), $prow, $contact, $req, $state)
                 && $ok;
             $tag = substr($tag, $span);
@@ -300,8 +300,7 @@ class Tag_AssignmentParser extends UserlessAssignmentParser {
             $state->remove(new Tag_Assignable($prow->paperId, $ltag));
         } else {
             assert(is_float($nvalue));
-            if ($nvalue > -TAG_INDEXBOUND
-                && $nvalue < TAG_INDEXBOUND) {
+            if ($nvalue > -TAG_INDEXBOUND && $nvalue < TAG_INDEXBOUND) {
                 $state->add(new Tag_Assignable($prow->paperId, $ltag, $ntag, $nvalue));
             } else {
                 $state->error("<0>Tag value out of range");

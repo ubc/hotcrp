@@ -8,27 +8,6 @@ class Filer {
     /** @var ?bool */
     static public $no_touch;
 
-    /** @return bool
-     * @deprecated */
-    static function skip_content_length_header() {
-        return Downloader::skip_content_length_header();
-    }
-    /** @return non-empty-string|false
-     * @deprecated */
-    static function hash_as_text($hash) {
-        return HashAnalysis::hash_as_text($hash);
-    }
-    /** @return non-empty-string|false
-     * @deprecated */
-    static function hash_as_binary($hash) {
-        return HashAnalysis::hash_as_binary($hash);
-    }
-    /** @return non-empty-string|false
-     * @deprecated */
-    static function sha1_hash_as_text($hash) {
-        return HashAnalysis::sha1_hash_as_text($hash);
-    }
-
     /** @param ?string $pattern
      * @param null|true|Conf $conf
      * @return ?array{resource,string} */
@@ -189,19 +168,19 @@ class Filer {
                 } else if ($fn === "j") {
                     $x .= substr($hash, 0, strlen($hash) === 40 ? 2 : 3);
                 } else {
-                    $h = $hash;
-                    if (strlen($h) !== 40) {
-                        $pos = strpos($h, "-") + 1;
-                        if ($fn === "h") {
-                            $x .= substr($h, 0, $pos);
+                    $lp = $rp = 0;
+                    if (strlen($hash) !== 40) {
+                        $rp = strpos($hash, "-") + 1;
+                        if ($fn !== "h") {
+                            $lp = $rp;
                         }
-                        $h = substr($h, $pos);
                     }
                     if ($fwidth === "") {
-                        $x .= $h;
+                        $rp = strlen($hash);
                     } else {
-                        $x .= substr($h, 0, intval($fwidth));
+                        $rp = min(strlen($hash), $rp + intval($fwidth));
                     }
+                    $x .= substr($hash, $lp, $rp - $lp);
                 }
             }
         }

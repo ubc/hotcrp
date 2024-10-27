@@ -174,12 +174,12 @@ class Search_Tester {
 
     function test_search_overflow() {
         $s = join(" AND ", array_fill(0, 1024, "a"));
-        $splitter = new SearchSplitter($s);
-        xassert_neqq($splitter->parse_expression("SPACE", 1024), null);
+        $splitter = new SearchParser($s);
+        xassert_neqq($splitter->parse_expression(null, "SPACE", 1024), null);
 
         $s = join(" AND ", array_fill(0, 1026, "a"));
-        $splitter = new SearchSplitter($s);
-        xassert_eqq($splitter->parse_expression("SPACE", 1024), null);
+        $splitter = new SearchParser($s);
+        xassert_eqq($splitter->parse_expression(null, "SPACE", 1024), null);
 
         $s = "ti:x";
         for ($i = 0; $i < 500; ++$i) {
@@ -197,17 +197,17 @@ class Search_Tester {
     /** @suppress PhanTypeArraySuspiciousNullable */
     function test_search_splitter_parens() {
         $s = "((a) XOR #whatever)";
-        $splitter = new SearchSplitter($s);
+        $splitter = new SearchParser($s);
         $a = $splitter->parse_expression();
         xassert_eqq(json_encode($a->unparse_json()), '{"op":"(","child":[{"op":"xor","child":[{"op":"(","child":["a"]},"#whatever"]}]}');
 
         $s = "(() XOR #whatever)";
-        $splitter = new SearchSplitter($s);
+        $splitter = new SearchParser($s);
         $a = $splitter->parse_expression();
         xassert_eqq(json_encode($a->unparse_json()), '{"op":"(","child":[{"op":"xor","child":[{"op":"(","child":[""]},"#whatever"]}]}');
 
         $s = "((OveMer:>3 OveMer:<2) or (OveMer:>4 OveMer:<3)) #r2";
-        $splitter = new SearchSplitter($s);
+        $splitter = new SearchParser($s);
         $a = $splitter->parse_expression();
         xassert_eqq($a->op->type, "space");
         xassert_eqq($a->child[0]->op->type, "(");

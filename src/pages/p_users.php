@@ -78,26 +78,30 @@ class Users_Page {
         $users = [];
         while (($user = Contact::fetch($result, $this->conf))) {
             $users[] = $user;
-            $this->conf->prefetch_cdb_user_by_email($user->email);
         }
         Dbl::free($result);
         usort($users, $this->conf->user_comparator());
 
         $texts = [];
-        $has_country = false;
+        $has_country = $has_orcid = false;
         foreach ($users as $u) {
             $texts[] = $line = [
-                "first" => $u->firstName,
-                "last" => $u->lastName,
+                "given_name" => $u->firstName,
+                "family_name" => $u->lastName,
                 "email" => $u->email,
                 "affiliation" => $u->affiliation,
-                "country" => $u->country()
+                "country" => $u->country_code(),
+                "orcid" => $u->decorated_orcid()
             ];
+            $has_orcid = $has_orcid || $line["orcid"] !== "";
             $has_country = $has_country || $line["country"] !== "";
         }
-        $header = ["first", "last", "email", "affiliation"];
+        $header = ["given_name", "family_name", "email", "affiliation"];
         if ($has_country) {
             $header[] = "country";
+        }
+        if ($has_orcid) {
+            $header[] = "orcid";
         }
         $this->conf->make_csvg("users")->select($header)->append($texts)->emit();
         return true;
@@ -110,7 +114,6 @@ class Users_Page {
         $users = [];
         while (($user = Contact::fetch($result, $this->conf))) {
             $users[] = $user;
-            $this->conf->prefetch_cdb_user_by_email($user->email);
         }
         Dbl::free($result);
         usort($users, $this->conf->user_comparator());
@@ -120,20 +123,22 @@ class Users_Page {
         $tagger = new Tagger($this->viewer);
         $people = [];
         $has_preferred_email = $has_tags = $has_topics =
-            $has_phone = $has_country = $has_disabled = false;
+            $has_phone = $has_country = $has_orcid = $has_disabled = false;
         $has = (object) [];
         foreach ($users as $user) {
             $row = [
-                "first" => $user->firstName,
-                "last" => $user->lastName,
+                "given_name" => $user->firstName,
+                "family_name" => $user->lastName,
                 "email" => $user->email,
                 "affiliation" => $user->affiliation,
-                "country" => $user->country(),
+                "orcid" => $user->decorated_orcid(),
+                "country" => $user->country_code(),
                 "phone" => $user->phone(),
                 "disabled" => $user->is_disabled() ? "yes" : "",
                 "collaborators" => rtrim($user->collaborators())
             ];
             $has_country = $has_country || $row["country"] !== "";
+            $has_orcid = $has_orcid || $row["orcid"] !== "";
             $has_phone = $has_phone || ($row["phone"] ?? "") !== "";
             $has_disabled = $has_disabled || $user->is_disabled();
             if ($user->preferredEmail && $user->preferredEmail !== $user->email) {
@@ -145,7 +150,7 @@ class Users_Page {
                 $has_tags = $has_tags || $row["tags"] !== "";
             }
             foreach ($user->topic_interest_map() as $t => $i) {
-                $row["topic$t"] = $i;
+                $row["topic{$t}"] = $i;
                 $has_topics = true;
             }
             $f = [];
@@ -177,7 +182,10 @@ class Users_Page {
             $people[] = $row;
         }
 
-        $header = ["first", "last", "email", "affiliation"];
+        $header = ["given_name", "family_name", "email", "affiliation"];
+        if ($has_orcid) {
+            $header[] = "orcid";
+        }
         if ($has_country) {
             $header[] = "country";
         }
@@ -200,7 +208,7 @@ class Users_Page {
         if ($has_topics) {
             foreach ($this->conf->topic_set() as $t => $tn) {
                 $header[] = "topic: " . $tn;
-                $selection[] = "topic$t";
+                $selection[] = "topic{$t}";
             }
         }
 
@@ -380,7 +388,7 @@ class Users_Page {
     private function print_query_form(ContactList $pl) {
         echo '<div class="tlcontainer mb-3">';
 
-        echo '<div class="tld is-tla active" id="default" role="tabpanel" aria-labelledby="tab-default">',
+        echo '<div class="tld is-tla active" id="default" role="tabpanel" aria-labelledby="k-default-tab">',
             Ht::form($this->conf->hoturl("users"), ["method" => "get"]);
         if (isset($this->qreq->sort)) {
             echo Ht::hidden("sort", $this->qreq->sort);
@@ -389,7 +397,7 @@ class Users_Page {
             " &nbsp;", Ht::submit("Go"), "</form></div>";
 
         // Display options
-        echo '<div class="tld is-tla" id="view" role="tabpanel" aria-labelledby="tab-view">',
+        echo '<div class="tld is-tla" id="view" role="tabpanel" aria-labelledby="k-view-tab">',
             Ht::form($this->conf->hoturl("users"), ["method" => "get"]);
         foreach (["t", "sort"] as $x) {
             if (isset($this->qreq[$x]))
@@ -399,8 +407,11 @@ class Users_Page {
         echo '<table><tr><td><strong>Show:</strong> &nbsp;</td>
       <td class="pad">';
         foreach (["tags" => "Tags",
-                  "aff" => "Affiliations", "collab" => "Collaborators",
-                  "topics" => "Topics"] as $fold => $text) {
+                  "aff" => "Affiliations",
+                  "collab" => "Collaborators",
+                  "topics" => "Topics",
+                  "orcid" => "ORCID iD",
+                  "country" => "Country"] as $fold => $text) {
             if (($pl->have_folds[$fold] ?? null) !== null) {
                 $k = array_search($fold, ContactList::$folds) + 1;
                 echo Ht::checkbox("show{$fold}", 1, $pl->have_folds[$fold],
@@ -446,8 +457,8 @@ class Users_Page {
 
         // Tab selectors
         echo '<div class="tllx" role="tablist">',
-            '<div class="tll active" role="tab" id="tab-default" aria-controls="default" aria-selected="true"><a class="ui tla" href="">User selection</a></div>',
-            '<div class="tll" role="tab" id="tab-view" aria-controls="view" aria-selected="false"><a class="ui tla" href="#view">View options</a></div>',
+            '<div class="tll active" role="tab" id="k-default-tab" aria-controls="default" aria-selected="true"><a class="ui tla" href="">User selection</a></div>',
+            '<div class="tll" role="tab" id="k-view-tab" aria-controls="view" aria-selected="false"><a class="ui tla" href="#view">View options</a></div>',
             '</div></div>', "\n\n";
     }
 
@@ -550,6 +561,9 @@ class Users_Page {
             Multiconference::fail($qreq, 403, ["title" => "Users"], "<0>User list not found");
             return;
         }
+
+        // update from contactdb
+        (new CdbUserUpdate($viewer->conf))->check();
 
         // handle request
         if (isset($qreq["default"]) && $qreq->defaultfn) {

@@ -55,49 +55,45 @@ class Home_Page {
         }
     }
 
-    static function profile_redirect_request(Contact $user, Qrequest $qreq) {
+    static function profile_redirect_request(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         if (!$user->is_empty() && $qreq->postlogin) {
             LoginHelper::check_postlogin($user, $qreq);
         }
-        if ($user->has_account_here()
-            && $qreq->csession("freshlogin") === true) {
-            if (self::need_profile_redirect($user)) {
-                $qreq->set_csession("freshlogin", "redirect");
-                $user->conf->redirect_hoturl("profile", "redirect=1");
-            } else {
-                $qreq->unset_csession("freshlogin");
-            }
+        if (!$user->has_account_here()) {
+            return;
         }
-    }
-
-    static function need_profile_redirect(Contact $user) {
-        if (!$user->firstName && !$user->lastName) {
-            return true;
-        } else if ($user->conf->opt("noProfileRedirect")) {
-            return false;
+        if (self::profilecheck($user, $gx)) {
+            $qreq->unset_csession("freshlogin");
+        } else if ($qreq->csession("freshlogin") === true) {
+            $qreq->set_csession("freshlogin", "redirect");
+            $user->conf->redirect_hoturl("profile", "redirect=1");
         } else {
-            return !$user->affiliation
-                || ($user->is_pc_member()
-                    && !$user->has_review()
-                    && (!$user->collaborators()
-                        || ($user->conf->has_topics()
-                            && !$user->topic_interest_map())));
+            $user->conf->feedback_msg([MessageItem::warning("<5>Please " . Ht::link("complete your profile", $user->conf->hoturl("profile")))]);
         }
     }
 
-    function print_head(Contact $user, Qrequest $qreq, $gx) {
+    /** @param Contact $user
+     * @param ComponentSet $gx */
+    static function profilecheck($user, $gx) {
+        $gx->enter()->set_context_args($user);
+        $v = $gx->call_members("__profilecheck", "&&");
+        $gx->leave();
+        return $v;
+    }
+
+    function print_head(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         $qreq->print_header("Home", "home");
         if ($qreq->signedout && $user->is_empty()) {
             $user->conf->success_msg("<0>You have been signed out of the site");
         }
-        $gx->push_print_cleanup("__footer");
+        $gx->print_on_leave("__footer");
         echo '<noscript><div class="msg msg-error"><strong>This site requires JavaScript.</strong> Your browser does not support JavaScript.<br><a href="https://github.com/kohler/hotcrp/">Report bad compatibility problems</a></div></noscript>', "\n";
         if ($user->privChair) {
             echo '<div id="p-clock-drift" class="homegrp hidden"></div>';
         }
     }
 
-    function print_content(Contact $user, Qrequest $qreq, $gx) {
+    function print_content(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         echo '<main class="home-content">';
         ob_start();
         $gx->print_members("home/sidebar");
@@ -115,7 +111,7 @@ class Home_Page {
         return "<h2 class=\"home\">" . $x . "</h2>";
     }
 
-    static function print_admin_sidebar(Contact $user, Qrequest $qreq, $gx) {
+    static function print_admin_sidebar(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         echo '<div class="homegrp"><h2 class="home">Administration</h2><ul>';
         $gx->print_members("home/sidebar/admin");
         echo '</ul></div>';
@@ -137,7 +133,7 @@ class Home_Page {
         echo '<li>', Ht::link("Action log", $user->conf->hoturl("log")), '</li>';
     }
 
-    static function print_info_sidebar(Contact $user, Qrequest $qreq, $gx) {
+    static function print_info_sidebar(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         ob_start();
         $gx->print_members("home/sidebar/info");
         if (($t = ob_get_clean())) {
@@ -166,7 +162,12 @@ class Home_Page {
         assert($user->conf->time_all_author_view_decision());
         if ($user->conf->time_all_author_view_decision()) {
             list($n, $nyes) = $user->conf->count_submitted_accepted();
-            echo '<li>', $user->conf->_("{} applications accepted out of {} submitted.", $nyes, $n), '</li>';
+            echo '<li>', $user->conf->_("{naccepted} of {nsubmitted} {submissions} accepted", new FmtArg("naccepted", $nyes), new FmtArg("nsubmitted", $n)), '</li>';
+        }
+    }
+    static function print_info_help(Contact $user) {
+        if ($user->isPC) {
+            echo '<li class="mt-2">', Ht::link("?⃝ <u>Help</u>", $user->conf->hoturl("help"), ["class" => "noul"]), '</li>';
         }
     }
 
@@ -178,21 +179,24 @@ class Home_Page {
         }
     }
 
-    function print_welcome() {
-        echo '<div class="homegrp">Welcome to the ', htmlspecialchars($this->conf->full_name()), " submissions site.";
+    function print_welcome(Contact $user) {
+        if ($user->isPC && $user->conf->has_any_submitted()) {
+            return;
+        }
+        echo '<div class="homegrp"><p>Welcome to the ', htmlspecialchars($this->conf->full_name()), " submissions site.";
         if (($site = $this->conf->opt("conferenceSite"))
             && $site !== $this->conf->opt("paperSite"))
-            echo " For general program information, see ", Ht::link(htmlspecialchars($site), htmlspecialchars($site)), ".";
-        echo '</div>';
+            echo " For general information, see ", Ht::link(htmlspecialchars($site), htmlspecialchars($site)), ".";
+        echo '</p></div>';
     }
 
-    function print_signin(Contact $user, Qrequest $qreq, $gx) {
+    function print_signin(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         if (!$user->has_email() || $qreq->signin) {
             Signin_Page::print_signin_form($user, $qreq, $gx);
         }
     }
 
-    function print_search(Contact $user, Qrequest $qreq, $gx) {
+    function print_search(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         if (!$user->privChair
             && ($user->isPC
                 ? !$this->conf->setting("pc_seeall") && !$this->conf->has_any_submitted()
@@ -219,8 +223,12 @@ class Home_Page {
         if ($user->isPC) {
             $hs = [];
             foreach ($user->conf->named_searches() as $sj) {
-                if (($sj->display ?? null) === "highlight")
-                    $hs[] = '<li>⭐️ ' . Ht::link("ss:" . htmlspecialchars($sj->name), $this->conf->hoturl("search", ["q" => "ss:{$sj->name}"])) . '</li>';
+                if (($sj->display ?? null) === "highlight"
+                    && $user->can_view_named_search($sj, false)) {
+                    $tw = strpos($sj->name, "~");
+                    $name = $tw > 0 ? substr($sj->name, $tw) : $sj->name;
+                    $hs[] = '<li><span class="mr-1">⭐️</span>' . Ht::link("ss:" . htmlspecialchars($name), $this->conf->hoturl("search", ["q" => "ss:{$name}"])) . '</li>';
+                }
             }
             if (!empty($hs)) {
                 echo '<div class="mt-1 font-weight-semibold"><ul class="inline">',
@@ -244,10 +252,10 @@ class Home_Page {
         return $t > 0 ? $this->conf->unparse_time_with_local_span($t) : null;
     }
 
-    function print_reviews(Contact $user, Qrequest $qreq, $gx) {
+    function print_reviews(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         $conf = $user->conf;
         if (!$user->privChair
-            && !($user->is_reviewer() && $conf->has_any_submitted())) {
+            && (!$user->is_reviewer() || !$conf->has_any_submitted())) {
             return;
         }
 
@@ -354,7 +362,7 @@ class Home_Page {
         }
         if ($this->_r_num_submitted < $this->_r_num_needs_submit
             && !$conf->time_review_open()) {
-            echo ' <em class="deadline">The site is not open for reviewing.</em><br>', "\n";
+            echo ' <em class="deadline">Reviewing is currently closed.</em><br>', "\n";
         } else if ($this->_r_num_submitted < $this->_r_num_needs_submit) {
             sort($this->_r_unsubmitted_rounds, SORT_NUMERIC);
             foreach ($this->_r_unsubmitted_rounds as $round) {
@@ -422,8 +430,7 @@ class Home_Page {
             $sep = $xsep;
         }
 
-        if ($has_rinfo
-            && $conf->setting("rev_ratings") != REV_RATINGS_NONE) {
+        if ($has_rinfo && $conf->review_ratings() >= 0) {
             $badratings = PaperSearch::unusable_ratings($user);
             $qx = (count($badratings) ? " and not (PaperReview.reviewId in (" . join(",", $badratings) . "))" : "");
             $result = $conf->qe_raw("select sum((rating&" . ReviewInfo::RATING_GOODMASK . ")!=0), sum((rating&" . ReviewInfo::RATING_BADMASK . ")!=0) from PaperReview join ReviewRating using (reviewId) where PaperReview.contactId={$user->contactId} $qx");
@@ -470,7 +477,7 @@ class Home_Page {
     }
 
     // Review token printing
-    function print_review_tokens(Contact $user, Qrequest $qreq, $gx) {
+    function print_review_tokens(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         if (!$this->_tokens_done
             && $user->has_email()
             && $user->conf->setting("rev_tokens")
@@ -493,7 +500,7 @@ class Home_Page {
         }
     }
 
-    function print_review_requests(Contact $user, Qrequest $qreq, $gx) {
+    function print_review_requests(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         $conf = $user->conf;
         if (!$user->is_requester()
             && !$user->has_review_pending_approval()
@@ -549,7 +556,7 @@ class Home_Page {
             // Be careful not to refer to a future deadline; perhaps an admin
             // just turned off submissions.
             if (!$sr->submit || $sr->submit + $sr->grace > Conf::$now) {
-                $deadlines[] = "The site is not open for {$sr->title1}{$this->conf->snouns[1]} at the moment.";
+                $deadlines[] = "The site is currently closed for {$sr->title1}{$this->conf->snouns[1]}.";
             } else {
                 $deadlines[] = 'The <a href="' . $this->conf->hoturl("deadlines") . "\">{$sr->title1}{$this->conf->snouns[0]} deadline</a> has passed.";
             }
@@ -567,7 +574,7 @@ class Home_Page {
         }
     }
 
-    function print_submissions(Contact $user, Qrequest $qreq, $gx) {
+    function print_submissions(Contact $user, Qrequest $qreq, ComponentSet $gx) {
         $conf = $user->conf;
         $srlist = [];
         $any_open = false;
@@ -633,7 +640,7 @@ class Home_Page {
             if ($any_open) {
                 $deadlines[] = "The <a href=\"" . $conf->hoturl("deadlines") . "\">deadline</a> for registering {$conf->snouns[1]} has passed.";
             } else {
-                $deadlines[] = "The site is not open for {$conf->snouns[1]} at the moment.";
+                $deadlines[] = "{$conf->snouns[3]} are currently closed.";
             }
         }
         // NB only has("accepted") if author can see an accepted paper

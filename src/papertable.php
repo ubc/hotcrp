@@ -99,7 +99,7 @@ class PaperTable {
             return;
         }
 
-        $this->can_view_reviews = $user->can_view_review($prow, null);
+        $this->can_view_reviews = $user->can_view_submitted_review($prow);
         if (!$this->can_view_reviews && $prow->has_active_reviewer($user)) {
             foreach ($prow->reviews_by_user($user) as $rrow) {
                 if ($rrow->reviewStatus >= ReviewInfo::RS_COMPLETED) {
@@ -272,8 +272,7 @@ class PaperTable {
         if (($list = $this->qreq->active_list())
             && $list->highlight
             && preg_match('/\Ap\/([^\/]*)\/([^\/]*)(?:\/|\z)/', $list->listid, $m)) {
-            $hlquery = is_string($list->highlight) ? $list->highlight : urldecode($m[2]);
-            $ps = new PaperSearch($this->user, ["t" => $m[1], "q" => $hlquery]);
+            $ps = new PaperSearch($this->user, ["t" => $m[1], "q" => urldecode($m[2])]);
             $this->matchPreg = $ps->field_highlighters();
         }
         if (empty($this->matchPreg)) {
@@ -1191,13 +1190,11 @@ class PaperTable {
         $rrow = $this->editrrow;
         if ($rrow->reviewId <= 0
             || $rrow->reviewType >= REVIEW_SECONDARY
-            || $rrow->reviewStatus > ReviewInfo::RS_ACCEPTED
-            || (!$this->user->can_administer($this->prow)
-                && (!$this->user->is_my_review($rrow)
-                    || !$this->user->time_review($this->prow, $rrow)))) {
+            || $rrow->reviewStatus > ReviewInfo::RS_ACKNOWLEDGED
+            || !$this->user->can_edit_review($this->prow, $rrow)) {
             return;
         }
-        $acc = $rrow->reviewStatus === ReviewInfo::RS_ACCEPTED;
+        $acc = $rrow->reviewStatus === ReviewInfo::RS_ACKNOWLEDGED;
         echo Ht::form(["method" => "post", "class" => ($acc ? "msg" : "msg msg-warning") . ' d-flex demargin remargin-left remargin-right']),
             '<div class="flex-grow-1 align-self-center">';
         if ($acc) {
@@ -1243,17 +1240,16 @@ class PaperTable {
         // review accept/decline message
         if ($this->mode === "re"
             && $this->editrrow
-            && $this->editrrow->reviewStatus <= ReviewInfo::RS_ACCEPTED
+            && $this->editrrow->reviewStatus <= ReviewInfo::RS_ACKNOWLEDGED
             && $this->user->is_my_review($this->editrrow)) {
             $this->_print_accept_decline();
         } else if ($this->mode === "p"
-                   && $this->qreq->page() === "review") {
-            $capuid = $this->user->capability("@ra{$this->prow->paperId}");
-            $capu = $capuid ? $this->conf->user_by_id($capuid, USER_SLICE) : $this->user;
-            $refusals = $capu ? $this->prow->review_refusals_by_user($capu) : [];
+                   && $this->qreq->page() === "review"
+                   && ($capu = $this->user->reviewer_capability_user($this->prow))) {
+            $refusals = $this->prow->review_refusals_by_user($capu);
             if ($refusals && $refusals[0]->refusedReviewId) {
                 $this->_print_decline_reason($capu, $refusals[0]);
-            } else if ($capuid) {
+            } else {
                 echo "<div class=\"msg msg-warning demargin remargin-left remargin-right\"><p>Your review for this {$this->conf->snouns[0]} is currently inaccessible.</p></div>";
             }
         }
@@ -1493,7 +1489,8 @@ class PaperTable {
         $pcconf = [];
         $this->conf->pc_members(); // to ensure pc_index is set
         foreach ($this->prow->conflict_list() as $cu) {
-            if (!$cu->user->is_pc_member()
+            if (!$cu->user // XXX should never happen
+                || !$cu->user->is_pc_member()
                 || !Conflict::is_conflicted($cu->conflictType)) {
                 continue;
             }
@@ -1655,9 +1652,6 @@ class PaperTable {
         echo $this->papt("decision", Ht::label("Decision", $id),
                 ["type" => "ps", "fold" => "decision"]),
             '<form class="ui-submit uin fx">';
-        if (isset($this->qreq->forceShow)) {
-            echo Ht::hidden("forceShow", $this->qreq->forceShow ? 1 : 0);
-        }
         $opts = [];
         foreach ($this->conf->decision_set() as $dec) {
             $opts[$dec->id] = $dec->name_as(5);
@@ -2236,9 +2230,8 @@ class PaperTable {
         if ($this->user->can_view_shepherd($this->prow)) {
             $this->papstripShepherd();
         }
-        if ($this->user->can_edit_preference_for($this->user, $this->prow, true)
-            && $this->conf->timePCReviewPreferences()
-            && ($this->user->roles & (Contact::ROLE_PC | Contact::ROLE_CHAIR))) {
+        if (($this->user->roles & Contact::ROLE_PC) !== 0
+            && $this->user->pc_assignable($this->prow)) {
             $this->papstripReviewPreference();
         }
     }
@@ -2567,7 +2560,7 @@ class PaperTable {
             if ($rr->reviewOrdinal && !$isdelegate) {
                 $id .= " #" . $rr->unparse_ordinal_id();
             }
-            if ($rr->reviewStatus < ReviewInfo::RS_ADOPTED
+            if ($rr->reviewStatus < ReviewInfo::RS_APPROVED
                 && !$rr->is_ghost()) {
                 $d = $rr->status_description();
                 if ($d === "draft") {
@@ -2584,7 +2577,7 @@ class PaperTable {
                 $t .= $id;
             } else {
                 if ((!$this->can_view_reviews
-                     || $rr->reviewStatus < ReviewInfo::RS_ADOPTED)
+                     || $rr->reviewStatus < ReviewInfo::RS_APPROVED)
                     && $user->can_edit_review($prow, $rr)) {
                     $link = $prow->reviewurl(["r" => $rlink]);
                 } else if ($this->qreq->page() === "paper") {
@@ -2821,7 +2814,7 @@ class PaperTable {
         $nocmt = in_array($this->mode, ["assign", "contact", "edit", "re"]);
         if (!$this->allreviewslink
             && !$nocmt
-            && $this->user->add_comment_state($prow) !== 0) {
+            && $this->user->new_comment_flags($prow) !== 0) {
             $img = Ht::img("comment48.png", "[Add comment]", $dlimgjs);
             $t[] = "<a class=\"uic js-edit-comment noul revlink\" href=\"#cnew\">{$img} <u>Add comment</u></a>";
             $any_comments = true;
@@ -2892,7 +2885,7 @@ class PaperTable {
     private function include_comments() {
         return !$this->allreviewslink
             && (!empty($this->mycrows)
-                || $this->user->add_comment_state($this->prow) !== 0
+                || $this->user->new_comment_flags($this->prow) !== 0
                 || $this->conf->any_response_open);
     }
 
@@ -2956,14 +2949,14 @@ class PaperTable {
 
         $s = "";
         $ncmt = 0;
-        $rf = $this->conf->review_form();
+        $pex = new PaperExport($this->user);
         foreach ($rcs as $rc) {
             if (isset($rc->reviewId)) {
-                $rcj = $rf->unparse_review_json($this->user, $this->prow, $rc);
-                if (($any_submitted || $rc->reviewStatus === ReviewInfo::RS_ADOPTED)
+                $rcj = $pex->review_json($this->prow, $rc);
+                if (($any_submitted || $rc->reviewStatus === ReviewInfo::RS_APPROVED)
                     && $rc->reviewStatus < ReviewInfo::RS_COMPLETED
                     && !$this->user->is_my_review($rc)) {
-                    $rcj->collapsed = $rcj->folded /* XXX */ = true;
+                    $rcj->collapsed = true;
                 }
                 $s .= "hotcrp.add_review(" . json_encode_browser($rcj) . ");\n";
             } else {
@@ -3102,7 +3095,7 @@ class PaperTable {
             if (!$this->user->can_clickthrough("review", $this->prow)) {
                 self::print_review_clickthrough();
             }
-            $rvalues = $this->review_values ?? new ReviewValues($this->conf->review_form());
+            $rvalues = $this->review_values ?? new ReviewValues($this->conf);
             $this->conf->review_form()->print_form($this->prow, $this->editrrow, $this->user, $rvalues);
         } else {
             $this->print_rc([$this->editrrow], false);
@@ -3190,15 +3183,15 @@ class PaperTable {
 
         if ($want_review
             && ($this->editrrow
-                ? $this->user->can_edit_review($this->prow, $this->editrrow, false)
-                : $this->user->can_create_review($this->prow))) {
+                ? $this->user->can_edit_review($this->prow, $this->editrrow)
+                : $this->user->can_create_review($this->prow, $this->user))) {
             $this->mode = "re";
         }
 
         // fix mode
         if ($this->mode === "re"
             && $this->rrow
-            && !$this->user->can_edit_review($this->prow, $this->rrow, false)
+            && !$this->user->can_edit_review($this->prow, $this->rrow)
             && ($this->rrow->contactId != $this->user->contactId
                 || $this->rrow->reviewStatus >= ReviewInfo::RS_COMPLETED)) {
             $this->mode = "p";

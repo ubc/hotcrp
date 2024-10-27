@@ -625,9 +625,9 @@ CREATE TABLE `TopicInterest` (
 
 
 -- Initial settings
--- (each setting must be on its own line for createdb.sh)
+-- (each setting must be on its own line for createdb.php/createdb.sh)
 insert into Settings (name, value, data) values
-  ('allowPaperOption', 295, null),   -- schema version
+  ('allowPaperOption', 304, null),   -- schema version
   ('setupPhase', 1, null),           -- initial user is chair
   ('no_papersub', 1, null),          -- no submissions yet
   ('sub_pcconf', 1, null),           -- collect PC conflicts, not collaborators
@@ -635,7 +635,8 @@ insert into Settings (name, value, data) values
   ('pcrev_any', 1, null),            -- PC members can review any paper
   ('viewrevid', 1, null),            -- PC members can see anonymous reviewer IDs
   ('extrev_chairreq', 2, null),      -- administrators must approve potentially-conflicted reviewers
-  ('pcrev_soft', 0, null);           -- soft review deadline is explicit 0
+  ('pcrev_soft', 0, null)            -- soft review deadline is explicit 0
+  ;
 
 -- matches DocumentInfo::make_empty()
 insert ignore into PaperStorage set

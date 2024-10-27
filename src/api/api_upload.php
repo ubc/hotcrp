@@ -628,7 +628,7 @@ class Upload_API {
         }
         $qreq->qsession()->commit();
 
-        if ($qreq->start) {
+        if (friendly_boolean($qreq->start)) {
             $j = $this->exec_start($user, $qreq, $prow);
             if (!$j["ok"]) {
                 return $j;
@@ -651,7 +651,7 @@ class Upload_API {
         }
         $this->_capd = json_decode($this->_cap->data);
 
-        if ($qreq->cancel) {
+        if (friendly_boolean($qreq->cancel)) {
             $this->delete_all();
             $this->_cap->delete();
             return ["ok" => true, "token" => $qreq->token, "message_list" => [MessageItem::marked_note("<0>Upload canceled")]];
@@ -679,7 +679,7 @@ class Upload_API {
             } else if ($offset + $length > $this->_capd->size) {
                 return $this->_make_error("<0>Uploaded segment bigger than claimed upload size");
             }
-            $data = $qreq->file_contents("blob", 0, $length);
+            $data = $qreq->file_content("blob", 0, $length);
             if ($data === false || strlen($data) !== $length) {
                 return $this->_make_error("<0>Problem reading uploaded file");
             }
@@ -690,11 +690,12 @@ class Upload_API {
             return $this->_make_error("<0>Problem with uploaded file");
         }
 
-        if ($qreq->finish && $this->_capd->ranges !== [0, $this->_capd->size]) {
+        $finish = friendly_boolean($qreq->finish);
+        if ($finish && $this->_capd->ranges !== [0, $this->_capd->size]) {
             return $this->_make_error("<0>Upload incomplete");
         }
 
-        if (!$qreq->finish
+        if (!$finish
             && !$this->synchronous
             && JsonCompletion::$allow_short_circuit) {
             $json = new JsonResult($this->_make_result());

@@ -23,8 +23,8 @@ class PaperPC_API {
         $pcu = $cid ? $user->conf->user_by_id($cid, USER_SLICE) : null;
         $j = [
             "ok" => true,
-            "value" => $pcu ? $pcu->email : "none",
-            "result" => $pcu ? $user->name_html_for($pcu) : "None"
+            $type => $pcu ? $pcu->email : "none",
+            "{$type}_html" => $pcu ? $user->name_html_for($pcu) : "None"
         ];
         if ($user->can_view_user_tags()) {
             $j["color_classes"] = $pcu ? $pcu->viewable_color_classes($user) : "";
@@ -48,7 +48,10 @@ class PaperPC_API {
         if (!$user->can_view_pc()) {
             return JsonResult::make_permission_error();
         }
-        $pc = $user->conf->hotcrp_pc_json($user);
-        return ["ok" => true, "pc" => $pc];
+        $jr = new JsonResult($user->conf->hotcrp_pc_json($user, $qreq->ui ? Conf::PCJM_UI : Conf::PCJM_DEFAULT));
+        if ($qreq->ui) {
+            $jr->set_pretty_print(false);
+        }
+        return $jr;
     }
 }

@@ -278,15 +278,19 @@ class Permission_Tester {
         $comment1 = new CommentInfo($paper1);
         $c1ok = $comment1->save_comment(["text" => "test", "visibility" => "a", "blind" => false], $user_mgbaker);
         xassert($c1ok);
+        $paper1->load_comments();
         xassert(!$user_van->can_view_comment($paper1, $comment1));
         xassert(!$user_van->can_view_comment_identity($paper1, $comment1));
-        xassert_eqq($user_van->add_comment_state($paper1), 0);
+        xassert_eqq($user_van->new_comment_flags($paper1), 0);
         $this->conf->save_refresh_setting("cmt_author", 1);
-        xassert_eqq($user_van->add_comment_state($paper1), 0);
+        xassert(!$user_van->can_view_comment($paper1, $comment1));
+        xassert_eqq($user_van->new_comment_flags($paper1), 0);
+        // can exchange comments with reviewers only when there are author-viewable comments
         $this->conf->save_refresh_setting("au_seerev", Conf::AUSEEREV_YES);
-        xassert_neqq($user_van->add_comment_state($paper1), 0);
+        xassert($user_van->can_view_comment($paper1, $comment1));
+        xassert_neqq($user_van->new_comment_flags($paper1), 0);
         $this->conf->save_refresh_setting("cmt_author", null);
-        xassert_eqq($user_van->add_comment_state($paper1), 0);
+        xassert_eqq($user_van->new_comment_flags($paper1), 0);
         xassert($user_van->can_view_comment($paper1, $comment1));
         xassert(!$user_van->can_view_comment_identity($paper1, $comment1));
         $this->conf->save_refresh_setting("rev_blind", Conf::BLIND_OPTIONAL);
@@ -415,8 +419,8 @@ class Permission_Tester {
         xassert(!$paper13->has_reviewer($user_jon));
         xassert(!$this->conf->check_tracks($paper13, $user_jon, Track::ASSREV));
         xassert($user_jon->can_view_paper($paper13));
-        xassert(!$user_jon->can_accept_review_assignment_ignore_conflict($paper13));
-        xassert(!$user_jon->can_accept_review_assignment($paper13));
+        xassert(!$user_jon->pc_track_assignable($paper13));
+        xassert(!$user_jon->pc_assignable($paper13));
 
         // tag searches
         xassert_search($user_chair, "#green", "3 9 13 17");
@@ -678,13 +682,16 @@ class Permission_Tester {
     }
 
     function test_comment_search() {
+        $this->conf->save_refresh_setting("viewrevid", 1);
+        Contact::update_rights();
+
         $paper1 = $this->u_chair->checked_paper_by_id(1);
         $paper2 = $this->u_chair->checked_paper_by_id(2);
         $paper18 = $this->u_chair->checked_paper_by_id(18);
-        xassert($this->u_mgbaker->add_comment_state($paper2) !== 0);
-        xassert($this->u_mgbaker->add_comment_state($paper18) === 0);
-        xassert($this->u_marina->add_comment_state($paper1) !== 0);
-        xassert($this->u_marina->add_comment_state($paper18) !== 0);
+        xassert($this->u_mgbaker->new_comment_flags($paper2) !== 0);
+        xassert($this->u_mgbaker->new_comment_flags($paper18) === 0);
+        xassert($this->u_marina->new_comment_flags($paper1) !== 0);
+        xassert($this->u_marina->new_comment_flags($paper18) !== 0);
         xassert_search($this->u_chair, "cmt:any", "1");
         xassert_search($this->u_chair, "has:comment", "1");
         xassert_search($this->u_chair, "has:response", "");
@@ -705,9 +712,6 @@ class Permission_Tester {
     }
 
     function test_comment_notification() {
-        $this->conf->save_refresh_setting("viewrevid", 1);
-        Contact::update_rights();
-
         $paper2 = $this->u_chair->checked_paper_by_id(2);
         xassert($paper2->has_reviewer($this->u_chair));
         $comment4 = new CommentInfo($paper2);
@@ -756,7 +760,7 @@ class Permission_Tester {
 
         $review2a = fresh_review($paper2, $user_jon);
         xassert(!$review2a->reviewSubmitted && !$review2a->reviewAuthorSeen);
-        xassert($review2a->reviewOrdinal == 0);
+        xassert($review2a->reviewOrdinal === 0);
         xassert($user_jon->can_view_review($paper2, $review2a));
         xassert(!$user_pdruschel->can_view_review($paper2, $review2a));
         xassert(!$this->u_mgbaker->can_view_review($paper2, $review2a));
@@ -765,7 +769,7 @@ class Permission_Tester {
         $review2a = save_review(2, $user_jon, $revreq);
         MailChecker::check0();
         xassert($review2a->reviewSubmitted && !$review2a->reviewAuthorSeen);
-        xassert($review2a->reviewOrdinal == 1);
+        xassert($review2a->reviewOrdinal === 1);
         xassert($user_jon->can_view_review($paper2, $review2a));
         xassert(!$user_pdruschel->can_view_review($paper2, $review2a));
         xassert(!$this->u_mgbaker->can_view_review($paper2, $review2a));
@@ -779,14 +783,14 @@ class Permission_Tester {
         self::run_assignment($this->u_chair, "paper,action,email\n2,secondary,mgbaker@cs.stanford.edu\n");
         $review2d = fresh_review($paper2, $this->u_mgbaker);
         xassert(!$review2d->reviewSubmitted);
-        xassert($review2d->reviewNeedsSubmit == 1);
+        xassert($review2d->reviewNeedsSubmit === 1);
         xassert(!$this->u_mgbaker->can_view_review($paper2, $review2a));
 
         $user_external = Contact::make_keyed($this->conf, ["email" => "external@_.com", "name" => "External Reviewer"])->store();
-        $this->u_mgbaker->assign_review(2, $user_external->contactId, REVIEW_EXTERNAL);
+        $this->u_mgbaker->assign_review(2, $user_external, REVIEW_EXTERNAL);
         $review2d = fresh_review($paper2, $this->u_mgbaker);
         xassert(!$review2d->reviewSubmitted);
-        xassert($review2d->reviewNeedsSubmit == -1);
+        xassert($review2d->reviewNeedsSubmit === -1);
         xassert(!$this->u_mgbaker->can_view_review($paper2, $review2a));
         $review2c = fresh_review($paper2, $user_external);
         xassert(!$this->u_mgbaker->can_view_review($paper2, $review2c));
@@ -794,7 +798,7 @@ class Permission_Tester {
         MailChecker::check_db("test01-review2C");
         $review2d = fresh_review($paper2, $this->u_mgbaker);
         xassert(!$review2d->reviewSubmitted);
-        xassert($review2d->reviewNeedsSubmit == 0);
+        xassert($review2d->reviewNeedsSubmit === 0);
         xassert($this->u_mgbaker->can_view_review($paper2, $review2a));
         xassert($this->u_mgbaker->can_view_review($paper2, $review2c));
 
@@ -892,7 +896,7 @@ class Permission_Tester {
         $review2d = fresh_review($paper2, $this->u_mgbaker);
         xassert_eqq($review2d->reviewType, REVIEW_SECONDARY);
         xassert(!$review2d->reviewSubmitted);
-        xassert($review2d->reviewNeedsSubmit == 0);
+        xassert($review2d->reviewNeedsSubmit === 0);
 
         // mgbaker secondary -> primary
         $assignset = new AssignmentSet($this->u_chair);
@@ -905,7 +909,7 @@ class Permission_Tester {
         $review2d = fresh_review($paper2, $this->u_mgbaker);
         xassert_eqq($review2d->reviewType, REVIEW_PRIMARY);
         xassert(!$review2d->reviewSubmitted);
-        xassert($review2d->reviewNeedsSubmit == 1);
+        xassert($review2d->reviewNeedsSubmit === 1);
 
         // mgbaker primary -> secondary
         xassert_assign($this->u_chair, "action,paper,email,reviewtype\nreview,2,mgbaker@cs.stanford.edu,primary:secondary\n");
@@ -917,7 +921,7 @@ class Permission_Tester {
         $review2d = fresh_review($paper2, $this->u_mgbaker);
         xassert_eqq($review2d->reviewType, REVIEW_SECONDARY);
         xassert(!$review2d->reviewSubmitted);
-        xassert($review2d->reviewNeedsSubmit == 0);
+        xassert($review2d->reviewNeedsSubmit === 0);
 
         // no change to assignment
         $old_pcassignments = $this->get_pcassignment_csv();
@@ -926,7 +930,7 @@ class Permission_Tester {
         $review2d = fresh_review($paper2, $this->u_mgbaker);
         xassert_eqq($review2d->reviewType, REVIEW_SECONDARY);
         xassert(!$review2d->reviewSubmitted);
-        xassert($review2d->reviewNeedsSubmit == 0);
+        xassert($review2d->reviewNeedsSubmit === 0);
 
         // another secondary -> primary
         xassert_search($this->u_chair, "sec:any", "2");
@@ -1231,15 +1235,15 @@ class Permission_Tester {
         xassert(!$user_jon->can_view_pdf($paper13));
         xassert(!$user_jon->can_view_review($paper13, null));
         xassert(!$user_jon->can_view_review_identity($paper13, null));
-        xassert($user_jon->can_accept_review_assignment_ignore_conflict($paper13));
-        xassert($user_jon->can_accept_review_assignment($paper13));
+        xassert($user_jon->pc_track_assignable($paper13));
+        xassert($user_jon->pc_assignable($paper13));
         xassert(!$user_jon->can_edit_some_review($paper13));
         xassert($this->u_marina->can_view_paper($paper13));
         xassert($this->u_marina->can_view_pdf($paper13));
         xassert($this->u_marina->can_view_review($paper13, null));
         xassert($this->u_marina->can_view_review_identity($paper13, null));
-        xassert($this->u_marina->can_accept_review_assignment_ignore_conflict($paper13));
-        xassert($this->u_marina->can_accept_review_assignment($paper13));
+        xassert($this->u_marina->pc_track_assignable($paper13));
+        xassert($this->u_marina->pc_assignable($paper13));
         xassert($this->u_marina->can_edit_some_review($paper13));
 
         xassert($user_jon->can_view_some_review_identity());
@@ -1271,15 +1275,15 @@ class Permission_Tester {
         xassert($user_jon->can_view_pdf($paper14));
         xassert($user_jon->can_view_review($paper14, null));
         xassert($user_jon->can_view_review_identity($paper14, null));
-        xassert($user_jon->can_accept_review_assignment_ignore_conflict($paper14));
-        xassert($user_jon->can_accept_review_assignment($paper14));
+        xassert($user_jon->pc_track_assignable($paper14));
+        xassert($user_jon->pc_assignable($paper14));
         xassert($user_jon->can_edit_some_review($paper14));
         xassert(!$this->u_marina->can_view_paper($paper14));
         xassert(!$this->u_marina->can_view_pdf($paper14));
         xassert(!$this->u_marina->can_view_review($paper14, null));
         xassert(!$this->u_marina->can_view_review_identity($paper14, null));
-        xassert($this->u_marina->can_accept_review_assignment_ignore_conflict($paper14));
-        xassert($this->u_marina->can_accept_review_assignment($paper14));
+        xassert($this->u_marina->pc_track_assignable($paper14));
+        xassert($this->u_marina->pc_assignable($paper14));
         xassert(!$this->u_marina->can_edit_some_review($paper14));
 
         xassert_assign($this->u_chair, "paper,action,user\n13,primary,jon@cs.ucl.ac.uk\n");
@@ -1294,30 +1298,30 @@ class Permission_Tester {
         xassert(!$user_jon->can_view_pdf($paper13));
         xassert(!$user_jon->can_view_review($paper13, null));
         xassert(!$user_jon->can_view_review_identity($paper13, null));
-        xassert(!$user_jon->can_accept_review_assignment_ignore_conflict($paper13));
-        xassert(!$user_jon->can_accept_review_assignment($paper13));
+        xassert(!$user_jon->pc_track_assignable($paper13));
+        xassert(!$user_jon->pc_assignable($paper13));
         xassert(!$user_jon->can_edit_some_review($paper13));
         xassert($this->u_marina->can_view_paper($paper13));
         xassert($this->u_marina->can_view_pdf($paper13));
         xassert($this->u_marina->can_view_review($paper13, null));
         xassert($this->u_marina->can_view_review_identity($paper13, null));
-        xassert($this->u_marina->can_accept_review_assignment_ignore_conflict($paper13));
-        xassert($this->u_marina->can_accept_review_assignment($paper13));
+        xassert($this->u_marina->pc_track_assignable($paper13));
+        xassert($this->u_marina->pc_assignable($paper13));
         xassert($this->u_marina->can_edit_some_review($paper13));
 
         xassert($user_jon->can_view_paper($paper14));
         xassert($user_jon->can_view_pdf($paper14));
         xassert($user_jon->can_view_review($paper14, null));
         xassert($user_jon->can_view_review_identity($paper14, null));
-        xassert($user_jon->can_accept_review_assignment_ignore_conflict($paper14));
-        xassert($user_jon->can_accept_review_assignment($paper14));
+        xassert($user_jon->pc_track_assignable($paper14));
+        xassert($user_jon->pc_assignable($paper14));
         xassert($user_jon->can_edit_some_review($paper14));
         xassert(!$this->u_marina->can_view_paper($paper14));
         xassert(!$this->u_marina->can_view_pdf($paper14));
         xassert(!$this->u_marina->can_view_review($paper14, null));
         xassert(!$this->u_marina->can_view_review_identity($paper14, null));
-        xassert(!$this->u_marina->can_accept_review_assignment_ignore_conflict($paper14));
-        xassert(!$this->u_marina->can_accept_review_assignment($paper14));
+        xassert(!$this->u_marina->pc_track_assignable($paper14));
+        xassert(!$this->u_marina->pc_assignable($paper14));
         xassert(!$this->u_marina->can_edit_some_review($paper14));
 
         xassert_assign_fail($this->u_chair, "paper,action,user\n13,primary,jon@cs.ucl.ac.uk\n");
@@ -1348,7 +1352,7 @@ class Permission_Tester {
             $paper = $this->u_chair->checked_paper_by_id($pid);
             foreach ([$this->u_marina, $this->u_estrin, $user_pfrancis, $user_floyd] as $cidx => $user) {
                 if ((!($cidx & 1) && (($pid - 1) & 2)) /* user not red && paper green */
-                    || (($cidx & 1) && ($pid == 1 || (($pid - 1) & 1))) /* user red && paper red or none */
+                    || (($cidx & 1) && ($pid === 1 || (($pid - 1) & 1))) /* user red && paper red or none */
                     || (($cidx & 2) && (($pid - 1) & 4))) /* user blue && paper blue */
                     xassert($user->can_view_paper($paper), "user {$user->email} can view paper $pid");
                 else
@@ -1420,12 +1424,14 @@ class Permission_Tester {
         $this->conf->save_refresh_setting("au_seerev", Conf::AUSEEREV_YES);
         xassert($user_author2->can_view_review($paper2, $review2b));
 
-        $rjson = $this->conf->review_form()->unparse_review_json($this->u_chair, $paper2, $review2b);
+        $pex = new PaperExport($this->u_chair);
+        $rjson = $pex->review_json($paper2, $review2b);
         ReviewForm::update_review_author_seen();
         $review2b = fresh_review($paper2, $user_pdruschel);
         xassert(!$review2b->reviewAuthorSeen);
 
-        $rjson = $this->conf->review_form()->unparse_review_json($user_author2, $paper2, $review2b);
+        $pex = new PaperExport($user_author2);
+        $rjson = $pex->review_json($paper2, $review2b);
         ReviewForm::update_review_author_seen();
         $review2b = fresh_review($paper2, $user_pdruschel);
         xassert(!!$review2b->reviewAuthorSeen);
@@ -1830,7 +1836,7 @@ class Permission_Tester {
     }
 
     function test_withdraw_review_interaction() {
-        $this->u_chair->assign_review(16, $this->u_mgbaker->contactId, REVIEW_PC, []);
+        $this->u_chair->assign_review(16, $this->u_mgbaker, REVIEW_PC, []);
         // can withdraw because review not started
         xassert_assign($this->u_mogul, "paper,action,reason\n16,withdraw,Sucky\n");
         xassert_assign($this->u_mogul, "paper,action,reason\n16,revive,Sucky\n");
@@ -1917,9 +1923,28 @@ class Permission_Tester {
         }
     }
 
+    function test_rights_recursion() {
+        $this->conf->save_setting("au_seedec", 1, "#accept OR #reject");
+        $this->conf->save_setting("au_seerev", 3, "#accept OR #reject");
+        $this->conf->refresh_settings();
+        Contact::update_rights();
+
+        $p1 = $this->u_chair->checked_paper_by_id(1);
+        xassert_neqq($p1->outcome, 0);
+        xassert($this->u_chair->allow_view_authors($p1));
+
+        $this->conf->save_setting("au_seedec", null);
+        $this->conf->save_setting("au_seerev", null);
+        $this->conf->refresh_settings();
+    }
+
     function test_reset_deadlines() {
         $this->conf->save_setting("sub_reg", Conf::$now + 10);
         $this->conf->save_setting("sub_update", Conf::$now + 10);
         $this->conf->save_setting("sub_sub", Conf::$now + 10);
+    }
+
+    function test_invariants_last() {
+        ConfInvariants::test_all($this->conf);
     }
 }
