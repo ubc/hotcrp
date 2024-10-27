@@ -1,6 +1,6 @@
 <?php
 // checkinvariants.php -- HotCRP batch invariant checking script
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 if (realpath($_SERVER["PHP_SELF"]) === __FILE__) {
     require_once(dirname(__DIR__) . "/src/init.php");
@@ -141,6 +141,10 @@ class CheckInvariants_Batch {
             $this->report_fix("document match");
             $this->fix_document_match();
         }
+        if (isset($ic->problems["user_whitespace"]) && $this->want_fix("whitespace")) {
+            $this->report_fix("whitespace");
+            $this->fix_whitespace();
+        }
         return 0;
     }
 
@@ -171,6 +175,23 @@ class CheckInvariants_Batch {
         $this->conf->qe("update Paper p join PaperStorage s on (s.paperId=p.paperId and s.paperStorageId=p.finalPaperStorageId) set p.size=s.size where p.size<0 and p.finalPaperStorageId>1");
     }
 
+    private function fix_whitespace() {
+        $result = $this->conf->qe("select * from ContactInfo");
+        $mq = Dbl::make_multi_qe_stager($this->conf->dblink);
+        while (($u = Contact::fetch($result, $this->conf))) {
+            $u->firstName = simplify_whitespace(($fn = $u->firstName));
+            $u->lastName = simplify_whitespace(($ln = $u->lastName));
+            $u->affiliation = simplify_whitespace(($af = $u->affiliation));
+            $un = $u->unaccentedName;
+            $u->unaccentedName = $u->db_searchable_name();
+            if ($fn !== $u->firstName || $ln !== $u->lastName
+                || $af !== $u->affiliation || $un !== $u->unaccentedName) {
+                $mq("update ContactInfo set firstName=?, lastName=?, affiliation=?, unaccentedName=? where contactId=?", $u->firstName, $u->lastName, $u->affiliation, $u->unaccentedName, $u->contactId);
+            }
+        }
+        $mq(null);
+    }
+
     /** @return CheckInvariants_Batch */
     static function make_args($argv) {
         $arg = (new Getopt)->long(
@@ -180,7 +201,7 @@ class CheckInvariants_Batch {
             "verbose,V Be verbose",
             "fix-autosearch ! Repair any incorrect autosearch tags",
             "fix-inactive ! Repair any inappropriately inactive documents",
-            "fix[] =PROBLEM Repair PROBLEM [all, autosearch, inactive, setting, document-match]",
+            "fix[] =PROBLEM Repair PROBLEM [all, autosearch, inactive, setting, document-match, whitespace]",
             "color",
             "no-color !",
             "pad-prefix !"

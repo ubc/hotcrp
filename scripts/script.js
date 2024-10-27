@@ -379,7 +379,9 @@ function log_jserror(errormsg, error, noconsole) {
 (function () {
     var old_onerror = window.onerror, nerrors_logged = 0;
     window.onerror = function (errormsg, url, lineno, colno, error) {
-        if ((url || !lineno) && ++nerrors_logged <= 10) {
+        if ((url || !lineno)
+            && ++nerrors_logged <= 10
+            && !/(?:moz|safari|chrome)-extension|AdBlock/.test(errormsg)) {
             var x = {error: errormsg, url: url, lineno: lineno};
             if (colno)
                 x.colno = colno;
@@ -672,12 +674,6 @@ var urldecode = function (s) {
         return s;
     return decodeURIComponent(s.replace(/\+/g, "%20"));
 };
-
-function text_to_html(text) {
-    var n = document.createElement("div");
-    n.appendChild(document.createTextNode(text));
-    return n.innerHTML;
-}
 
 function text_eq(a, b) {
     if (a === b)
@@ -2540,6 +2536,7 @@ return function (content, bubopt) {
             ds = /^[ahv]$/.test(dsx) ? dsx : "a";
 
         var wpos = $(window).geometry();
+        $(bubdiv).css({maxWidth: "", left: "", top: ""});
         var bpos = make_bpos(wpos, dsx);
 
         if (ds === "a") {
@@ -2666,31 +2663,38 @@ return function (content, bubopt) {
         },
         html: function (content) {
             var n = bubch[1];
-            if (content === undefined)
+            if (content === undefined) {
                 return n.innerHTML;
+            }
             if (typeof content === "string"
                 && content === n.innerHTML
-                && bubdiv.style.visibility === "visible")
+                && bubdiv.style.visibility === "visible") {
                 return bubble;
-            nearpos && $(bubdiv).css({maxWidth: "", left: "", top: ""});
-            if (typeof content === "string")
+            }
+            if (typeof content === "string") {
                 n.innerHTML = content;
-            else if (content && content.jquery) {
+            } else if (content && content.jquery) {
                 n.replaceChildren();
                 content.appendTo(n);
-            } else
+            } else {
                 n.replaceChildren(content);
+            }
             nearpos && show();
             return bubble;
         },
         text: function (text) {
-            if (text === undefined)
+            if (text === undefined) {
                 return $(bubch[1]).text();
-            else
-                return bubble.html(text ? text_to_html(text) : text);
+            }
+            return bubble.replace_content(text);
         },
         content_node: function () {
             return bubch[1];
+        },
+        replace_content: function (...es) {
+            bubch[1].replaceChildren(...es);
+            nearpos && show();
+            return bubble;
         },
         hover: function (enter, leave) {
             $(bubdiv).hover(enter, leave);
@@ -2717,9 +2721,8 @@ return function (content, bubopt) {
 })();
 
 
-var global_tooltip;
 hotcrp.tooltip = (function ($) {
-var builders = {};
+var builders = {}, global_tooltip = null;
 
 function prepare_info(elt, info) {
     var xinfo = elt.getAttribute("data-tooltip-info");
@@ -2759,7 +2762,7 @@ function show_tooltip(info) {
     var tt, bub = null, to = null, near = null,
         refcount = 0, content = info.content;
 
-    function erase() {
+    function close() {
         to = clearTimeout(to);
         bub && bub.remove();
         $self.removeData("tooltipState");
@@ -2811,11 +2814,10 @@ function show_tooltip(info) {
             var delay = info.type === "focus" ? 0 : 200;
             to = clearTimeout(to);
             if (--refcount == 0 && info.type !== "sticky")
-                to = setTimeout(erase, delay);
+                to = setTimeout(close, delay);
             return tt;
         },
-        close: erase,
-        erase: erase, /* XXX backward compat */
+        close: close,
         _element: $self[0],
         html: function (new_content) {
             if (new_content === undefined) {
@@ -2861,7 +2863,11 @@ tooltip.close = function (e) {
     var tt = e ? $(e).data("tooltipState") : global_tooltip;
     tt && tt.close();
 };
-tooltip.erase = tooltip.close; /* XXX backward compat */
+tooltip.close_under = function (e) {
+    if (global_tooltip && e.contains(global_tooltip.near())) {
+        global_tooltip.close();
+    }
+};
 tooltip.add_builder = function (name, f) {
     builders[name] = f;
 };
@@ -3318,7 +3324,7 @@ function resize(b) {
         document.body.style.minHeight = "calc(100vh - " + h + "px)";
     } else {
         for (const e of offs) {
-            const bo = e.getAttribute("data-banner-offset");
+            const bo = e.getAttribute("data-banner-offset") || "";
             e.style[bo.startsWith("B") ? "bottom" : "top"] = null;
         }
         document.body.style.minHeight = null;
@@ -3343,10 +3349,7 @@ return {
     remove: function (id) {
         const e = $$(id);
         if (e) {
-            if (global_tooltip
-                && e.contains(global_tooltip.near())) {
-                global_tooltip.close();
-            }
+            hotcrp.tooltip.close_under(e);
             const b = e.parentElement;
             e.remove();
             if (!b.firstChild) {
@@ -3645,10 +3648,7 @@ function display_tracker() {
         t = tracker_html(dl.tracker);
     }
     if (t !== last_tracker_html) {
-        if (global_tooltip
-            && mne.contains(global_tooltip.near())) {
-            global_tooltip.close();
-        }
+        hotcrp.tooltip.close_under(mne);
         last_tracker_html = mne.innerHTML = t;
         $(mne).awaken();
         if (tracker_has_format)
@@ -3881,7 +3881,7 @@ handle_ui.on("js-tracker", function (evt) {
         $pu.on("closedialog", clear_elapsed)
             .on("click", "button[name=new]", new_tracker)
             .on("click", "button[name=stopall]", stop_all)
-            .on("submit", "form", submit);
+            .on("submit", submit);
     }
     if (evt.shiftKey
         || evt.ctrlKey
@@ -4675,6 +4675,19 @@ function jump_hash(hash, focus) {
     return false;
 }
 
+function hashjump_destination(e, p) {
+    const eg = $(e).geometry(), pg = $(p).geometry(), wh = $(window).height();
+    if ((eg.width > 0 || eg.height > 0)
+        && (pg.top > eg.top || eg.top - pg.top > wh * 0.75)) {
+        return false;
+    }
+    $(".hashtarget").removeClass("hashtarget");
+    const border = wh > 300 && !hasClass(p, "revcard") ? 20 : 0;
+    window.scroll(0, pg.top - Math.max(border, (wh - pg.height) * 0.25));
+    focus_at(e);
+    return true;
+}
+
 handle_ui.on("hashjump.js-hash", function (hashc, focus) {
     if (hashc.length > 1 || (hashc.length === 1 && typeof hashc[0] !== "string")) {
         hashc = [];
@@ -4684,10 +4697,10 @@ handle_ui.on("hashjump.js-hash", function (hashc, focus) {
     }
 
     // look up destination element
-    var hash = hashc[0] || "", m, e, p;
+    let hash = hashc[0] || "", m, e, p;
     if (hash === "" || hash === "default") {
         e = $$("default");
-        hash = ""
+        hash = location.hash = "";
     } else {
         e = $$(hash);
         if (!e
@@ -4698,11 +4711,12 @@ handle_ui.on("hashjump.js-hash", function (hashc, focus) {
             location.hash = "#" + hash;
         }
     }
-
     if (!e) {
-        /* do nothing */
-    } else if (hasClass(e, "is-tla")) {
-        // tabbed UI
+        return;
+    }
+
+    // tabbed UI
+    if (hasClass(e, "is-tla")) {
         if (!hasClass(e, "active")) {
             $(".is-tla, .papmode").removeClass("active");
             $(".tll").removeClass("active").attr("aria-selected", "false");
@@ -4717,19 +4731,34 @@ handle_ui.on("hashjump.js-hash", function (hashc, focus) {
         }
         focus && focus_within(e);
         return true;
-    } else if ((p = e.closest(".pfe, .rfe, .f-i, .form-g, .form-section, .entryi, .checki"))) {
-        // highlight destination
-        var eg = $(e).geometry(), pg = $(p).geometry(), wh = $(window).height();
-        if ((eg.width <= 0 && eg.height <= 0)
-            || (pg.top <= eg.top && eg.top - pg.top <= wh * 0.75)) {
-            $(".tla-highlight").removeClass("tla-highlight");
-            window.scroll(0, pg.top - Math.max(wh > 300 ? 20 : 0, (wh - pg.height) * 0.25));
-            $(p).find("label, .field-title").first().addClass("tla-highlight");
-            focus_at(e);
-            return true;
-        }
-    } else if (hasClass(e, "need-anchor-unfold")) {
+    }
+
+    // highlight destination
+    if ((p = e.closest(".pfe, .rfe, .f-i, .form-g, .form-section, .entryi, .checki"))
+        && hashjump_destination(e, p)) {
+        $(p).find("label, .field-title").first().addClass("hashtarget");
+        return true;
+    }
+
+    // anchor unfolding
+    if (hasClass(e, "need-anchor-unfold")) {
         foldup.call(e, null, {open: true});
+    }
+
+    // comments
+    if (hash.startsWith("cx")
+        && hasClass(e, "cmtt")
+        && (p = e.closest("article"))
+        && hasClass(p, "cmtcard")
+        && p.id) {
+        hash = p.id;
+        location.hash = "#" + hash;
+    }
+    if ((hasClass(e, "cmtcard") || hasClass(e, "revcard"))
+        && hashjump_destination(e, e)
+        && hash !== "cnew") {
+        addClass(e, "hashtarget");
+        return true;
     }
 }, -1);
 
@@ -5086,12 +5115,13 @@ function populate(e, v, placeholder) {
 }
 
 handle_ui.on("input.js-email-populate", function () {
-    var self = this,
-        v = self.value.toLowerCase().trim(),
-        f = this.form || this.closest("form"),
+    const self = this, f = this.form || this.closest("form");
+    if (!f) {
+        return;
+    }
+    let v = self.value.toLowerCase().trim(),
         fn = null, ln = null, nn = null, af = null,
-        country = null, orcid = null, placeholder = false,
-        idx;
+        country = null, orcid = null, placeholder = false, idx;
     if (this.name === "email" || this.name === "uemail") {
         fn = f.elements.firstName;
         ln = f.elements.lastName;
@@ -5107,38 +5137,46 @@ handle_ui.on("input.js-email-populate", function () {
         idx = parseInt(this.name.substring(9));
         nn = f.elements["contacts:" + idx + ":name"];
     }
-    if (!fn && !ln && !nn && !af)
+    if (!fn && !ln && !nn && !af) {
         return;
+    }
 
     function success(data) {
         if (data) {
-            if (data.email)
+            if (data.email) {
                 data.lemail = data.email.toLowerCase();
-            else
+            } else {
                 data.lemail = v + "~";
-            if (!email_info.length)
+            }
+            if (!email_info.length) {
                 email_info_at = now_sec();
-            var i = 0;
-            while (i !== email_info.length && email_info[i] !== v)
+            }
+            let i = 0;
+            while (i !== email_info.length && email_info[i] !== v) {
                 i += 2;
-            if (i === email_info.length)
+            }
+            if (i === email_info.length) {
                 email_info.push(v, data);
+            }
         }
-        if (!data || !data.email || data.lemail !== v)
+        if (!data || !data.email || data.lemail !== v) {
             data = {};
+        }
         if (self.value.trim() !== v
-            && self.getAttribute("data-populated-email") === v)
+            && self.getAttribute("data-populated-email") === v) {
             return;
-        if (!data.name) {
-            if (data.firstName && data.lastName)
-                data.name = data.firstName + " " + data.lastName;
-            else if (data.lastName)
-                data.name = data.lastName;
-            else
-                data.name = data.firstName;
         }
         fn && populate(fn, data.firstName || "", placeholder);
         ln && populate(ln, data.lastName || "", placeholder);
+        if (nn && !data.name) {
+            if (data.firstName && data.lastName) {
+                data.name = data.firstName + " " + data.lastName;
+            } else if (data.lastName) {
+                data.name = data.lastName;
+            } else {
+                data.name = data.firstName;
+            }
+        }
         nn && populate(nn, data.name || "", placeholder);
         af && populate(af, data.affiliation || "", placeholder);
         country && populate(country, data.country || "", false);
@@ -5150,28 +5188,30 @@ handle_ui.on("input.js-email-populate", function () {
         self.setAttribute("data-populated-email", v);
     }
 
-    if (/^\S+@\S+\.\S\S+$/.test(v)) {
-        if ((email_info_at && now_sec() - email_info_at >= 3600)
-            || email_info.length > 200)
-            email_info = [];
-        var i = 0;
-        while (i !== email_info.length
-               && (v < email_info[i] || v > email_info[i + 1].lemail))
-            i += 2;
-        if (i === email_info.length) {
-            var args = {email: v};
-            if (hasClass(this, "want-potential-conflict")) {
-                args.potential_conflict = 1;
-                args.p = siteinfo.paperid;
-            }
-            $.ajax(hoturl("=api/user", args), {
-                method: "GET", success: success
-            });
-        } else if (v === email_info[i + 1].lemail) {
-            success(email_info[i + 1]);
-        } else {
-            success(null);
+    if (!/^\S+@\S+\.\S\S+$/.test(v)) {
+        success(null);
+        return;
+    }
+    if ((email_info_at && now_sec() - email_info_at >= 3600)
+        || email_info.length > 200) {
+        email_info = [];
+    }
+    let i = 0;
+    while (i !== email_info.length
+           && (v < email_info[i] || v > email_info[i + 1].lemail)) {
+        i += 2;
+    }
+    if (i === email_info.length) {
+        let args = {email: v};
+        if (hasClass(this, "want-potential-conflict")) {
+            args.potential_conflict = 1;
+            args.p = siteinfo.paperid;
         }
+        $.ajax(hoturl("=api/user", args), {
+            method: "GET", success: success
+        });
+    } else if (v === email_info[i + 1].lemail) {
+        success(email_info[i + 1]);
     } else {
         success(null);
     }
@@ -5254,7 +5294,7 @@ hotcrp.monitor_job = function (jobid, statuselt) {
     return new Promise(function (resolve, reject) {
         let tries = 0;
         function success(data) {
-            const dead = data.update_at && data.update_at < now_sec() - 40;
+            const dead = !data.ok || (data.update_at && data.update_at < now_sec() - 40);
             if (data.message_list) {
                 let ex = statuselt.firstElementChild;
                 while (ex && ex.nodeName === "H3") {
@@ -5490,7 +5530,7 @@ handle_ui.on(".js-badpairs-row", function (evt) {
     var tbody = $("#bptable > tbody"), n = tbody.children().length;
     if (hasClass(this, "more")) {
         ++n;
-        tbody.append('<tr><td class="rentry nw">or &nbsp;</td><td class="lentry"><span class="select"><select name="bpa' + n + '" class="badpairs"></select></span> &nbsp;and&nbsp; <span class="select"><select name="bpb' + n + '" class="badpairs"></select></span></td></tr>');
+        tbody.append('<tr><td class="rxcaption nw">or</td><td class="lentry"><span class="select"><select name="bpa' + n + '" class="badpairs"></select></span> &nbsp;and&nbsp; <span class="select"><select name="bpb' + n + '" class="badpairs"></select></span></td></tr>');
         var options = tbody.find("select").first().html();
         tbody.find("select[name=bpa" + n + "], select[name=bpb" + n + "]").html(options).val("none");
     } else if (n > 1) {
@@ -5524,12 +5564,12 @@ handle_ui.on(".js-autoassign-prepare", function () {
 
 function row_fill(row, i, defaults, changes) {
     ++i;
-    var ipts, e, m, num = i + ".";
+    let e, m;
+    const numstr = i + ".";
     if ((e = row.querySelector(".row-counter"))
-        && e.textContent !== num)
-        e.replaceChildren(num);
-    ipts = row.querySelectorAll("input, select, textarea");
-    for (e of ipts) {
+        && e.textContent !== numstr)
+        e.replaceChildren(numstr);
+    for (e of row.querySelectorAll("input, select, textarea")) {
         if (!e.name
             || !(m = /^(.*?)(\d+|\$)(|:.*)$/.exec(e.name))
             || m[2] == i)
@@ -5555,10 +5595,12 @@ function is_row_interesting(row) {
 }
 
 function row_add(group, before, button) {
-    var row, id = (button && button.getAttribute("data-row-template"))
+    const id = (button && button.getAttribute("data-row-template"))
         || group.getAttribute("data-row-template");
-    if (!id || !(row = document.getElementById(id)))
+    let row;
+    if (!id || !(row = document.getElementById(id))) {
         return null;
+    }
     if ("content" in row) {
         row = row.content.cloneNode(true).firstElementChild;
     } else {
@@ -5570,9 +5612,8 @@ function row_add(group, before, button) {
 }
 
 function row_order_defaults(group) {
-    var ipts = group.querySelectorAll("input, select, textarea"),
-        e, defaults = {};
-    for (e of ipts) {
+    const defaults = {};
+    for (const e of group.querySelectorAll("input, select, textarea")) {
         if (e.name)
             defaults[e.name] = input_default_value(e);
     }
@@ -5580,9 +5621,9 @@ function row_order_defaults(group) {
 }
 
 function row_order_drag_confirm(group, defaults) {
-    var i, row, changes = [];
+    const changes = [];
     defaults = defaults || row_order_defaults(group);
-    for (row = group.firstElementChild, i = 0;
+    for (let row = group.firstElementChild, i = 0;
          row; row = row.nextElementSibling, ++i) {
         row_fill(row, i, defaults, changes);
     }
@@ -5618,7 +5659,7 @@ function row_order_autogrow(group, defaults) {
             }
         } else {
             while (nr > min_rows && nr > 1 && !hasClass(row, "row-order-inserted")) {
-                let prev_row = row.previousElementSibling;
+                const prev_row = row.previousElementSibling;
                 if (is_row_interesting(prev_row)) {
                     break;
                 }
@@ -5628,7 +5669,7 @@ function row_order_autogrow(group, defaults) {
             }
         }
     }
-    var ndig = Math.ceil(Math.log10(nr + 1)).toString();
+    const ndig = Math.ceil(Math.log10(nr + 1)).toString();
     if (group.getAttribute("data-row-counter-digits") !== ndig) {
         group.setAttribute("data-row-counter-digits", ndig);
     }
@@ -5647,6 +5688,7 @@ handle_ui.on("dragstart.row-order-draghandle", function (evt) {
         changed && row_order_drag_confirm(group);
     }).start(evt);
 });
+
 hotcrp.dropmenu.add_builder("row-order-draghandle", function () {
     const row = this.closest(".draggable"), group = row.parentElement;
     let details = this.closest("details"), menu;
@@ -5668,8 +5710,14 @@ hotcrp.dropmenu.add_builder("row-order-draghandle", function () {
         attr["type"] = "button";
         return $e("li", attr.disabled ? "disabled" : "has-link", $e("button", attr, text));
     }
-    menu.append(buttonli("link ui row-order-dragmenu move-up", {disabled: !row.previousElementSibling}, "Move up"));
-    menu.append(buttonli("link ui row-order-dragmenu move-down", {disabled: !row.nextElementSibling}, "Move down"));
+    let sib = row.previousElementSibling;
+    menu.append(buttonli("link ui row-order-dragmenu move-up", {
+        disabled: !sib || hasClass(sib, "row-order-barrier")
+    }, "Move up"));
+    sib = row.nextElementSibling;
+    menu.append(buttonli("link ui row-order-dragmenu move-down", {
+        disabled: !sib || hasClass(sib, "row-order-barrier")
+    }, "Move down"));
     if (group.hasAttribute("data-row-template")) {
         const max_rows = +group.getAttribute("data-max-rows") || 0;
         if (max_rows <= 0 || row_order_count(group) < max_rows) {
@@ -5679,13 +5727,19 @@ hotcrp.dropmenu.add_builder("row-order-draghandle", function () {
     }
     menu.append(buttonli("link ui row-order-dragmenu remove", {disabled: !row_order_allow_remove(group)}, "Remove"));
 });
+
 handle_ui.on("row-order-dragmenu", function () {
     hotcrp.dropmenu.close(this);
-    var row = this.closest(".draggable"), sib, group = row.parentElement,
+    const row = this.closest(".draggable"), group = row.parentElement,
         defaults = row_order_defaults(group);
-    if (hasClass(this, "move-up") && (sib = row.previousElementSibling)) {
+    let sib;
+    if (hasClass(this, "move-up")
+        && (sib = row.previousElementSibling)
+        && !hasClass(sib, "row-order-barrier")) {
         sib.before(row);
-    } else if (hasClass(this, "move-down") && (sib = row.nextElementSibling)) {
+    } else if (hasClass(this, "move-down")
+               && (sib = row.nextElementSibling)
+               && !hasClass(sib, "row-order-barrier")) {
         sib.after(row);
     } else if (hasClass(this, "remove") && row_order_allow_remove(group)) {
         row.remove();
@@ -5696,6 +5750,7 @@ handle_ui.on("row-order-dragmenu", function () {
     }
     row_order_drag_confirm(group, defaults);
 });
+
 handle_ui.on("row-order-append", function () {
     var group = document.getElementById(this.getAttribute("data-rowset")),
         nr, row;
@@ -6563,18 +6618,20 @@ function Score_ReviewField(fj) {
 
 Object.setPrototypeOf(Score_ReviewField.prototype, DiscreteValues_ReviewField.prototype);
 
-Score_ReviewField.prototype.unparse_symbol = function (val, split) {
-    if (val === (val | 0) && this.symbols[val - 1] != null)
+Score_ReviewField.prototype.unparse_symbol = function (val) {
+    if (val === (val | 0) && this.symbols[val - 1] != null) {
         return this.symbols[val - 1];
-    var rval = (split ? Math.round(val * 2) / 2 : Math.round(val)) - 1;
-    if (this.default_numeric || rval < 0 || rval > this.symbols.length - 1)
-        return val.toFixed(2);
-    else if (rval === (rval | 0))
-        return this.symbols[rval];
-    else if (this.flip)
+    }
+    const rval = Math.round(val * 2) / 2 - 1;
+    if (this.default_numeric || rval < 0 || rval > this.symbols.length - 1) {
+        return val;
+    } else if (rval === (rval | 0)) {
+        return this.symbols[rval].toString();
+    } else if (this.flip) {
         return this.symbols[rval + 0.5].concat("~", this.symbols[rval - 0.5]);
-    else
+    } else {
         return this.symbols[rval - 0.5].concat("~", this.symbols[rval + 0.5]);
+    }
 };
 
 Score_ReviewField.prototype.render_in = function (fv, rrow, fe) {
@@ -6620,18 +6677,19 @@ Checkbox_ReviewField.prototype.className = function (val) {
 };
 
 Checkbox_ReviewField.prototype.unparse_symbol = function (val) {
-    if (val === true || val === false)
+    if (val === true || val === false) {
         return val ? "✓" : "✗";
-    else if (val < 0.125)
+    } else if (val < 0.125) {
         return "✗";
-    else if (val < 0.375)
+    } else if (val < 0.375) {
         return "¼✓";
-    else if (val < 0.625)
+    } else if (val < 0.625) {
         return "½✓";
-    else if (val < 0.875)
+    } else if (val < 0.875) {
         return "¾✓";
-    else
+    } else {
         return "✓";
+    }
 };
 
 Checkbox_ReviewField.prototype.render_in = function (fv, rrow, fe) {
@@ -6651,9 +6709,10 @@ function Checkboxes_ReviewField(fj) {
 Object.setPrototypeOf(Checkboxes_ReviewField.prototype, DiscreteValues_ReviewField.prototype);
 
 Checkboxes_ReviewField.prototype.unparse_symbol = function (val) {
-    if (!val || val !== (val | 0))
+    if (!val || val !== (val | 0)) {
         return "";
-    var s, b, t = [];
+    }
+    let s, b, t = [];
     for (s = b = 1; b <= val; b <<= 1, ++s) {
         if (val & b)
             t.push(this.symbols[s - 1]);
@@ -7391,7 +7450,7 @@ function cmt_render(cj, editing) {
 
     // header
     const hdre = $e("header", cj.editable ? "cmtt ui js-click-child" : "cmtt");
-    cj.is_new || (hdre.id = cj.cid);
+    cj.is_new || (hdre.id = "cx" + cj.cid);
     if (cj.response && cj.text !== false) {
         const h2 = $e("h2");
         let cnc = h2;
@@ -9230,15 +9289,18 @@ function tablelist(elt) {
     return elt ? elt.closest(".pltable") : null;
 }
 
-function tablelist_each_facet(tbl, f) {
-    if (hasClass(tbl, "pltable-facets")) {
-        for (tbl = tbl.firstChild; tbl; tbl = tbl.nextSibling) {
-            if (tbl.nodeName === "TABLE")
-                f(tbl);
-        }
+function tablelist_facets(tbl) {
+    if (!tbl) {
+        return [];
+    } else if (!hasClass(tbl, "pltable-facets")) {
+        return [tbl];
     } else {
-        f(tbl);
+        return tbl.children;
     }
+}
+
+function facet_tablelist(tfacet) {
+    return hasClass(tfacet, "pltable-facet") ? tfacet.parentElement : tfacet;
 }
 
 function tablelist_search(tbl) {
@@ -9316,17 +9378,20 @@ function tagannorow_fill(row, anno) {
     }
 }
 
-function tagannorow_add(tbl, tbody, before, anno) {
-    tbl = tbl || tablelist(tbody);
-    var $r = $(tbl).find("thead > tr.pl_headrow:first-child > th"),
-        selcol = -1, titlecol = -1, ncol = $r.length, i, x, tr;
-    for (i = 0; i !== ncol; ++i) {
-        if (hasClass($r[i], "pl_sel"))
-            selcol = i;
-        else if (hasClass($r[i], "pl_title"))
-            titlecol = i;
+function tagannorow_add(tfacet, tbody, before, anno) {
+    let selcol = -1, titlecol = -1, ncol = 0;
+    for (const th of tfacet.tHead.rows[0].children) {
+        if (th.nodeName === "TH") {
+            if (hasClass(th, "pl_sel")) {
+                selcol = ncol;
+            } else if (hasClass(th, "pl_title")) {
+                titlecol = ncol;
+            }
+            ++ncol;
+        }
     }
 
+    let tr;
     if (anno.blank) {
         tr = $e("tr", "plheading-blank",
             $e("td", {"class": "plheading", colspan: ncol}));
@@ -9358,11 +9423,12 @@ function tagannorow_add(tbl, tbody, before, anno) {
             $e("span", "plheading-count")));
     }
 
-    if (anno.tag
-        && anno.annoid
-        && (x = tbl.getAttribute("data-drag-action")).startsWith("tagval:")
-        && strnatcasecmp(x, "#" + tag_canonicalize(anno.tag)) === 0) {
-        add_draghandle(tr);
+    if (anno.tag && anno.annoid) {
+        const dra = facet_tablelist(tfacet).getAttribute("data-drag-action") || "";
+        if (dra.startsWith("tagval:")
+            && strnatcasecmp(dra, "tagval:" + tag_canonicalize(anno.tag)) === 0) {
+            add_draghandle(tr);
+        }
     }
     tbody.insertBefore(tr, before);
     tagannorow_fill(tr, anno)
@@ -9371,51 +9437,62 @@ function tagannorow_add(tbl, tbody, before, anno) {
 
 
 function tablelist_reorder(tbl, pids, groups, remove_all) {
-    var tbody = tbl.tBodies[0], pida = "data-pid";
-    remove_all && $(tbody).detach();
-
-    var rowmap = [], xpid = 0, cur = tbody.firstChild, next;
-    while (cur) {
-        if (cur.nodeType === 1 && (xpid = cur.getAttribute(pida)))
-            rowmap[xpid] = rowmap[xpid] || [];
-        next = cur.nextSibling;
-        if (xpid)
-            rowmap[xpid].push(cur);
-        else
-            tbody.removeChild(cur);
-        cur = next;
+    const pida = "data-pid", tfacets = tablelist_facets(tbl), tbodies = [], rowmap = [];
+    for (const tf of tfacets) {
+        const tb = tf.tBodies[0];
+        tbodies.push(tb);
+        remove_all && $(tb).detach();
+        let cur = tb.firstChild;
+        while (cur) {
+            const xpid = cur.nodeType === 1 && cur.getAttribute(pida),
+                next = cur.nextSibling;
+            if (xpid) {
+                rowmap[xpid] = rowmap[xpid] || [];
+                rowmap[xpid].push(cur);
+            } else {
+                cur.remove();
+            }
+            cur = next;
+        }
     }
 
-    cur = tbody.firstChild;
-    var cpid = cur ? cur.getAttribute(pida) : 0;
-
-    var pid_index = 0, grp_index = 0;
+    let tf = tfacets[0], tb = tbodies[0],
+        cur = tb.firstChild, cpid = cur && cur.getAttribute(pida),
+        pid_index = 0, grp_index = 0;
     groups = groups || [];
     while (pid_index < pids.length || grp_index < groups.length) {
-        // handle headings
-        if (grp_index < groups.length && groups[grp_index].pos == pid_index) {
+        if (grp_index < groups.length && groups[grp_index].pos === pid_index) {
+            if (tbodies.length > 1) {
+                tf = tfacets[grp_index];
+                tb = tbodies[grp_index];
+                cur = tb.firstChild;
+                cpid = cur && cur.getAttribute(pida);
+            }
             if (grp_index > 0 || !groups[grp_index].blank) {
-                tagannorow_add(tbl, tbody, cur, groups[grp_index]);
+                tagannorow_add(tf, tb, cur, groups[grp_index]);
             }
             ++grp_index;
         } else {
-            var npid = pids[pid_index];
+            const npid = pids[pid_index];
             if (cpid == npid) {
                 do {
                     cur = cur.nextSibling;
-                    if (!cur || cur.nodeType == 1)
-                        cpid = cur ? cur.getAttribute(pida) : 0;
+                    cpid = cur && cur.getAttribute(pida);
                 } while (cpid == npid);
             } else {
-                for (var j = 0; rowmap[npid] && j < rowmap[npid].length; ++j)
-                    tbody.insertBefore(rowmap[npid][j], cur);
-                delete rowmap[npid];
+                for (const tr of rowmap[npid] || []) {
+                    tb.insertBefore(tr, cur);
+                }
             }
             ++pid_index;
         }
     }
 
-    remove_all && $(tbody).appendTo(tbl);
+    if (remove_all) {
+        for (let i = 0; i !== tfacets.length; ++i) {
+            tfacets[i].insertBefore(tbodies[i], tfacets[i].tFoot);
+        }
+    }
     tablelist_postreorder(tbl);
 }
 
@@ -9433,20 +9510,22 @@ function tablelist_postreorder(tbl) {
         nh = 0;
         lasthead = head;
     }
-    for (let cur = tbl.tBodies[0].firstChild; cur; cur = cur.nextSibling) {
-        if (cur.nodeName !== "TR") {
-            continue;
-        } else if (hasClass(cur, "plheading")) {
-            change_heading(cur);
-        } else if (hasClass(cur, "pl")) {
-            e = !e;
-            ++n;
-            ++nh;
-            $(cur.firstChild).find(".pl_rownum").text(n + ". ");
-        }
-        if (hasClass(cur, e ? "k0" : "k1")) {
-            toggleClass(cur, "k0", !e);
-            toggleClass(cur, "k1", e);
+    for (const tf of tablelist_facets(tbl)) {
+        for (let cur = tf.tBodies[0].firstChild; cur; cur = cur.nextSibling) {
+            if (cur.nodeName !== "TR") {
+                continue;
+            } else if (hasClass(cur, "plheading")) {
+                change_heading(cur);
+            } else if (hasClass(cur, "pl")) {
+                e = !e;
+                ++n;
+                ++nh;
+                $(cur.firstChild).find(".pl_rownum").text(n + ". ");
+            }
+            if (hasClass(cur, e ? "k0" : "k1")) {
+                toggleClass(cur, "k0", !e);
+                toggleClass(cur, "k1", e);
+            }
         }
     }
     lasthead && change_heading(null);
@@ -9470,21 +9549,38 @@ function sorter_analyze(sorter) {
 }
 
 function tablelist_ids(tbl) {
-    var tbody = tbl.tBodies[0], tbl_ids = [], xpid;
-    for (var cur = tbody.firstChild; cur; cur = cur.nextSibling)
-        if (cur.nodeType === 1
-            && /^pl\b/.test(cur.className)
-            && (xpid = cur.getAttribute("data-pid")))
-            tbl_ids.push(+xpid);
-    return tbl_ids;
+    const ids = [];
+    let xpid;
+    for (const t of tablelist_facets(tbl)) {
+        for (const tr of t.tBodies[0].children) {
+            if (tr.nodeType === 1
+                && (tr.className === "pl" || tr.className.startsWith("pl "))
+                && (xpid = tr.getAttribute("data-pid"))) {
+                ids.push(+xpid);
+            }
+        }
+    }
+    return ids;
 }
 
-function tablelist_ids_equal(tbl, ids) {
-    var tbl_ids = tablelist_ids(tbl);
+function tablelist_compatible(tbl, data) {
+    if (hasClass(tbl, "pltable-facets")
+        && tbl.children.length !== data.groups.length) {
+        return false;
+    }
+    const tbl_ids = tablelist_ids(tbl), ids = [].concat(data.ids);
     tbl_ids.sort();
-    ids = [].concat(ids);
     ids.sort();
     return tbl_ids.join(" ") === ids.join(" ");
+}
+
+function facet_sortable_ths(tbl) {
+    const l = [];
+    for (const th of tbl.tHead.rows[0].children) {
+        if (th.nodeName === "TH" && hasClass(th, "sortable"))
+            l.push(th);
+    }
+    return l;
 }
 
 function tablelist_header_sorter(th) {
@@ -9552,7 +9648,7 @@ function tablelist_load(tbl, k, v) {
     }
     function success(data) {
         var use_history = tbl === mainlist() && k;
-        if (data.ok && data.ids && tablelist_ids_equal(tbl, data.ids)) {
+        if (data.ok && data.ids && tablelist_compatible(tbl, data)) {
             use_history && push_history_state();
             tablelist_apply(tbl, data, searchparam);
             use_history && push_history_state(hoturl_search(window.location.href, k, v));
@@ -9578,20 +9674,19 @@ function search_sort_click(evt) {
 function scoresort_change() {
     var tbl = mainlist();
     $.post(hoturl("=api/session"), {v: "scoresort=" + this.value});
-    if (tbl) {
-        tablelist_load(tbl, "scoresort", this.value);
-    }
+    tbl && tablelist_load(tbl, "scoresort", this.value);
 }
 
 function showforce_click() {
-    var tbl = mainlist(), v = this.checked ? 1 : null;
-    if (tbl) {
-        siteinfo.want_override_conflict = !!v;
-        $(tbl.tHead.rows[0]).find("th.sortable a.pl_sort").each(function () {
-            this.setAttribute("href", hoturl_search(this.getAttribute("href"), "forceShow", v));
-        });
-        tablelist_load(tbl, "forceShow", v);
+    const plt = mainlist(), v = this.checked ? 1 : null;
+    siteinfo.want_override_conflict = !!v;
+    for (const tbl of tablelist_facets(plt)) {
+        for (const th of facet_sortable_ths(tbl)) {
+            const a = th.querySelector("a.pl_sort");
+            a && a.setAttribute("href", hoturl_search(a.getAttribute("href"), "forceShow", v));
+        }
     }
+    plt && tablelist_load(plt, "forceShow", v);
 }
 
 if ("pushState" in window.history) {
@@ -10386,14 +10481,13 @@ Assign_DraggableTable.prototype.commit = function () {
 return {
     try_reorder: function (tbl, data) {
         if (data.search_params === tbl.getAttribute("data-search-params")
-            && tablelist_ids_equal(tbl, data.ids)) {
+            && tablelist_compatible(tbl, data)) {
             tablelist_reorder(tbl, data.ids, data.groups);
         }
     },
     prepare_draggable: function () {
-        tablelist_each_facet(this, function (tbl) {
-            var tr;
-            for (tr = tbl.tBodies[0].firstChild; tr; tr = tr.nextSibling) {
+        for (const tbl of tablelist_facets(this)) {
+            for (const tr of tbl.tBodies[0].children) {
                 if (tr.nodeName === "TR"
                     && (hasClass(tr, "pl")
                         || (hasClass(tr, "plheading") && tr.hasAttribute("data-anno-id")))
@@ -10401,7 +10495,7 @@ return {
                     add_draghandle(tr);
                 }
             }
-        });
+        }
     }
 };
 })();
@@ -10485,7 +10579,7 @@ function Plist(tbl) {
     this.taghighlighter = false;
     this.next_foldnum = 8;
     this._bypid = {};
-    var fs = JSON.parse(tbl.getAttribute("data-fields") || tbl.getAttribute("data-columns") /* XXX backward compat */), i;
+    var fs = JSON.parse(tbl.getAttribute("data-fields")), i;
     for (i = 0; i !== fs.length; ++i) {
         this.add_field(fs[i], true);
     }
@@ -10551,9 +10645,9 @@ function populate_pidrows(tbl, bypid) {
 Plist.prototype.pidrow = function (pid) {
     if (!(pid in this._bypid)) {
         var bypid = this._bypid;
-        tablelist_each_facet(this.pltable, function (tbl) {
+        for (const tbl of tablelist_facets(this.pltable)) {
             populate_pidrows(tbl, bypid);
-        });
+        }
     }
     return this._bypid[pid];
 };
@@ -11923,7 +12017,7 @@ handle_ui.on("js-remove-document", function () {
         $doc.find(".document-stamps, .document-shortformat").removeClass("hidden");
         $(this).removeClass("undelete").html("Delete");
     } else {
-        $(hidden_input(doce.getAttribute("data-document-name") + ":remove", "1", {"class": "document-remover", "data-default-value": ""})).appendTo($doc.find(".document-actions")).trigger("change");
+        $(hidden_input(doce.getAttribute("data-document-name") + ":delete", "1", {"class": "document-remover", "data-default-value": ""})).appendTo($doc.find(".document-actions")).trigger("change");
         if (!$en.find("del").length)
             $en.wrapInner("<del></del>");
         $doc.find(".document-uploader").trigger("hotcrp-change-document");
@@ -12261,7 +12355,7 @@ edit_conditions.document_count = function (ec, form) {
         if (this.getAttribute("data-dtype") == ec.dtype) {
             var name = this.getAttribute("data-document-name"),
                 preve = form.elements[name],
-                removee = form.elements[name + ":remove"],
+                removee = form.elements[name + ":delete"],
                 filee = form.elements[name + ":file"],
                 uploade = form.elements[name + ":upload"];
             if (!removee || !removee.value) {
@@ -13481,7 +13575,7 @@ var scheme_info = {
     sv: [0, 9], svr: [1, 9, "sv"], bupu: [0, 9], pubu: [1, 9, "bupu"],
     orbu: [0, 9], buor: [1, 9, "orbu"], viridis: [0, 9], viridisr: [1, 9, "viridis"],
     pkrd: [0, 9], rdpk: [1, 9, "pkrd"], turbo: [0, 9], turbor: [1, 9, "turbo"],
-    catx: [2, 10], none: [2, 1]
+    observablex: [2, 10], catx: [2, 10], none: [2, 1]
 }, sccolor = {};
 
 function make_fm9(n, max, flip, categorical) {
@@ -14021,7 +14115,6 @@ Object.assign(window.hotcrp, {
     // monitor_autoassignment
     // monitor_job
     // onload
-    paper_edit_conditions: function () {}, // XXX
     popup_skeleton: popup_skeleton,
     // render_list
     render_text: render_text,

@@ -1,6 +1,6 @@
 <?php
 // qsession.php -- HotCRP session handling; default is empty
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class Qsession {
     /** @var ?string
@@ -77,6 +77,7 @@ class Qsession {
                 return;
             }
             $this->sopen = true;
+            unset($curv["deletedat"]);
             foreach ($curv as $k => $v) {
                 $this->set($k, $v);
             }
@@ -98,8 +99,13 @@ class Qsession {
 
     /** @param ?string $sid
      * @return ?string */
-    function start($sid) {
+    protected function start($sid) {
         return null;
+    }
+
+    /** @return bool */
+    function is_open() {
+        return $this->sopen;
     }
 
     /** @return ?string */

@@ -1,14 +1,18 @@
 <?php
 // phpqsession.php -- HotCRP session handler wrapping PHP sessions
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
 class PHPQsession extends Qsession {
     function start($sid) {
-        if ($sid !== null) {
+        if ($sid !== null
+            && strlen($sid) >= 20
+            && strlen($sid) <= 128
+            && (ctype_alnum($sid) || preg_match('/\A[-,0-9A-Za-z]+\z/', $sid))) {
             session_id($sid);
         }
         session_start();
-        return session_id();
+        $sid = session_id();
+        return $sid !== "" ? $sid : null;
     }
 
     function new_sid() {

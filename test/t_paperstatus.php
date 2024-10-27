@@ -391,7 +391,7 @@ class PaperStatus_Tester {
     function test_save_draft_new_paper() {
         $ps = new PaperStatus($this->u_estrin);
         // NB old style of entries
-        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:name_1" => "Bobby Flay", "authors:email_1" => "flay@_.com", "has_submission" => 1]), null));
+        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["title" => "New paper", "abstract" => "This is an abstract\r\n", "has_authors" => "1", "authors:1:name" => "Bobby Flay", "authors:1:email" => "flay@_.com", "has_submission" => 1]), null));
         xassert_paper_status($ps);
         xassert($ps->has_change_at("title"));
         xassert($ps->has_change_at("abstract"));
@@ -582,28 +582,6 @@ class PaperStatus_Tester {
         xassert_eqq($newpaper->option(1)->value, 10);
     }
 
-    function test_save_old_authors() {
-        $ps = new PaperStatus($this->u_estrin);
-        xassert($ps->prepare_save_paper_web(new Qrequest("POST", ["has_authors" => "1", "auname1" => "Robert Flay", "auemail1" => "flay@_.com"]), $this->newpaper1));
-        xassert($ps->has_change_at("authors"));
-        xassert($ps->execute_save());
-        xassert_paper_status($ps);
-
-        $newpaper = $this->u_estrin->checked_paper_by_id($ps->paperId);
-        xassert($newpaper);
-        xassert_eqq($newpaper->title, "New paper");
-        xassert_eqq($newpaper->abstract, "This is an abstract");
-        xassert_eqq($newpaper->abstract(), "This is an abstract");
-        xassert_eqq(count($newpaper->author_list()), 1);
-        $aus = $newpaper->author_list();
-        xassert_eqq($aus[0]->firstName, "Robert");
-        xassert_eqq($aus[0]->lastName, "Flay");
-        xassert_eqq($aus[0]->email, "flay@_.com");
-        xassert($newpaper->timeSubmitted <= 0);
-        xassert($newpaper->timeWithdrawn <= 0);
-        xassert_eqq($newpaper->option(1)->value, 10);
-    }
-
     function test_save_new_authors() {
         $qreq = new Qrequest("POST", ["status:submit" => 1, "has_opt2" => "1", "opt2:1" => "new", "title" => "Paper about mantis shrimp", "has_authors" => "1", "authors:1:name" => "David Attenborough", "authors:1:email" => "atten@_.com", "authors:1:affiliation" => "BBC", "abstract" => "They see lots of colors.", "has_submission" => "1"]);
         $qreq->set_file("submission", ["name" => "amazing-sample.pdf", "tmp_name" => SiteLoader::find("etc/sample.pdf"), "type" => "application/pdf", "error" => UPLOAD_ERR_OK]);
@@ -696,7 +674,7 @@ class PaperStatus_Tester {
         xassert(!$ps->has_problem());
         xassert_array_eqq($ps->changed_keys(), ["abstract"], true);
         $nprow1 = $this->u_estrin->checked_paper_by_id($this->pid2);
-        xassert_eqq($nprow1->abstract, "They\nsee\r\nlots of\n\n\ncolors.");
+        xassert_eqq($nprow1->abstract, "They\nsee\nlots of\n\n\ncolors.");
     }
 
     function test_save_collaborators() {

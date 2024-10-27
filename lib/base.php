@@ -111,15 +111,12 @@ function preg_matchpos($pattern, $subject) {
 /** @param string $text
  * @return string */
 function cleannl($text) {
-    if (substr($text, 0, 3) === "\xEF\xBB\xBF") {
+    if (str_starts_with($text, "\xEF\xBB\xBF")) {
         $text = substr($text, 3);
     }
     if (strpos($text, "\r") !== false) {
         $text = str_replace("\r\n", "\n", $text);
         $text = str_replace("\r", "\n", $text);
-    }
-    if ($text !== "" && $text[strlen($text) - 1] !== "\n") {
-        $text .= "\n";
     }
     return $text;
 }
@@ -193,13 +190,12 @@ function convert_to_utf8($str) {
     }
     if (is_valid_utf8($str)) {
         return $str;
+    }
+    $pfx = substr($str, 0, 5000);
+    if (substr_count($pfx, "\r") > 1.5 * substr_count($pfx, "\n")) {
+        return mac_os_roman_to_utf8($str);
     } else {
-        $pfx = substr($str, 0, 5000);
-        if (substr_count($pfx, "\r") > 1.5 * substr_count($pfx, "\n")) {
-            return mac_os_roman_to_utf8($str);
-        } else {
-            return windows_1252_to_utf8($str);
-        }
+        return windows_1252_to_utf8($str);
     }
 }
 

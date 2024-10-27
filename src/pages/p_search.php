@@ -418,7 +418,9 @@ class Search_Page {
 
     static function redisplay(Contact $user, Qrequest $qreq) {
         // change session based on request
-        Session_API::parse_view($qreq, "pl", $qreq);
+        if ($qreq->qsession()->is_open()) {
+            Session_API::parse_view($qreq, "pl", $qreq);
+        }
         // redirect, including differences between search and request
         // create PaperList
         if (isset($qreq->q)) {
@@ -477,7 +479,7 @@ class Search_Page {
             $qreq->print_header("Search", "search");
             $conf->error_msg($conf->_("<0>You aren’t allowed to search {submissions}"));
             $qreq->print_footer();
-            exit;
+            exit();
         }
 
         // paper selection

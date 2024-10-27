@@ -168,7 +168,7 @@ abstract class Fexpr implements JsonSerializable {
     /** @return bool */
     function nonnullable_format() {
         return $this->_format === Fexpr::FNUMERIC
-               || $this->_format === Fexpr::FBOOL;
+            || $this->_format === Fexpr::FBOOL;
     }
 
     /** @return bool */
@@ -234,8 +234,9 @@ abstract class Fexpr implements JsonSerializable {
 
     private function _typecheck_format() {
         $commonf = null;
-        $nonnull = true;
-        foreach ($this->inferred_format() ?? [] as $fe) {
+        $inferred = $this->inferred_format();
+        $nonnull = !empty($inferred);
+        foreach ($inferred ?? [] as $fe) {
             $nonnull = $nonnull && $fe->nonnull_format();
             if ($fe->format() < Fexpr::FNUMERIC) {
                 /* ignore it */
@@ -629,7 +630,7 @@ class Additive_Fexpr extends Fexpr {
         if ((!$d0 && !$d1)
             || (!$d0 && $f0)
             || (!$d1 && $f1)) {
-            return null;
+            return $this->args;
         } else if ($this->op === "-" && $d0 && $d1 && !$delta0 && !$delta1) {
             $fx = Fexpr::FDATEDELTA;
         } else if ($d0 && (!$d1 || $delta1)) {
@@ -637,7 +638,7 @@ class Additive_Fexpr extends Fexpr {
         } else if ($d1 && (!$d0 || $delta0)) {
             $fx = $delta1 ? Fexpr::FDATEDELTA : Fexpr::FDATE;
         } else {
-            return null;
+            return $this->args;
         }
         if ($f0 === Fexpr::FTIME || $f0 === Fexpr::FTIMEDELTA
             || $f1 === Fexpr::FTIME || $f1 === Fexpr::FTIMEDELTA) {
@@ -660,6 +661,9 @@ class Multiplicative_Fexpr extends Fexpr {
     }
     function typecheck(Formula $formula) {
         return $this->typecheck_arguments($formula, true);
+    }
+    function inferred_format() {
+        return $this->args;
     }
     function compile(FormulaCompiler $state) {
         $t1 = $state->_addltemp($this->args[0]->compile($state));
@@ -1048,7 +1052,8 @@ class Extremum_Fexpr extends Aggregate_Fexpr {
     }
     function compile(FormulaCompiler $state) {
         $cmp = $this->compiled_relation($this->op === "min" ? "<" : ">");
-        return $state->_compile_loop("null", "(~r~ === null || (~l~ !== null && ~l~ {$cmp} ~r~) ? ~l~ : ~r~)", $this);
+        $cmpx = $this->args[0]->nonnull_format() ? "~l~ {$cmp} ~r~" : "(~l~ !== null && ~l~ {$cmp} ~r~)";
+        return $state->_compile_loop("null", "(~r~ === null || {$cmpx} ? ~l~ : ~r~)", $this);
     }
 }
 
@@ -1092,7 +1097,11 @@ class Sum_Fexpr extends Aggregate_Fexpr {
             && Count_Fexpr::check_private_tag_index($this);
     }
     function compile(FormulaCompiler $state) {
-        return $state->_compile_loop("null", "(~l~ !== null ? (~r~ !== null ? ~r~ + ~l~ : +~l~) : ~r~)", $this);
+        if ($this->args[0]->nonnull_format()) {
+            return $state->_compile_loop("null", "(~r~ !== null ? ~r~ + ~l~ : +~l~)", $this);
+        } else {
+            return $state->_compile_loop("null", "(~l~ !== null ? (~r~ !== null ? ~r~ + ~l~ : +~l~) : ~r~)", $this);
+        }
     }
 }
 
@@ -1766,8 +1775,8 @@ class Formula implements JsonSerializable {
 
     const BINARY_OPERATOR_REGEX = '/\A(?:[-\+\/%^]|\*\*?|\&\&?|\|\|?|\?\?|==?|!=|<[<=]?|>[>=]?|≤|≥|≠)/';
 
-    /** @var bool */
-    const DEBUG = false;
+    /** @var 0|1|2 */
+    const DEBUG = 0;
 
     static public $opprec = [
         "**" => 14,
@@ -1975,6 +1984,18 @@ class Formula implements JsonSerializable {
             $this->_placeholder_prow = PaperInfo::make_placeholder($this->conf, -1);
         }
         return $this->_placeholder_prow;
+    }
+
+    /** @return PaperOption */
+    function format_sf() {
+        assert($this->_format === Fexpr::FSUBFIELD);
+        return $this->_format_detail;
+    }
+
+    /** @return ReviewField */
+    function format_rf() {
+        assert($this->_format === Fexpr::FREVIEWFIELD);
+        return $this->_format_detail;
     }
 
     /** @param string $t
@@ -2566,6 +2587,14 @@ class Formula implements JsonSerializable {
     }
 
 
+    private static function debug_report($function) {
+        if (self::DEBUG === 1) {
+            error_log("{$function}\n");
+        } else if (self::DEBUG > 1) {
+            Conf::msg_debugt("{$function}\n");
+        }
+    }
+
     /** @param Contact $user
      * @param string $expr
      * @param int $sortable
@@ -2600,14 +2629,15 @@ class Formula implements JsonSerializable {
         if ($this->check()) {
             $state = new FormulaCompiler($this->user);
             $expr = $this->_parse->fexpr->compile($state);
-            $t = self::compile_body($this->user, $state, $expr, $sortable);
+            $body = self::compile_body($this->user, $state, $expr, $sortable);
         } else {
-            $t = "return null;\n";
+            $body = "return null;\n";
         }
-
-        $args = '$prow, $rrow_cid, $contact';
-        self::DEBUG && Conf::msg_debugt("function ({$args}) {\n  // " . simplify_whitespace($this->expression) . "\n  {$t}}\n");
-        return eval("return function ($args) {\n  $t};");
+        $function = "function (\$prow, \$rrow_cid, \$contact) {\n"
+            . "  // " . simplify_whitespace($this->expression)
+            . "\n  {$body}}";
+        self::DEBUG && self::debug_report($function);
+        return eval("return {$function};");
     }
 
     /** @return callable(PaperInfo,?int,Contact):mixed */
@@ -2642,31 +2672,30 @@ class Formula implements JsonSerializable {
     }
 
     static function compile_indexes_function(Contact $user, $index_types) {
-        if ($index_types !== 0) {
-            $state = new FormulaCompiler($user);
-            $g = $state->loop_variable($index_types);
-            $t = "assert(\$contact->contactXid === {$user->contactXid});\n  "
-                . join("\n  ", $state->gstmt) . "\n";
-            if (($index_types & Fexpr::IDX_REVIEW) !== 0) {
-                $check = "";
-                if ($index_types === Fexpr::IDX_CREVIEW) {
-                    $check = "    if (!\$rrow->reviewSubmitted) { continue; }\n";
-                }
-                $t .= "  \$cids = [];\n"
-                    . "  foreach ({$g} as \$rrow) {\n"
-                    . $check
-                    . "    \$cids[] = \$rrow->contactId;\n"
-                    . "  }\n"
-                    . "  return \$cids;\n";
-            } else {
-                $t .= "  return array_keys({$g});\n";
-            }
-            $args = '$prow, $contact';
-            self::DEBUG && error_log("function ({$args}) {\n  {$t}}\n");
-            return eval("return function ({$args}) {\n  {$t}};");
-        } else {
+        if ($index_types === 0) {
             return null;
         }
+        $state = new FormulaCompiler($user);
+        $g = $state->loop_variable($index_types);
+        $body = "assert(\$contact->contactXid === {$user->contactXid});\n  "
+            . join("\n  ", $state->gstmt) . "\n";
+        if (($index_types & Fexpr::IDX_REVIEW) !== 0) {
+            $check = "";
+            if ($index_types === Fexpr::IDX_CREVIEW) {
+                $check = "    if (!\$rrow->reviewSubmitted) { continue; }\n";
+            }
+            $body .= "  \$cids = [];\n"
+                . "  foreach ({$g} as \$rrow) {\n"
+                . $check
+                . "    \$cids[] = \$rrow->contactId;\n"
+                . "  }\n"
+                . "  return \$cids;\n";
+        } else {
+            $body .= "  return array_keys({$g});\n";
+        }
+        $function = "function (\$prow, \$contact) {\n  {$body}}";
+        self::DEBUG && self::debug_report($function);
+        return eval("return {$function};");
     }
 
     /** @return bool */
@@ -2688,18 +2717,20 @@ class Formula implements JsonSerializable {
 
     function compile_extractor_function() {
         $this->support_combiner();
-        $t = $this->_extractorf ? : "  return null;\n";
-        $args = '$prow, $rrow_cid, $contact';
-        self::DEBUG && error_log("function ({$args}) {\n  // extractor " . simplify_whitespace($this->expression) . "\n  {$t}}\n");
-        return eval("return function ({$args}) {\n  {$t}};");
+        $function = "function (\$prow, \$rrow_cid, \$contact) {\n"
+            . "  // extractor " . simplify_whitespace($this->expression)
+            . "\n  " . ($this->_extractorf ? : "return null;\n") . "}";
+        self::DEBUG && self::debug_report($function);
+        return eval("return {$function};");
     }
 
     function compile_combiner_function() {
         $this->support_combiner();
-        $t = $this->_combinerf ? : "  return null;\n";
-        $args = '$extractor_results';
-        self::DEBUG && error_log("function ({$args}) {\n  // combiner " . simplify_whitespace($this->expression) . "\n  {$t}}\n");
-        return eval("return function ({$args}) {\n  {$t}};");
+        $function = "function (\$extractor_results) {\n"
+            . "  // combiner " . simplify_whitespace($this->expression)
+            . "\n  " . ($this->_combinerf ? : "return null;\n") . "}";
+        self::DEBUG && self::debug_report($function);
+        return eval("return {$function};");
     }
 
 /*    function _unparse_iso_duration($x) {
@@ -2757,11 +2788,12 @@ class Formula implements JsonSerializable {
         $rx = round($x * 100) / 100;
         if ($this->_format > Fexpr::FNUMERIC) {
             if ($this->_format === Fexpr::FREVIEWFIELD) {
-                return $this->_format_detail->unparse_span_html($rx, $real_format);
+                return $this->format_rf()->unparse_span_html($rx, $real_format);
             } else if ($this->_format === Fexpr::FSUBFIELD) {
                 $prow = $this->placeholder_prow();
                 $fr = new FieldRender(FieldRender::CFHTML);
-                $this->_format_detail->render($fr, new PaperValue($prow, $x));
+                $sf = $this->format_sf();
+                $sf->render($fr, PaperValue::make($prow, $sf, $x));
                 return $fr->value_html();
             } else if ($this->_format === Fexpr::FPREFEXPERTISE) {
                 return ReviewField::make_expertise($this->conf)->unparse_span_html($x + 2, $real_format);
@@ -2791,11 +2823,12 @@ class Formula implements JsonSerializable {
         $rx = round($x * 100) / 100;
         if ($this->_format > Fexpr::FNUMERIC) {
             if ($this->_format === Fexpr::FREVIEWFIELD) {
-                return $this->_format_detail->unparse_computed($rx, $real_format);
+                return $this->format_rf()->unparse_computed($rx, $real_format);
             } else if ($this->_format === Fexpr::FSUBFIELD) {
                 $prow = $this->placeholder_prow();
                 $fr = new FieldRender(FieldRender::CFTEXT | FieldRender::CFCSV | FieldRender::CFVERBOSE);
-                $this->_format_detail->render($fr, new PaperValue($prow, $x));
+                $sf = $this->format_sf();
+                $sf->render($fr, PaperValue::make($prow, $sf, $x));
                 return $fr->value; // XXX
             } else if ($this->_format === Fexpr::FPREFEXPERTISE) {
                 return ReviewField::make_expertise($this->conf)->unparse_computed($x + 2, $real_format);

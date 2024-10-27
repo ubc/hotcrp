@@ -272,13 +272,13 @@ class Autoassign_Page {
     private function print_bad_pairs() {
         echo '<div class="g"></div><div class="relative"><table id="bptable"><tbody>', "\n";
         for ($i = 1; $i == 1 || isset($this->qreq["bpa{$i}"]); ++$i) {
-            echo '    <tr><td class="entry nw">';
+            echo '    <tr><td class="rxcaption nw">';
             if ($i == 1) {
                 echo '<label class="d-inline-block checki"><span class="checkc">',
                     Ht::checkbox("badpairs", 1, isset($this->qreq["badpairs"])),
-                    '</span>Don’t assign</label> &nbsp;';
+                    '</span>Don’t assign</label>';
             } else {
-                echo "or &nbsp;";
+                echo "or";
             }
             echo '</td><td class="lentry">', $this->bp_selector($i, "a"),
                 " &nbsp;and&nbsp; ", $this->bp_selector($i, "b");
@@ -571,7 +571,7 @@ class Autoassign_Page {
             }
             $this->conf->error_msg("<5>{$m} <a href=\"" . $this->conf->selfurl($this->qreq, ["a" => $this->qreq->a]) . "\">Try again</a>");
             $this->qreq->print_footer();
-            exit;
+            exit();
         }
     }
 
@@ -630,7 +630,7 @@ class Autoassign_Page {
             Ht::submit("cancel", "Cancel"),
             '</div></form>';
         $qreq->print_footer();
-        exit;
+        exit();
     }
 
     private function handle_in_progress(TokenInfo $tok) {
@@ -654,7 +654,7 @@ class Autoassign_Page {
                 Ht::unstash_script("hotcrp.monitor_autoassignment(" . json_encode_browser($this->jobid) . ")");
         }
         $this->qreq->print_footer();
-        exit;
+        exit();
     }
 
     private function handle_empty_assignment(TokenInfo $tok) {
@@ -666,7 +666,7 @@ class Autoassign_Page {
             Ht::link("Revise assignment", $this->conf->selfurl($this->qreq, $this->qreq_parameters()), ["class" => "btn btn-primary"]),
             '</div>';
         $this->qreq->print_footer();
-        exit;
+        exit();
     }
 
     private function handle_download_assignment(TokenInfo $tok) {
@@ -677,6 +677,7 @@ class Autoassign_Page {
         $csvg = $this->conf->make_csvg("assignments");
         $aset->make_acsv()->unparse_into($csvg);
         $csvg->sort(SORT_NATURAL)->emit();
+        exit();
     }
 
     private function handle_execute(TokenInfo $tok) {

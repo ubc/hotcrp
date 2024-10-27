@@ -35,8 +35,8 @@ class Scorechart_Page {
     /** @var int */
     private $scale;
 
-    public static $scheme_colors = ["sv" => "9c3131a04b00a26300a179009d8f00929e007fad005fbd0000cc00", "bupu" => "4b8bc14181be3b76bb396bb73b5fb24053ab4646a34d389a54278f", "pkrd" => "e14da0d7448bcc3b76c13363b52b50a9243e9c1e2c8f1819821201", "viridis" => "440154472c7a3b518b2c718e21908d27ad815cc863aadc32dbcb39", "orbu" => "fca636f68443e86659d14d6fb23a818e2c8f6721963e15940d0887", "turbo" => "23171b4569ee26bce13ff3936be619ecd12eff821dcb2f0d900c00", "catx" => "1f77b4ff7f0e2ca02cd627289467bd8c564be377c27f7f7fbcbd2217becf", "none" => "222222"];
-    public static $scheme_categorical = ["catx" => true, "none" => true];
+    public static $scheme_colors = ["sv" => "9c3131a04b00a26300a179009d8f00929e007fad005fbd0000cc00", "bupu" => "4b8bc14181be3b76bb396bb73b5fb24053ab4646a34d389a54278f", "pkrd" => "e14da0d7448bcc3b76c13363b52b50a9243e9c1e2c8f1819821201", "viridis" => "440154472c7a3b518b2c718e21908d27ad815cc863aadc32dbcb39", "orbu" => "fca636f68443e86659d14d6fb23a818e2c8f6721963e15940d0887", "turbo" => "23171b4569ee26bce13ff3936be619ecd12eff821dcb2f0d900c00", "observablex" => "4269d0efb118ff725c6cc5b03ca951ff8ab7a463f297bbf59c6b4e9498a0", "catx" => "1f77b4ff7f0e2ca02cd627289467bd8c564be377c27f7f7fbcbd2217becf", "none" => "222222"];
+    public static $scheme_categorical = ["observablex" => true, "catx" => true, "none" => true];
     public static $scheme_reverse = ["sv" => "svr", "svr" => "sv", "bupu" => "pubu", "pubu" => "bupu", "rdpk" => "pkrd", "pkrd" => "rdpk", "viridisr" => "viridis", "viridis" => "viridisr", "orbu" => "buor", "buor" => "orbu", "turbo" => "turbor", "turbor" => "turbo"];
 
     /** @param array{int,int,int} $c1
@@ -49,6 +49,13 @@ class Scorechart_Page {
                 (int) ($c2[2] * $f + $c1[2] * (1 - $f) + 0.5)];
     }
 
+    /** @param string $v
+     * @param ?int $h
+     * @param ?string $lo
+     * @param ?string $hi
+     * @param bool $flip
+     * @param string $sv
+     * @param int $scale */
     function __construct($v, $h, $lo, $hi, $flip, $sv, $scale) {
         foreach (explode(",", $v) as $value) {
             if ($value !== "") {
@@ -74,7 +81,7 @@ class Scorechart_Page {
         $this->scheme = $sv;
         $this->scheme_max = strlen(self::$scheme_colors[$sv]) / 6;
         $this->categorical = self::$scheme_categorical[$sv] ?? false;
-        $this->scale = intval($scale);
+        $this->scale = $scale;
     }
 
     static function cacheable_headers() {
@@ -115,17 +122,19 @@ class Scorechart_Page {
         return [$k >> 16, ($k >> 8) & 255, $k & 255];
     }
 
+    /** @return GdImage */
     private function make_s1() {
         $scale = $this->scale;
+        $maxY = min(max($this->maxY, 3), 200);
+        $valMax = min($this->valMax, 200);
+        // These restrictions ensure a max image size of ~20Kx20K pixels.
 
         // set shape constants
         $blockHeight = $blockWidth = 3 * $scale;
         $blockSkip = 2 * $scale;
         $blockPad = 2 * $scale;
 
-        $maxY = max($this->maxY, 3);
-        $picWidth = ($blockWidth + $blockPad) * ($this->valMax - 1)
-            + $blockPad;
+        $picWidth = ($blockWidth + $blockPad) * ($valMax - 1) + $blockPad;
         $picHeight = $blockHeight * $maxY + $blockSkip * ($maxY + 1);
         $pic = @imagecreate($picWidth + 2 * $scale, $picHeight + $scale);
 
@@ -136,16 +145,18 @@ class Scorechart_Page {
         imagecolortransparent($pic, $cWhite);
         imagefilledrectangle($pic, 0, $picHeight, $picWidth + 2 * $scale, $picHeight + $scale, $cgray);
         imagefilledrectangle($pic, 0, $picHeight - $blockHeight - $blockPad, $scale - 1, $picHeight + $scale, $cgray);
-        imagefilledrectangle($pic, $picWidth + $scale, $picHeight - $blockHeight - $blockPad, $picWidth + 2 * $scale, $picHeight + $scale, $cgray);
+        if ($valMax === $this->valMax) {
+            imagefilledrectangle($pic, $picWidth + $scale, $picHeight - $blockHeight - $blockPad, $picWidth + 2 * $scale, $picHeight + $scale, $cgray);
+        }
 
         $cv_black = [0, 0, 0];
         $cv_bad = [200, 128, 128];
         $cv_good = [0, 232, 0];
         $pos = 0;
 
-        for ($value = 1; $value < $this->valMax; $value++) {
+        for ($value = 1; $value < $valMax; $value++) {
             $vpos = $this->flip ? $this->valMax - $value : $value;
-            $height = $this->values[$vpos];
+            $height = min($this->values[$vpos], $maxY);
             $cv_cur = $this->rgb_array($vpos);
             $cFill = imagecolorallocate($pic, $cv_cur[0], $cv_cur[1], $cv_cur[2]);
 
@@ -153,7 +164,7 @@ class Scorechart_Page {
             $curY = $picHeight - ($blockHeight + $blockSkip) * $height + $blockHeight;
 
             for ($h = 1; $h <= $height; $h++) {
-                if ($h == $height && $vpos == $this->valLight) {
+                if ($h === $height && $vpos === $this->valLight) {
                     $cv_cur = self::quality_color($cv_black, $cv_cur, 0.5);
                     $cFill = imagecolorallocate($pic, $cv_cur[0], $cv_cur[1], $cv_cur[2]);
                 }
@@ -170,13 +181,15 @@ class Scorechart_Page {
         if ($this->values[$this->flip ? $this->valMax - 1 : 1] === 0) {
             imagestring($pic, $font, $lx, $y, $this->loLabel, $cgray);
         }
-        if ($this->values[$this->flip ? 1 : $this->valMax - 1] === 0) {
+        if ($this->values[$this->flip ? 1 : $this->valMax - 1] === 0
+            && $valMax === $this->valMax) {
             imagestring($pic, $font, $rx, $y, $this->hiLabel, $cgray);
         }
 
         return $pic;
     }
 
+    /** @return GdImage */
     private function make_s2() {
         $picWidth = 64 * $this->scale;
         $picHeight = 8 * $this->scale;
@@ -192,17 +205,30 @@ class Scorechart_Page {
         for ($value = 1; $value < $this->valMax; $value++) {
             $vpos = $this->flip ? $this->valMax - $value : $value;
             $height = $this->values[$vpos];
-            if ($height > 0) {
+            if ($height <= 0) {
+                continue;
+            }
+            $x1 = round(($picWidth + $this->scale) * $pos / $this->sum);
+            $x2 = round(($picWidth + $this->scale) * ($pos + $height) / $this->sum - 2 * $this->scale);
+            if ($x2 >= $x1) {
                 $cv_cur = $this->rgb_array($vpos);
                 $cFill = imagecolorallocate($pic, $cv_cur[0], $cv_cur[1], $cv_cur[2]);
-                imagefilledrectangle($pic, ($picWidth + $this->scale) * $pos / $this->sum, 0,
-                                     ($picWidth + $this->scale) * ($pos + $height) / $this->sum - 2 * $this->scale, $picHeight,
-                                     $cFill);
-                $pos += $height;
+                imagefilledrectangle($pic, (int) $x1, 0, (int) $x2, $picHeight, $cFill);
             }
+            $pos += $height;
         }
 
         return $pic;
+    }
+
+    /** @param ?GdImage $image */
+    private function output($image) {
+        if ($image) {
+            header("Content-Type: image/gif");
+            imagegif($image);
+        } else {
+            self::fail("503 Service Unavailable", "Image generation failed", false);
+        }
     }
 
     static function go_param($params) {
@@ -222,7 +248,9 @@ class Scorechart_Page {
             || ($sn = intval($s)) < 1
             || $sn > 2
             || ($h !== null && !ctype_digit($h))
-            || !ctype_digit($scale)) {
+            || !ctype_digit($scale)
+            || ($scalen = intval($scale)) < 1
+            || $scalen > 20) {
             self::fail("400 Bad Request", "Invalid parameters", true);
             return;
         }
@@ -240,13 +268,12 @@ class Scorechart_Page {
             session_cache_limiter("");
         }
         self::cacheable_headers();
-        header("Content-Type: image/png");
 
-        $sc = new Scorechart_Page($v, $h !== null ? intval($h) : null, $lo, $hi, $flip, $sv, $scale);
+        $sc = new Scorechart_Page($v, $h !== null ? intval($h) : null, $lo, $hi, $flip, $sv, $scalen);
         if ($sn !== 2) {
-            imagepng($sc->make_s1());
+            $sc->output($sc->make_s1());
         } else {
-            imagepng($sc->make_s2());
+            $sc->output($sc->make_s2());
         }
     }
 

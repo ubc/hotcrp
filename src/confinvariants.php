@@ -417,7 +417,7 @@ class ConfInvariants {
 
         // load users
         $primary = [];
-        $result = $this->conf->qe("select " . $this->conf->user_query_fields() . " from ContactInfo");
+        $result = $this->conf->qe("select " . $this->conf->user_query_fields() . ", unaccentedName from ContactInfo");
         while (($u = $result->fetch_object())) {
             $u->contactId = intval($u->contactId);
             $u->primaryContactId = intval($u->primaryContactId);
@@ -442,7 +442,7 @@ class ConfInvariants {
 
             // whitespace is simplified
             $t = " ";
-            foreach ([$u->firstName, $u->lastName, $u->email, $u->affiliation] as $s) {
+            foreach ([$u->firstName, $u->lastName, $u->email, $u->affiliation, $u->unaccentedName] as $s) {
                 if ($s !== "")
                     $t .= "{$s} ";
             }

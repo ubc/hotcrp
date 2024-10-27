@@ -415,19 +415,19 @@ abstract class ReviewField implements JsonSerializable {
      * @return string */
     abstract function unparse_value($fval);
 
-    /** @deprecated */
-    function unparse($fval) {
-        return $this->unparse_value($fval);
-    }
-
     /** @param ?int|?float|?string $fval
      * @return mixed */
     abstract function unparse_json($fval);
 
-    /** @param int|float|string $fval
-     * @param ?string $real_format
+    /** @param int|float $fval
+     * @param ?string $format
      * @return string */
-    function unparse_span_html($fval, $real_format = null) {
+    abstract function unparse_computed($fval, $format = null);
+
+    /** @param int|float|string $fval
+     * @param ?string $format
+     * @return string */
+    function unparse_span_html($fval, $format = null) {
         return "";
     }
 
@@ -435,13 +435,6 @@ abstract class ReviewField implements JsonSerializable {
      * @return string */
     function unparse_search($fval) {
         return "";
-    }
-
-    const VALUE_NONE = 0;
-    const VALUE_SC = 1;
-    /** @deprecated */
-    function value_unparse($fval, $flags = 0, $real_format = null) {
-        return $flags & self::VALUE_SC ? $this->unparse_span_html($fval, $real_format) : $this->unparse_value($fval);
     }
 
     /** @param Qrequest $qreq
@@ -571,7 +564,8 @@ abstract class Discrete_ReviewField extends ReviewField {
         "viridisr" => [1, 9, "viridis"], "viridis" => [0, 9, "viridisr"],
         "orbu" => [0, 9, "buor"], "buor" => [1, 9, "orbu"],
         "turbo" => [0, 9, "turbor"], "turbor" => [1, 9, "turbo"],
-        "catx" => [2, 10, null], "none" => [2, 1, null]
+        "observablex" => [2, 10, null], "catx" => [2, 10, null],
+        "none" => [2, 1, null]
     ];
 
     /** @var array<string,string>
@@ -648,11 +642,6 @@ abstract class Discrete_ReviewField extends ReviewField {
         $rfs->scheme = $this->scheme;
         return $rfs;
     }
-
-    /** @param int|float $fval
-     * @param ?string $real_format
-     * @return string */
-    abstract function unparse_computed($fval, $real_format = null);
 
     const GRAPH_STACK = 1;
     const GRAPH_PROPORTIONS = 2;
@@ -982,15 +971,15 @@ class Score_ReviewField extends DiscreteValues_ReviewField {
     }
 
     /** @param int|float $fval
-     * @param ?string $real_format
+     * @param ?string $format
      * @return string */
-    function unparse_computed($fval, $real_format = null) {
+    function unparse_computed($fval, $format = null) {
         if ($fval === null) {
             return "";
         }
         $numeric = ($this->flags & self::FLAG_NUMERIC) !== 0;
-        if ($real_format !== null && $numeric) {
-            return sprintf($real_format, $fval);
+        if ($format !== null && $numeric) {
+            return sprintf($format, $fval);
         }
         if ($fval <= 0.8) {
             return "–";
@@ -1366,8 +1355,12 @@ class Text_ReviewField extends ReviewField {
         return $fval;
     }
 
+    function unparse_computed($fval, $format = null) {
+        return (string) $fval;
+    }
+
     function parse($text) {
-        $text = rtrim($text);
+        $text = rtrim(cleannl($text));
         if ($text === "") {
             return null;
         }

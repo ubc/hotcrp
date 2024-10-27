@@ -953,8 +953,7 @@ class PaperList {
             }
             // default editable tag
             $this->_sort_etag = "";
-            if (!$thenqe
-                && $this->_sortcol[0] instanceof Tag_PaperColumn
+            if ($this->_sortcol[0] instanceof Tag_PaperColumn
                 && !$this->_sortcol[0]->sort_descending) {
                 $this->_sort_etag = $this->_sortcol[0]->etag();
             }
@@ -1000,10 +999,9 @@ class PaperList {
         $this->user->set_overrides($overrides);
 
         // clean up, assign groups
-        if ($this->_sort_etag !== "") {
+        $groups = $this->search->group_anno_list();
+        if (empty($groups) && $this->_sort_etag !== "") {
             $groups = $this->_sort_etag_anno_groups();
-        } else {
-            $groups = $this->search->group_anno_list();
         }
         if (!empty($groups)) {
             $this->_collect_groups($rowset->as_list(), $groups);
@@ -1663,27 +1661,29 @@ class PaperList {
 
         // row classes
         $trclass = [];
-        $cc = "";
-        if ($row->paperTags ?? null) {
-            if ($this->row_tags_override !== ""
-                && ($cco = $row->conf->tags()->color_classes($this->row_tags_override))) {
-                $ccx = $row->conf->tags()->color_classes($this->row_tags);
-                if ($cco !== $ccx) {
-                    $this->row_attr["data-color-classes"] = $cco;
-                    $this->row_attr["data-color-classes-conflicted"] = $ccx;
-                    $trclass[] = "colorconflict";
-                }
-                $cc = $this->_view_force !== 0 ? $cco : $ccx;
-                $rstate->hascolors = $rstate->hascolors || str_ends_with($cco, " tagbg");
-            } else if ($this->row_tags !== "") {
-                $cc = $row->conf->tags()->color_classes($this->row_tags);
-            }
+        if ($this->row_tags_override !== ""
+            && $this->row_tags_override !== $this->row_tags) {
+            $cco = $row->conf->tags()->color_classes($this->row_tags_override);
+            $ccx = $row->conf->tags()->color_classes($this->row_tags);
+        } else if ($this->row_tags !== "") {
+            $cco = $ccx = $row->conf->tags()->color_classes($this->row_tags);
+        } else {
+            $cco = $ccx = "";
         }
-        if ($cc) {
-            $trclass[] = $cc;
-            $rstate->hascolors = $rstate->hascolors || str_ends_with($cc, " tagbg");
+        if ($cco !== $ccx) {
+            $this->row_attr["data-color-classes"] = $cco;
+            $this->row_attr["data-color-classes-conflicted"] = $ccx;
+            $trclass[] = "colorconflict";
+            $trclass[] = $this->_view_force !== 0 ? $cco : $ccx;
+            $rstate->hascolors = $rstate->hascolors
+                || str_ends_with($cco, " tagbg")
+                || str_ends_with($ccx, " tagbg");
+        } else if ($cco !== "") {
+            $trclass[] = $cco;
+            $rstate->hascolors = $rstate->hascolors
+                || str_ends_with($cco, " tagbg");
         }
-        if (!$cc || !$rstate->hascolors) {
+        if (!$rstate->hascolors) {
             $trclass[] = "k" . $rstate->colorindex;
         }
         if ($this->_highlight_map !== null
