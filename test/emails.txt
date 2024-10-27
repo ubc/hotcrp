@@ -474,11 +474,11 @@ concerns.
 
 ******** create-d.francis2@place.edu
 To: Dottie Francis <d.francis2@place.edu>
-Subject: [Testconf I] Welcome to the program committee
+Subject: [Testconf I] Welcome to the adjudication committee
 
 Greetings,
 
-You have been added to the program committee on the Test Conference I
+You have been added to the adjudication committee on the Test Program I
 (Testconf I) submission site.
 
 * Site: http://hotcrp.lcdf.org/test/
@@ -1775,7 +1775,7 @@ Subject: [Testconf I] Accepted review request for submission #17
 Dear Lixia Zhang,
 
 Jo March <external2@_.com> has confirmed their intention to complete the
-review you requested of Test Conference I (Testconf I) submission #17.
+review you requested of Test Program I (Testconf I) submission #17.
 
 * Title: Network Text Editor (NTE): A Scalable Shared Text Editor for
   the MBone
