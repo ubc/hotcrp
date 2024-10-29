@@ -1100,7 +1100,7 @@ class Unit_Tester {
     function test_mailer_expand() {
         $mailer = new HotCRPMailer($this->conf, null, ["width" => false]);
         xassert_eqq($mailer->expand("%CONFNAME%//%CONFLONGNAME%//%CONFSHORTNAME%"),
-            "Test Program I (Testconf I)//Test Program I//Testconf I\n");
+            "Test Conference I (Testconf I)//Test Conference I//Testconf I\n");
         xassert_eqq($mailer->expand("%SITECONTACT%//%ADMINEMAIL%"),
             "Eddie Kohler <ekohler@hotcrp.lcdf.org>//ekohler@hotcrp.lcdf.org\n");
         xassert_eqq($mailer->expand("%URLENC(ADMINEMAIL)% : %OPT(ADMINEMAIL)% : %OPT(NULL)% : %OPT(EMAIL)%"),
