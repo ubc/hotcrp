@@ -32,8 +32,11 @@ COPY docker/www.conf /usr/local/etc/php-fpm.d/
 COPY docker/php.ini /usr/local/etc/php/
 COPY --chmod=755 docker/docker-entrypoint.sh /docker-entrypoint.sh
 COPY . /var/www/html
+# workaround: add Root CA as Debian bookwarm doesn't have this one in the stable release packages.
+# It likely will include in the next release.
+COPY docker/SSL.com_TLS_RSA_Root_CA_2022.pem /etc/ssl/certs/SSL.com_TLS_RSA_Root_CA_2022.pem
 
-RUN touch /var/log/msmtp.log && chown www-data:www-data /var/log/msmtp.log && mkdir /shared
+RUN touch /var/log/msmtp.log && chown www-data:www-data /var/log/msmtp.log && mkdir /shared && update-ca-certificates --fresh
 
 WORKDIR /var/www/html
 
