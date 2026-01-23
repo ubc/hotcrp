@@ -1,6 +1,6 @@
 <?php
 // multiconference.php -- HotCRP multiconference installations
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Multiconference {
     /** @var array<string,?Conf> */
@@ -112,7 +112,7 @@ class Multiconference {
         return $newconf;
     }
 
-    /** @param 403|404|array{title?:string,link?:bool}|Qrequest|MessageItem|string|null ...$arg
+    /** @param 403|404|array{title?:string,link?:bool,action_bar?:string}|Qrequest|MessageItem|FailureReason|string|null ...$arg
      * @return never */
     static function fail(...$arg) {
         global $Opt;
@@ -122,6 +122,8 @@ class Multiconference {
         $title = "";
         $status = 404;
         $link = null;
+        $action_bar = "";
+        $fr = null;
         foreach ($arg as $x) {
             if ($x === null) {
                 // skip
@@ -133,24 +135,29 @@ class Multiconference {
                 $mis[] = $x;
             } else if ($x instanceof Qrequest) {
                 $qreq = $x;
+            } else if ($x instanceof FailureReason) {
+                assert(!$fr);
+                $fr = $x;
+                if (PHP_SAPI !== "cli"
+                    && $qreq->page() !== "api"
+                    && !friendly_boolean($_GET["ajax"] ?? null)) {
+                    $fr->set("expand", true);
+                }
+                array_push($mis, ...$fr->message_list());
             } else {
                 assert(is_array($x));
                 $title = $x["title"] ?? $title;
                 $link = $x["link"] ?? $link;
+                $action_bar = $x["action_bar"] ?? $action_bar;
             }
         }
 
         $maintenance = $Opt["maintenance"] ?? null;
-        if ($maintenance) {
+        if ($maintenance && empty($mis)) {
             $status = 503;
             $title = "Maintenance";
-            $mis = [Messageitem::error(Ftext::concat("<0>The site is down for maintenance. ", is_string($maintenance) ? $maintenance : "<0>Please check back later."))];
+            $mis[] = MessageItem::error(Ftext::concat("<0>The site is down for maintenance. ", is_string($maintenance) ? $maintenance : "<0>Please check back later."));
             $link = false;
-        }
-
-        if (PHP_SAPI === "cli") {
-            fwrite(STDERR, MessageSet::feedback_text($mis));
-            exit(1);
         }
 
         $qreq = $qreq ?? Qrequest::$main_request ?? Qrequest::make_minimal();
@@ -161,45 +168,60 @@ class Multiconference {
             $qreq->set_user(null);
         }
 
+        // print message
+        if (PHP_SAPI === "cli") {
+            fwrite(STDERR, MessageSet::feedback_text($mis));
+            exit(1);
+        }
+
         if ($qreq->page() === "api" || ($_GET["ajax"] ?? null)) {
             http_response_code($status);
             header("Content-Type: application/json; charset=utf-8");
             $j = ["ok" => false, "message_list" => $mis];
-            if ($maintenance) {
+            if ($maintenance && $status === 503) {
                 $j["maintenance"] = true;
             }
             echo json_encode_browser($j), "\n";
-            exit();
+            exit(0);
         }
 
         http_response_code($status);
-        $qreq->print_header($title, "", ["action_bar" => "", "body_class" => "body-error"]);
+        $qreq->print_header($title, "", [
+            "action_bar" => $action_bar, "body_class" => "body-error"
+        ]);
         $mis[0] = $mis[0] ?? MessageItem::error("<0>Internal error");
-        if ($link && $mis[0]->status >= 2) {
-            $m = $mis[0]->message;
+        if ($link && $mis[0]->status >= 2 && $qreq->page() !== "index") {
             if (!is_string($link)) {
                 $link = Conf::$main->hoturl_raw("index");
             }
-            $mis[0] = $mis[0]->with(["message" => Ftext::concat($m, preg_match('/[^.?!\s]\z/', $m) ? "<0>. " : "<0> ", "<5><a href=\"" . htmlspecialchars($link) . "\">Go to " . htmlspecialchars(Conf::$main->long_name) . " site</a>")]);
+            $mis[] = MessageItem::plain("<5><a href=\"" . htmlspecialchars($link) . "\">" . htmlspecialchars(Conf::$main->short_name) . " main site</a>");
         }
         echo '<div class="msg mx-auto msg-error">', MessageSet::feedback_html($mis), '</div>';
         $qreq->print_footer();
-        exit();
+        exit(0);
     }
 
-    /** @return Qrequest */
-    static private function make_qrequest() {
-        if (Qrequest::$main_request) {
-            return Qrequest::$main_request;
-        }
-        $qreq = (new Qrequest("GET"))->set_navigation(Navigation::get());
-        if (Contact::$main_user) {
-            $qreq->set_user(Contact::$main_user);
+    /** @param Contact $user
+     * @param Qrequest $qreq
+     * @param array $rest
+     * @return never */
+    static function fail_user_disabled($user, $qreq, $rest = []) {
+        $args = [new FmtArg("email", $user->email, 0)];
+        if ($user->is_deleted()) {
+            $e = "account_deleted";
+            $t = "Account deleted";
+        } else if ($user->is_empty()) {
+            $e = "signin_required";
+            $t = "";
+            $args[] = new FmtArg("url", $user->conf->hoturl_raw("signin"), 0);
+            $args[] = new FmtArg("expand", true);
         } else {
-            global $Opt;
-            $qreq->set_conf(Conf::$main ?? new Conf($Opt, false));
+            $e = "account_disabled";
+            $t = "Account disabled";
         }
-        return $qreq;
+        $rest["title"] = $rest["title"] ?? $t;
+        $rest["link"] = $rest["link"] ?? true;
+        Multiconference::fail($qreq, 403, $rest, $user->conf->_i($e, ...$args));
     }
 
     /** @return string */

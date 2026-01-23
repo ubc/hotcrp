@@ -23,17 +23,20 @@ class Mail_Page {
 
         // set list of searchable paper collections
         if ($viewer->privChair) {
-            $this->search_topt["s"] = PaperSearch::$search_type_names["s"];
+            $this->search_topt["s"] = PaperSearch::limit_description($this->conf, "s");
             if ($this->conf->has_any_accepted()) {
-                $this->search_topt["accepted"] = PaperSearch::$search_type_names["accepted"];
+                $this->search_topt["accepted"] = PaperSearch::limit_description($this->conf, "accepted");
             }
-            $this->search_topt["unsub"] = "Unsubmitted";
-            $this->search_topt["all"] = PaperSearch::$search_type_names["all"];
         }
+        $this->search_topt["req"] = PaperSearch::limit_description($this->conf, "req");
         if ($viewer->privChair ? $this->conf->has_any_manager() : $viewer->is_manager()) {
-            $this->search_topt["admin"] = PaperSearch::$search_type_names["admin"];
+            $this->search_topt["admin"] = PaperSearch::limit_description($this->conf, "admin");
         }
-        $this->search_topt["req"] = PaperSearch::$search_type_names["req"];
+        if ($viewer->privChair) {
+            $this->search_topt["active"] = PaperSearch::limit_description($this->conf, "active");
+            $this->search_topt["unsub"] = PaperSearch::limit_description($this->conf, "unsub");
+            $this->search_topt["all"] = PaperSearch::limit_description($this->conf, "all");
+        }
 
         $this->recip = new MailRecipients($viewer);
     }
@@ -84,12 +87,14 @@ class Mail_Page {
         if (!isset($qreq->q) || strcasecmp(trim($qreq->q), "(All)") === 0) {
             $qreq->q = "";
         }
-        if (isset($qreq->p) && !$qreq->has_a("p")) {
-            $qreq->set_a("p", preg_split('/\s+/', $qreq->p));
-        } else if (!isset($qreq->p) && isset($qreq->pap)) {
-            $qreq->set_a("p", $qreq->has_a("pap") ? $qreq->get_a("pap") : preg_split('/\s+/', $qreq->pap));
+        $ssel = SearchSelection::make($qreq, $this->viewer);
+        if (!$ssel->is_empty()) {
+            $ssel->sort_selection();
+            $qreq->set_a("p", $ssel->selection());
         }
-        if (!$qreq->has_plimit && $qreq->has_a("p") && !isset($qreq->recheck)) {
+        if (!$qreq->has_plimit
+            && !$qreq->recheck
+            && $qreq->has_a("p")) {
             $qreq->plimit = "1";
         }
 
@@ -109,18 +114,11 @@ class Mail_Page {
             $search = new PaperSearch($this->viewer, ["t" => $qreq->t, "q" => $qreq->q]);
             $papersel = $search->paper_ids();
             sort($papersel);
-
-            if ($qreq->has_a("p") && !isset($qreq->recheck)) {
-                $chksel = [];
-                foreach ($qreq->get_a("p") as $p) {
-                    if (($p = stoi($p) ?? -1) > 0)
-                        $chksel[] = $p;
-                }
-                sort($chksel);
-                if ($chksel !== $papersel) {
-                    $papersel = $chksel;
-                    $qreq->q = join(" ", $chksel);
-                }
+            if (!$qreq->recheck
+                && $qreq->has_a("p")
+                && $qreq->get_a("p") !== $papersel) {
+                $papersel = $qreq->get_a("p");
+                $qreq->q = PaperSearch::encode_id_search($papersel);
             }
         } else {
             $qreq->q = "";
@@ -178,39 +176,39 @@ class Mail_Page {
     }
 
     function print_keyword_help() {
-        echo '<div id="mailref">Keywords enclosed in percent signs, such as <code>%NAME%</code> or <code>%REVIEWDEADLINE%</code>, are expanded for each mail.  Use the following syntax:
+        echo '<div id="mailref">Keywords enclosed in double braces, such as <code>{{NAME}}</code> or <code>{{REVIEWDEADLINE}}</code>, are expanded for each mail. Use the following syntax:
 <hr class="g">
 
 <div class="ctable no-hmargin">
-<dl class="ctelt">
-<dt><code>%URL%</code></dt>
+<dl class="bsp ctelt">
+<dt><code>{{LINK}}</code></dt>
     <dd>Site URL.</dd>
-<dt><code>%NUMSUBMITTED%</code></dt>
+<dt><code>{{NUMSUBMITTED}}</code></dt>
     <dd>Number of papers submitted.</dd>
-<dt><code>%NUMACCEPTED%</code></dt>
+<dt><code>{{NUMACCEPTED}}</code></dt>
     <dd>Number of papers accepted.</dd>
-<dt><code>%NAME%</code></dt>
+<dt><code>{{NAME}}</code></dt>
     <dd>Full name of recipient.</dd>
-<dt><code>%FIRST%</code>, <code>%LAST%</code></dt>
+<dt><code>{{FIRST}}</code>, <code>{{LAST}}</code></dt>
     <dd>First and last names, if any, of recipient.</dd>
-<dt><code>%EMAIL%</code></dt>
+<dt><code>{{EMAIL}}</code></dt>
     <dd>Email address of recipient.</dd>
-<dt><code>%REVIEWDEADLINE%</code></dt>
+<dt><code>{{REVIEWDEADLINE}}</code></dt>
     <dd>Reviewing deadline appropriate for recipient.</dd>
-</dl><dl class="ctelt">
-<dt><code>%NUMBER%</code></dt>
+</dl><dl class="bsp ctelt">
+<dt><code>{{PID}}</code></dt>
     <dd>Paper number relevant for mail.</dd>
-<dt><code>%TITLE%</code></dt>
+<dt><code>{{TITLE}}</code></dt>
     <dd>Paper title.</dd>
-<dt><code>%TITLEHINT%</code></dt>
+<dt><code>{{TITLEHINT}}</code></dt>
     <dd>First couple words of paper title (useful for mail subject).</dd>
-<dt><code>%OPT(AUTHORS)%</code></dt>
+<dt><code>{{OPT(AUTHORS)}}</code></dt>
     <dd>Paper authors (if recipient is allowed to see the authors).</dd>
 ';
 
         $opts = array_filter($this->conf->options()->normal(), function ($o) {
             return $o->search_keyword() !== false
-                && $o->on_render_context(FieldRender::CFMAIL);
+                && $o->published(FieldRender::CFMAIL);
         });
         usort($opts, function ($a, $b) {
             if ($a->is_final() !== $b->is_final()) {
@@ -220,36 +218,36 @@ class Mail_Page {
             }
         });
         if (!empty($opts)) {
-            echo '<dt><code>%', htmlspecialchars($opts[0]->search_keyword()), '%</code></dt>
+            echo '<dt><code>{{', htmlspecialchars($opts[0]->search_keyword()), '}}</code></dt>
     <dd>Value of paper’s “', $opts[0]->title_html(), '” submission field.';
             if (count($opts) > 1) {
                 echo ' Also ', join(", ", array_map(function ($o) {
-                    return '<code>%' . htmlspecialchars($o->search_keyword()) . '%</code>';
+                    return '<code>{{' . htmlspecialchars($o->search_keyword()) . '}}</code>';
                 }, array_slice($opts, 1))), '.';
             }
-            echo "</dd>\n<dt><code>%IF(", htmlspecialchars($opts[0]->search_keyword()), ')%...%ENDIF%</code></dt>
+            echo "</dd>\n<dt><code>{{IF(", htmlspecialchars($opts[0]->search_keyword()), ')}}...{{ENDIF}}</code></dt>
     <dd>Include text if paper has a “', $opts[0]->title_html(), "” submission field.</dd>\n";
         }
-        echo '</dl><dl class="ctelt">
-<dt><code>%REVIEWS%</code></dt>
+        echo '</dl><dl class="bsp ctelt">
+<dt><code>{{REVIEWS}}</code></dt>
     <dd>Pretty-printed paper reviews.</dd>
-<dt><code>%COMMENTS%</code></dt>
+<dt><code>{{COMMENTS}}</code></dt>
     <dd>Pretty-printed paper comments, if any.</dd>
-<dt><code>%COMMENTS(<i>tag</i>)%</code></dt>
+<dt><code>{{COMMENTS(<i>tag</i>)}}</code></dt>
     <dd>Comments tagged #<code><i>tag</i></code>, if any.</dd>
-</dl><dl class="ctelt">
-<dt><code>%IF(SHEPHERD)%...%ENDIF%</code></dt>
+</dl><dl class="bsp ctelt">
+<dt><code>{{IF(SHEPHERD)}}...{{ENDIF}}</code></dt>
     <dd>Include text if a shepherd is assigned.</dd>
-<dt><code>%SHEPHERD%</code></dt>
+<dt><code>{{SHEPHERD}}</code></dt>
     <dd>Shepherd name and email, if any.</dd>
-<dt><code>%SHEPHERDNAME%</code></dt>
+<dt><code>{{SHEPHERDNAME}}</code></dt>
     <dd>Shepherd name, if any.</dd>
-<dt><code>%SHEPHERDEMAIL%</code></dt>
+<dt><code>{{SHEPHERDEMAIL}}</code></dt>
     <dd>Shepherd email, if any.</dd>
-</dl><dl class="ctelt">
-<dt><code>%IF(#<i>tag</i>)%...%ENDIF%</code></dt>
+</dl><dl class="bsp ctelt">
+<dt><code>{{IF(#<i>tag</i>)}}...{{ENDIF}}</code></dt>
     <dd>Include text if paper has tag <code><i>tag</i></code>.</dd>
-<dt><code>%TAGVALUE(<i>tag</i>)%</code></dt>
+<dt><code>{{TAGVALUE(<i>tag</i>)}}</code></dt>
     <dd>Value of paper’s <code><i>tag</i></code>.</dd>
 </dl>
 </div></div>';
@@ -307,10 +305,10 @@ class Mail_Page {
                 $this->recip->append_item_at("q", $mi);
             }
             if ($plist->is_empty()) {
-                $this->recip->warning_at("q", "<0>No papers match that search.");
+                $this->recip->warning_at("q", "<0>No papers match that search");
             }
         }
-        echo '<div class="', $this->recip->control_class("q", "fx8 mt-1 d-flex"), '">';
+        echo '<div class="', $this->recip->control_class("q", "fx8 mt-1"), '"><div class="d-flex">';
         if (!$this->viewer->privChair) {
             echo '<label for="q" class="mr-2">Papers:</label>';
         }
@@ -325,7 +323,7 @@ class Mail_Page {
         } else {
             echo Ht::select("t", $this->search_topt, $this->qreq->t, ["id" => "t"]);
         }
-        echo Ht::submit("psearch", "Search"), '</div></div>',
+        echo Ht::submit("psearch", "Search"), '</div></div></div>',
             $this->recip->feedback_html_at("q");
         if ($plist && !$plist->is_empty()) {
             echo '<div class="fx8 mt-2">';
@@ -371,8 +369,9 @@ class Mail_Page {
 
         // form
         echo Ht::form($this->conf->hoturl("=mail", ["check" => 1, "monreq" => $this->qreq->monreq]), [
-                "id" => "mailform",
-                "data-default-messages" => json_encode_browser((object) $templates)
+                "id" => "f-mail",
+                "data-default-messages" => json_encode_browser((object) $templates),
+                "class" => "ui-submit js-selector-summary"
             ]),
             Ht::hidden("defaultfn", ""),
             Ht::hidden_default_submit("default", 1);

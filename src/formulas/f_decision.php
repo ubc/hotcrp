@@ -6,14 +6,13 @@ class Decision_Fexpr extends Fexpr {
     function __construct() {
         $this->set_format(Fexpr::FDECISION);
     }
-    function viewable_by(Contact $user) {
-        return $user->can_view_some_decision();
+    static function make(Contact $user) {
+        if (!$user->can_view_some_decision()) {
+            return Fexpr::cnever();
+        }
+        return new Decision_Fexpr;
     }
     function compile(FormulaCompiler $state) {
-        if ($state->check_gvar('$decision')) {
-            $prow = $state->_prow();
-            $state->gstmt[] = "\$decision = \$contact->can_view_decision({$prow}) ? {$prow}->outcome : 0;";
-        }
-        return '$decision';
+        return $state->_add_decision();
     }
 }

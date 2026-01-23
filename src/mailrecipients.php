@@ -66,6 +66,13 @@ class MailRecipients extends MessageSet {
         $this->rect = $this->recipts[0];
     }
 
+    /** @return \Generator<MessageItem> */
+    function decorated_message_list() {
+        foreach ($this->message_list() as $mi) {
+            yield Mailer::decorated_message($mi);
+        }
+    }
+
     private function dcounts() {
         if ($this->_dcounts === null) {
             if ($this->user->allow_administer_all()) {
@@ -110,16 +117,16 @@ class MailRecipients extends MessageSet {
             }
         } else if ($t === "myuncextrev") {
             return "uncmyextrev";
-        } else {
-            return $t ?? "";
         }
+        return $t ?? "";
     }
 
     /** @return list<string> */
     function default_messages() {
         $dm = [];
         foreach ($this->recipts as $rec) {
-            if ($rec->default_message && !in_array($rec->default_message, $dm))
+            if ($rec->default_message
+                && !in_array($rec->default_message, $dm, true))
                 $dm[] = $rec->default_message;
         }
         return $dm;
@@ -272,11 +279,11 @@ class MailRecipients extends MessageSet {
             && !preg_match('/\A(?:|n\/a|\(?all\)?|0)\z/i', $newrev_since)) {
             $t = $this->conf->parse_time($newrev_since);
             if ($t === false) {
-                $this->error_at("newrev_since", "Invalid date.");
+                $this->error_at("newrev_since", "<0>Invalid date");
             } else {
                 $this->newrev_since = $t;
                 if ($t > Conf::$now) {
-                    $this->warning_at("newrev_since", "That time is in the future.");
+                    $this->warning_at("newrev_since", "<0>That time is in the future");
                 }
             }
         } else {
@@ -298,7 +305,7 @@ class MailRecipients extends MessageSet {
         }
         $this->rect = $this->recipts[0];
         if (($type ?? "") !== "") {
-            $this->error_at("to", "Invalid recipients");
+            $this->error_at("to", "<0>Invalid recipients");
         }
         return $this;
     }
@@ -350,7 +357,7 @@ class MailRecipients extends MessageSet {
 
     /** @return bool */
     function is_authors() {
-        return in_array($this->rect->name, ["s", "unsub", "au"])
+        return in_array($this->rect->name, ["s", "unsub", "au"], true)
             || str_starts_with($this->rect->name, "dec:");
     }
 
@@ -366,15 +373,14 @@ class MailRecipients extends MessageSet {
             return 2;
         } else if ($this->is_authors() || $paper_sensitive) {
             return 1;
-        } else {
-            return 0;
         }
+        return 0;
     }
 
     /** @return string */
     function unparse() {
         $t = $this->rect->description;
-        if ($this->rect->name == "newpcrev" && $this->newrev_since) {
+        if ($this->rect->name === "newpcrev" && $this->newrev_since) {
             $t .= " since " . htmlspecialchars($this->conf->parseableTime($this->newrev_since, false));
         }
         return $t;
@@ -402,9 +408,9 @@ class MailRecipients extends MessageSet {
             $options["finalized"] = true;
         } else if ($t === "unsub") {
             $options["unsub"] = $options["active"] = true;
-        } else if (in_array($t, ["dec:any", "dec:none", "dec:yes", "dec:no", "dec:maybe"])) {
+        } else if (in_array($t, ["dec:any", "dec:none", "dec:yes", "dec:no", "dec:maybe"], true)) {
             $options["finalized"] = $options[$t] = true;
-        } else if (substr($t, 0, 4) === "dec:") {
+        } else if (str_starts_with($t, "dec:")) {
             $options["finalized"] = true;
             $options["where"] = "false";
             foreach ($this->conf->decision_set() as $dec) {

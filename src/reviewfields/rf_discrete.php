@@ -25,9 +25,8 @@ class Discrete_ReviewFieldSearch extends ReviewFieldSearch {
         } else if ($this->rf->main_storage) {
             $ce = count($this->scores) === 1 ? "=" : ">=";
             return $this->rf->main_storage . $ce . $this->scores[0];
-        } else {
-            return "sfields is not null";
         }
+        return "sfields is not null";
     }
 
     function prepare() {
@@ -35,7 +34,7 @@ class Discrete_ReviewFieldSearch extends ReviewFieldSearch {
     }
 
     function test_value($rrow, $fv) {
-        if (!in_array($fv ?? 0, $this->scores)) {
+        if (!in_array($fv ?? 0, $this->scores, true)) {
             if (($this->op & CountMatcher::RELALL) !== 0 && $fv !== null) {
                 $this->finished = -1;
             }

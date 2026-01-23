@@ -12,7 +12,7 @@ body.paper {
 .pcard {
 	margin-left: 22.5%;
 }
-#t-home #p-body {
+#m-home #p-body {
 	margin-left: 24px;
 	margin-right: 24px;
 }
@@ -69,7 +69,7 @@ body.leftmenu #p-header {
 body.paper #p-header {
 	background: #dce4e8;
 }
-#p-body, body.paper #p-body, #t-home #p-body {
+#p-body, body.paper #p-body, #m-home #p-body {
 	margin-left: 12px;
 	margin-right: 12px;
 }
@@ -148,6 +148,9 @@ h1.leftmenu > a:after {
 .leftmenu-if-left {
 	display: none;
 }
+.leftmenu-not-left {
+	display: initial;
+}
 .leftmenu-list {
 	display: none;
 	-webkit-columns: 100px 4;
@@ -157,7 +160,7 @@ h1.leftmenu > a:after {
 	-moz-column-gap: 18px;
 	column-gap: 18px;
 }
-.leftmenu-open > .leftmenu-list {
+.expanded > .leftmenu-list {
 	display: block;
 }
 .leftmenu-item {
@@ -242,7 +245,7 @@ td.pl.pl_title, td.pl.pl_text {
 	display: none;
 }
 .msg,
-.w-text, .w-entry-text,
+.w-text, .w-entry-text, .form-outline-section.w-text,
 .feedback, .feedback-list, .field-d,
 .revtext.format0, .cmttext.format0, .revtext .format0, .cmttext .format0,
 .overlong-expander {
@@ -263,5 +266,11 @@ td.pl.pl_title, td.pl.pl_text {
 }
 .plet {
 	min-width: 5rem;
+}
+}
+
+@media (max-width: 456px) {
+.minw-480 {
+	min-width: 100%;
 }
 }

@@ -29,7 +29,7 @@ class Graph_Formula_Page {
         }
         $klass = $ms->control_class($field, "need-suggest papersearch want-focus");
         echo '<div class="draggable d-flex mb-2">',
-            '<div class="flex-grow-0 pr-1"><button type="button" class="draghandle ui js-dropmenu-open ui-drag row-order-draghandle need-tooltip need-dropmenu" draggable="true" title="Click or drag to reorder"></button></div>',
+            '<div class="flex-grow-0 pr-1"><button type="button" class="draghandle ui uikd js-dropmenu-button ui-drag row-order-draghandle need-tooltip need-dropmenu" draggable="true" title="Click or drag to reorder" aria-haspopup="menu" aria-expanded="false"></button></div>',
             '<div class="flex-grow-1 lentry">',
             $ms->feedback_html_at($field),
             Ht::entry("q{$i}", $q, ["size" => 40, "placeholder" => "(All)", "class" => $klass, "id" => "q{$i}", "spellcheck" => false, "autocomplete" => "off", "aria-label" => "Search"]),
@@ -57,8 +57,8 @@ class Graph_Formula_Page {
 
         if ($fg->fx_format() === Fexpr::FSEARCH) {
             $h2 = "";
-        } else if ($fg->type === FormulaGraph::RAWCDF) {
-            $h2 = "Cumulative count of {$xhtml}";
+        } else if ($fg->type === FormulaGraph::OGIVE) {
+            $h2 = "Cumulative frequency of {$xhtml}";
         } else if ($fg->type & FormulaGraph::CDF) {
             $h2 = "{$xhtml} CDF";
         } else if (($fg->type & FormulaGraph::BARCHART)

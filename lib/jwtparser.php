@@ -1,8 +1,11 @@
 <?php
 // jwtparser.php -- HotCRP class for limited parsing of JSON Web Tokens
-// Copyright (c) 2022-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2022-2025 Eddie Kohler; see LICENSE.
 
-class JWTParser extends MessageSet {
+namespace HotCRP;
+use Conf;
+
+class JWTParser extends \MessageSet {
     /** @var ?object */
     public $jose;
     /** @var ?object */
@@ -31,7 +34,6 @@ class JWTParser extends MessageSet {
     ];
 
     function __construct() {
-        parent::__construct();
         self::$has_openssl = self::$has_openssl ?? function_exists("openssl_verify");
     }
 
@@ -57,7 +59,7 @@ class JWTParser extends MessageSet {
         } else if ($l < 16777216) {
             $s .= "\x83" . chr($l >> 16) . chr(($l >> 8) & 255) . chr($l & 255);
         } else {
-            throw new InvalidArgumentException("der_encode_tlv too long");
+            throw new \InvalidArgumentException("der_encode_tlv too long");
         }
         return $s . $v;
     }
@@ -274,7 +276,7 @@ class JWTParser extends MessageSet {
         if (!isset($payload->aud) || (!is_string($payload->aud) && !is_array($payload->aud))) {
             return $this->false_error(1203, "<0>`aud` claim missing or invalid");
         } else if (is_array($payload->aud)
-                   ? !in_array($authi->client_id, $payload->aud)
+                   ? !in_array($authi->client_id, $payload->aud, true)
                    : $authi->client_id !== $payload->aud) {
             return $this->false_error(1204, "<0>`aud` claim does not match client ID");
         }

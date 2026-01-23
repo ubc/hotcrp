@@ -59,7 +59,7 @@ class Dbl_Result {
     }
     /** @template T
      * @param class-string<T> $class_name
-     * @return ?T
+     * @return T|null
      * @suppress PhanUnusedPublicNoOverrideMethodParameter */
     function fetch_object($class_name = "stdClass", $params = []) {
         return null;
@@ -377,9 +377,8 @@ class Dbl {
             return [$dblink, $q, []];
         } else if ($flags & self::F_APPLY) {
             return [$dblink, $q, $args[$argpos + 1]];
-        } else {
-            return [$dblink, $q, array_slice($args, $argpos + 1)];
         }
+        return [$dblink, $q, array_slice($args, $argpos + 1)];
     }
 
     /** @param \mysqli $dblink
@@ -538,7 +537,7 @@ class Dbl {
             }
             // combine
             $suffix = substr($qstr, $nextpos);
-            $qstr = "$prefix$arg$suffix";
+            $qstr = "{$prefix}{$arg}{$suffix}";
             $strpos = strlen($qstr) - strlen($suffix);
         }
         if ($simpleargs && $argpos !== count($argv)) {
@@ -778,7 +777,7 @@ class Dbl {
 
     /** @param \mysqli $dblink
      * @param int $flags
-     * @return callable(?string,string|int|null|list...):void */
+     * @return callable(?string,string|int|float|null|list...):void */
     static function make_multi_query_stager($dblink, $flags) {
         // NB $q argument as `true` is deprecated but might still be present
         $qs = $qvs = [];
@@ -797,13 +796,13 @@ class Dbl {
     }
 
     /** @param ?\mysqli $dblink
-     * @return callable(?string,string|int|null...):void */
+     * @return callable(?string,string|int|float|null|list...):void */
     static function make_multi_ql_stager($dblink = null) {
         return self::make_multi_query_stager($dblink ?? self::$default_dblink, self::F_LOG);
     }
 
     /** @param ?\mysqli $dblink
-     * @return callable(?string,string|int|null...):void */
+     * @return callable(?string,string|int|float|null|list...):void */
     static function make_multi_qe_stager($dblink = null) {
         return self::make_multi_query_stager($dblink ?? self::$default_dblink, self::F_ERROR);
     }
@@ -825,9 +824,8 @@ class Dbl {
     static private function do_make_result($args, $flags = self::F_ERROR) {
         if (count($args) === 1 && !is_string($args[0])) {
             return $args[0];
-        } else {
-            return self::do_query($args, $flags);
         }
+        return self::do_query($args, $flags);
     }
 
     /** @return ?string */
@@ -957,6 +955,67 @@ class Dbl {
         return self::compare_exchange($dblink, $value_query, $value_query_args, $callback, $update_query, $update_query_args);
     }
 
+    /** @param mysqli $dblink
+     * @param string $query
+     * @param array $args
+     * @param string $prefix
+     * @param int $slicelen
+     * @return string */
+    static function fetch_blob($dblink, $query, $args,
+                               $prefix = "", $slicelen = 16 << 20) {
+        if (!preg_match('/\Aselect ([\w.]+) (from.*)/s', $query, $qm)) {
+            throw new Exception("bad query to Dbl::fetch_blob");
+        }
+        $qcol = $qm[1];
+        while (true) {
+            $pos = strlen($prefix) + 1;
+            $query = "select substr({$qm[1]},{$pos},{$slicelen}) {$qm[2]}";
+            $result = self::qe_apply($dblink, $query, $args);
+            if ($dblink->errno
+                || ($row = $result->fetch_row()) === null) {
+                return null;
+            }
+            $result->close();
+            $prefix .= $row[0];
+            if (strlen($row[0]) < $slicelen) {
+                return $prefix;
+            }
+        }
+    }
+
+    /** @param mysqli $dblink
+     * @param string $query
+     * @param string $blob
+     * @param array $args
+     * @param int $pos
+     * @param int $slicelen
+     * @return bool */
+    static function store_blob($dblink, $query, $blob, $args,
+                               $pos = 0, $slicelen = 16 << 20) {
+        if (!preg_match('/\A(update.*?)(\w+)=\?\{blob\}(.*)\z/s', $query, $qm)) {
+            throw new Exception("bad query to Dbl::store_blob");
+        }
+        $qcol = $qm[2];
+        $first = $pos === 0;
+        while ($first || $pos < strlen($blob)) {
+            $chunklen = min($slicelen, strlen($blob) - $pos);
+            $args["chunk"] = substr($blob, $pos, $chunklen);
+            if ($pos === 0) {
+                $qchunk = "?{chunk}";
+            } else {
+                $qchunk = "concat({$qm[2]},?{chunk})";
+            }
+            $query = $qm[1] . $qm[2] . "=" . $qchunk . $qm[3];
+            $result = self::qe_apply($dblink, $query, $args);
+            if ($result->is_error()) {
+                return false;
+            }
+            $pos += $chunklen;
+            $first = false;
+        }
+        return true;
+    }
+
     /** @param null|bool|float|'verbose' $limit
      * @param ?string $file */
     static function log_queries($limit, $file = null) {
@@ -1077,9 +1136,8 @@ function sql_in_int_list($set) {
         return " is null";
     } else if (count($set) === 1) {
         return "=" . $set[0];
-    } else {
-        return " in (" . join(", ", $set) . ")";
     }
+    return " in (" . join(", ", $set) . ")";
 }
 
 if (function_exists("mysqli_report")) {

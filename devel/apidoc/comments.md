@@ -1,6 +1,6 @@
 # Comments
 
-These endpoints query and modify submission comments.
+These endpoints fetch and modify submission comments.
 
 Each comment has a *visibility* and a *topic* (which in the UI is called a
 *thread*). These values control who can see the comment.
@@ -23,16 +23,22 @@ decision).
 
 > Retrieve comment
 
+Return a comment object specified by ID.
+
 The `c` parameter specifies the comment to return. If the comment exists and
 the user can view it, it will be returned in the `comment` component of the
 response. Otherwise, an error response is returned.
 
 If `c` is omitted, all viewable comments are returned in a `comments` list.
 
+* param content boolean: False omits comment content from response
+
 
 # post /{p}/comment
 
 > Create, modify, or delete comment
+
+Create, modify, or delete a comment specified by ID.
 
 The `c` parameter specifies the comment to modify. It can be a numeric comment
 ID; `new`, to create a new comment; or `response` (or a compound like
@@ -55,3 +61,16 @@ To upload a single new attachment:
 To upload multiple attachments, number them sequentially (`attachment:2`,
 `attachment:3`, and so forth). To delete an existing attachment, supply its
 `docid` as an `attachment:N` parameter, and set `attachment:N:delete` to 1.
+
+* param override boolean
+* param delete boolean
+* param text string
+* param tags string
+* param topic comment_topic
+* param visibility comment_visibility
+* param response string
+* param ready boolean
+* param draft boolean
+* param blind boolean
+* param by_author boolean
+* param review_token string

@@ -1,6 +1,6 @@
 <?php
 // o_collaborators.php -- HotCRP helper class for collaborators intrinsic
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Collaborators_PaperOption extends PaperOption {
     function __construct(Conf $conf, $args) {
@@ -24,27 +24,27 @@ class Collaborators_PaperOption extends PaperOption {
             && !$ov->prow->allow_absent()
             && ($ov->prow->outcome_sign <= 0 || !$user->can_view_decision($ov->prow))) {
             $ov->warning($this->conf->_("<0>Enter the authors’ external conflicts of interest"));
-            $ov->msg($this->conf->_("<0>If none of the authors have external conflicts, enter “None”."), MessageSet::INFORM);
+            $ov->inform($this->conf->_("<0>If none of the authors have external conflicts, enter “None”."));
         }
     }
     function value_save(PaperValue $ov, PaperStatus $ps) {
-        $ps->change_at($this);
-        $collab = $ov->data();
-        if ($collab === null || strlen($collab) < 8190) {
-            $ov->prow->set_prop("collaborators", $collab === "" ? null : $collab);
-            $ov->prow->set_overflow_prop("collaborators", null);
-        } else {
-            $ov->prow->set_prop("collaborators", null);
-            $ov->prow->set_overflow_prop("collaborators", $collab);
+        if (!$ov->equals($ov->prow->base_option($this->id))) {
+            $collab = $ov->data();
+            if ($collab === null || strlen($collab) < 8190) {
+                $ov->prow->set_prop("collaborators", $collab === "" ? null : $collab);
+                $ov->prow->set_overflow_prop("collaborators", null);
+            } else {
+                $ov->prow->set_prop("collaborators", null);
+                $ov->prow->set_overflow_prop("collaborators", $collab);
+            }
         }
-        return true;
     }
     function parse_qreq(PaperInfo $prow, Qrequest $qreq) {
         $ov = $this->parse_json_string($prow, $qreq->collaborators, PaperOption::PARSE_STRING_CONVERT | PaperOption::PARSE_STRING_TRIM);
         $this->normalize_value($ov);
         return $ov;
     }
-    function parse_json(PaperInfo $prow, $j) {
+    function parse_json_user(PaperInfo $prow, $j, Contact $user) {
         $ov = $this->parse_json_string($prow, $j, PaperOption::PARSE_STRING_TRIM);
         $this->normalize_value($ov);
         return $ov;
@@ -54,12 +54,16 @@ class Collaborators_PaperOption extends PaperOption {
         $fix = (string) AuthorMatcher::fix_collaborators($s);
         if ($s !== $fix) {
             $ov->warning("<0>Field changed to follow our required format");
-            $ov->msg("<0>Please check that the result is what you expect.", MessageSet::INFORM);
+            $ov->inform("<0>Please check that the result is what you expect.");
             $ov->set_value_data([1], [$fix]);
         }
     }
     function print_web_edit(PaperTable $pt, $ov, $reqov) {
-        $this->print_web_edit_text($pt, $ov, $reqov, ["no_format_description" => true, "no_spellcheck" => true, "rows" => 5]);
+        $class = "";
+        if ($pt->has_editable_pc_conflicts()) {
+            $class = "uii js-update-potential-conflicts";
+        }
+        $this->print_web_edit_text($pt, $ov, $reqov, ["no_format_description" => true, "no_spellcheck" => true, "rows" => 5, "class" => $class]);
     }
     function render(FieldRender $fr, PaperValue $ov) {
         $n = ["<ul class=\"x namelist-columns\">"];

@@ -1,13 +1,120 @@
 HotCRP NEWS
 ===========
 
+## Version 3.1 – 12.Sep.2025
+
+* Upgrade notes
+
+    * PHP 8.4 is supported, PHP 7.2 is not.
+    * The `oAuthTypes` setting is no longer understood.
+    * The `oAuthTypes` `group_mappings` subsetting is replaced by
+      `group_roles`.
+    * Previous versions of the `batch/backupdb.php` script could produce
+      invalid backups in the case that the database contained large documents.
+
+* Accounts
+
+    * Replace “merge accounts” functionality with “Manage email”. Manage email
+      allows transferring reviews and linking accounts, where the primary
+      linked account redirects review requests and receives shared authorship.
+    * OAuth can import group affiliations and roles (Tobias Fiebig).
+    * Expose ORCID iD and country in user lists and downloads.
+    * Profile supports reauthentication more cleanly.
+    * Improve LDAP support.
+    * Add support for extension tracks. For instance, the `settings!`
+      extension track defines who can modify settings.
+
+* Search
+
+    * Improve named search UI; expose highlighted searches.
+    * Add support for dot tag patterns (for instance, tag `#dot-rgb-ffff00`
+      adds bright yellow dots).
+    * Systematize view options.
+    * Add `cmtafter:DATE` search term.
+    * Treat some Unicode spaces like normal spaces in parsing.
+    * Fix searches within specific response rounds.
+
+* Assignments
+
+    * The autoassigner can run as a background job, supporting longer
+      processing times.
+    * Fix bug where “bad pairs” were misparsed by the autoassigner.
+    * Bulk assignments supports upload of very large assignment files.
+    * Improve handling of assignment files that generate large numbers of
+      errors.
+    * Assigner messages about potential conflicts include buttons for
+      immediately confirming or ignoring each conflict.
+    * The `copytag` and `newtag` assigners can move all matching tags (for
+      instance, set `tag` to `my*` and `newtag` to `renamed-*`).
+    * Improve UI display of large PC sets in conflict editing and review
+      assignment pages.
+
+* Submissions
+
+    * Improve handling of complex field conditions: avoid crashes.
+    * Support fields with edit conditions that depend on other fields with
+      edit conditions.
+    * Introduce author certification submission field type.
+
+* Reviews
+
+    * Review preferences page supports shuffled preferences via
+      `sort:shuffle`.
+    * Preference fuzzing can group preferences into bands to reduce the impact
+      of collusion.
+    * Assign review IDs randomly.
+    * Improve handling of field names with no ASCII characters.
+    * Administrators can clear all review ratings.
+    * Detect conflicts when saving a review that’s been concurrently updated
+      in another tab.
+
+* Comments
+
+    * Refer to comment “threads” rather than topics; update thread UI.
+    * Don’t expose identities of past shepherds.
+    * Fix bugs where @mentions were not always reset.
+    * Fix bug where @mentioned user might receive multiple emails for a single
+      comment.
+    * @Mentions of the current user are highlighted.
+    * Censor comment display in more cases: @mentioned users are anonymized to
+      comment viewers who can’t see the relevant identities.
+    * Add setting that allows authors to initiate comment exchanges.
+    * Add separate track permission for commenting.
+
+* Formulas
+
+    * Checkbox review fields can be used in formulas.
+    * Improve graph displays.
+    * Support `pagecount`.
+
+* API
+
+    * Begin stabilizing and documenting API.
+    * Reduce opportunities to enumerate users through the API.
+    * Add `reviewhistory` API call.
+
+* Mail
+
+    * Prefer `{{TEMPLATE}}` style to `%TEMPLATE%`.
+    * Add site URL to mail signatures.
+    * Better handle thousands of emails.
+
+* Batch scripts
+
+    * Settings can be filtered by tag.
+    * Add `batch/actionlog.php` script.
+    * Add `batch/hotcrapi.php` script for contacting HotCRP APIs.
+
+* Many other bug fixes and improvements.
+
+
 ## Version 3.0.0 – 14.Mar.2024
 
 * Upgrade notes
 
     * PHP 8.2 and 8.3 are supported, PHP 7.0 and 7.1 are not.
     * Remove support for `#perm` tags.
-    * Prefer `$Opt["oAuthProviders"]` (not `$Opt["oAuthTypes"]`).
+    * Prefer `$Opt["oAuthProviders"]` (deprecate `$Opt["oAuthTypes"]`).
 
 * Batch scripts
 

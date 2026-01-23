@@ -1,6 +1,6 @@
 <?php
 // settings/s_response.php -- HotCRP settings > decisions page
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Response_Setting {
     /** @var int */
@@ -136,7 +136,7 @@ class Response_SettingParser extends SettingParser {
 
     function prepare_oblist(Si $si, SettingValues $sv) {
         $m = [];
-        foreach ($sv->conf->response_rounds() as $rrd) {
+        foreach ($sv->conf->response_round_list() as $rrd) {
             $m[] = Response_Setting::make($sv->conf, $rrd);
         }
         $sv->append_oblist("response", $m, "name");
@@ -237,7 +237,8 @@ class Response_SettingParser extends SettingParser {
     function apply_req(Si $si, SettingValues $sv) {
         if ($si->name === "response") {
             return $this->apply_response_req($si, $sv);
-        } else if ($si->name2 === "/name") {
+        }
+        if ($si->name2 === "/name") {
             if (($v = $sv->base_parse_req($si)) !== null) {
                 $lv = strtolower($v);
                 if ($lv === "1" || $lv === "unnamed" || $lv === "none") {
@@ -247,7 +248,8 @@ class Response_SettingParser extends SettingParser {
                 }
             }
             return false;
-        } else if ($si->name2 === "/condition") {
+        }
+        if ($si->name2 === "/condition") {
             if (($v = $sv->base_parse_req($si)) !== "" && $v !== "all") {
                 $search = new PaperSearch($sv->conf->root_user(), $v);
                 foreach ($search->message_list() as $mi) {
@@ -255,9 +257,8 @@ class Response_SettingParser extends SettingParser {
                 }
             }
             return false;
-        } else {
-            return false;
         }
+        return false;
     }
 
     function apply_response_req(Si $si, SettingValues $sv) {
@@ -270,11 +271,11 @@ class Response_SettingParser extends SettingParser {
         foreach ($sv->oblist_keys("response") as $ctr) {
             $rs = $sv->newv("response/{$ctr}");
             '@phan-var-force Response_Setting $rs';
-            if ($rs->deleted) {
-                $this->round_delete[] = $rs->id;
-            } else {
+            if (!$rs->deleted) {
                 $sv->check_date_before("response/{$ctr}/open", "response/{$ctr}/done", false);
                 array_splice($rss, $rs->name === "" ? 0 : count($rss), 0, [$rs]);
+            } else if ($rs->id !== null) {
+                $this->round_delete[] = $rs->id;
             }
         }
 
@@ -291,11 +292,13 @@ class Response_SettingParser extends SettingParser {
             }
         }
 
+        $xform = !empty($this->round_transform) || !empty($this->round_delete);
         $jrt = json_encode_db($jrl);
-        $sv->update("responses", $jrt === "[{}]" || $jrt === "[]" ? "" : $jrt);
-        if (!empty($this->round_transform) || !empty($this->round_delete)) {
-            $sv->request_write_lock("PaperComment");
+        if ($sv->update("responses", $jrt === "[{}]" || $jrt === "[]" ? "" : $jrt) || $xform) {
             $sv->request_store_value($si);
+        }
+        if ($xform) {
+            $sv->request_write_lock("PaperComment");
         }
         return true;
     }
@@ -319,7 +322,7 @@ class Response_SettingParser extends SettingParser {
 
     static function crosscheck(SettingValues $sv) {
         if ($sv->has_interest("response")) {
-            foreach ($sv->conf->response_rounds() as $i => $rrd) {
+            foreach ($sv->conf->response_round_list() as $i => $rrd) {
                 $ctr = $i + 1;
                 if ($rrd->hard_wordlimit > 0
                     && $rrd->wordlimit > $rrd->hard_wordlimit) {

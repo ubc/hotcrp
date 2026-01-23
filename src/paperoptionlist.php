@@ -21,6 +21,10 @@ class PaperOptionList implements IteratorAggregate {
     private $_olist_nonfinal;
     /** @var AbbreviationMatcher<PaperOption> */
     private $_nonpaper_am;
+    /** @var array<string,int> */
+    private $_keymap;
+    /** @var bool */
+    private $_keymap_options = false;
 
     function __construct(Conf $conf) {
         $this->conf = $conf;
@@ -94,6 +98,8 @@ class PaperOptionList implements IteratorAggregate {
         $am->add_keyword_lazy("pc_conflicts", $cb, [PaperOption::PCCONFID], Conf::MFLAG_OPTION);
         $am->add_keyword_lazy("collaborators", $cb, [PaperOption::COLLABORATORSID], Conf::MFLAG_OPTION);
         $am->add_keyword("reviews", null); // reserve keyword
+        $am->add_keyword("comments", null); // reserve keyword
+        $am->add_keyword("json", null); // reserve keyword
         foreach ($this->option_json_map() as $id => $oj) {
             if (($oj->nonpaper ?? false) !== true) {
                 $this->add_abbrev_matcher($am, $id, $oj);
@@ -212,18 +218,17 @@ class PaperOptionList implements IteratorAggregate {
                 $this->populate_intrinsic($id);
             }
             return $this->_imap[$id];
-        } else {
-            if (!array_key_exists($id, $this->_omap)) {
-                $opt = null;
-                if (($oj = ($this->option_json_map())[$id] ?? null)
-                    && Conf::xt_enabled($oj)
-                    && XtParams::static_allowed($oj, $this->conf, null)) {
-                    $opt = PaperOption::make($this->conf, $oj);
-                }
-                $this->_omap[$id] = $opt;
-            }
-            return $this->_omap[$id];
         }
+        if (!array_key_exists($id, $this->_omap)) {
+            $opt = null;
+            if (($oj = ($this->option_json_map())[$id] ?? null)
+                && Conf::xt_enabled($oj)
+                && XtParams::static_allowed($oj, $this->conf, null)) {
+                $opt = PaperOption::make($this->conf, $oj);
+            }
+            $this->_omap[$id] = $opt;
+        }
+        return $this->_omap[$id];
     }
 
     /** @param int $id
@@ -236,18 +241,36 @@ class PaperOptionList implements IteratorAggregate {
         return $o;
     }
 
-    /** @param string $key
+    /** @param ?string $key
      * @return ?PaperOption */
-    function option_by_field_key($key) {
-        // Since this function is rarely used, don’t bother optimizing it.
-        if (($colon = strpos($key, ":"))) {
+    function option_by_key($key) {
+        if ($key === null) {
+            return null;
+        }
+        if (($colon = strpos($key, ":")) !== false) {
             $key = substr($key, 0, $colon);
         }
-        foreach ($this->unsorted_field_list(null, null) as $f) {
-            if ($f->field_key() === $key)
-                return $f;
+        if (str_starts_with($key, "opt")
+            && ctype_digit(substr($key, 3))) {
+            return $this->option_by_id(intval(substr($key, 3)));
         }
-        return null;
+        if ($this->_keymap === null) {
+            $this->_keymap = [];
+            $this->_keymap_options = false;
+            foreach ($this->intrinsic_json_map() as $id => $oj) {
+                if (($oj->nonpaper ?? false) !== true) {
+                    $this->_keymap[$oj->json_key] = $id;
+                }
+            }
+        }
+        if (!$this->_keymap_options && !isset($this->_keymap[$key])) {
+            $this->_keymap_options = true;
+            foreach ($this->normal() as $id => $opt) {
+                $this->_keymap[$opt->json_key()] = $id;
+            }
+        }
+        $oid = $this->_keymap[$key] ?? null;
+        return $oid !== null ? $this->option_by_id($oid) : null;
     }
 
     /** @return array<int,PaperOption> */
@@ -364,7 +387,7 @@ class PaperOptionList implements IteratorAggregate {
     /** @suppress PhanAccessReadOnlyProperty */
     function invalidate_options() {
         if ($this->_jmap !== null || $this->_ijmap !== null) {
-            $this->_jmap = $this->_ijmap = null;
+            $this->_jmap = $this->_ijmap = $this->_keymap = null;
             $this->_omap = $this->_imap = [];
             $this->_olist = $this->_olist_nonfinal = $this->_nonpaper_am = null;
         }
@@ -447,5 +470,16 @@ class PaperOptionList implements IteratorAggregate {
         $omap = $this->find_all_nonpaper($name);
         reset($omap);
         return count($omap) == 1 ? current($omap) : null;
+    }
+
+    function refresh_topics() {
+        foreach ($this->_imap as $opt) {
+            if ($opt && $opt instanceof Topics_PaperOption)
+                $opt->refresh_topic_set();
+        }
+        foreach ($this->_omap as $opt) {
+            if ($opt && $opt instanceof Topics_PaperOption)
+                $opt->refresh_topic_set();
+        }
     }
 }

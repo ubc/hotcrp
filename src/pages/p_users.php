@@ -1,6 +1,6 @@
 <?php
 // pages/p_users.php -- HotCRP people listing/editing page
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Users_Page {
     /** @var Conf */
@@ -155,13 +155,10 @@ class Users_Page {
             }
             $f = [];
             $dw = $user->defaultWatch;
-            foreach (UserStatus::$watch_keywords as $kw => $bit) {
-                if ($dw === 0) {
-                    break;
-                } else if (($dw & $bit) !== 0) {
-                    $f[] = $kw;
-                    $dw &= ~$bit;
-                }
+            for ($b = 1; $b <= $dw; $b <<= 1) {
+                if (($dw & $b) !== 0
+                    && ($fb = UserStatus::unparse_follow_bit($b)))
+                    $f[] = $fb;
             }
             $row["follow"] = empty($f) ? "none" : join(" ", $f);
             if ($user->roles & (Contact::ROLE_PC | Contact::ROLE_ADMIN | Contact::ROLE_CHAIR)) {
@@ -223,35 +220,45 @@ class Users_Page {
     private function handle_modify() {
         $modifyfn = $this->qreq->modifyfn;
         unset($this->qreq->fn, $this->qreq->modifyfn);
-        $ms = new MessageSet;
+        $ua = new UserActions($this->viewer);
+        $list = $action = null;
 
-        if ($modifyfn === "disableaccount") {
-            $j = UserActions::disable($this->viewer, $this->papersel);
-            if ($j->disabled_users ?? false) {
-                $ms->success($this->conf->_("<0>Disabled accounts {:list}", $j->disabled_users));
-            }
-        } else if ($modifyfn === "enableaccount") {
-            $j = UserActions::enable($this->viewer, $this->papersel);
-            if ($j->enabled_users ?? false) {
-                $ms->success($this->conf->_("<0>Enabled accounts {:list}", $j->enabled_users));
-            }
-            if ($j->activated_users ?? false) {
-                $ms->success($this->conf->_("<0>Activated accounts and sent mail to {:list}", $j->activated_users));
-            }
+        if ($modifyfn === "disable" || $modifyfn === "disableaccount") {
+            $ua->disable($this->papersel);
+            $list = "disabled";
+            $action = new FmtArg("action", "disabled", 0);
+        } else if ($modifyfn === "enable" || $modifyfn === "enableaccount") {
+            $ua->enable($this->papersel);
+            $list = "enabled";
+            $action = new FmtArg("action", "enabled", 0);
         } else if ($modifyfn === "sendaccount") {
-            $j = UserActions::send_account_info($this->viewer, $this->papersel);
-            if ($j->mailed_users ?? false) {
-                $ms->success($this->conf->_("<0>Sent account information mail to {:list}", $j->mailed_users));
+            $ua->send_account_info($this->papersel);
+            if (!empty($ua->name_list("sent"))) {
+                $ua->success($this->conf->_("<0>Sent account information mail to {:list}", $ua->name_list("sent")));
             }
-            if ($j->skipped_users ?? false) {
-                $ms->msg_at(null, $this->conf->_("<0>Skipped disabled accounts {:list}", $j->skipped_users), MessageSet::WARNING_NOTE);
+            if (!empty($ua->name_list("skipped"))) {
+                $ua->append_item(MessageItem::warning_note($this->conf->_("<0>Skipped disabled accounts {:list}", $ua->name_list("skipped"))));
             }
+        } else if ($modifyfn === "add_pc" || $modifyfn === "remove_pc") {
+            $ua->$modifyfn($this->papersel);
+            $list = $modifyfn;
+            $action = new FmtArg("action", $modifyfn === "add_pc" ? "added to PC" : "removed from PC", 0);
         } else {
             return false;
         }
 
-        $ms->append_list($j->message_list ?? []);
-        $this->conf->feedback_msg($ms);
+        if ($list !== null) {
+            if (!empty($ua->name_list($list))) {
+                $ua->success($this->conf->_("<0>Accounts {:list} {action}", $ua->name_list($list), $action));
+            } else if (!$ua->has_message()) {
+                $ua->append_item(MessageItem::warning_note("<0>No changes"));
+            }
+            if ($list === "enabled" && !empty($ua->name_list("activated"))) {
+                $ua->success($this->conf->_("<0>Accounts {:list} {action}", $ua->name_list("activated"), new FmtArg("action", "activated and notified", 0)));
+            }
+        }
+
+        $this->conf->feedback_msg($ua);
         $this->conf->redirect_self($this->qreq);
         return true;
     }
@@ -259,62 +266,69 @@ class Users_Page {
 
     /** @return bool */
     private function handle_tags() {
+        $tagfn = $this->qreq->tagfn;
+        // XXX what about removing a tag with a specific value?
+
         // check tags
         $tagger = new Tagger($this->viewer);
         $t1 = [];
         $ms = new MessageSet;
+        $flags = $tagfn === "d" ? Tagger::NOVALUE | Tagger::NOPRIVATE : Tagger::NOPRIVATE;
         foreach (preg_split('/[\s,;]+/', (string) $this->qreq->tag) as $t) {
             if ($t === "") {
-                /* nada */
-            } else if (!($t = $tagger->check($t, Tagger::NOPRIVATE))) {
+                continue;
+            } else if (!($t = $tagger->check($t, $flags))) {
                 $ms->error_at(null, $tagger->error_ftext());
-            } else if (in_array(strtolower(Tagger::tv_tag($t)), ["pc", "admin", "chair"])) {
+            } else if (!UserStatus::check_pc_tag(Tagger::tv_tag($t))) {
                 $ms->error_at(null, $this->conf->_("<0>User tag ‘{}’ reserved", Tagger::tv_tag($t)));
             } else {
                 $t1[] = $t;
             }
         }
         if ($ms->has_error()) {
-            $ms->prepend_msg("<0>Changes not saved; please correct these errors and try again", MessageSet::ERROR);
+            $ms->prepend_item(MessageItem::error("<0>Changes not saved; please correct these errors and try again"));
             $this->conf->feedback_msg($ms);
             return false;
-        } else if (!count($t1)) {
-            $ms->msg_at(null, "No changes", MessageSet::WARNING_NOTE);
+        } else if (empty($t1)) {
+            $ms->append_item(MessageItem::warning_note("<0>No changes"));
             $this->conf->feedback_msg($ms);
             return false;
         }
 
-        // modify database
+        // load affected users
         Conf::$no_invalidate_caches = true;
-        $users = [];
-        if ($this->qreq->tagfn === "s") {
-            // erase existing tags
-            $likes = $removes = [];
+        $tests = ["contactId?a"];
+        if ($tagfn === "s") {
             foreach ($t1 as $t) {
                 list($tag, $index) = Tagger::unpack($t);
-                $removes[] = $t;
-                $x = sqlq(Dbl::escape_like($tag));
-                $likes[] = "contactTags like " . Dbl::utf8ci("'% {$x}#%'");
-            }
-            foreach (Dbl::fetch_first_columns(Dbl::qe("select contactId from ContactInfo where " . join(" or ", $likes))) as $cid) {
-                $users[(int) $cid] = (object) ["id" => (int) $cid, "add_tags" => [], "remove_tags" => $removes];
+                $x = $this->conf->dblink->real_escape_string(Dbl::escape_like($tag));
+                $tests[] = "contactTags like " . Dbl::utf8ci($this->conf->dblink, "'% {$x}#%'");
             }
         }
+        $result = $this->conf->qe("select * from ContactInfo where " . join(" or ", $tests), $this->papersel);
 
-        // account for request
-        $key = $this->qreq->tagfn === "d" ? "remove_tags" : "add_tags";
-        foreach ($this->papersel as $cid) {
-            if (!isset($users[(int) $cid])) {
-                $users[(int) $cid] = (object) ["id" => (int) $cid, "add_tags" => [], "remove_tags" => []];
-            }
-            array_push($users[(int) $cid]->$key, ...$t1);
-        }
-
-        // apply modifications
+        // make changes
         $us = new UserStatus($this->viewer);
-        foreach ($users as $cid => $cj) {
-            $us->save_user($cj);
+        $changes = false;
+        while (($u = Contact::fetch($result, $this->conf))) {
+            $us->start_update();
+            $us->set_user($u);
+            foreach ($t1 as $t) {
+                if ($tagfn === "s"
+                    || $tagfn === "d") {
+                    $us->jval->change_tags[] = "-" . Tagger::tv_tag($t);
+                }
+                if (($tagfn === "s" && in_array($u->contactId, $this->papersel, true))
+                    || $tagfn === "a") {
+                    $us->jval->change_tags[] = $t;
+                }
+            }
+            $us->execute_update();
+            $changes = $changes || !empty($us->diffs);
         }
+        $result->close();
+
+        // that’s it
         Conf::$no_invalidate_caches = false;
         $this->conf->invalidate_caches(["pc" => true]);
 
@@ -323,25 +337,30 @@ class Users_Page {
             $ms->append_set($us);
             $this->conf->feedback_msg($ms);
             return false;
-        } else {
-            $ms->prepend_msg("<0>User tag changes saved", MessageSet::SUCCESS);
-            $this->conf->feedback_msg($ms);
-            unset($this->qreq->fn, $this->qreq->tagfn);
-            $this->conf->redirect_self($this->qreq);
-            return true;
         }
+        if ($changes) {
+            $ms->prepend_item(MessageItem::success("<0>User tag changes saved"));
+        } else {
+            $ms->prepend_item(MessageItem::warning_note("<0>No changes"));
+        }
+        $this->conf->feedback_msg($ms);
+        unset($this->qreq->fn, $this->qreq->tagfn);
+        $this->conf->redirect_self($this->qreq);
+        return true;
     }
 
 
     /** @return bool */
     private function handle_redisplay() {
+        $this->qreq->unset_csession("uldisplay");
         $sv = [];
         foreach (ContactList::$folds as $key) {
-            $sv[] = "uldisplay.{$key}=" . ($this->qreq->get("show$key") ? 0 : 1);
+            if (($x = friendly_boolean($this->qreq["show{$key}"])) !== null)
+                $sv[] = "uldisplay.{$key}=" . ($x ? 0 : 1);
         }
         foreach ($this->conf->all_review_fields() as $f) {
-            if ($this->qreq["has_show{$f->short_id}"])
-                $sv[] = "uldisplay.{$f->short_id}=" . ($this->qreq["show{$f->short_id}"] ? 0 : 1);
+            if (($x = friendly_boolean($this->qreq["show{$f->short_id}"])) !== null)
+                $sv[] = "uldisplay.{$f->short_id}=" . ($x ? 0 : 1);
         }
         if (isset($this->qreq->scoresort)) {
             $sv[] = "ulscoresort=" . ScoreInfo::parse_score_sort($this->qreq->scoresort);
@@ -377,7 +396,7 @@ class Users_Page {
             return $this->viewer->privChair
                 && $qreq->valid_post()
                 && !empty($this->papersel)
-                && in_array($qreq->tagfn, ["a", "d", "s"])
+                && in_array($qreq->tagfn, ["a", "d", "s"], true)
                 && $this->handle_tags();
         }
         if ($qreq->redisplay) {
@@ -410,6 +429,7 @@ class Users_Page {
                   "aff" => "Affiliations",
                   "collab" => "Collaborators",
                   "topics" => "Topics",
+                  "nprefs" => "# Preferences",
                   "orcid" => "ORCID iD",
                   "country" => "Country"] as $fold => $text) {
             if (($pl->have_folds[$fold] ?? null) !== null) {
@@ -434,9 +454,9 @@ class Users_Page {
             $uldisplay = ContactList::uldisplay($this->qreq);
             foreach ($viewable_fields as $f) {
                 $checked = strpos($uldisplay, " {$f->short_id} ") !== false;
-                echo Ht::checkbox("show{$f->short_id}", 1, $checked),
-                    "&nbsp;", Ht::label($f->name_html),
-                    Ht::hidden("has_show{$f->short_id}", 1), "<br />";
+                echo '<label class="checki"><span class="checkc">',
+                    Ht::checkbox("show{$f->short_id}", 1, $checked),
+                    '</span>', $f->name_html, '</label>';
             }
             echo "</td>";
         }
@@ -446,7 +466,7 @@ class Users_Page {
         if (!empty($viewable_fields)) {
             $ss = [];
             foreach (ScoreInfo::score_sort_selector_options() as $k => $v) {
-                if (in_array($k, ["average", "variance", "maxmin"]))
+                if (in_array($k, ["average", "variance", "maxmin"], true))
                     $ss[$k] = $v;
             }
             echo '<tr><td colspan="3"><hr class="g"><b>Sort scores by:</b> &nbsp;',
@@ -514,8 +534,9 @@ class Users_Page {
             }
         }
 
-        if ($pl->any->sel) {
-            echo Ht::form($this->conf->hoturl("=users", ["t" => $this->qreq->t])),
+        if ($pl->has("sel")) {
+            echo Ht::form($this->conf->hoturl("=users", ["t" => $this->qreq->t]),
+                    ["class" => "ui-submit js-submit-list"]),
                 Ht::hidden("defaultfn", ""),
                 Ht::hidden_default_submit("default", 1),
                 isset($this->qreq->sort) ? Ht::hidden("sort", $this->qreq->sort) : "",

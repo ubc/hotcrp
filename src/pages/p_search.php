@@ -15,6 +15,8 @@ class Search_Page {
     public $headers = [];
     /** @var array<int,list<string>> */
     public $items = [];
+    /** @var string */
+    public $stab;
 
     /** @param Contact $user
      * @param SearchSelection $ssel */
@@ -30,6 +32,7 @@ class Search_Page {
     private function set_header($column, $header) {
         $this->headers[$column] = $header;
     }
+
     /** @param int $column
      * @param string $item */
     private function item($column, $item) {
@@ -38,16 +41,22 @@ class Search_Page {
         }
         $this->items[$column][] = $item;
     }
+
     /** @param int $column
      * @param string $type
      * @param string $title */
     private function checkbox_item($column, $type, $title, $options = []) {
         $options["class"] = "uich js-plinfo";
-        $x = '<label class="checki"><span class="checkc">'
-            . Ht::hidden("has_show{$type}", 1)
-            . Ht::checkbox("show{$type}", 1, $this->pl->viewing($type), $options)
-            . '</span>' . $title . '</label>';
-        $this->item($column, $x);
+        $options["id"] = "show{$type}";
+        $xtype = $type === "anonau" ? "authors" : $type;
+        $lclass = "checki";
+        if ($this->pl->view_origin($xtype) === PaperList::VIEWORIGIN_SEARCH) {
+            $options["disabled"] = true;
+            $lclass .= " disabled";
+        }
+        $this->item($column, "<label class=\"{$lclass}\"><span class=\"checkc\">"
+            . Ht::checkbox("show[]", $type, $this->pl->viewing($type), $options)
+            . "</span>{$title}</label>");
     }
 
     private function prepare_display_options() {
@@ -86,7 +95,7 @@ class Search_Page {
         // Options
         foreach ($this->conf->options() as $ox) {
             if ($ox->search_keyword() !== false
-                && $ox->on_render_context(FieldRender::CFSUGGEST)
+                && $ox->published(FieldRender::CFSUGGEST)
                 && $pl->has("opt{$ox->id}")) {
                 $this->checkbox_item(10, $ox->search_keyword(), $ox->name);
             }
@@ -174,8 +183,10 @@ class Search_Page {
 
     /** @param Qrequest $qreq */
     private function print_display_options($qreq) {
-        echo '<div class="tld is-tla pb-2" id="view" role="tabpanel" aria-labelledby="k-view-tab">',
-            Ht::form($this->conf->hoturl("=search", "redisplay=1"), ["id" => "foldredisplay", "class" => "fn3 fold5c"]);
+        echo '<div class="tld is-tla',
+            $this->stab === "view" ? " active" : "",
+            ' pb-2" id="view" role="tabpanel" aria-labelledby="k-view-tab">',
+            Ht::form($this->conf->hoturl("search"), ["id" => "foldredisplay", "class" => "fn3 fold5c", "method" => "get"]);
         foreach (["q", "qa", "qo", "qx", "qt", "t", "sort"] as $x) {
             if (isset($qreq[$x]) && ($x !== "q" || !isset($qreq->qa)))
                 echo Ht::hidden($x, $qreq[$x]);
@@ -218,17 +229,19 @@ class Search_Page {
     private function print_list($pl_text, $qreq, $limits) {
         $search = $this->pl->search;
 
+        if ($search->has_problem_at("warn_missing_repeatable")) {
+            $search->inform_at(null, "<5>" . Ht::link("Repeat search in all submissions you can view", $this->conf->hoturl("search", ["t" => "viewable", "q" => $search->q])));
+        }
         if (!empty($this->user->hidden_papers)
             && $this->user->is_actas_user()) {
-            $this->pl->message_set()->warning_at(null, $this->conf->_("<0>{Submissions} {:numlist} are totally hidden when viewing the site as another user.", array_map(function ($n) { return "#{$n}"; }, array_keys($this->user->hidden_papers))));
+            $search->warning_at(null, $this->conf->_("<0>{Submissions} {:numlist} are totally hidden when viewing the site as another user.", array_map(function ($n) { return "#{$n}"; }, array_keys($this->user->hidden_papers))));
         }
         if ($search->has_message()) {
             echo '<div class="msgs-wide">',
                 Ht::msg($search->full_feedback_html(), min($search->problem_status(), MessageSet::WARNING)),
                 '</div>';
         }
-
-        echo "<div class=\"maintabsep\"></div>\n\n";
+        echo "\n";
 
         if ($this->pl->has("sel")) {
             echo Ht::form($this->conf->selfurl($qreq, ["forceShow" => null], Conf::HOTURL_POST), ["id" => "sel", "class" => "ui-submit js-submit-list"]),
@@ -248,15 +261,21 @@ class Search_Page {
                     $a[] = "{$xa}=" . urlencode($qreq[$xa]);
                 }
             }
-            if ($limits[0] !== $search->limit()
-                && !in_array($search->limit(), ["all", "viewable", "active"], true)) {
-                echo " (<a href=\"", $this->conf->hoturl("search", join("&amp;", $a)), "\">Repeat search in ", htmlspecialchars(strtolower(PaperSearch::limit_description($this->conf, $limits[0]))), "</a>)";
-            }
         }
 
         if ($this->pl->has("sel")) {
             echo "</form>";
         }
+    }
+
+    private function print_tab_selector($id, $html) {
+        echo '<div class="tll',
+            $this->stab === $id ? " active" : "",
+            "\" role=\"tab\" id=\"k-{$id}-tab\" aria-controls=\"{$id}\" aria-selected=\"",
+            $this->stab === $id ? "true" : "false",
+            "\"><a class=\"ui tla nw\" href=\"",
+            $id === "default" ? "" : "#{$id}",
+            "\">{$html}</a></div>";
     }
 
     /** @param Qrequest $qreq */
@@ -269,6 +288,7 @@ class Search_Page {
         } else {
             $search = new PaperSearch($user, ["t" => $qreq->t, "q" => "NONE"]);
         }
+        $search->set_warn_missing(2);
         assert(!isset($qreq->display));
         $this->pl = new PaperList("pl", $search, ["sort" => true], $qreq);
         $this->pl->apply_view_report_default();
@@ -303,9 +323,20 @@ class Search_Page {
         $limits = PaperSearch::viewable_limits($user, $search->limit());
         $qtOpt = $this->field_search_types();
 
+        // Search tabs
+        $this->stab = $qreq->tab ?? "default";
+        if ($this->stab !== "default"
+            && $this->stab !== "advanced"
+            && ($this->stab !== "saved-searches" || !$user->isPC)
+            && ($this->stab !== "view" || $this->pl->is_empty())) {
+            $this->stab = "default";
+        }
+
         // Basic search tab
-        echo '<div class="tld is-tla active" id="default" role="tabpanel" aria-labelledby="k-default-tab">',
-            Ht::form($this->conf->hoturl("search"), ["method" => "get", "class" => "form-basic-search"]),
+        echo '<div class="tld is-tla',
+            $this->stab === "default" ? " active" : "",
+            '" id="default" role="tabpanel" aria-labelledby="k-default-tab">',
+            Ht::form($this->conf->hoturl("search"), ["method" => "get", "class" => "form-basic-search", "role" => "search"]),
             Ht::entry("q", (string) $qreq->q, [
                 "size" => 40, "tabindex" => 1,
                 "class" => "papersearch want-focus need-suggest flex-grow-1",
@@ -318,8 +349,10 @@ class Search_Page {
             '</div></form></div>';
 
         // Advanced search tab
-        echo '<div class="tld is-tla" id="advanced" role="tabpanel" aria-labelledby="k-advanced-tab">',
-            Ht::form($this->conf->hoturl("search"), ["method" => "get"]),
+        echo '<div class="tld is-tla',
+            $this->stab === "advanced" ? " active" : "",
+            '" id="advanced" role="tabpanel" aria-labelledby="k-advanced-tab">',
+            Ht::form($this->conf->hoturl("search"), ["method" => "get", "role" => "search"]),
             '<div class="d-inline-block">',
             '<div class="entryi medium"><label for="k-advanced-qt">Search</label><div class="entry">',
               Ht::select("qt", $qtOpt, $qreq->qt ?? "n", ["id" => "k-advanced-qt"]),
@@ -350,7 +383,9 @@ class Search_Page {
 
         // Saved searches tab
         if ($user->isPC) {
-            echo '<div class="tld is-tla pb-2 ui-fold js-named-search-tabpanel" id="saved-searches" role="tabpanel" aria-labelledby="k-saved-searches-tab"></div>';
+            echo '<div class="tld is-tla',
+                $this->stab === "saved-searches" ? " active" : "",
+                ' pb-2 ui-fold js-named-search-tabpanel" id="saved-searches" role="tabpanel" aria-labelledby="k-saved-searches-tab"></div>';
         }
 
         // Display options tab
@@ -359,14 +394,14 @@ class Search_Page {
         }
 
         // Tab selectors
-        echo '<div class="tllx" role="tablist">',
-            '<div class="tll active" role="tab" id="k-default-tab" aria-controls="default" aria-selected="true"><a class="ui tla" href="">Search</a></div>',
-            '<div class="tll" role="tab" id="k-advanced-tab" aria-controls="advanced" aria-selected="false"><a class="ui tla nw" href="#advanced">Advanced search</a></div>';
+        echo '<div class="tllx" role="tablist">';
+        $this->print_tab_selector("default", "Search");
+        $this->print_tab_selector("advanced", "Advanced search");
         if ($user->isPC) {
-            echo '<div class="tll" role="tab" id="k-saved-searches-tab" aria-controls="saved-searches" aria-selected="false"><a class="ui tla nw" href="#saved-searches">Saved searches</a></div>';
+            $this->print_tab_selector("saved-searches", "Saved searches");
         }
         if (!$this->pl->is_empty()) {
-            echo '<div class="tll" role="tab" id="k-view-tab" aria-controls="view" aria-selected="false"><a class="ui tla nw" href="#view">View options</a></div>';
+            $this->print_tab_selector("view", "Display options");
         }
         echo '</div></div>', Ht::unstash(), "\n\n";
 
@@ -380,38 +415,33 @@ class Search_Page {
         $qreq->print_footer();
     }
 
-    static function redisplay(Contact $user, Qrequest $qreq) {
-        // change session based on request
-        if ($qreq->qsession()->is_open()) {
-            Session_API::parse_view($qreq, "pl", $qreq);
-        }
-        // redirect, including differences between search and request
-        // create PaperList
-        if (isset($qreq->q)) {
-            $search = new PaperSearch($user, $qreq);
-        } else {
-            $search = new PaperSearch($user, ["t" => $qreq->t, "q" => "NONE"]);
-        }
-        $pl = new PaperList("pl", $search, ["sort" => true], $qreq);
-        $pl->apply_view_report_default();
-        $pl->apply_view_session($qreq);
-        $pl->apply_view_qreq($qreq);
-        $param = ["#" => "view"];
-        foreach ($pl->unparse_view(PaperList::VIEWORIGIN_SEARCH, false) as $vx) {
-            if (str_starts_with($vx, "sort:score[")) {
-                $param["scoresort"] = substr($vx, 11, -1);
-            } else if (strpos($vx, "[") === false) {
-                $name = substr($vx, 5);
-                $show = str_starts_with($vx, "show:") ? 1 : 0;
-                $param[$name === "force" ? "forceShow" : "show{$name}"] = $show;
+    /** @return never */
+    static private function not_allowed(Contact $user, Qrequest $qreq) {
+        http_response_code(403);
+        $qreq->print_header("Search", "search");
+        $ml = [MessageItem::error("<0>Account {} can’t search {submissions}", $user->email)];
+
+        $semails = Contact::session_emails($qreq);
+        $user->conf->prefetch_users_by_email($semails);
+        $links = [];
+        foreach ($semails as $i => $email) {
+            if (strcasecmp($email, $user->email) !== 0
+                && ($u = $user->conf->user_by_email($email))
+                && PaperSearch::viewable_limits($u)) {
+                $links[] = Ht::link(htmlspecialchars($email),
+                    $qreq->navigation()->base_path . "u/{$i}/" . $user->conf->selfurl($qreq, [], Conf::HOTURL_SITEREL | Conf::HOTURL_RAW));
             }
         }
-        $user->conf->redirect_self($qreq, $param);
+        if ($links) {
+            $ml[] = MessageItem::inform("<5>You may want to try a different account ({:nblist}).", new FmtArg(0, $links, 5));
+        }
+
+        $user->conf->feedback_msg($ml);
+        $qreq->print_footer();
+        throw new PageCompletion;
     }
 
-    /** @param Contact $user
-     * @param Qrequest $qreq */
-    static function go($user, $qreq) {
+    static function go(Contact $user, Qrequest $qreq) {
         $conf = $user->conf;
         if ($user->is_empty()) {
             $user->escape();
@@ -440,10 +470,7 @@ class Search_Page {
 
         // paper group
         if (!PaperSearch::viewable_limits($user, $qreq->t)) {
-            $qreq->print_header("Search", "search");
-            $conf->error_msg($conf->_("<0>You aren’t allowed to search {submissions}"));
-            $qreq->print_footer();
-            exit();
+            self::not_allowed($user, $qreq);
         }
 
         // paper selection
@@ -461,11 +488,6 @@ class Search_Page {
                 $fn .= "/" . $qreq[$subkey];
             }
             ListAction::call($fn, $user, $qreq, $ssel);
-        }
-
-        // request and session parsing
-        if ($qreq->redisplay) {
-            self::redisplay($user, $qreq);
         }
 
         // display

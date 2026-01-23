@@ -20,21 +20,21 @@ class Abstract_PaperOption extends PaperOption {
         return (string) $ov->data();
     }
     function value_save(PaperValue $ov, PaperStatus $ps) {
-        $ps->change_at($this);
-        $ab = $ov->data();
-        if ($ab === null || strlen($ab) < 16383) {
-            $ov->prow->set_prop("abstract", $ab === "" ? null : $ab);
-            $ov->prow->set_overflow_prop("abstract", null);
-        } else {
-            $ov->prow->set_prop("abstract", null);
-            $ov->prow->set_overflow_prop("abstract", $ab);
+        if (!$ov->equals($ov->prow->base_option($this->id))) {
+            $ab = $ov->data();
+            if ($ab === null || strlen($ab) < 16383) {
+                $ov->prow->set_prop("abstract", $ab === "" ? null : $ab);
+                $ov->prow->set_overflow_prop("abstract", null);
+            } else {
+                $ov->prow->set_prop("abstract", null);
+                $ov->prow->set_overflow_prop("abstract", $ab);
+            }
         }
-        return true;
     }
     function parse_qreq(PaperInfo $prow, Qrequest $qreq) {
         return $this->parse_json_string($prow, $qreq->abstract, PaperOption::PARSE_STRING_CONVERT | PaperOption::PARSE_STRING_TRIM);
     }
-    function parse_json(PaperInfo $prow, $j) {
+    function parse_json_user(PaperInfo $prow, $j, Contact $user) {
         return $this->parse_json_string($prow, $j, PaperOption::PARSE_STRING_TRIM);
     }
     function print_web_edit(PaperTable $pt, $ov, $reqov) {
@@ -54,7 +54,7 @@ class Abstract_PaperOption extends PaperOption {
             }
         }
     }
-    function search_examples(Contact $viewer, $context) {
+    function search_examples(Contact $viewer, $venue) {
         return [$this->has_search_example(), $this->text_search_example()];
     }
     function present_script_expression() {

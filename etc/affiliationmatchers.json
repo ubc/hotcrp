@@ -23,6 +23,9 @@
     "none": {
         "stop": true
     },
+    "independent": {
+        "stop": true
+    },
     "unaffiliated": {
         "stop": true
     },
@@ -164,6 +167,9 @@
     "analytics": {
         "weak": true
     },
+    "applied": {
+        "weak": true
+    },
     "associates": {
         "weak": true
     },
@@ -174,6 +180,12 @@
         "weak": true
     },
     "bv": {
+        "weak": true
+    },
+    "campus": {
+        "weak": true
+    },
+    "canada": {
         "weak": true
     },
     "capital": {
@@ -230,6 +242,9 @@
     "corporation": {
         "weak": true
     },
+    "denmark": {
+        "weak": true
+    },
     "department": {
         "weak": true
     },
@@ -246,6 +261,9 @@
         "weak": true
     },
     "economics": {
+        "weak": true
+    },
+    "electronic": {
         "weak": true
     },
     "electronics": {
@@ -275,6 +293,9 @@
     "hochschule": {
         "weak": true
     },
+    "hospital": {
+        "weak": true
+    },
     "informatics": {
         "weak": true
     },
@@ -297,6 +318,9 @@
     "it": {
         "weak": true
     },
+    "king": {
+        "weak": true
+    },
     "lab": {
         "weak": true
     },
@@ -313,6 +337,9 @@
         "weak": true
     },
     "llc": {
+        "weak": true
+    },
+    "london": {
         "weak": true
     },
     "ltd": {
@@ -366,6 +393,9 @@
     "research": {
         "weak": true
     },
+    "royal": {
+        "weak": true
+    },
     "school": {
         "weak": true
     },
@@ -404,7 +434,7 @@
     },
     "tech": {
         "weak": true,
-        "alternate": ["technology"]
+        "alternate": ["technology", {"word": "polytechnic", "if": "virginia"}]
     },
     "technology": {
         "weak": true,
@@ -426,6 +456,12 @@
         "weak": true
     },
     "tokyo": {
+        "weak": true
+    },
+    "uk": {
+        "weak": true
+    },
+    "united": {
         "weak": true
     },
     "univ": {
@@ -480,6 +516,9 @@
     "austin": {
         "nameish": true, "sync": "ut texas"
     },
+    "australia": {
+        "weak": true
+    },
     "australian": {
         "alternate": [{"word": "anu", "if": "national university"}]
     },
@@ -504,6 +543,9 @@
     },
     "birmingham": {
         "sync": "alabama"
+    },
+    "brigham": {
+        "sync": "young"
     },
     "cal": {
         "weak": true,
@@ -553,7 +595,8 @@
         "weak": true
     },
     "columbia": {
-        "sync": "british"
+        "sync": "british",
+        "alternate": [{"word": "ubc", "if": "british"}]
     },
     "csu": {
         "alternate": ["california state university", "cal state"]
@@ -572,7 +615,8 @@
     },
     "diego": {
         "nameish": true,
-        "alternate": [{"word": "ucsd", "if": "university california san"}]
+        "alternate": [{"word": "ucsd", "if": "university california san"}],
+        "sync": "state"
     },
     "epfl": {
         "nameish": false
@@ -583,6 +627,9 @@
     "ethz": {
         "alternate": ["eth zurich"]
     },
+    "europe": {
+        "weak": true
+    },
     "facebook": {
         "nameish": false
     },
@@ -590,7 +637,7 @@
         "nameish": false
     },
     "florida": {
-        "sync": ["state", "central", "international"]
+        "sync": ["state", "central", "international", "south"]
     },
     "france": {
         "weak": true
@@ -605,7 +652,7 @@
     },
     "georgia": {
         "weak": true,
-        "sync": "tech"
+        "sync": "tech technology"
     },
     "germany": {
         "weak": true
@@ -675,6 +722,9 @@
     "inria": {
         "nameish": false
     },
+    "iowa": {
+        "sync": "state"
+    },
     "irisa": {
         "nameish": false
     },
@@ -701,6 +751,9 @@
     },
     "kaist": {
         "alternate": ["korea advanced institute science technology"]
+    },
+    "kansas": {
+        "sync": ["state"]
     },
     "kong": {
         "weak": true, "nameish": true,
@@ -743,7 +796,7 @@
         ]
     },
     "michigan": {
-        "sync": "state"
+        "sync": ["state", "tech technological", "western"]
     },
     "microsoft": {
         "nameish": false,
@@ -774,7 +827,11 @@
         "alternate": ["national university singapore"]
     },
     "nyu": {
-        "alternate": ["new york university"]
+        "alternate": ["new york university"],
+        "sync": ["buffalo", "city"]
+    },
+    "oregon": {
+        "sync": "state"
     },
     "penn": {
         "weak": true, "nameish": 0,
@@ -797,6 +854,12 @@
     },
     "rio": {
         "weak": true
+    },
+    "rochester": {
+        "sync": ["institute"]
+    },
+    "rome": {
+        "sync": ["sapienza", "tor"]
     },
     "rpi": {
         "alternate": ["rensselaer polytechnic institute"]
@@ -826,6 +889,9 @@
     "standards": {
         "alternate": [{"word": "nist", "if": "national institute technology"}]
     },
+    "sun": {
+        "nameish": true
+    },
     "suny": {
         "nameish": false
     },
@@ -851,6 +917,9 @@
     "tu": {
         "nameish": 2, "weak": true,
         "alternate": [{"word": "technische universitat"}]
+    },
+    "ubc": {
+        "alternate": ["university british columbia"]
     },
     "uc": {
         "weak": true,
@@ -921,6 +990,9 @@
             {"word": "university texas", "if": "dallas"}
         ]
     },
+    "utah": {
+        "sync": "state"
+    },
     "uva": {
         "alternate": ["university virginia"]
     },
@@ -935,9 +1007,13 @@
     "virginia": {
         "weak": true,
         "alternate": [
-            {"word": "uva", "if": "university"}
+            {"word": "uva", "if": "university"},
+            {"word": "vt", "if": "tech"}
         ],
         "sync": ["commonwealth", "rensselaer"]
+    },
+    "vt": {
+        "alternate": ["virginia tech"]
     },
     "wales": {
         "alternate": [
@@ -950,7 +1026,13 @@
         "alternate": [
             {"word": "uw", "if": "university"}
         ],
-        "sync": ["george", "lee", "state"]
+        "sync": ["george", "lee", "state", "louis", "science", "technology tech"]
+    },
+    "western": {
+        "sync": ["case", "australia"]
+    },
+    "wien": {
+        "weak": true
     },
     "wisconsin": {
         "alternate": [
@@ -965,7 +1047,7 @@
         "alternate": [
             {"word": "nyu", "if": "new university"}
         ],
-        "sync": ["new"]
+        "sync": ["new", "buffalo", "city"]
     },
     "zurich": {
         "weak": true

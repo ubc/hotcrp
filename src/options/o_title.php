@@ -20,9 +20,9 @@ class Title_PaperOption extends PaperOption {
         return (string) $ov->data();
     }
     function value_save(PaperValue $ov, PaperStatus $ps) {
-        $ps->change_at($this);
-        $ov->prow->set_prop("title", $ov->data());
-        return true;
+        if (!$ov->equals($ov->prow->base_option($this->id))) {
+            $ov->prow->set_prop("title", $ov->data());
+        }
     }
     /** @return ?PaperValue */
     private function check_value(?PaperValue $ov) {
@@ -34,7 +34,7 @@ class Title_PaperOption extends PaperOption {
     function parse_qreq(PaperInfo $prow, Qrequest $qreq) {
         return $this->check_value($this->parse_json_string($prow, $qreq->title, PaperOption::PARSE_STRING_CONVERT | PaperOption::PARSE_STRING_SIMPLIFY));
     }
-    function parse_json(PaperInfo $prow, $j) {
+    function parse_json_user(PaperInfo $prow, $j, Contact $user) {
         return $this->check_value($this->parse_json_string($prow, $j, PaperOption::PARSE_STRING_SIMPLIFY));
     }
     function print_web_edit(PaperTable $pt, $ov, $reqov) {

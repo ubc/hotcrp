@@ -1,38 +1,20 @@
 <?php
 // helpers.php -- HotCRP non-class helper functions
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 // string helpers
-
-/** @param null|int|string $value
- * @return int
- * @deprecated */
-function cvtint($value, $default = -1) {
-    $v = trim((string) $value);
-    if (is_numeric($v)) {
-        $ival = intval($v);
-        if ($ival == floatval($v)) {
-            return $ival;
-        }
-    }
-    return $default;
-}
 
 /** @param null|int|string $s
  * @return ?int */
 function stoi($s) {
     if ($s === null || is_int($s)) {
         return $s;
-    }
-    $v = trim((string) $s);
-    if (!is_numeric($v)) {
+    } else if (!is_numeric($s)) {
         return null;
     }
-    $iv = intval($v);
-    if ($iv != floatval($v)) {
-        return null;
-    }
-    return $iv;
+    $iv = intval($s);
+    $fv = floatval($s);
+    return $iv == $fv ? $iv : null;
 }
 
 /** @param null|int|float|string $s
@@ -40,13 +22,11 @@ function stoi($s) {
 function stonum($s) {
     if ($s === null || is_int($s) || is_float($s)) {
         return $s;
-    }
-    $v = trim((string) $s);
-    if (!is_numeric($v)) {
+    } else if (!is_numeric($s)) {
         return null;
     }
-    $iv = intval($v);
-    $fv = floatval($v);
+    $iv = intval($s);
+    $fv = floatval($s);
     return $iv == $fv ? $iv : $fv;
 }
 
@@ -70,9 +50,8 @@ function unparse_number_pm_html($n) {
         return "−" . (-$n); // U+2212 MINUS
     } else if ($n > 0) {
         return "+" . $n;
-    } else {
-        return "0";
     }
+    return "0";
 }
 
 /** @param int|float $n
@@ -82,9 +61,8 @@ function unparse_number_pm_text($n) {
         return "-" . (-$n);
     } else if ($n > 0) {
         return "+" . $n;
-    } else {
-        return "0";
     }
+    return "0";
 }
 
 /** @param string $url
@@ -130,7 +108,7 @@ class JsonResult implements JsonSerializable, ArrayAccess {
                 $this->content = (array) $a2;
             }
         } else {
-            assert(is_associative_array($a2));
+            assert(is_array($a2) && !array_is_list($a2));
             $this->content = $a2;
         }
     }
@@ -144,6 +122,11 @@ class JsonResult implements JsonSerializable, ArrayAccess {
         $jr->content = $content;
         $jr->minimal = true;
         return $jr;
+    }
+
+    /** @return JsonResult */
+    static function make_ok() {
+        return new JsonResult(200);
     }
 
     /** @param int $status
@@ -177,7 +160,7 @@ class JsonResult implements JsonSerializable, ArrayAccess {
      * @param ?string $ftext
      * @return JsonResult */
     static function make_parameter_error($param, $ftext = null) {
-        $mi = new MessageItem($param, $ftext ?? "<0>Parameter error", 2);
+        $mi = new MessageItem(2, $param, $ftext ?? "<0>Parameter error");
         return new JsonResult(400, ["ok" => false, "message_list" => [$mi]]);
     }
 
@@ -185,7 +168,7 @@ class JsonResult implements JsonSerializable, ArrayAccess {
      * @param ?string $ftext
      * @return JsonResult */
     static function make_missing_error($param, $ftext = null) {
-        $mi = new MessageItem($param, $ftext ?? "<0>Parameter missing", 2);
+        $mi = new MessageItem(2, $param, $ftext ?? "<0>Parameter missing");
         return new JsonResult(400, ["ok" => false, "message_list" => [$mi]]);
     }
 
@@ -193,7 +176,7 @@ class JsonResult implements JsonSerializable, ArrayAccess {
      * @param ?string $ftext
      * @return JsonResult */
     static function make_permission_error($field = null, $ftext = null) {
-        $mi = new MessageItem($field, $ftext ?? "<0>Permission error", 2);
+        $mi = new MessageItem(2, $field, $ftext ?? "<0>Permission error");
         return new JsonResult(403, ["ok" => false, "message_list" => [$mi]]);
     }
 
@@ -201,7 +184,7 @@ class JsonResult implements JsonSerializable, ArrayAccess {
      * @param ?string $ftext
      * @return JsonResult */
     static function make_not_found_error($field = null, $ftext = null) {
-        $mi = new MessageItem($field, $ftext ?? "<0>Not found", 2);
+        $mi = new MessageItem(2, $field, $ftext ?? "<0>Not found");
         return new JsonResult(404, ["ok" => false, "message_list" => [$mi]]);
     }
 
@@ -225,6 +208,26 @@ class JsonResult implements JsonSerializable, ArrayAccess {
      * @return $this */
     function append_item($mi) {
         $this->content["message_list"][] = $mi;
+        return $this;
+    }
+
+
+    /** @return bool */
+    function ok() {
+        return $this->content["ok"];
+    }
+
+    /** @param string $key
+     * @return mixed */
+    function get($key) {
+        return $this->content[$key] ?? null;
+    }
+
+    /** @param string $key
+     * @param mixed $value
+     * @return $this */
+    function set($key, $value) {
+        $this->content[$key] = $value;
         return $this;
     }
 
@@ -282,7 +285,7 @@ class JsonResult implements JsonSerializable, ArrayAccess {
         } else {
             $pprint = $this->pretty_print ?? true;
         }
-        echo json_encode_browser($this->content, $pprint ? JSON_PRETTY_PRINT : 0), "\n";
+        echo json_encode_browser($this->content, ($pprint ? JSON_PRETTY_PRINT : 0) | JSON_UNESCAPED_SLASHES), "\n";
     }
 
     /** @return never
@@ -300,10 +303,14 @@ class JsonResult implements JsonSerializable, ArrayAccess {
 class Redirection extends Exception {
     /** @var string */
     public $url;
-    /** @param string $url */
-    function __construct($url) {
-        parent::__construct("Redirect to $url");
+    /** @var int */
+    public $status;
+    /** @param string $url
+     * @param 301|302|303|307|308 $status */
+    function __construct($url, $status = 302) {
+        parent::__construct("Redirect to {$url}");
         $this->url = $url;
+        $this->status = $status;
     }
 }
 
@@ -363,6 +370,16 @@ function expander($open, $foldnum = null, $open_tooltip = null) {
     return $t . '</span>';
 }
 
+function aria_expander($c = "") {
+    return '<span class="' . Ht::add_tokens("expander", $c) . '" role="none"><span class="ifx">' . Icons::ui_triangle(2)
+        . '</span><span class="ifnx">' . Icons::ui_triangle(1) . '</span></span>';
+}
+
+function aria_plus_expander($c = "") {
+    $c = Ht::add_tokens("expander", $c);
+    return '<span class="' . Ht::add_tokens("expander", $c) . '" role="none"><span class="ifx">−</span><span class="ifnx">+</span></span>';
+}
+
 
 /** @param Contact|Author|ReviewInfo|CommentInfo $userlike
  * @return string */
@@ -382,7 +399,7 @@ function clean_tempdirs() {
     $dirh = opendir($dir);
     $now = time();
     while (($fname = readdir($dirh)) !== false) {
-        if (preg_match('/\Ahotcrptmp\d+\z/', $fname)
+        if (preg_match('/\Ahotcrptmp[.\w]+\z/', $fname)
             && is_dir("{$dir}/{$fname}")
             && ($mtime = @filemtime("{$dir}/{$fname}")) !== false
             && $mtime < $now - 1800)
@@ -561,6 +578,22 @@ function unparse_byte_size_binary($n) {
     }
 }
 
+/** @param int|float $n
+ * @return string */
+function unparse_byte_size_binary_f($n) {
+    if ($n > 1073689395) {
+        return sprintf("%.2fGiB", round($n / 10737418.24) / 100);
+    } else if ($n > 1048063) {
+        return sprintf("%.1fMiB", round($n / 104857.6) / 10);
+    } else if ($n > 10188) {
+        return sprintf("%.0fKiB", $n / 1024);
+    } else if ($n > 0) {
+        return sprintf("%.1fKiB", max(round($n / 102.4), 1) / 10);
+    } else {
+        return "0B";
+    }
+}
+
 /** @param string $t
  * @return int */
 function parse_latin_ordinal($t) {
@@ -588,15 +621,14 @@ function unparse_latin_ordinal($n) {
     assert($n >= 1);
     if ($n <= 26) {
         return chr($n + 64);
-    } else {
-        $t = "";
-        while (true) {
-            $t = chr((($n - 1) % 26) + 65) . $t;
-            if ($n <= 26) {
-                return $t;
-            }
-            $n = intval(($n - 1) / 26);
+    }
+    $t = "";
+    while (true) {
+        $t = chr((($n - 1) % 26) + 65) . $t;
+        if ($n <= 26) {
+            return $t;
         }
+        $n = intval(($n - 1) / 26);
     }
 }
 
@@ -605,9 +637,8 @@ function unparse_latin_ordinal($n) {
 function unparse_expertise($expertise) {
     if ($expertise === null) {
         return "";
-    } else {
-        return $expertise > 0 ? "X" : ($expertise == 0 ? "Y" : "Z");
     }
+    return $expertise > 0 ? "X" : ($expertise == 0 ? "Y" : "Z");
 }
 
 /** @param array{int,?int} $preference
@@ -643,6 +674,11 @@ function review_lead_icon() {
 /** @return string */
 function review_shepherd_icon() {
     return '<span class="rto rtshep" title="Shepherd"><span class="rti">S</span></span>';
+}
+
+/** @return string */
+function review_potential_conflict_icon() {
+    return '<span class="rto rtpotential" title="Potential conflict"><span class="rti">?</span></span>';
 }
 
 

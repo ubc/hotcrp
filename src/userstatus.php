@@ -1,6 +1,6 @@
 <?php
 // userstatus.php -- HotCRP helpers for reading/storing users as JSON
-// Copyright (c) 2008-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2008-2025 Eddie Kohler; see LICENSE.
 
 class UserStatus_UserLinks {
     /** @var list<int> */
@@ -20,69 +20,57 @@ class UserStatus extends MessageSet {
     /** @var Contact
      * @readonly */
     public $viewer;
-    /** @var Contact */
+    /** @var Contact
+     * @readonly */
     public $user;
+    const AUTHF_USER = 1;
+    const AUTHF_SELF = 2;
+    const AUTHF_CDB = 4;
+    const AUTHF_ACTAS = 8;
+    /** @var int */
+    private $_authf;
 
-    /** @var bool */
+    /** @var bool
+     * @readonly */
     public $notify = false;
     /** @var bool */
     public $no_deprivilege_self = false;
+    /** @var 0|1|2 */
+    private $if_empty = 0; /* = IF_EMPTY_NONE */
+    /** @var 0|1|2 */
+    private $save_mode = 0; /* = SAVE_ALL */
     /** @var bool */
-    public $update_profile_if_empty = false;
-    /** @var bool */
-    public $update_pc_if_empty = false;
-    /** @var bool */
-    public $no_create = false;
-    /** @var bool */
-    public $no_modify = false;
-    /** @var ?array<string,true> */
-    public $unknown_topics = null;
+    private $follow_primary = false;
 
-    /** @var Qrequest */
+    /** @var Qrequest
+     * @readonly */
     public $qreq;
     /** @var CsvRow */
     public $csvreq;
     /** @var object */
     public $jval;
 
-    const AUTHF_USER = 1;
-    const AUTHF_SELF = 2;
-    const AUTHF_CDB = 4;
-    /** @var int */
-    private $_authf;
     /** @var ?bool */
     private $_req_security;
+    /** @var ?array<string,true> */
+    public $unknown_topics;
     /** @var bool */
     public $created;
     /** @var bool */
     public $notified;
+    /** @var ?string */
+    public $linked_secondary;
     /** @var associative-array<string,true|string> */
     public $diffs = [];
 
     /** @var ?ComponentSet */
     private $_cs;
+    /** @var ?ComponentSet */
+    private $_xcs;
     /** @var bool */
     private $_inputs_printed = false;
-
-    /** @var array<string,int>
-     * @readonly */
-    static public $watch_keywords = [
-        "register" => Contact::WATCH_PAPER_REGISTER_ALL,
-        "submit" => Contact::WATCH_PAPER_NEWSUBMIT_ALL,
-        "latewithdraw" => Contact::WATCH_LATE_WITHDRAWAL_ALL,
-        "review" => Contact::WATCH_REVIEW,
-        "anyreview" => Contact::WATCH_REVIEW_ALL,
-        "adminreview" => Contact::WATCH_REVIEW_MANAGED,
-        "finalupdate" => Contact::WATCH_FINAL_UPDATE_ALL,
-
-        "allregister" => Contact::WATCH_PAPER_REGISTER_ALL,
-        "allnewsubmit" => Contact::WATCH_PAPER_NEWSUBMIT_ALL,
-        "reviews" => Contact::WATCH_REVIEW,
-        "allreviews" => Contact::WATCH_REVIEW_ALL,
-        "adminreviews" => Contact::WATCH_REVIEW_MANAGED,
-        "managedreviews" => Contact::WATCH_REVIEW_MANAGED,
-        "allfinal" => Contact::WATCH_FINAL_UPDATE_ALL
-    ];
+    /** @var ?AuthenticationChecker */
+    private $_authchecker;
 
     static private $web_to_message_map = [
         "preferredEmail" => "preferred_email",
@@ -112,13 +100,41 @@ class UserStatus extends MessageSet {
     function __construct(Contact $viewer) {
         $this->conf = $viewer->conf;
         $this->viewer = $viewer;
-        if ($viewer->is_root_user()) {
-            $this->set_user(Contact::make($this->conf));
-        } else {
-            $this->set_user($viewer);
-        }
-        parent::__construct();
-        $this->set_want_ftext(true, 5);
+    }
+
+    const IF_EMPTY_NONE = 0;
+    const IF_EMPTY_PROFILE = 1;
+    const IF_EMPTY_MOST = 2;
+    /** @param 0|1|2 $if_empty
+     * @return $this */
+    function set_if_empty($if_empty) {
+        $this->if_empty = $if_empty;
+        return $this;
+    }
+
+    /** @param bool $x
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_notify($x) {
+        $this->notify = $x;
+        return $this;
+    }
+
+    const SAVE_ALL = 0;
+    const SAVE_EXISTING = 1;
+    const SAVE_NEW = 2;
+    /** @param 0|1|2 $mode
+     * @return $this */
+    function set_save_mode($mode) {
+        $this->save_mode = $mode;
+        return $this;
+    }
+
+    /** @param bool $x
+     * @return $this */
+    function set_follow_primary($x) {
+        $this->follow_primary = $x;
+        return $this;
     }
 
     function clear() {
@@ -126,32 +142,51 @@ class UserStatus extends MessageSet {
         $this->unknown_topics = null;
     }
 
-    function set_user(Contact $user) {
+    /** @return $this */
+    function set_user(?Contact $user) {
         if ($user === $this->user) {
-            return;
+            return $this;
         }
+
+        /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
         $this->user = $user;
 
         // set authentication flags
         $this->_authf = 0;
-        $auth_viewer = $this->viewer->base_user();
-        if ($auth_viewer->has_email()
-            && strcasecmp($auth_viewer->email, $user->email) === 0) {
-            $this->_authf |= self::AUTHF_USER;
-            if (!$this->viewer->is_actas_user()) {
+        if ($user && $user->has_email()) {
+            $auth_viewer = $this->viewer->base_user();
+            if (strcasecmp($auth_viewer->email, $user->email) === 0) {
+                $this->_authf |= self::AUTHF_USER;
+            }
+            if ($this->viewer->is_actas_user()) {
+                if (strcasecmp($this->viewer->email, $user->email) === 0) {
+                    $this->_authf |= self::AUTHF_ACTAS;
+                }
+            } else if (($this->_authf & self::AUTHF_USER) !== 0) {
                 $this->_authf |= self::AUTHF_SELF | self::AUTHF_CDB;
             }
-        }
-        if (($this->_authf & self::AUTHF_CDB) === 0
-            && $auth_viewer->privChair
-            && $this->conf->opt("contactdbAdminUpdate")) {
-            $this->_authf |= self::AUTHF_CDB;
+            if (($this->_authf & self::AUTHF_CDB) === 0
+                && $auth_viewer->privChair
+                && $this->conf->opt("contactdbAdminUpdate")) {
+                $this->_authf |= self::AUTHF_CDB;
+            }
         }
 
-        if ($this->_cs) {
-            $this->_cs->reset_context();
-            $this->initialize_cs();
-        }
+        $this->_cs = null;
+        return $this;
+    }
+
+    /** @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_qreq(Qrequest $qreq) {
+        $this->qreq = $qreq;
+        $this->_authchecker = null;
+        return $this;
+    }
+
+    /** @return ?Contact */
+    function cdb_user() {
+        return $this->user->cdb_user();
     }
 
     /** @return bool */
@@ -159,26 +194,34 @@ class UserStatus extends MessageSet {
         return !$this->user->email;
     }
 
-    /** Test if the edited user is the authenticated user.
+
+    /* These functions distinguish three kinds of user:
+       1. The *edited user* — the user being edited ($this->user)
+       2. The *apparent viewer* ($this->viewer; might be actas)
+       3. The *authenticated viewer* ($this->viewer->base_user(), if that viewer
+          has an email) */
+
+    /** Test if edited user is the authenticated viewer.
      * @return bool */
-    function is_auth_user() {
+    function is_editing_authenticated() {
         return ($this->_authf & self::AUTHF_USER) !== 0;
     }
 
-    /** Test if the edited user is the authenticated user and same as the viewer.
+    /** Test if edited user = apparent viewer = authenticated viewer.
      * @return bool */
     function is_auth_self() {
         return ($this->_authf & self::AUTHF_SELF) !== 0;
     }
 
+    /** Test if edited user = apparent viewer != authenticated viewer.
+     * @return bool */
+    function is_actas_self() {
+        return ($this->_authf & self::AUTHF_ACTAS) !== 0;
+    }
+
     /** @return bool */
     function can_update_cdb() {
         return ($this->_authf & self::AUTHF_CDB) !== 0;
-    }
-
-    /** @return ?Contact */
-    function cdb_user() {
-        return $this->user->cdb_user();
     }
 
     /** @param object $gj
@@ -193,37 +236,46 @@ class UserStatus extends MessageSet {
 
     /** @return ComponentSet */
     function cs() {
-        if ($this->_cs === null) {
-            $this->_cs = new ComponentSet($this->viewer, ["etc/profilegroups.json"], $this->conf->opt("profileGroups"));
-            $this->_cs->set_title_class("form-h")
+        if ($this->_cs !== null) {
+            return $this->_cs;
+        }
+        if ($this->_xcs === null) {
+            $this->_xcs = new ComponentSet($this->viewer,
+                ["etc/profilegroups.json"],
+                $this->conf->opt("profileGroups"));
+            $this->_xcs->set_title_class("form-h")
                 ->set_section_class("form-section")
                 ->set_separator('<hr class="form-sep">')
                 ->add_print_callback([$this, "_print_callback"]);
-            $this->_cs->add_xt_checker([$this, "xt_allower"]);
-            $this->initialize_cs();
+            $this->_xcs->add_xt_checker([$this, "xt_allower"]);
+        } else {
+            $this->_xcs->reset_context();
         }
+        $this->_cs = $this->_xcs;
+        $this->_cs->set_callable("UserStatus", $this)
+            ->set_context_args($this);
         return $this->_cs;
     }
 
-    private function initialize_cs() {
-        $this->_cs->set_callable("UserStatus", $this)->set_context_args($this);
+    /** @return AuthenticationChecker */
+    function authentication_checker() {
+        if (!$this->_authchecker) {
+            $this->_authchecker = $this->viewer->authentication_checker($this->qreq, "profile_security");
+        }
+        return $this->_authchecker;
     }
 
     /** @return bool */
-    function allow_some_security() {
-        return !$this->user->is_empty()
-            && ($this->is_auth_self() || $this->viewer->can_edit_any_password());
+    function has_recent_authentication() {
+        return $this->authentication_checker()->test();
     }
 
     /** @return ?bool */
     function xt_allower($e, $xt, $xtp) {
-        if ($e === "profile_security") {
-            return $this->allow_some_security();
-        } else if ($e === "auth_self") {
+        if ($e === "auth_self") {
             return $this->is_auth_self();
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @return 0|1|2
@@ -243,9 +295,8 @@ class UserStatus extends MessageSet {
             return 1;
         } else if (($this->jval->user_override ?? null) !== null) {
             return $this->jval->user_override ? 0 : 1;
-        } else {
-            return $this->update_profile_if_empty ? 1 : 0;
         }
+        return min($this->if_empty, 1);
     }
 
     /** @param int $cid
@@ -316,21 +367,20 @@ class UserStatus extends MessageSet {
     /** @param int $roles
      * @return ?list<string> */
     static function unparse_roles_json($roles) {
-        if ($roles) {
-            $rj = [];
-            if ($roles & Contact::ROLE_CHAIR) {
-                $rj[] = "chair";
-            }
-            if ($roles & (Contact::ROLE_PC | Contact::ROLE_CHAIR)) {
-                $rj[] = "pc";
-            }
-            if ($roles & Contact::ROLE_ADMIN) {
-                $rj[] = "sysadmin";
-            }
-            return $rj;
-        } else {
+        if (!$roles) {
             return null;
         }
+        $rj = [];
+        if ($roles & Contact::ROLE_CHAIR) {
+            $rj[] = "chair";
+        }
+        if ($roles & (Contact::ROLE_PC | Contact::ROLE_CHAIR)) {
+            $rj[] = "pc";
+        }
+        if ($roles & Contact::ROLE_ADMIN) {
+            $rj[] = "sysadmin";
+        }
+        return $rj;
     }
 
     /** @param int $old_roles
@@ -374,13 +424,10 @@ class UserStatus extends MessageSet {
             if (($dw & Contact::WATCH_REVIEW_ALL) !== 0) {
                 $dw |= Contact::WATCH_REVIEW;
             }
-            foreach (self::$watch_keywords as $kw => $bit) {
-                if ($dw === 0) {
-                    break;
-                } else if (($dw & $bit) !== 0) {
-                    $cj->follow->$kw = true;
-                    $dw &= ~$bit;
-                }
+            for ($b = 1; $b <= $dw; $b <<= 1) {
+                if (($dw & $b) !== 0
+                    && ($n = self::unparse_follow_bit($b)))
+                    $cj->follow->$n = true;
             }
         }
 
@@ -392,30 +439,47 @@ class UserStatus extends MessageSet {
         if ($user->contactId && ($tm = $user->topic_interest_map())) {
             $cj->topics = (object) $tm;
         }
-
-        $user_data = clone $user->data();
-        foreach (Contact::$props as $prop => $shape) {
-            unset($user_data->$prop);
-        }
-        if (!empty(get_object_vars($user_data))) {
-            $cj->data = $user_data;
-        }
     }
 
     function user_json() {
-        if ($this->user) {
-            $this->jval = (object) [];
-            if ($this->user->contactId > 0) {
-                $this->jval->id = $this->user->contactId;
-            }
-            $cs = $this->cs();
-            foreach ($cs->members("", "unparse_json_function") as $gj) {
-                $cs->call_function($gj, $gj->unparse_json_function, $gj);
-            }
-            return $this->jval;
-        } else {
+        if (!$this->user) {
             return null;
         }
+        $this->jval = (object) [];
+        $cs = $this->cs();
+        foreach ($cs->members("", "unparse_json_function") as $gj) {
+            $cs->call_function($gj, $gj->unparse_json_function, $gj);
+        }
+        return $this->jval;
+    }
+
+
+    /** @var array<int,non-empty-list<string>>
+     * @readonly */
+    static private $follow_keywords = [
+        Contact::WATCH_REVIEW => ["review", "reviews"],
+        Contact::WATCH_REVIEW_ALL => ["anyreview", "allreviews"],
+        Contact::WATCH_REVIEW_MANAGED => ["adminreview", "adminreviews", "managedreviews"],
+        Contact::WATCH_PAPER_NEWSUBMIT_ALL => ["submit", "allnewsubmit"],
+        Contact::WATCH_PAPER_REGISTER_ALL => ["register", "allregister"],
+        Contact::WATCH_LATE_WITHDRAWAL_ALL => ["latewithdraw"],
+        Contact::WATCH_FINAL_UPDATE_ALL => ["finalupdate", "allfinal"]
+    ];
+
+    /** @param int $f
+     * @return ?string */
+    static function unparse_follow_bit($f) {
+        return self::$follow_keywords[$f][0] ?? null;
+    }
+
+    /** @param string $s
+     * @return ?int */
+    static function parse_follow_bit($s) {
+        foreach (self::$follow_keywords as $b => $ns) {
+            if (in_array($s, $ns, true))
+                return $b;
+        }
+        return null;
     }
 
 
@@ -424,7 +488,7 @@ class UserStatus extends MessageSet {
             $x = preg_split('/[\s,;]+/', $x);
         }
         $res = [];
-        if (is_object($x) || is_associative_array($x)) {
+        if (is_object($x) || (is_array($x) && !array_is_list($x))) {
             foreach ((array) $x as $k => $v) {
                 $res[$lc ? strtolower($k) : $k] = $v;
             }
@@ -459,7 +523,8 @@ class UserStatus extends MessageSet {
         }
     }
 
-    /** @return list<string> */
+    /** @param 'tags'|'add_tags'|'remove_tags'|'change_tags' $key
+     * @return list<string> */
     private function make_tags_array($x, $key) {
         $t0 = [];
         if (is_string($x)) {
@@ -471,13 +536,24 @@ class UserStatus extends MessageSet {
         }
         $tagger = new Tagger($this->viewer);
         $t1 = [];
+        $change = $key === "change_tags";
         foreach ($t0 as $t) {
-            if ($t !== "") {
-                if (($tx = $tagger->check($t, Tagger::NOPRIVATE))) {
-                    $t1[] = $tx;
-                } else {
-                    $this->error_at($key, $tagger->error_ftext(true));
-                }
+            if ($t === "") {
+                continue;
+            }
+            $pfx = "";
+            $flags = Tagger::NOPRIVATE;
+            if ($change && strlen($t) > 1 && $t[0] === "-") {
+                $pfx = "-";
+                $t = substr($t, 1);
+                $flags |= Tagger::NOVALUE;
+            } else if ($change && strlen($t) > 1 && $t[0] === "+") {
+                $t = substr($t, 1);
+            }
+            if (($tx = $tagger->check($t, $flags))) {
+                $t1[] = $pfx . $tx;
+            } else {
+                $this->error_at($key, $tagger->error_ftext(true));
             }
         }
         return $t1;
@@ -518,24 +594,8 @@ class UserStatus extends MessageSet {
             }
         } else if (!$this->has_problem_at("email")
                    && !validate_email($cj->email)
-                   && (!$old_user || $old_user->email !== $cj->email)) {
-            $this->error_at("email", "<0>Invalid email address ‘{$cj->email}’");
-        }
-
-        // ID
-        if (!isset($cj->id)
-            && $old_user
-            && $old_user->contactId) {
-            $cj->id = $old_user->contactId;
-        }
-        if (isset($cj->id)
-            && $cj->id !== "new"
-            && $old_user
-            && ($cj->email ?? false)
-            && strtolower($old_user->email) !== strtolower($cj->email)
-            && $this->conf->fresh_user_by_email($cj->email)) {
-            $this->error_at("email", "<0>Email address ‘{$cj->email}’ already in use");
-            $this->msg_at("email", "<5>You may want to <a href=\"" . $this->conf->hoturl("mergeaccounts") . "\">merge these accounts</a>.", MessageSet::INFORM);
+                   && (!$old_user || strcasecmp($old_user->email, $cj->email) !== 0)) {
+            $this->error_at("email", "<0>Invalid email address");
         }
 
         // Contactdb information
@@ -627,13 +687,18 @@ class UserStatus extends MessageSet {
 
         // Follow
         if (isset($cj->follow) && $cj->follow !== "") {
-            $cj->follow = $this->make_keyed_object($cj->follow, "follow", true);
+            $fs = $this->make_keyed_object($cj->follow, "follow", true);
+            $cj->follow = (object) [];
             $cj->bad_follow = [];
-            foreach ((array) $cj->follow as $k => $v) {
-                if ($v
-                    && $k !== "none"
-                    && $k !== "partial"
-                    && !isset(self::$watch_keywords[$k])) {
+            foreach ((array) $fs as $k => $v) {
+                if ($k === "none" || $k === "partial") {
+                    $cj->follow->$k = $v;
+                } else if (($b = self::parse_follow_bit($k))) {
+                    $n = self::unparse_follow_bit($b);
+                    if ($n === $k || !isset($cj->follow->$n)) {
+                        $cj->follow->$n = $v;
+                    }
+                } else if ($v) {
                     $cj->bad_follow[] = $k;
                 }
             }
@@ -647,7 +712,10 @@ class UserStatus extends MessageSet {
             $cj->add_tags = $this->make_tags_array($cj->add_tags, "add_tags");
         }
         if (isset($cj->remove_tags)) {
-            $cj->remove_tags = $this->make_tags_array($cj->remove_tags, "add_tags");
+            $cj->remove_tags = $this->make_tags_array($cj->remove_tags, "remove_tags");
+        }
+        if (isset($cj->change_tags)) {
+            $cj->change_tags = $this->make_tags_array($cj->change_tags, "change_tags");
         }
 
         // Topics
@@ -707,11 +775,12 @@ class UserStatus extends MessageSet {
         }
     }
 
-    /** @param int $old_roles
-     * @param ?MessageSet $ms
-     * @return int */
-    static function parse_roles($j, $old_roles, $ms = null) {
-        if (is_object($j) || is_associative_array($j)) {
+    /** @param ?MessageSet $ms
+     * @return array{int,int} */
+    static private function parse_roles($j, $ms = null) {
+        $reset_roles = null;
+        $ignore_empty = false;
+        if (is_object($j) || (is_array($j) && !array_is_list($j))) {
             $reset_roles = true;
             $ij = [];
             foreach ((array) $j as $k => $v) {
@@ -719,69 +788,71 @@ class UserStatus extends MessageSet {
                     $ij[] = $k;
                 } else if ($v !== false && $v !== null) {
                     $ms && $ms->error_at("roles", "<0>Format error in roles");
-                    return $old_roles;
+                    return [0, 0];
                 }
             }
         } else if (is_string($j)) {
-            $reset_roles = null;
+            $ignore_empty = true;
             $ij = preg_split('/[\s,;]+/', $j);
         } else if (is_array($j)) {
-            $reset_roles = null;
             $ij = $j;
         } else {
             if ($j !== null) {
                 $ms && $ms->error_at("roles", "<0>Format error in roles");
             }
-            return $old_roles;
+            return [0, 0];
         }
 
         $add_roles = $remove_roles = 0;
         foreach ($ij as $v) {
             if (!is_string($v)) {
                 $ms && $ms->error_at("roles", "<0>Format error in roles");
-                return $old_roles;
-            } else if ($v !== "") {
-                $action = null;
-                if (preg_match('/\A(\+|-|–|—|−)\s*(.*)\z/s', $v, $m)) {
-                    $action = $m[1] === "+";
-                    $v = $m[2];
-                }
-                if ($v === "") {
-                    $ms && $ms->error_at("roles", "<0>Format error in roles");
-                    return $old_roles;
-                } else if (is_bool($action) && strcasecmp($v, "none") === 0) {
-                    $ms && $ms->error_at("roles", "<0>Format error near “none”");
-                    return $old_roles;
-                } else if (is_bool($reset_roles) && is_bool($action) === $reset_roles) {
-                    $ms && $ms->warning_at("roles", "<0>Expected ‘" . ($reset_roles ? "" : "+") . "{$v}’ in roles");
-                } else if ($reset_roles === null) {
-                    $reset_roles = $action === null;
-                }
-                $role = 0;
-                if (strcasecmp($v, "pc") === 0) {
-                    $role = Contact::ROLE_PC;
-                } else if (strcasecmp($v, "chair") === 0) {
-                    $role = Contact::ROLE_CHAIR;
-                } else if (strcasecmp($v, "sysadmin") === 0
-                           || strcasecmp($v, "admin") === 0) {
-                    $role = Contact::ROLE_ADMIN;
-                } else if (strcasecmp($v, "none") !== 0) {
-                    $ms && $ms->warning_at("roles", "<0>Unknown role ‘{$v}’");
-                }
-                if ($action !== false) {
-                    $add_roles |= $role;
-                } else {
-                    $remove_roles |= $role;
-                    $add_roles &= ~$role;
-                }
+                return [0, 0];
+            } else if ($v === "" && $ignore_empty) {
+                continue;
+            }
+            $action = null;
+            if (preg_match('/\A(?:\+|-|–|—|−)/s', $v, $m)) {
+                $action = $m[0] === "+";
+                $v = substr($v, strlen($m[0]));
+            }
+            if ($v === "") {
+                $ms && $ms->error_at("roles", "<0>Format error in roles");
+                return [0, 0];
+            } else if (is_bool($action) && strcasecmp($v, "none") === 0) {
+                $ms && $ms->error_at("roles", "<0>Format error near “none”");
+                return [0, 0];
+            } else if (is_bool($reset_roles) && is_bool($action) === $reset_roles) {
+                $ms && $ms->warning_at("roles", "<0>Expected ‘" . ($reset_roles ? "" : "+") . "{$v}’ in roles");
+            } else if ($reset_roles === null) {
+                $reset_roles = $action === null;
+            }
+            $role = 0;
+            if (strcasecmp($v, "pc") === 0) {
+                $role = Contact::ROLE_PC;
+            } else if (strcasecmp($v, "chair") === 0) {
+                $role = Contact::ROLE_CHAIR;
+            } else if (strcasecmp($v, "sysadmin") === 0
+                       || strcasecmp($v, "admin") === 0) {
+                $role = Contact::ROLE_ADMIN;
+            } else if (strcasecmp($v, "none") !== 0) {
+                $ms && $ms->warning_at("roles", "<0>Unknown role ‘{$v}’");
+            }
+            if ($action !== false) {
+                $add_roles |= $role;
+            } else {
+                $remove_roles |= $role;
+                $add_roles &= ~$role;
             }
         }
 
-        $roles = ($reset_roles ? 0 : ($old_roles & ~$remove_roles)) | $add_roles;
-        if (($roles & Contact::ROLE_CHAIR) !== 0) {
-            $roles |= Contact::ROLE_PC;
+        if ($reset_roles) {
+            $remove_roles = ~0;
         }
-        return $roles;
+        if (($add_roles & Contact::ROLE_CHAIR) !== 0) {
+            $add_roles |= Contact::ROLE_PC;
+        }
+        return [$add_roles, $remove_roles];
     }
 
     /** @param int $roles
@@ -840,155 +911,213 @@ class UserStatus extends MessageSet {
         if ($user->is_pc_member()) {
             if ($user->collaborators() === "") {
                 $us->warning_at("collaborators", "<0>Please enter your recent collaborators and other affiliations");
-                $us->msg_at("collaborators", "<0>This information can help detect conflicts of interest. Enter “None” if you have none.", MessageSet::INFORM);
+                $us->inform_at("collaborators", "<0>This information can help detect conflicts of interest. Enter “None” if you have none.");
             }
             if ($us->conf->has_topics()
                 && !$user->topic_interest_map()
                 && !$us->conf->opt("allowNoTopicInterests")) {
                 $us->warning_at("topics", "<0>Please enter your topic interests");
-                $us->msg_at("topics", "<0>We use topic interests to improve the paper assignment process.", MessageSet::INFORM);
+                $us->inform_at("topics", "<0>We use topic interests to improve the paper assignment process.");
+            }
+        }
+    }
+
+    static function crosscheck_alerts(UserStatus $us) {
+        if ($us->cs()->root() !== "main"
+            || (!$us->is_auth_self() && !$us->is_actas_self())
+            || !$us->user->data("alerts")) {
+            return;
+        }
+        $ca = new ContactAlerts($us->user);
+        foreach ($ca->list() as $alert) {
+            if (isset($alert->scope)
+                && !($alert->dismissed ?? false)
+                && preg_match('/(?:\A| )profile\#(\S+)(?: |\z)/', $alert->scope, $m)
+                && ($p = strpos($alert->scope, "profile#"))
+                && (!($alert->sensitive ?? false)
+                    || $us->is_auth_self()
+                    || $us->conf->opt("debugShowSensitiveEmail"))) {
+                foreach ($ca->message_list($alert) as $mi) {
+                    $us->append_item($mi->with_field($m[1]));
+                }
             }
         }
     }
 
 
+    /** @param ?object $cj
+     * @return $this */
+    function start_update($cj = null) {
+        $this->jval = $cj ?? (object) [];
+        $this->diffs = [];
+        $this->created = $this->notified = false;
+        $this->linked_secondary = null;
+        $this->set_user(null);
+        return $this;
+    }
+
     /** @param object $cj
      * @param ?Contact $old_user
      * @return ?Contact */
     function save_user($cj, $old_user = null) {
-        assert(is_object($cj));
-        assert(!$old_user || (!$this->no_create && !$this->no_modify));
-        $this->diffs = [];
-        $this->created = $this->notified = false;
+        $this->start_update($cj);
+        $this->set_user($old_user);
+        return $this->execute_update() ? $this->user : null;
+    }
+
+    /** @return bool */
+    function execute_update() {
+        assert(is_object($this->jval));
+        assert(!$this->user || $this->save_mode === self::SAVE_ALL);
+        $cj = $this->jval;
 
         // normalize name, including email
         self::normalize_name($cj);
 
-        // check id and email
-        if (isset($cj->id)
-            && $cj->id !== "new"
-            && (!is_int($cj->id) || $cj->id <= 0)) {
-            $this->error_at("id", "<0>Format error [id]");
-            return null;
-        }
-        if (isset($cj->email)
-            && !is_string($cj->email)) {
-            $this->error_at("email", "<0>Format error [email]");
-            return null;
-        }
-
         // obtain old users in this conference and contactdb
-        // - load by id if only id is set
-        if (!$old_user && isset($cj->id) && is_int($cj->id)) {
-            $old_user = $this->conf->fresh_user_by_id($cj->id);
-        }
-
         // - obtain email
-        if ($old_user && $old_user->has_email()) {
-            $old_email = $old_user->email;
-        } else if (is_string($cj->email ?? null) && $cj->email !== "") {
-            $old_email = $cj->email;
+        $xuser = $this->user && $this->user->has_email() ? $this->user : null;
+        if ($xuser) {
+            $email = $xuser->email;
+        } else if (!isset($cj->email) || $cj->email === "") {
+            $this->error_at("email", "<0>Entry required");
+            return false;
+        } else if (!is_string($cj->email)
+                   || !is_valid_utf8($cj->email)) {
+            $this->error_at("email", "<0>Format error");
+            return false;
+        } else if (!validate_email($cj->email)) {
+            $this->error_at("email", "<0>Invalid email address");
+            return false;
         } else {
-            $old_email = null;
+            $email = $cj->email;
         }
 
-        // - load old_cdb_user
-        if ($old_user && $old_user->contactDbId > 0) {
-            $old_cdb_user = $old_user;
-        } else if ($old_email) {
-            $old_cdb_user = $this->conf->fresh_cdb_user_by_email($old_email);
+        // - look up local user
+        list($add_roles, $remove_roles) = self::parse_roles($cj->roles ?? null, $this);
+        if ($xuser && !$xuser->is_cdb_user()) {
+            $old_user = $xuser;
         } else {
-            $old_cdb_user = null;
-        }
-
-        // - load old_user; reset if old_user was in contactdb
-        if (!$old_user || !$old_user->has_account_here()) {
-            if ($old_email) {
-                $old_user = $this->conf->fresh_user_by_email($old_email);
-            } else {
-                $old_user = null;
+            $old_user = $this->conf->fresh_user_by_email($email);
+            if ($old_user
+                && !$xuser
+                && $this->follow_primary
+                && ($add_roles & Contact::ROLE_PCLIKE) !== 0
+                && $old_user->should_use_primary("pc")) {
+                $this->linked_secondary = $old_user->email;
+                $old_user = $this->conf->fresh_user_by_id($old_user->primaryContactId)
+                    ?? /* should never happen */ $old_user;
+                $email = $old_user->email;
             }
         }
 
-        // - check no_create and no_modify
-        if ($this->no_create && !$old_user) {
-            if (isset($cj->id) && $cj->id !== "new") {
-                $this->error_at("id", "<0>Refusing to create user with ID {$cj->id}");
-            } else {
-                $this->error_at("email", "<0>Refusing to create user with email {$cj->email}");
+        // - look up CDB user
+        if ($xuser && $xuser->is_cdb_user()) {
+            $old_cdb_user = $xuser;
+        } else {
+            $old_cdb_user = $this->conf->fresh_cdb_user_by_email($email);
+            if ($old_cdb_user
+                && !$old_user
+                && $this->follow_primary
+                && $old_cdb_user->should_use_primary("import")) {
+                $this->linked_secondary = $old_cdb_user->email;
+                $old_cdb_user = $this->conf->fresh_cdb_user_by_id($old_cdb_user->primaryContactId)
+                    ?? /* should never happen */ $old_cdb_user;
+                $email = $old_cdb_user->email;
+                $old_user = $this->conf->fresh_user_by_email($email);
             }
-            return null;
-        } else if (($this->no_modify || ($cj->id ?? null) === "new") && $old_user) {
-            if (isset($cj->id) && $cj->id !== "new") {
-                $this->error_at("id", "<0>Refusing to modify existing user with ID {$cj->id}");
-            } else {
-                $this->error_at("email", "<0>Refusing to modify existing user with email {$cj->email}");
-            }
-            return null;
         }
 
+        // - adopt existing user email case
+        if ($old_user || $old_cdb_user) {
+            $email = ($old_user ?? $old_cdb_user)->email;
+        }
+
+        // - check save mode
+        if ($this->save_mode === self::SAVE_EXISTING && !$old_user) {
+            $this->error_at("email", "<0>Account {$cj->email} not found");
+            return false;
+        }
+        if ($this->save_mode === self::SAVE_NEW && $old_user) {
+            $this->error_at("email", "<0>Email address {$email} is already in use");
+            return false;
+        }
+        if ($old_cdb_user
+            && $old_cdb_user->is_deleted()) {
+            $this->error_at("email", "<0>Account {$cj->email} has been deleted and cannot be recreated");
+            return false;
+        } else if ($old_user
+                   && $old_user->is_deleted()
+                   && !($cj->user_override ?? false)) {
+            $this->error_at("email", "<0>Account {$cj->email} has been deleted");
+            if ($this->viewer->privChair) {
+                $this->inform_at("email", "<5>You can recreate the account using <a href=\"{bulkupdate}\">Bulk update</a>. Set the ‘user_override’ column to ‘yes’.", new FmtArg("bulkupdate", $this->conf->hoturl_raw("profile", ["u" => "bulk"]), 0));
+            }
+            return false;
+        }
         $user = $old_user ?? $old_cdb_user;
 
-        // normalize and check for errors
-        if (!isset($cj->id)) {
-            $cj->id = $old_user ? $old_user->contactId : "new";
-        }
-        if ($cj->id !== "new" && $old_user && $cj->id != $old_user->contactId) {
-            $this->error_at("id", "<0>Saving user with different ID");
-            return null;
-        }
+        // normalize properties
         $this->normalize($cj, $user);
+
+        // parse roles
         $roles = $old_roles = $old_user ? $old_user->roles : 0;
         if (isset($cj->roles)) {
-            $roles = self::parse_roles($cj->roles, $roles, $this);
+            $roles = ($old_roles & ~$remove_roles) | $add_roles;
+            if ($this->if_empty >= UserStatus::IF_EMPTY_MOST) {
+                $roles |= $old_roles & Contact::ROLE_PCLIKE;
+            }
+            if (($roles & Contact::ROLE_CHAIR) !== 0) {
+                $roles |= Contact::ROLE_PC;
+            }
             if ($old_user) {
                 $roles = $this->check_role_change($roles, $old_user);
             }
         }
+
+        // errors before this point prevent save
         if ($this->has_error()) {
-            return null;
+            return false;
         }
-        // At this point, we will save a user.
 
         // ensure/create user
         $this->check_invariants($cj);
         $actor = $this->viewer->is_root_user() ? null : $this->viewer;
         if (!$old_user) {
-            $create_cj = array_merge((array) $cj, ["disablement" => Contact::CF_PLACEHOLDER]);
+            $create_cj = array_merge((array) $cj, [
+                "email" => $email, "disablement" => Contact::CF_PLACEHOLDER
+            ]);
             $user = Contact::make_keyed($this->conf, $create_cj)->store(0, $actor);
-            $cj->email = $user->email; // adopt contactdb’s email capitalization
         }
         if (!$user) {
-            return null;
+            return false;
         }
         $old_disablement = $user->disabled_flags();
 
         // initialize
-        if (isset($cj->email) && strcasecmp($cj->email, $user->email) !== 0) {
-            error_log(debug_string_backtrace());
-        }
-        assert(!isset($cj->email) || strcasecmp($cj->email, $user->email) === 0);
         $this->created = !$old_user;
         $this->set_user($user);
         $user->invalidate_cdb_user();
         $cdb_user = $user->ensure_cdb_user();
-
-        // Early properties
+        $cs = $this->cs();
         $this->jval = $cj;
-        $this->save_members("", "save_early_function", null);
+
+        // apply roles
+        if ($roles !== $old_roles) {
+            $user->set_prop("roles", $roles);
+            $this->diffs["roles"] = self::unparse_roles_diff($old_roles, $roles);
+        }
+
+        // apply other early properties
+        foreach ($cs->members("") as $gj) {
+            if (isset($gj->save_early_function)
+                && $cs->call_function($gj, $gj->save_early_function, $gj) === false) {
+                break;
+            }
+        }
         if (($user->prop_changed() || $this->created)
             && !$user->save_prop()) {
-            return null;
-        }
-
-        // Roles
-        if ($this->update_pc_if_empty
-            && ($old_roles & Contact::ROLE_PCLIKE) !== 0) {
-            $roles = ($roles & ~Contact::ROLE_PCLIKE) | ($old_roles & Contact::ROLE_PCLIKE);
-        }
-        if ($roles !== $old_roles
-            && ($roles = $user->save_roles($roles, $actor, true)) !== $old_roles) {
-            $this->diffs["roles"] = self::unparse_roles_diff($old_roles, $roles);
+            return false;
         }
 
         // Contact DB (must precede password)
@@ -1001,13 +1130,9 @@ class UserStatus extends MessageSet {
                 $cdb_user->abort_prop();
             }
         }
-        if ($roles !== $old_roles
-            || ($user->disabled_flags() !== 0) !== ($old_disablement !== 0)) {
-            $user->update_cdb();
-        }
 
         // Main properties
-        $this->save_members("", "save_function", "save_members");
+        $this->save_members("");
 
         // Clean up
         $old_activity_at = $user->activity_at;
@@ -1042,114 +1167,23 @@ class UserStatus extends MessageSet {
             }
         }
 
-        return $user;
+        return true;
     }
 
 
     /** @param string $name
-     * @param string $function
-     * @param string $members
      * @return null|false */
-    private function save_members($name, $function, $members) {
+    function save_members($name) {
         $cs = $this->cs();
         foreach ($cs->members($name) as $gj) {
-            if (isset($gj->$function)
-                && $cs->call_function($gj, $gj->$function, $gj) === false) {
-                return false;
-            }
-            if ($members !== null
-                && ($gj->$members ?? false)
-                && $this->save_members($gj->name, $function, $members) === false) {
+            if (isset($gj->save_function)
+                && $cs->call_function($gj, $gj->save_function, $gj) === false) {
                 return false;
             }
         }
         return null;
     }
 
-    static function save_main(UserStatus $us) {
-        $user = $us->user;
-        $cj = $us->jval;
-
-        // Profile properties
-        $us->set_profile_prop($user, $us->if_empty_code(false));
-        if (($cdbu = $user->cdb_user())) {
-            $us->set_profile_prop($cdbu, $us->if_empty_code(true));
-        }
-
-        // Disabled
-        $cflags = $user->cflags;
-        if (isset($cj->disabled) && !$user->security_locked_here()) {
-            if ($cj->disabled) {
-                $cflags |= Contact::CF_UDISABLED;
-            } else {
-                $cflags &= ~Contact::CF_UDISABLED;
-            }
-        }
-        if (($cflags & Contact::CFM_DISABLEMENT) === Contact::CF_PLACEHOLDER) {
-            $cflags &= ~Contact::CF_PLACEHOLDER;
-        }
-        $user->set_prop("cflags", $cflags);
-        if ($user->prop_changed("disabled") && isset($cj->disabled)) {
-            $us->diffs[$cj->disabled ? "disabled" : "enabled"] = true;
-        }
-
-        // Follow
-        if (isset($cj->follow)
-            && (!$us->update_pc_if_empty || $user->defaultWatch === Contact::WATCH_REVIEW)) {
-            $w = 0;
-            $wmask = ($cj->follow->partial ?? false ? 0 : 0xFFFFFFFF);
-            foreach (self::$watch_keywords as $k => $bit) {
-                if (isset($cj->follow->$k)) {
-                    $wmask |= $bit;
-                    $w |= $cj->follow->$k ? $bit : 0;
-                }
-            }
-            $w |= $user->defaultWatch & ~$wmask;
-            $user->set_prop("defaultWatch", $w);
-            if ($user->prop_changed("defaultWatch")) {
-                $us->diffs["follow"] = true;
-            }
-        }
-
-        // Tags
-        if ((isset($cj->tags) || isset($cj->add_tags) || isset($cj->remove_tags))
-            && $us->viewer->privChair
-            && (!$us->update_pc_if_empty || $user->contactTags === null)) {
-            if (isset($cj->tags)) {
-                $user->set_prop("contactTags", null);
-            }
-            foreach ($cj->tags ?? [] as $t) {
-                list($tag, $value) = Tagger::unpack($t);
-                if (self::check_pc_tag($tag)) {
-                    $user->change_tag_prop($tag, $value ?? 0);
-                }
-            }
-            foreach ($cj->add_tags ?? [] as $t) {
-                list($tag, $value) = Tagger::unpack($t);
-                if (self::check_pc_tag($tag)) {
-                    $user->change_tag_prop($tag, $value ?? $user->tag_value($tag) ?? 0);
-                }
-            }
-            foreach ($cj->remove_tags ?? [] as $t) {
-                list($tag, $value) = Tagger::unpack($t);
-                if (self::check_pc_tag($tag)) {
-                    $user->change_tag_prop($tag, false);
-                }
-            }
-            if ($user->prop_changed("contactTags")) {
-                $us->diffs["tags"] = true;
-            }
-        }
-
-        // Data
-        if (isset($cj->data) && is_object($cj->data)) {
-            foreach (get_object_vars($cj->data) as $key => $value) {
-                if ($user->set_data($key, $value)) {
-                    $us->diffs["data"] = true;
-                }
-            }
-        }
-    }
 
     /** @param 0|1|2 $ifempty */
     private function set_profile_prop(Contact $user, $ifempty) {
@@ -1170,6 +1204,116 @@ class UserStatus extends MessageSet {
                 }
             }
         }
+        if ($user->conf->allow_preferred_email()
+            && ($v = $this->jval->preferred_email ?? null) !== null) {
+            $user->set_prop("preferredEmail", $v, $ifempty);
+            if ($user->prop_changed("preferredEmail")) {
+                $this->diffs["preferred_email"] = true;
+            }
+        }
+    }
+
+    function save_main() {
+        $user = $this->user;
+        $cj = $this->jval;
+
+        // Profile properties
+        $this->set_profile_prop($user, $this->if_empty_code(false));
+        if (($cdbu = $user->cdb_user())) {
+            $this->set_profile_prop($cdbu, $this->if_empty_code(true));
+        }
+
+        // Disabled
+        $old_cflags = $cflags = $user->cflags;
+        $cflags &= ~Contact::CF_DELETED;
+        if (isset($cj->disabled) && !$user->security_locked_here()) {
+            if ($cj->disabled) {
+                $cflags |= Contact::CF_UDISABLED;
+            } else {
+                $cflags &= ~Contact::CF_UDISABLED;
+            }
+        }
+        if (($cflags & Contact::CFM_DISABLEMENT) === Contact::CF_PLACEHOLDER) {
+            $cflags &= ~Contact::CF_PLACEHOLDER;
+        }
+        $user->set_prop("cflags", $cflags);
+        if (isset($cj->disabled) && $old_cflags !== $cflags) {
+            $old_disabled = ($old_cflags & Contact::CFM_DISABLEMENT & Contact::CFM_DB) !== 0;
+            $new_disabled = ($cflags & Contact::CFM_DISABLEMENT & Contact::CFM_DB) !== 0;
+            if ($old_disabled !== $new_disabled) {
+                $this->diffs[$new_disabled ? "disabled" : "enabled"] = true;
+            }
+        }
+
+        // Follow
+        if (isset($cj->follow)
+            && ($this->if_empty < UserStatus::IF_EMPTY_MOST
+                || $user->defaultWatch === Contact::WATCH_REVIEW)) {
+            $this->save_follow($cj->follow);
+        }
+
+        // Tags
+        if ((isset($cj->tags)
+             || !empty($cj->add_tags)
+             || !empty($cj->remove_tags)
+             || !empty($cj->change_tags))
+            && $this->viewer->privChair
+            && ($this->if_empty < UserStatus::IF_EMPTY_MOST
+                || $user->contactTags === null)) {
+            if (isset($cj->tags)) {
+                $user->set_prop("contactTags", null);
+            }
+            foreach ($cj->tags ?? [] as $t) {
+                list($tag, $value) = Tagger::unpack($t);
+                if (self::check_pc_tag($tag)) {
+                    $user->change_tag_prop($tag, $value ?? 0);
+                }
+            }
+            foreach ($cj->remove_tags ?? [] as $t) {
+                list($tag, $value) = Tagger::unpack($t);
+                if (self::check_pc_tag($tag)) {
+                    $user->change_tag_prop($tag, false);
+                }
+            }
+            foreach ($cj->add_tags ?? [] as $t) {
+                list($tag, $value) = Tagger::unpack($t);
+                if (self::check_pc_tag($tag)) {
+                    $user->change_tag_prop($tag, $value ?? $user->tag_value($tag) ?? 0);
+                }
+            }
+            foreach ($cj->change_tags ?? [] as $t) {
+                list($tag, $value) = Tagger::unpack($t);
+                if (str_starts_with($tag, "-")) {
+                    $tag = substr($tag, 1);
+                    $value = false;
+                } else {
+                    $value = $value ?? $user->tag_value($tag) ?? 0;
+                }
+                if (self::check_pc_tag($tag)) {
+                    $user->change_tag_prop($tag, $value);
+                }
+            }
+            if ($user->prop_changed("contactTags")) {
+                $this->diffs["tags"] = true;
+            }
+        }
+    }
+
+    private function save_follow($follow) {
+        if (($follow->partial ?? false) && !($follow->none ?? false)) {
+            $w = $this->user->defaultWatch;
+        } else {
+            $w = 0;
+        }
+        foreach (self::$follow_keywords as $bit => $ns) {
+            if (($v = $follow->{$ns[0]} ?? null) !== null) {
+                $w = ($w & ~$bit) | ($v ? $bit : 0);
+            }
+        }
+        $this->user->set_prop("defaultWatch", $w);
+        if ($this->user->prop_changed("defaultWatch")) {
+            $this->diffs["follow"] = true;
+        }
     }
 
     static function save_topics(UserStatus $us) {
@@ -1179,7 +1323,7 @@ class UserStatus extends MessageSet {
             return;
         }
         $ti = $us->created ? [] : $us->user->topic_interest_map();
-        if ($us->update_pc_if_empty && !empty($ti)) {
+        if ($us->if_empty >= UserStatus::IF_EMPTY_MOST && !empty($ti)) {
             return;
         }
         $tv = [];
@@ -1214,22 +1358,14 @@ class UserStatus extends MessageSet {
         $cj = $us->jval;
 
         // email
-        if (!$us->conf->external_login()) {
-            if (isset($qreq->uemail) || $us->user->is_empty()) {
-                $cj->email = trim((string) $qreq->uemail);
-            } else {
-                $cj->email = $us->user->email;
-            }
-        } else {
-            if ($us->user->is_empty()) {
-                $cj->email = trim((string) $qreq->newUsername);
-            } else {
-                $cj->email = $us->user->email;
-            }
+        $email_key = $us->conf->external_login() ? "newUsername" : "uemail";
+        if (isset($qreq->$email_key)) {
+            $cj->email = trim((string) $qreq->$email_key);
         }
 
         // whether to update global profile
-        if (friendly_boolean($qreq->update_global ?? !$qreq->has_update_global) === false) {
+        $ug = $qreq->update_global ?? !isset($qreq->has_update_global);
+        if (!friendly_boolean($ug)) {
             $cj->update_global = false;
         }
 
@@ -1241,72 +1377,59 @@ class UserStatus extends MessageSet {
                 $cj->$k = $v;
         }
 
+        // follow settings
+        $follow = [];
+        foreach (self::$follow_keywords as $bit => $names) {
+            $t = $qreq["follow_{$names[0]}"] ?? (isset($qreq["has_follow_{$names[0]}"]) ? "0" : null);
+            if (($v = friendly_boolean($t)) !== null) {
+                $follow[$names[0]] = $v;
+            }
+        }
+        if (!empty($follow)) {
+            $follow["partial"] = true;
+            $cj->follow = (object) $follow;
+        }
+
         // PC components
-        if (isset($qreq->pctype) && $us->viewer->privChair) {
+        if ($us->viewer->privChair) {
+            $us->parse_qreq_chair();
+        }
+
+        if (isset($qreq->has_ti)
+            && $us->viewer->isPC
+            && (!isset($cj->roles) || $cj->roles !== ["none"])) {
+            $topics = [];
+            foreach ($us->conf->topic_set() as $id => $t) {
+                if (($v = $qreq["ti{$id}"]) !== null && is_numeric($v)) {
+                    $topics[$id] = (int) $v;
+                }
+            }
+            $cj->topics = (object) $topics;
+        }
+    }
+
+    private function parse_qreq_chair() {
+        $cj = $this->jval;
+
+        if (isset($this->qreq->pctype)) {
             $cj->roles = [];
-            $pctype = $qreq->pctype;
+            $pctype = $this->qreq->pctype;
             if ($pctype === "chair") {
                 $cj->roles[] = "chair";
                 $cj->roles[] = "pc";
             } else if ($pctype === "pc") {
                 $cj->roles[] = "pc";
             }
-            if ($qreq->ass) {
+            if ($this->qreq->ass) {
                 $cj->roles[] = "sysadmin";
             }
-            $roles_pc = !empty($cj->roles);
-            if (!$roles_pc) {
+            if (empty($cj->roles)) {
                 $cj->roles[] = "none";
             }
-        } else {
-            $roles_pc = ($us->user->roles & Contact::ROLE_PCLIKE) !== 0;
         }
 
-        $follow = [];
-        if ($qreq->has_follow_register
-            && ($us->viewer->privChair || $us->user->is_track_manager())) {
-            $follow["register"] = !!$qreq->follow_register;
-        }
-        if ($qreq->has_follow_submit
-            && ($us->viewer->privChair || $us->user->is_track_manager())) {
-            $follow["submit"] = !!$qreq->follow_submit;
-        }
-        if ($qreq->has_follow_latewithdraw
-            && ($us->viewer->privChair || $us->user->is_track_manager())) {
-            $follow["latewithdraw"] = !!$qreq->follow_latewithdraw;
-        }
-        if ($qreq->has_follow_review) {
-            $follow["review"] = !!$qreq->follow_review;
-        }
-        if ($qreq->has_follow_anyreview
-            && ($us->viewer->privChair || $us->user->isPC)) {
-            $follow["anyreview"] = !!$qreq->follow_anyreview;
-        }
-        if ($qreq->has_follow_adminreview
-            && ($us->viewer->privChair || $us->user->is_manager())) {
-            $follow["adminreview"] = !!$qreq->follow_adminreview;
-        }
-        if ($qreq->has_follow_finalupdate
-            && ($us->viewer->privChair || $us->user->is_manager())) {
-            $follow["finalupdate"] = !!$qreq->follow_finalupdate;
-        }
-        if (!empty($follow) && $roles_pc) {
-            $follow["partial"] = true;
-            $cj->follow = (object) $follow;
-        }
-
-        if (isset($qreq->tags) && $roles_pc && $us->viewer->privChair) {
-            $cj->tags = explode(" ", simplify_whitespace($qreq->tags));
-        }
-
-        if (isset($qreq->has_ti) && $roles_pc && $us->viewer->isPC) {
-            $topics = [];
-            foreach ($us->conf->topic_set() as $id => $t) {
-                if (isset($qreq["ti$id"]) && is_numeric($qreq["ti$id"])) {
-                    $topics[$id] = (int) $qreq["ti$id"];
-                }
-            }
-            $cj->topics = (object) $topics;
+        if (isset($this->qreq->tags)) {
+            $cj->tags = explode(" ", simplify_whitespace($this->qreq->tags));
         }
     }
 
@@ -1315,13 +1438,6 @@ class UserStatus extends MessageSet {
     function field_label($k) {
         $gj = $this->cs()->get("__field/{$k}");
         return $gj->label ?? null;
-    }
-
-
-    /** @return bool
-     * @deprecated */
-    function has_req_security() {
-        return $this->cs()->callable("Security_UserInfo")->allow_security_changes();
     }
 
 
@@ -1345,6 +1461,7 @@ class UserStatus extends MessageSet {
         ["tags", "tag"],
         ["add_tags", "add_tag"],
         ["remove_tags", "remove_tag"],
+        ["change_tags", "change_tag"],
         ["disabled"]
     ];
 
@@ -1401,9 +1518,7 @@ class UserStatus extends MessageSet {
 
     function add_csv_synonyms(CsvParser $csv) {
         foreach (self::$csv_keys as $ks) {
-            for ($i = 1; !$csv->has_column($ks[0]) && isset($ks[$i]); ++$i) {
-                $csv->add_synonym($ks[0], $ks[$i]);
-            }
+            $csv->add_synonym(...$ks);
         }
     }
 
@@ -1439,10 +1554,10 @@ class UserStatus extends MessageSet {
 
     static function pc_role_text($cj) {
         if (isset($cj->roles)) {
-            assert(is_array($cj->roles) && !is_associative_array($cj->roles));
-            if (in_array("chair", $cj->roles)) {
+            assert(is_array($cj->roles) && array_is_list($cj->roles));
+            if (in_array("chair", $cj->roles, true)) {
                 return "chair";
-            } else if (in_array("pc", $cj->roles)) {
+            } else if (in_array("pc", $cj->roles, true)) {
                 return "pc";
             }
         }
@@ -1465,30 +1580,11 @@ class UserStatus extends MessageSet {
     static function print_main(UserStatus $us) {
         $user = $us->user;
         $qreq = $us->qreq;
-        $actas = "";
-        if ($user !== $us->viewer
-            && $user->email !== ""
-            && $us->viewer->privChair) {
-            $actas = '&nbsp;' . actas_link($user);
-        }
 
-        if (!$us->conf->external_login()) {
-            $email_class = "want-focus fullw";
-            if ($user->can_lookup_user()) {
-                $email_class .= " uii js-email-populate";
-            }
-            $us->print_field("uemail", "Email" . $actas,
-                Ht::entry("uemail", $qreq->email ?? $user->email, ["class" => $email_class, "size" => 52, "id" => "uemail", "autocomplete" => $us->autocomplete("username"), "data-default-value" => $user->email, "type" => "email"]));
-        } else if (!$user->is_empty()) {
-            $us->print_field("", "Username" . $actas,
-                htmlspecialchars($user->email));
-            $us->print_field("preferredEmail", "Email",
-                Ht::entry("preferredEmail", $qreq->preferredEmail ?? $user->preferredEmail, ["class" => "want-focus fullw", "size" => 52, "id" => "preferredEmail", "autocomplete" => $us->autocomplete("email"), "data-default-value" => $user->preferredEmail, "type" => "email"]));
+        if ($us->conf->external_login()) {
+            $us->print_main_external_username();
         } else {
-            $us->print_field("uemail", "Username",
-                Ht::entry("newUsername", $qreq->email ?? $user->email, ["class" => "want-focus fullw", "size" => 52, "id" => "uemail", "autocomplete" => $us->autocomplete("username"), "data-default-value" => $user->email]));
-            $us->print_field("preferredEmail", "Email",
-                      Ht::entry("preferredEmail", $qreq->preferredEmail ?? $user->preferredEmail, ["class" => "fullw", "size" => 52, "id" => "preferredEmail", "autocomplete" => $us->autocomplete("email"), "data-default-value" => $user->preferredEmail, "type" => "email"]));
+            $us->print_main_email();
         }
 
         echo '<div class="f-mcol w-text">';
@@ -1501,6 +1597,50 @@ class UserStatus extends MessageSet {
 
         $t = Ht::entry("affiliation", $qreq->affiliation ?? $user->affiliation, ["size" => 52, "autocomplete" => $us->autocomplete("organization"), "class" => "fullw", "id" => "affiliation", "data-default-value" => $user->affiliation]) . $us->global_profile_difference("affiliation");
         $us->print_field("affiliation", "Department", $t);
+    }
+
+    function actas_link() {
+        if ($this->user !== $this->viewer
+            && $this->user->email !== ""
+            && $this->viewer->privChair) {
+            return "&nbsp;" . actas_link($this->user);
+        }
+        return "";
+    }
+
+    function print_main_email() {
+        if ($this->user->is_empty()) {
+            $class = "want-focus fullw";
+            if ($this->viewer->can_lookup_user()) {
+                $class .= " uii js-email-populate";
+            }
+            $this->print_field("uemail", "Email" . $this->actas_link(),
+                Ht::entry("uemail", $this->qreq->uemail ?? $this->qreq->email ?? "", ["class" => $class, "size" => 52, "id" => "uemail", "autocomplete" => $this->autocomplete("username"), "data-default-value" => "", "type" => "email"]));
+            return;
+        }
+        if (Contact::session_index_by_email($this->qreq->qsession(), $this->user->email) >= 0) {
+            $link = "<p class=\"nearby\">" . Ht::link("Manage email →", $this->conf->hoturl("manageemail", ["u" => $this->user->email]), ["class" => "btn btn-success btn-sm"]) . "</p>";
+        } else if ($this->viewer->privChair && $this->user->is_reviewer()) {
+            $link = "<p class=\"nearby\">" . Ht::link("Transfer reviews →", $this->conf->hoturl("manageemail", ["t" => "transferreview", "u" => $this->user->email]), ["class" => "btn btn-primary btn-sm"]) . "</p>";
+        } else {
+            $link = "";
+        }
+        $this->print_field(null, "Email" . $this->actas_link(),
+            "<p><strong class=\"sb\">" . htmlspecialchars($this->user->email) . "</strong></p>{$link}");
+    }
+
+    function print_main_external_username() {
+        if ($this->user->is_empty()) {
+            $this->print_field("uemail", "Username",
+                Ht::entry("newUsername", $this->qreq->uemail ?? $this->user->email, ["class" => "want-focus fullw", "size" => 52, "id" => "uemail", "autocomplete" => $this->autocomplete("username"), "data-default-value" => $this->user->email]));
+            $peclass = "fullw";
+        } else {
+            $this->print_field("", "Username" . $this->actas_link(),
+                "<strong class=\"sb\">" . htmlspecialchars($this->user->email) . "</strong>");
+            $peclass = "want-focus fullw";
+        }
+        $this->print_field("preferredEmail", "Email",
+            Ht::entry("preferredEmail", $this->qreq->preferredEmail ?? $this->user->preferredEmail, ["class" => $peclass, "size" => 52, "id" => "preferredEmail", "autocomplete" => $this->autocomplete("email"), "data-default-value" => $this->user->preferredEmail, "type" => "email"]));
     }
 
     static function print_country(UserStatus $us) {
@@ -1525,9 +1665,10 @@ class UserStatus extends MessageSet {
     static function print_follow(UserStatus $us) {
         $qreq = $us->qreq;
         $reqwatch = $iwatch = $us->user->defaultWatch;
-        foreach (self::$watch_keywords as $kw => $bit) {
-            if ($qreq["has_follow_{$kw}"] || $qreq["follow_{$kw}"]) {
-                $reqwatch = ($reqwatch & ~$bit) | ($qreq["follow_{$kw}"] ? $bit : 0);
+        foreach (self::$follow_keywords as $bit => $ns) {
+            $t = $qreq["follow_{$ns[0]}"] ?? (isset($req["has_follow_{$ns[0]}"]) ? "0" : null);
+            if (($v = friendly_boolean($t)) !== null) {
+                $reqwatch = ($reqwatch & ~$bit) | ($v ? $bit : 0);
             }
         }
         if ($us->user->is_empty() ? $us->viewer->privChair : $us->user->isPC) {
@@ -1567,6 +1708,7 @@ class UserStatus extends MessageSet {
             return;
         }
 
+        $us->cs()->set_section_tag("fieldset");
         $us->print_start_section("Roles", "roles");
 
         if ($us->user->security_locked_here()) {
@@ -1599,7 +1741,7 @@ class UserStatus extends MessageSet {
             $pcrole = $cpcrole = "none";
         }
         if (isset($us->qreq->pctype)
-            && in_array($us->qreq->pctype, ["chair", "pc", "none"])) {
+            && in_array($us->qreq->pctype, ["chair", "pc", "none"], true)) {
             $pcrole = $us->qreq->pctype;
         }
         $diffclass = $us->user->email ? "" : " ignore-diff";
@@ -1633,7 +1775,8 @@ class UserStatus extends MessageSet {
         $cd = $us->conf->_i("conflictdef");
         $us->cs()->add_section_class("w-text")->print_start_section();
         /*
-        echo '<h3 class="', $us->control_class("collaborators", "form-h field-title"), '">Collaborators and other affiliations</h3>', "\n",
+        echo '<h3 class="', $us->control_class("collaborators", "form-h field-title"), '"><label for="collaborators">Collaborators and other affiliations</label></h3>', "\n",
+
             "<p>List potential conflicts of interest one per line, using parentheses for affiliations and institutions. We may use this information when assigning reviews.<br>Examples: “Ping Yen Zhang (INRIA)”, “All (University College London)”</p>";
         if ($cd !== "" && preg_match('/<(?:p|div)[ >]/', $cd)) {
             echo $cd;
@@ -1656,47 +1799,84 @@ class UserStatus extends MessageSet {
             && !$us->viewer->privChair) {
             return;
         }
-        $us->cs()->add_section_class("w-text fx1")->print_start_section("Topic interests");
-        echo '<p>Please indicate your interest in reviewing applications on these program
+
+        $us->cs()->add_section_class("w-text fx1")
+            ->set_section_tag("fieldset")
+            ->print_start_section("Topic interests");
+
+        $ibound = [-INF, -1.5, -0.5, 0.5, 1.5, INF];
+        $labels = ["Very low interest", "Low interest", "Standard interest", "High interest", "Very high interest"];
+
+        echo '<p>Please indicate your interest in reviewing applications on these conference
 topics. We use this information to help match applications to reviewers.</p>',
             Ht::hidden("has_ti", 1),
             $us->feedback_html_at("ti"),
-            '  <table class="table-striped"><thead>
-    <tr><td></td><th class="ti_interest">Low</th><th class="ti_interest"></th><th class="ti_interest"></th><th class="ti_interest"></th><th class="ti_interest">High</th></tr>
-    <tr><td></td><th class="topic-2"></th><th class="topic-1"></th><th class="topic0"></th><th class="topic1"></th><th class="topic2"></th></tr></thead><tbody>', "\n";
+            '  <table class="profile-topic-interests"><thead><tr>',
+            '<th aria-label="Topic"></th>',
+            '<th class="ti_interest" aria-label="', $labels[0], '">Low<br><span class="topic-2"></span></th>',
+            '<th class="ti_interest" aria-label="', $labels[1], '"><span class="topic-1"></span></th>',
+            '<th class="ti_interest" aria-label="', $labels[2], '"><span class="topic0"></span></th>',
+            '<th class="ti_interest" aria-label="', $labels[3], '"><span class="topic1"></span></th>',
+            '<th class="ti_interest" aria-label="', $labels[4], '">High<br><span class="topic2"></span></th>',
+            "</tr></thead>\n";
 
-        $ibound = [-INF, -1.5, -0.5, 0.5, 1.5, INF];
         $tmap = $us->user->topic_interest_map();
         $ts = $us->conf->topic_set();
+        $k = 0;
         foreach ($ts->group_list() as $tg) {
+            echo '<tbody>';
             foreach ($tg->members() as $i => $tid) {
                 $tic = "ti_topic";
-                if ($i === 0) {
+                $thscope = "row";
+                if ($tg->trivial()) {
                     $n = $ts->unparse_name_html($tid);
+                } else if ($i === 0 && $tg->has_group_topic()) {
+                    $n = $ts->unparse_name_html($tid);
+                    $thscope = "rowgroup";
                 } else {
+                    if ($i === 0) {
+                        echo '<tr class="k', $k, '">',
+                            '<th class="ti_topic" scope="rowgroup" colspan="6">',
+                            $tg->unparse_name_html(),
+                            "</th></tr>\n";
+                        $k = 1 - $k;
+                    }
                     $n = $ts->unparse_subtopic_name_html($tid);
                     $tic .= " ti_subtopic";
                 }
-                echo "      <tr><td class=\"{$tic}\">{$n}</td>";
+                echo "<tr class=\"k{$k}\">",
+                    "<th class=\"{$tic}\" scope=\"{$thscope}\">{$n}</th>";
+                $k = 1 - $k;
                 $ival = $tmap[$tid] ?? 0;
                 $reqval = isset($us->qreq["ti{$tid}"]) ? (int) $us->qreq["ti{$tid}"] : $ival;
                 for ($j = -2; $j <= 2; ++$j) {
                     $ichecked = $ival >= $ibound[$j+2] && $ival < $ibound[$j+3];
                     $reqchecked = $reqval >= $ibound[$j+2] && $reqval < $ibound[$j+3];
-                    echo '<td class="ti_interest">', Ht::radio("ti$tid", $j, $reqchecked, ["class" => "uic js-range-click", "data-range-type" => "topicinterest$j", "data-default-checked" => $ichecked]), "</td>";
+                    echo '<td class="ti_interest">',
+                        Ht::radio("ti{$tid}", $j, $reqchecked, [
+                            "class" => "uic js-range-click",
+                            "data-range-type" => "topicinterest{$j}",
+                            "data-default-checked" => $ichecked,
+                            "aria-label" => $labels[$j+2]
+                        ]),
+                        "</td>";
                 }
                 echo "</tr>\n";
             }
+            echo "</tbody>\n";
         }
-        echo "    </tbody></table>\n";
+        echo "</table>\n";
     }
 
     static function print_tags(UserStatus $us) {
         $user = $us->user;
         $tagger = new Tagger($us->viewer);
-        $itags = $tagger->unparse($user->viewable_tags($us->viewer));
-        if (!$us->viewer->privChair
-            && (!$us->user->isPC || $itags === "")) {
+        $itags = $tagger->unparse($us->user->viewable_tags($us->viewer));
+        if (!$us->viewer->privChair) {
+            if ($us->user->isPC && $itags !== "") {
+                $us->print_start_section("Tags");
+                echo $itags, "<p class=\"f-d\">Tags represent PC subgroups and are set by administrators.</p>\n";
+            }
             return;
         }
 //        $us->cs()->add_section_class("w-text fx2")->print_start_section("Tags");
@@ -1737,12 +1917,13 @@ topics. We use this information to help match applications to reviewers.</p>',
         if (!$us->viewer->privChair || $us->is_new_user()) {
             return;
         }
+
         $us->cs()->add_section_class("form-outline-section")->print_start_section("User administration");
         echo '<div class="grid-btn-explanation"><div class="d-flex mf mf-absolute">';
 
         echo Ht::button("Send account information", ["class" => "ui js-send-user-accountinfo flex-grow-1", "disabled" => $us->user->is_disabled()]), '</div><p></p>';
 
-        if (!$us->is_auth_user()) {
+        if (!$us->is_editing_authenticated()) {
             $disablement = $us->user->disabled_flags() & ~Contact::CF_PLACEHOLDER;
             if ($us->user->contactdb_disabled()) {
                 $klass = "flex-grow-1 disabled";
@@ -1765,7 +1946,6 @@ topics. We use this information to help match applications to reviewers.</p>',
                 Ht::button($disablement ? "Enable account" : "Disable account", [
                     "class" => $klass, "disabled" => $disabled
                 ]), '</div>', $p;
-
             self::print_delete_action($us);
         }
 
@@ -1780,15 +1960,13 @@ topics. We use this information to help match applications to reviewers.</p>',
             Ht::submit("cancel", "Cancel", ["formnovalidate" => true])
         ];
         if ($this->can_update_cdb()
+            && $this->cdb_user()
             && $this->cs()->root === "main") {
-            if ($this->cdb_user()) {
-                echo '<label class="checki mt-7"><span class="checkc">',
-                    Ht::hidden("has_update_global", 1),
-                    Ht::checkbox("update_global", 1, !$this->qreq->has_updateglobal || $this->qreq->updateglobal, ["class" => "ignore-diff"]),
-                    '</span>Update global profile</label>';
-                $klass = "mt-3";
-            }
-            array_push($buttons, "", Ht::submit("merge", "Merge with another account"));
+            echo '<label class="checki mt-7"><span class="checkc">',
+                Ht::hidden("has_update_global", 1),
+                Ht::checkbox("update_global", 1, !$this->qreq->has_updateglobal || $this->qreq->updateglobal, ["class" => "ignore-diff"]),
+                '</span>Update global profile</label>';
+            $klass = "mt-3";
         }
         echo Ht::actions($buttons, ["class" => "aab aabig {$klass}"]);
     }
@@ -1808,7 +1986,7 @@ topics. We use this information to help match applications to reviewers.</p>',
 
     static function print_bulk_actions(UserStatus $us) {
         echo '<label class="checki mt-5"><span class="checkc">',
-            Ht::checkbox("bulkoverride", 1, isset($us->qreq->bulkoverride), ["class" => "ignore-diff"]),
+            Ht::checkbox("bulkoverride", 1, !!friendly_boolean($us->qreq->bulkoverride), ["class" => "ignore-diff"]),
             '</span>Override existing names, affiliations, and collaborators</label>',
             '<div class="aab aabig mt-3">',
             '<div class="aabut">', Ht::submit("savebulk", "Save accounts", ["class" => "btn-primary"]), '</div>',
@@ -1850,10 +2028,11 @@ John Adams,john@earbox.org,UC Berkeley,pc
     }
 
     static function print_bulk_help_topics(UserStatus $us) {
-        if ($us->conf->has_topics()) {
-            echo '<dl class="ctelt dd"><dt><code>topic: &lt;TOPIC NAME&gt;</code></dt>',
-                '<dd>Topic interest: blank, “<code>low</code>”, “<code>medium-low</code>”, “<code>medium-high</code>”, or “<code>high</code>”, or numeric (-2 to 2)</dd></dl>';
+        if (!$us->conf->has_topics()) {
+            return;
         }
+        echo '<dl class="bsp ctelt mb-2"><dt><code>topic: &lt;TOPIC NAME&gt;</code></dt>',
+            '<dd>Topic interest: blank, “<code>low</code>”, “<code>medium-low</code>”, “<code>medium-high</code>”, or “<code>high</code>”, or numeric (-2 to 2)</dd></dl>';
     }
 
 
@@ -1873,7 +2052,10 @@ John Adams,john@earbox.org,UC Berkeley,pc
     function request_group($name) {
         $cs = $this->cs();
         foreach ($cs->members($name, "request_function") as $gj) {
-            assert(!isset($gj->allow_request_if));
+            if (($gj->request_recent_authentication ?? false)
+                && !$this->has_recent_authentication()) {
+                continue;
+            }
             if ($cs->call_function($gj, $gj->request_function, $gj) === false) {
                 break;
             }

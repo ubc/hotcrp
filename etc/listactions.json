@@ -13,7 +13,6 @@
         "title": "Application information/JSON",
         "order": 10090,
         "allow_if": "manager",
-        "allow_api": true,
         "function": "+GetJson_ListAction",
         "has_attachments": false
     },
@@ -22,7 +21,6 @@
         "title": "Application information/JSON with attachments",
         "order": 10091,
         "allow_if": "manager",
-        "allow_api": true,
         "function": "+GetJson_ListAction",
         "has_attachments": true
     },
@@ -31,7 +29,6 @@
         "title": "Application information/JSON for reviewqualitycollector.org",
         "order": 10092,
         "allow_if": "manager",
-        "allow_api": true,
         "function": "+GetJsonRQC_ListAction"
     },
     {
@@ -39,7 +36,6 @@
         "title": "Review assignments/PC assignments",
         "order": 20099,
         "allow_if": "manager",
-        "allow_api": true,
         "function": "+GetPcassignments_ListAction"
     },
     {
@@ -47,7 +43,6 @@
         "title": "Review assignments/Your review forms",
         "order": 20000,
         "allow_if": "reviewer",
-        "allow_api": true,
         "function": "+GetReviewForms_ListAction",
         "zip": false, "all": false
     },
@@ -56,7 +51,6 @@
         "title": "Review assignments/Your review forms (zip)",
         "order": 20001,
         "allow_if": "reviewer",
-        "allow_api": true,
         "function": "+GetReviewForms_ListAction",
         "zip": true, "all": false
     },
@@ -65,7 +59,6 @@
         "title": "Review assignments/All review forms",
         "order": 20002,
         "allow_if": "manager",
-        "allow_api": true,
         "function": "+GetReviewForms_ListAction",
         "zip": false, "all": true
     },
@@ -74,7 +67,6 @@
         "title": "Review assignments/All review forms (zip)",
         "order": 20003,
         "allow_if": "manager",
-        "allow_api": true,
         "function": "+GetReviewForms_ListAction",
         "zip": true, "all": true
     },
@@ -83,7 +75,6 @@
         "title": "Reviews/Reviews with application info",
         "order": 30050,
         "allow_if": "view_review",
-        "allow_api": true,
         "function": "+GetReviews_ListAction",
         "zip": false, "abstract": true, "author_view": false, "submitted": true
     },
@@ -92,7 +83,6 @@
         "title": "Reviews/Reviews (text)",
         "order": 30100,
         "allow_if": "view_review",
-        "allow_api": true,
         "function": "+GetReviews_ListAction",
         "zip": false, "abstract": false, "author_view": false, "submitted": true
     },
@@ -101,7 +91,6 @@
         "title": "Reviews/Reviews (zip)",
         "order": 30105,
         "allow_if": "view_review",
-        "allow_api": true,
         "function": "+GetReviews_ListAction",
         "zip": true, "abstract": false, "author_view": false, "submitted": true
     },
@@ -110,7 +99,6 @@
         "title": "Reviews/Reviews (text, include drafts)",
         "order": 30150,
         "allow_if": "view_review && admin",
-        "allow_api": true,
         "function": "+GetReviews_ListAction",
         "zip": false, "abstract": false, "author_view": false, "submitted": false
     },
@@ -119,7 +107,6 @@
         "title": "Reviews/Reviews (zip, include drafts)",
         "order": 30151,
         "allow_if": "view_review && admin",
-        "allow_api": true,
         "function": "+GetReviews_ListAction",
         "zip": true, "abstract": false, "author_view": false, "submitted": false
     },
@@ -128,7 +115,6 @@
         "title": "Reviews/Reviews (text, author view)",
         "order": 30200,
         "allow_if": "view_review && admin",
-        "allow_api": true,
         "function": "+GetReviews_ListAction",
         "zip": false, "abstract": false, "author_view": true, "submitted": true
     },
@@ -137,7 +123,6 @@
         "title": "Reviews/Reviews (zip, author view)",
         "order": 30205,
         "allow_if": "view_review && admin",
-        "allow_api": true,
         "function": "+GetReviews_ListAction",
         "zip": true, "abstract": false, "author_view": true, "submitted": true
     },
@@ -146,7 +131,6 @@
         "title": "Reviews/Reviews (CSV)",
         "order": 30110,
         "allow_if": "view_review",
-        "allow_api": true,
         "function": "+GetReviewCSV_ListAction"
     },
     {
@@ -154,7 +138,6 @@
         "title": "Reviews/Reviews (CSV, author view)",
         "order": 30210,
         "allow_if": "view_review && admin",
-        "allow_api": true,
         "function": "+GetReviewCSV_ListAction",
         "author_view": true
     },
@@ -163,19 +146,17 @@
         "title": "Reviews/Scores (CSV)",
         "order": 30400,
         "allow_if": "view_review",
-        "allow_api": true,
         "function": "+GetScores_ListAction"
     },
     {
         "name": "get/rank", "get": true,
-        "allow_if": "setting.tag_rank && reviewer", "display_if": false,
+        "allow_if": "setting.tag_rank && reviewer && !api", "display_if": false,
         "function": "+GetRank_ListAction"
     },
     {
         "name": "get/lead", "get": true,
         "title": "Reviews/Discussion leads (CSV)", "order": 30600,
         "allow_if": "pc",
-        "allow_api": true,
         "display_if": "conf.has_any_lead_or_shepherd",
         "function": "+GetLead_ListAction",
         "type": "lead"
@@ -184,7 +165,6 @@
         "name": "get/shepherd", "get": true,
         "title": "Reviews/Shepherds (CSV)", "order": 30650,
         "allow_if": "pc",
-        "allow_api": true,
         "display_if": "conf.has_any_lead_or_shepherd",
         "function": "+GetLead_ListAction",
         "type": "shepherd"
@@ -194,25 +174,24 @@
         "title": "Preference file",
         "order": 1,
         "allow_if": "pc",
-        "allow_api": true,
         "display_if": "listreport:pf",
-        "function": "+Revpref_ListAction"
+        "function": "+Revpref_ListAction",
+        "parameters": "reviewer:user"
     },
     {
         "name": "get/revprefx", "get": true,
         "title": "Preference file with abstracts",
         "order": 2,
         "allow_if": "pc",
-        "allow_api": true,
         "display_if": "listreport:pf",
-        "function": "+Revpref_ListAction"
+        "function": "+Revpref_ListAction",
+        "parameters": "reviewer:user"
     },
     {
         "name": "get/allrevpref", "get": true,
         "title": "Review assignments/PC review preferences",
         "order": 20060,
         "allow_if": "manager",
-        "allow_api": true,
         "function": "+GetAllRevpref_ListAction"
     },
     {
@@ -220,7 +199,6 @@
         "title": "Documents/Format check",
         "order": 9999, "display_if": "listhas:paper",
         "allow_if": "manager",
-        "allow_api": true,
         "require": "src/listactions/la_get_sub.php",
         "function": "+GetCheckFormat_ListAction"
     },
@@ -243,7 +221,6 @@
         "name": "get/authors", "get": true,
         "title": "Application information/Authors",
         "order": 10001,
-        "allow_api": true,
         "display_if": "listhas:authors",
         "require": "src/listactions/la_get_sub.php",
         "function": "+GetAuthors_ListAction"
@@ -274,14 +251,51 @@
         "function": "+GetCSV_ListAction"
     },
     {
-        "name": "tag", "post": true,
+        "name": "tag", "post": true, "api": false,
         "render_function": "Tag_ListAction::render", "title": "Tag",
         "order": 500,
         "allow_if": "pc", "display_if": "!listreport:pf",
-        "function": "+Tag_ListAction"
+        "function": "+Tag_ListAction",
+        "parameters": "tagfn$ tag:tag ?dry_run ?gapless ?source_tag:tag ?rank_method=schulze|irv|range|civsrp|randomwalk"
     },
     {
-        "name": "assign", "post": true,
+        "name": "tag/add", "post": true, "title": "Add tags",
+        "allow_if": "pc", "display_if": false,
+        "function": "+Tag_ListAction", "parameters": "!tag:tag ?dry_run"
+    },
+    {
+        "name": "tag/remove", "post": true, "title": "Remove tags",
+        "allow_if": "pc", "display_if": false,
+        "function": "+Tag_ListAction", "parameters": "!tag:tag ?dry_run"
+    },
+    {
+        "name": "tag/define", "post": true, "title": "Define tags",
+        "allow_if": "pc", "display_if": false,
+        "function": "+Tag_ListAction", "parameters": "!tag:tag ?dry_run"
+    },
+    {
+        "name": "tag/add_order", "post": true, "title": "Add to tag order",
+        "allow_if": "pc", "display_if": false,
+        "function": "+Tag_ListAction", "parameters": "!tag:tag ?dry_run ?gapless"
+    },
+    {
+        "name": "tag/define_order", "post": true, "title": "Define tag order",
+        "allow_if": "pc", "display_if": false,
+        "function": "+Tag_ListAction", "parameters": "!tag:tag ?dry_run ?gapless ?random"
+    },
+    {
+        "name": "tag/calculate_rank", "post": true, "title": "Calculate rank",
+        "allow_if": "admin", "display_if": false,
+        "function": "+Tag_ListAction", "parameters": [
+            "!tag:tag",
+            "?dry_run",
+            "?gapless",
+            "?source_tag:tag",
+            "?rank_method=schulze|irv|range|civsrp|randomwalk [schulze]"
+        ]
+    },
+    {
+        "name": "assign", "post": true, "api": false,
         "render_function": "Assign_ListAction::render", "title": "Assign",
         "order": 700,
         "allow_if": "manager", "display_if": "!listreport:pf",
@@ -292,29 +306,32 @@
         "render_function": "Decide_ListAction::render", "title": "Decide",
         "order": 900,
         "allow_if": "manager", "display_if": "!listreport:pf",
-        "function": "+Decide_ListAction"
+        "function": "+Decide_ListAction",
+        "description": "Set decision",
+        "parameters": "decision$"
     },
     {
         "name": "mail",
         "render_function": "Mail_ListAction::render", "title": "Mail",
-        "order": 1000, "display_if": "!listreport:pf"
+        "order": 1000,
+        "display_if": "!listreport:pf"
     },
     {
-        "name": "mail/authors", "get": true,
+        "name": "mail/authors", "get": true, "api": false,
         "title": "Contact authors",
         "order": 10, "allow_if": "manager",
         "function": "+Mail_ListAction",
         "mail_template": "authors"
     },
     {
-        "name": "mail/reviewers", "get": true,
+        "name": "mail/reviewers", "get": true, "api": false,
         "title": "Reviewers",
         "order": 100, "allow_if": "manager",
         "function": "+Mail_ListAction",
         "mail_template": "reviewers"
     },
     {
-        "name": "tryuploadpref", "post": true,
+        "name": "tryuploadpref", "post": true, "api": false,
         "render_function": "Revpref_ListAction::render_upload", "title": "Upload",
         "allow_if": "pc", "display_if": "listreport:pf",
         "function": "+Revpref_ListAction",
@@ -322,17 +339,23 @@
     },
     {
         "name": "uploadpref", "post": true,
-        "allow_if": "pc", "function": "+Revpref_ListAction"
+        "allow_if": "pc", "function": "+Revpref_ListAction",
+        "parameters": "reviewer:user preffile$ upload$ forceShow dry_run summary quiet csv",
+        "description": "Upload reviewer preference file",
+        "order": 199
     },
     {
-        "name": "applyuploadpref", "post": true,
+        "name": "applyuploadpref", "post": true, "api": false,
         "allow_if": "pc", "function": "+Revpref_ListAction"
     },
     {
         "name": "setpref", "post": true,
-        "render_function": "Revpref_ListAction::render_set", "title": "Set selected",
+        "render_function": "Revpref_ListAction::render_set",
         "allow_if": "pc", "display_if": "listreport:pf",
         "function": "+Revpref_ListAction",
+        "title": "Set selected",
+        "description": "Set reviewer preference",
+        "parameters": "reviewer:user !preference# expertise$ forceShow dry_run summary quiet csv",
         "order": 200
     }
 ]

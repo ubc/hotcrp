@@ -16,7 +16,7 @@ Values meaningful within page stacking contexts, especially `#p-page`
 Generic values
 
 * `.modal.transparent`: 10
-* `.header-actas`, `.dropmenu-container`: 12 (must be > `.modal.transparent`)
+* `#h-actas`, `.dropmenu-container`: 12 (must be > `.modal.transparent`)
 * `.modal`: 14
 * `.modal-dialog`: 16 (must be > `.modal`)
 * `.bubble`: 20
@@ -40,7 +40,7 @@ Generic values
     * Paper and review fields cannot follow that pattern
     * Paper and review fields also must not match JSON keys used for papers
       and reviews
-* `id^=t-` defines the page type; it is only set on the `<body>` element
+* `id^=m-` defines the page type; it is only set on the `<body>` element
 * `id^=p-` is for page-level elements
     * `#p-tracker` (optional)
     * `#p-page`
@@ -49,7 +49,15 @@ Generic values
     * `#p-footer`
 * `id^=i-` is for icons
 * `id^=f-` is for forms
+    * `#f-mail`
+    * `#f-paper`
+    * `#f-profile`
+    * `#f-reauth`
+    * `#f-review`
+    * `#f-settings`
+    * `#f-signout`
 * `id^=h-` is for header elements
+    * `#h-actas`
     * `#h-site`
     * `#h-page`
     * `#h-right`
@@ -57,10 +65,13 @@ Generic values
     * `#h-messages`
     * `#h-usermenu`
     * `#h-usermenubutton`
+    * `#h-title`
 * `id^=n-` is for navigation elements (quicklinks)
     * `#n-next`
     * `#n-prev`
     * `#n-search`
     * `#n-list`
+* `id^=s-` is for submission elements
+* `id^=d-` is for descriptions
 * `id^=k-` is for inputs and for programmatically assigned IDs, e.g., elements
   that need IDs for reference by `label`

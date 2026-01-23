@@ -1,6 +1,6 @@
 <?php
 // test/setup.php -- HotCRP helper file to initialize tests
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 require_once(dirname(__DIR__) . "/src/siteloader.php");
 define("HOTCRP_OPTIONS", SiteLoader::find("test/options.php"));
@@ -35,27 +35,28 @@ class MailChecker {
     static public $messagedb = [];
 
     /** @param MailPreparation $prep */
-    static function send_hook($fh, $prep) {
-        if (self::$disabled === 0) {
-            $prep->landmark = "";
-            foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS) as $trace) {
-                if (isset($trace["file"])
-                    && preg_match('/\/(?:test\d|t_)/', $trace["file"])) {
-                    if (str_starts_with($trace["file"], SiteLoader::$root)) {
-                        $trace["file"] = substr($trace["file"], strlen(SiteLoader::$root) + 1);
-                    }
-                    $prep->landmark = $trace["file"] . ":" . $trace["line"];
-                    break;
+    static function send_hook($prep) {
+        if (self::$disabled !== 0) {
+            return;
+        }
+        $prep->landmark = "";
+        foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS) as $trace) {
+            if (isset($trace["file"])
+                && preg_match('/\/(?:test\d|t_)/', $trace["file"])) {
+                if (str_starts_with($trace["file"], SiteLoader::$root)) {
+                    $trace["file"] = substr($trace["file"], strlen(SiteLoader::$root) + 1);
                 }
+                $prep->landmark = $trace["file"] . ":" . $trace["line"];
+                break;
             }
-            self::$preps[] = $prep;
-            if (self::$print) {
-                fwrite(STDOUT, "********\n"
-                       . "To: " . join(", ", $prep->recipient_texts()) . "\n"
-                       . "Subject: " . str_replace("\r", "", $prep->subject) . "\n"
-                       . ($prep->landmark ? "X-Landmark: {$prep->landmark}\n" : "") . "\n"
-                       . $prep->body);
-            }
+        }
+        self::$preps[] = $prep;
+        if (self::$print) {
+            fwrite(STDOUT, "********\n"
+                   . "To: " . join(", ", $prep->recipient_texts()) . "\n"
+                   . "Subject: " . str_replace("\r", "", $prep->subject) . "\n"
+                   . ($prep->landmark ? "X-Landmark: {$prep->landmark}\n" : "") . "\n"
+                   . $prep->body);
         }
     }
 
@@ -151,19 +152,22 @@ class MailChecker {
                 $have = $haves[$index];
                 $havel = explode("\n", $have);
                 $wantl = explode("\n", $wtext);
-                $ml = [
-                    "Mail mismatch\n",
-                    "... line {$badline} differs near {$havel[$badline-1]}\n",
-                    "... expected {$wantl[$badline-1]}\n",
-                    "... ", str_replace("\n", "\n    ", rtrim($wtext)),
-                    "\n!== ", str_replace("\n", "\n    ", rtrim($wtext)), "\n"
-                ];
-                if (is_object($want) && isset($want->landmark)) {
-                    $ml[] =  "... expected mail at {$want->landmark}\n";
-                }
-                Xassert::fail_with(...$ml);
+                $color = Xassert::$test_runner && Xassert::$test_runner->color;
+                Xassert::fail_with(
+                    "Mail mismatch at line {$badline}\n",
+                    "  expected {$wantl[$badline-1]}\n",
+                    is_object($want) && isset($want->landmark)
+                    ? "        at {$want->landmark}\n" : "",
+                    "       got {$havel[$badline-1]}\n",
+                    $color ? "\x1b[90m" : "",
+                    "  expected ",
+                    str_replace("\n", "\n           ", rtrim($have)),
+                    "\n       got ",
+                    str_replace("\n", "\n           ", rtrim($wtext)),
+                    $color ? "\x1b[m\n" : "\n"
+                );
             } else {
-                Xassert::fail_with("Mail not found `{$wtext}`");
+                Xassert::fail_with("mail not found `{$wtext}`");
             }
             if ($index !== false) {
                 array_splice($haves, $index, 1);
@@ -172,7 +176,7 @@ class MailChecker {
 
         Xassert::push_failure_group();
         foreach ($haves as $have) {
-            Xassert::fail_with("Unexpected mail: " . $have);
+            Xassert::fail_with("unexpected mail: " . $have);
         }
         Xassert::pop_failure_group();
         self::$preps = [];
@@ -228,11 +232,6 @@ class MailChecker {
 }
 
 MailChecker::add_messagedb(file_get_contents(SiteLoader::find("test/emails.txt")), "test/emails.txt");
-Conf::$main->add_hook((object) [
-    "event" => "send_mail",
-    "function" => "MailChecker::send_hook",
-    "priority" => 1000
-]);
 
 
 class ProfileTimer {
@@ -258,6 +257,14 @@ class ProfileTimer {
 class SkipLandmark {
 }
 
+#[Attribute]
+class RequireCdb {
+    public $required;
+    function __construct($required = true) {
+        $this->required = $required;
+    }
+}
+
 class Xassert {
     /** @var int */
     static public $n = 0;
@@ -273,6 +280,8 @@ class Xassert {
     static public $context = null;
     /** @var bool */
     static public $stop = false;
+    /** @var bool */
+    static public $retry = false;
     /** @var ?TestRunner */
     static public $test_runner;
     /** @var array<int,string> */
@@ -332,6 +341,9 @@ class Xassert {
 
     /** @param list<string> $sl */
     static private function fail_message($sl) {
+        if (self::$retry) {
+            return;
+        }
         if (self::$test_runner) {
             self::$test_runner->will_fail();
         }
@@ -406,9 +418,15 @@ class Xassert {
             if (preg_match('/\A[Xx]?assert|\AMailChecker::check|::x?assert/s', $fname)) {
                 continue;
             }
-            $refl = isset($tr["class"]) ? new ReflectionMethod($tr["class"], $tr["function"]) : new ReflectionFunction($tr["function"]);
-            if (PHP_MAJOR_VERSION >= 8 && $refl->getAttributes("SkipLandmark")) {
-                continue;
+            if (PHP_MAJOR_VERSION >= 8 && !str_contains($fname, "{closure")) {
+                if (isset($tr["class"])) {
+                    $refl = new ReflectionMethod($tr["class"], $tr["function"]);
+                } else {
+                    $refl = new ReflectionFunction($tr["function"]);
+                }
+                if ($refl->getAttributes("SkipLandmark")) {
+                    continue;
+                }
             }
             $loc = $fname;
             if (($file = $trace[$pos - 1]["file"] ?? null) !== null) {
@@ -441,6 +459,27 @@ class Xassert {
         }
         return [$first, ""];
     }
+
+    /** @param int $ntries
+     * @param callable $f */
+    static function retry($ntries, $f) {
+        $r = self::$retry;
+        self::$retry = true;
+        while ($ntries > 1) {
+            --$ntries;
+            $n = self::$n;
+            $nsuccess = self::$nsuccess;
+            $f();
+            if (self::$nsuccess === $nsuccess + self::$n - $n) {
+                self::$retry = $r;
+                return;
+            }
+            self::$n = $n;
+            self::$nsuccess = $nsuccess;
+        }
+        self::$retry = $r;
+        $f();
+    }
 }
 
 /** @param int $errno
@@ -448,15 +487,16 @@ class Xassert {
  * @param string $file
  * @param int $line */
 function xassert_error_handler($errno, $emsg, $file, $line) {
-    if ((error_reporting() || $errno != E_NOTICE)
-        && Xassert::$disabled <= 0) {
-        if (($e = Xassert::$emap[$errno] ?? null)) {
-            $emsg = "{$e}:  {$emsg}";
-        } else {
-            $emsg = "PHP Message {$errno}:  {$emsg}";
-        }
-        Xassert::error_with("!", "{$emsg} in {$file} on line {$line}\n");
+    if ((error_reporting() & $errno) === 0
+        || Xassert::$disabled > 0) {
+        return;
     }
+    if (($e = Xassert::$emap[$errno] ?? null)) {
+        $emsg = "{$e}:  {$emsg}";
+    } else {
+        $emsg = "PHP Message {$errno}:  {$emsg}";
+    }
+    Xassert::error_with("!", "{$emsg} in {$file} on line {$line}\n");
 }
 
 set_error_handler("xassert_error_handler");
@@ -489,7 +529,7 @@ function xassert($x, $description = "") {
     if ($x) {
         Xassert::succeed();
     } else {
-        Xassert::fail_with($description ? : "Assertion failed");
+        Xassert::fail_with($description ? : "assertion failed");
     }
     return !!$x;
 }
@@ -530,7 +570,7 @@ function xassert_neqq($actual, $nonexpected) {
     if ($ok) {
         Xassert::succeed();
     } else {
-        Xassert::fail_with("Expected !== " . xassert_var_export($actual));
+        Xassert::fail_with("expected !== " . xassert_var_export($actual));
     }
     return $ok;
 }
@@ -550,7 +590,7 @@ function xassert_in_eqq($member, $list) {
     if ($ok) {
         Xassert::succeed();
     } else {
-        Xassert::fail_match("expected ", $member, " ∈ ", $list);
+        Xassert::fail_match("expected ∈ ", $list, ", got ", $member);
     }
     return $ok;
 }
@@ -570,7 +610,7 @@ function xassert_not_in_eqq($member, $list) {
     if ($ok) {
         Xassert::succeed();
     } else {
-        Xassert::fail_match("expected ", $member, " ∉ ", $list);
+        Xassert::fail_match("expected ∉ ", $list, ", got ", $member);
     }
     return $ok;
 }
@@ -596,7 +636,7 @@ function xassert_neq($actual, $nonexpected) {
     if ($ok) {
         Xassert::succeed();
     } else {
-        Xassert::fail_with("Expected != " . var_export($actual, true));
+        Xassert::fail_with("expected != " . var_export($actual, true));
     }
     return $ok;
 }
@@ -661,7 +701,7 @@ function xassert_str_starts_with($haystack, $needle) {
     if ($ok) {
         Xassert::succeed();
     } else {
-        Xassert::fail_with("Expected `{$haystack}` to start with `{$needle}`");
+        Xassert::fail_with("expected `{$haystack}` to start with `{$needle}`");
     }
     return $ok;
 }
@@ -674,7 +714,7 @@ function xassert_str_contains($haystack, $needle) {
     if ($ok) {
         Xassert::succeed();
     } else {
-        Xassert::fail_with("Expected `{$haystack}` to contain `{$needle}`");
+        Xassert::fail_with("expected `{$haystack}` to contain `{$needle}`");
     }
     return $ok;
 }
@@ -687,7 +727,7 @@ function xassert_not_str_contains($haystack, $needle) {
     if ($ok) {
         Xassert::succeed();
     } else {
-        Xassert::fail_with("Expected `{$haystack}` not to contain `{$needle}`");
+        Xassert::fail_with("expected `{$haystack}` to not contain `{$needle}`");
     }
     return $ok;
 }
@@ -702,7 +742,7 @@ function xassert_array_eqq($actual, $expected, $sort = false) {
         if (count($actual) !== count($expected)
             && !$sort) {
             $problem = "expected size " . count($expected) . ", got " . count($actual);
-        } else if (is_associative_array($actual) || is_associative_array($expected)) {
+        } else if (!array_is_list($actual) || !array_is_list($expected)) {
             $problem = "associative arrays";
         } else {
             if ($sort) {
@@ -748,7 +788,7 @@ function xassert_match($a, $b) {
     if ($ok) {
         Xassert::succeed();
     } else {
-        Xassert::fail_with("Expected " . var_export($a, true) . " ~= {$b}");
+        Xassert::fail_match("expected ", var_export($a, true), " ~= ", $b);
     }
     return $ok;
 }
@@ -762,11 +802,17 @@ function xassert_int_list_eqq($actual, $expected) {
     $estr = preg_replace_callback('/(\d+)-(\d+)/', function ($m) {
         return join(" ", range(+$m[1], +$m[2]));
     }, $estr);
+    if ($astr === "") {
+        $astr = "<empty>";
+    }
+    if ($estr === "") {
+        $estr = "<empty>";
+    }
     $ok = $astr === $estr;
     if ($ok) {
         Xassert::succeed();
     } else {
-        Xassert::fail_with("Expected {$estr}, got {$astr}");
+        Xassert::fail_match("expected ", $estr, ", got ", $astr);
     }
     return $ok;
 }
@@ -926,7 +972,7 @@ function xassert_paper_status(PaperStatus $ps, $maxstatus = null) {
 
 /** @param int $maxstatus */
 function xassert_paper_status_saved_nonrequired(PaperStatus $ps, $maxstatus = MessageSet::PLAIN) {
-    xassert($ps->save_status() !== 0);
+    xassert($ps->save_status_prepared());
     if ($ps->problem_status() > $maxstatus) {
         $asserted = false;
         foreach ($ps->problem_list() as $mx) {
@@ -959,8 +1005,19 @@ function call_api($fn, $user, $qreq, $prow = null) {
             $qreq = new Qrequest("GET", $qreq);
         }
     }
+    $qreq->set_user($user);
+    if ($prow) {
+        $qreq->set_paper($prow);
+    } else if ($qreq->p && ctype_digit((string) $qreq->p)) {
+        $user->conf->set_paper_request($qreq, $user);
+    }
+    $qreq->set_navigation(Navigation::get());
+    Qrequest::set_main_request($qreq);
     $uf = $user->conf->api($fn, $user, $qreq->method());
-    $jr = $user->conf->call_api_on($uf, $fn, $user, $qreq, $prow);
+    $jr = $user->conf->call_api_on($uf, $fn, $user, $qreq);
+    if (!isset($jr->content["status_code"]) && $jr->status > 299) {
+        $jr->content["status_code"] = $jr->status;
+    }
     return (object) $jr->content;
 }
 
@@ -1089,6 +1146,8 @@ class TestRunner {
     private $reset;
     /** @var bool */
     private $need_reset;
+    /** @var ?bool */
+    private $need_cdb;
     /** @var ?bool
      * @readonly */
     public $color;
@@ -1098,6 +1157,8 @@ class TestRunner {
     private $last_classname;
     /** @var ?object */
     private $tester;
+    /** @var ?string */
+    private $requirement_failure;
     /** @var bool */
     private $need_newline = false;
     /** @var ?string */
@@ -1111,6 +1172,7 @@ class TestRunner {
         }
         if (isset($arg["no-cdb"])) {
             Conf::$main->set_opt("contactdbDsn", null);
+            self::$original_opt["contactdbDsn"] = null;
         }
         if (isset($arg["reset"])) {
             $this->reset = true;
@@ -1148,7 +1210,7 @@ class TestRunner {
         $s0 = file_get_contents($filename);
         assert($s0 !== false);
 
-        $s = preg_replace('/\s*(?:--|#).*/m', "", $s0);
+        $s = preg_replace('/\s*(?:--|\#).*/m', "", $s0);
         $truncates = [];
         while (!$rebuild && preg_match('/\A\s*((?:DROP|CREATE)\C*?;)$/mi', $s, $m)) {
             $stmt = $m[1];
@@ -1234,12 +1296,12 @@ class TestRunner {
         $us = new UserStatus($conf->root_user());
         $ok = true;
         foreach ($json->contacts as $c) {
-            $us->notify = in_array("pc", $c->roles ?? []);
+            $us->set_notify(in_array("pc", $c->roles ?? [], true));
             $user = $us->save_user($c);
             if ($user) {
                 MailChecker::check_db("create-{$c->email}");
             } else {
-                fwrite(STDERR, "* failed to create user {$c->email}\n");
+                fwrite(STDERR, "* failed to create user {$c->email}\n" . debug_string_backtrace());
                 $ok = false;
             }
         }
@@ -1251,7 +1313,7 @@ class TestRunner {
                     return "    {$mx->field}: {$mx->message}\n";
                 }, $ps->message_list()));
                 $id = isset($p->_id_) ? "#{$p->_id_} " : "";
-                fwrite(STDERR, "* failed to create paper {$id}{$p->title}:\n" . htmlspecialchars_decode($t) . "\n");
+                fwrite(STDERR, "* failed to create paper {$id}{$p->title}:\n" . htmlspecialchars_decode($t) . "\n"  . debug_string_backtrace());
                 $ok = false;
             }
         }
@@ -1261,30 +1323,9 @@ class TestRunner {
         $timer->mark("papers");
 
         self::setup_assignments($json->assignments_1, $user_chair);
-        $conf->_save_cdb_user_updates();
+        $conf->save_cdb_user_updates();
         $timer->mark("assignment");
         MailChecker::clear();
-    }
-
-    /** @param Contact $user
-     * @param string $urlpart
-     * @param 'GET'|'PUT' $method
-     * @return Qrequest */
-    static function make_qreq($user, $urlpart, $method = "GET") {
-        $qreq = (new Qrequest($method))->set_user($user)->set_navigation(Navigation::get());
-        if (preg_match('/\A\/?([^\/?#]+)(\/.*?|)(?:\?|(?=#)|\z)([^#]*)(?:#.*|)\z/', $urlpart, $m)) {
-            $qreq->set_page($m[1], $m[2]);
-            if ($m[3] !== "") {
-                preg_match_all('/([^&;=]*)=([^&;]*)/', $m[3], $n, PREG_SET_ORDER);
-                foreach ($n as $x) {
-                    $qreq->set_req(urldecode($x[1]), urldecode($x[2]));
-                }
-            }
-        }
-        if ($method === "POST") {
-            $qreq->approve_token();
-        }
-        return $qreq;
     }
 
     /** @param string $url */
@@ -1309,26 +1350,39 @@ class TestRunner {
 
 
     function will_print() {
-        if ($this->need_newline) {
-            if ($this->color) {
-                fwrite(STDERR, "\r{$this->verbose_test}\x1b[K\n");
-            } else {
-                fwrite(STDERR, "\n");
-            }
-            $this->need_newline = false;
+        if (!$this->need_newline) {
+            return;
         }
+        if ($this->color) {
+            fwrite(STDERR, "\r{$this->verbose_test}\x1b[K\n");
+        } else {
+            fwrite(STDERR, "\n");
+        }
+        $this->need_newline = false;
     }
 
     function will_fail() {
-        if ($this->verbose_test !== null) {
-            if ($this->color) {
-                fwrite(STDERR, "\r{$this->verbose_test} \x1b[01;31mFAIL\x1b[m\n");
-            } else {
-                fwrite(STDERR, " FAIL\n");
-            }
-            $this->verbose_test = null;
-            $this->need_newline = false;
+        if ($this->verbose_test === null) {
+            return;
         }
+        if ($this->color) {
+            fwrite(STDERR, "\r{$this->verbose_test} \x1b[01;31mFAIL\x1b[m\n");
+        } else {
+            fwrite(STDERR, " FAIL\n");
+        }
+        $this->need_newline = false;
+        $this->verbose_test = null;
+    }
+
+    function set_verbose_test($ro, $m) {
+        if (!$this->verbose) {
+            return;
+        }
+        $mpfx = str_pad("{$ro->getName()}::{$m->name} ", $this->width, ".");
+        if (strlen($mpfx) > $this->width) {
+            $mpfx = rtrim($mpfx);
+        }
+        $this->verbose_test = $mpfx;
     }
 
     /** @param object $testo
@@ -1336,58 +1390,122 @@ class TestRunner {
     private function run_object_tests($testo, $methodmatch) {
         $ro = new ReflectionObject($testo);
         foreach ($ro->getMethods() as $m) {
-            if (str_starts_with($m->name, "test")
-                && strlen($m->name) > 4
-                && ($m->name[4] === "_" || ctype_upper($m->name[4]))
-                && ($methodmatch === "" || fnmatch($methodmatch, $m->name))) {
-                if ($this->verbose) {
-                    $mpfx = str_pad("{$ro->getName()}::{$m->name} ", $this->width, ".");
-                    if (strlen($mpfx) > $this->width) {
-                        $mpfx = rtrim($mpfx);
-                    }
-                    if ($this->color) {
-                        fwrite(STDERR, "{$mpfx} \x1b[01;36mRUN\x1b[m");
-                    } else {
-                        fwrite(STDERR, $mpfx);
-                    }
-                    $this->verbose_test = $mpfx;
-                    $this->need_newline = true;
-                    $before_nfail = Xassert::$n - Xassert::$nsuccess;
-                    $before_nerror = Xassert::$nerror;
-                    $testo->{$m->name}();
-                    $fail = Xassert::$n - Xassert::$nsuccess > $before_nfail;
-                    $ok = !$fail && Xassert::$nerror === $before_nerror;
-                    if ($this->verbose_test !== null) {
-                        if ($this->color) {
-                            $pfx = ($this->need_newline ? "\r" : "") . $mpfx;
-                            if ($ok) {
-                                $sfx = " \x1b[01;32m OK\x1b[m\x1b[K";
-                            } else if (!$fail) {
-                                $sfx = " \x1b[01;36mERROR\x1b[m\x1b[K";
-                            } else {
-                                $sfx = " \x1b[01;31mFAIL\x1b[m";
-                            }
-                        } else {
-                            $pfx = $this->need_newline ? "" : $mpfx;
-                            if ($ok) {
-                                $sfx = "  OK";
-                            } else if (!$fail) {
-                                $sfx = " ERROR";
-                            } else {
-                                $sfx = " FAIL";
-                            }
-                        }
-                        fwrite(STDERR, "{$pfx}{$sfx}\n");
-                    }
-                    $this->verbose_test = null;
-                    $this->need_newline = false;
-                } else {
-                    $testo->{$m->name}();
-                }
+            if (!str_starts_with($m->name, "test")
+                || strlen($m->name) <= 4
+                || ($m->name[4] !== "_" && !ctype_upper($m->name[4]))
+                || ($methodmatch !== "" && !fnmatch($methodmatch, $m->name))) {
+                continue;
             }
+            $this->set_verbose_test($ro, $m);
+            if (!$this->check_test_attributes($m, false)) {
+                if ($this->verbose) {
+                    if ($this->color) {
+                        fwrite(STDERR, "\x1b[90m{$this->verbose_test} \x1b[1;90mSKIP\x1b[m\n");
+                    } else {
+                        fwrite(STDERR, "{$this->verbose_test} SKIP\n");
+                    }
+                }
+                continue;
+            }
+            if (!$this->verbose) {
+                $testo->{$m->name}();
+                continue;
+            }
+            if ($this->color) {
+                fwrite(STDERR, "{$this->verbose_test} \x1b[1;36mRUN\x1b[m");
+            } else {
+                fwrite(STDERR, $this->verbose_test);
+            }
+            $this->need_newline = true;
+            $before_nfail = Xassert::$n - Xassert::$nsuccess;
+            $before_nerror = Xassert::$nerror;
+            $testo->{$m->name}();
+            $fail = Xassert::$n - Xassert::$nsuccess > $before_nfail;
+            $ok = !$fail && Xassert::$nerror === $before_nerror;
+            if ($this->verbose_test !== null) {
+                if ($this->color) {
+                    $pfx = ($this->need_newline ? "\r" : "") . $this->verbose_test;
+                    if ($ok) {
+                        $sfx = " \x1b[1;32m OK\x1b[m\x1b[K";
+                    } else if (!$fail) {
+                        $sfx = " \x1b[1;36mERROR\x1b[m\x1b[K";
+                    } else {
+                        $sfx = " \x1b[1;31mFAIL\x1b[m";
+                    }
+                } else {
+                    $pfx = $this->need_newline ? "" : $this->verbose_test;
+                    if ($ok) {
+                        $sfx = "  OK";
+                    } else if (!$fail) {
+                        $sfx = " ERROR";
+                    } else {
+                        $sfx = " FAIL";
+                    }
+                }
+                fwrite(STDERR, "{$pfx}{$sfx}\n");
+            }
+            $this->verbose_test = null;
+            $this->need_newline = false;
         }
     }
 
+    private function check_test_attributes($class, $store) {
+        if (PHP_MAJOR_VERSION < 8) {
+            return true;
+        }
+        foreach ($class->getAttributes("RequireCdb") ?? [] as $attr) {
+            $x = $attr->newInstance();
+            if ($x->required === !!Conf::$main->opt("contactdbDsn")) {
+                continue;
+            } else if ($store) {
+                $this->need_cdb = $x->required;
+            } else {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** @param string $test */
+    private function set_test_class($test) {
+        $this->last_classname = $test;
+        $this->tester = null;
+
+        $class = new ReflectionClass($test);
+        $this->check_test_attributes($class, true);
+
+        // prepare database
+        if ($this->reset ?? $this->need_reset) {
+            self::reset_db($this->reset ?? false);
+            $this->need_reset = false;
+            $this->reset = null;
+        }
+
+        // apply CDB requirement
+        if ($this->need_cdb === true && !Conf::$main->opt("contactdbDsn")) {
+            if (!(self::$original_opt["contactdbDsn"] ?? null)) {
+                $this->requirement_failure = "test class requires contactdb";
+                return;
+            }
+            Conf::$main->set_opt("contactdbDsn", self::$original_opt["contactdbDsn"]);
+            Conf::$main->invalidate_caches(["cdb" => true]);
+        } else if ($this->need_cdb === false && Conf::$main->opt("contactdbDsn")) {
+            Conf::$main->set_opt("contactdbDsn", null);
+            Conf::$main->invalidate_caches(["cdb" => true]);
+        }
+        $this->need_cdb = null;
+
+        // construct tester
+        $ctor = $class->getConstructor();
+        if ($ctor && $ctor->getNumberOfParameters() === 1) {
+            $this->tester = $class->newInstance(Conf::$main);
+        } else {
+            assert(!$ctor || $ctor->getNumberOfParameters() === 0);
+            $this->tester = $class->newInstance();
+        }
+    }
+
+    /** @param string $test */
     private function run_test($test) {
         if ($test === "no_argv") {
             return;
@@ -1411,29 +1529,22 @@ class TestRunner {
         $methodmatch = "";
         if (($pos = strpos($test, "::")) !== false) {
             $methodmatch = substr($test, $pos + 2);
-            $test = substr($test, 0, $pos);
+            $testclass = substr($test, 0, $pos);
+        } else {
+            $testclass = $test;
         }
-        if (strpos($test, "_") === false && ctype_alpha($test[0])) {
-            $test .= "_Tester";
+        if (strpos($testclass, "_") === false && ctype_alpha($testclass[0])) {
+            $testclass .= "_Tester";
         }
 
-        if ($test !== $this->last_classname || $methodmatch === "") {
-            $class = new ReflectionClass($test);
-            $ctor = $class->getConstructor();
-            if ($ctor && $ctor->getNumberOfParameters() === 1) {
-                if ($this->reset ?? $this->need_reset) {
-                    self::reset_db($this->reset ?? false);
-                    $this->need_reset = false;
-                    $this->reset = null;
-                }
-                $this->tester = $class->newInstance(Conf::$main);
-            } else {
-                assert(!$ctor || $ctor->getNumberOfParameters() === 0);
-                $this->tester = $class->newInstance();
-            }
-            $this->last_classname = $test;
+        if ($testclass !== $this->last_classname || $methodmatch === "") {
+            $this->set_test_class($testclass);
         }
-        $this->run_object_tests($this->tester, $methodmatch);
+        if ($this->tester) {
+            $this->run_object_tests($this->tester, $methodmatch);
+        } else {
+            Xassert::fail_with("!", "Cannot run `{$test}`: {$this->requirement_failure}");
+        }
     }
 
     /** @param 'no_cdb'|'reset_db'|class-string ...$tests */
@@ -1453,6 +1564,7 @@ class TestRunner {
                 "no-color !"
             )->description("Usage: php test/" . basename($_SERVER["PHP_SELF"]) . " [-V] [CLASSNAME...]")
              ->helpopt("help")
+             ->interleave(true)
              ->parse($argv);
         }
 
@@ -1467,3 +1579,80 @@ class TestRunner {
 
 TestRunner::$original_opt = $Opt;
 TestRunner::set_navigation_base("/");
+
+
+class TestQreq {
+    /** @param array<string,mixed> $args
+     * @return Qrequest */
+    static function get($args = []) {
+        return (new Qrequest("GET", $args))
+            ->set_navigation(Navigation::get());
+    }
+
+    /** @param string $page
+     * @param array<string,mixed> $args
+     * @return Qrequest */
+    static function get_page($page, $args = []) {
+        $slash = strlpos($page, "/");
+        return self::get($args)
+            ->set_page(substr($page, 0, $slash))
+            ->set_path((string) substr($page, $slash));
+    }
+
+    /** @param array<string,mixed> $args
+     * @return Qrequest */
+    static function post($args = []) {
+        return (new Qrequest("POST", $args))
+            ->set_navigation(Navigation::get())
+            ->approve_token()
+            ->set_body(null, "application/x-www-form-urlencoded");
+    }
+
+    /** @param string $page
+     * @param array<string,mixed> $args
+     * @return Qrequest */
+    static function post_page($page, $args = []) {
+        $slash = strlpos($page, "/");
+        return self::post($args)
+            ->set_page(substr($page, 0, $slash))
+            ->set_path((string) substr($page, $slash));
+    }
+
+    /** @param mixed $json
+     * @param array<string,mixed> $args
+     * @return Qrequest */
+    static function post_json($json, $args = []) {
+        return self::post($args)
+            ->set_body(is_string($json) ? $json : json_encode_db($json),
+                       "application/json");
+    }
+
+    /** @param array<string,mixed> $contents
+     * @param array<string,mixed> $args
+     * @return Qrequest */
+    static function post_zip($contents, $args = []) {
+        if (($fn = tempnam("/tmp", "hctz")) === false) {
+            throw new ErrorException("Failed to create temporary file");
+        }
+        unlink($fn);
+        $zip = new ZipArchive;
+        $zip->open($fn, ZipArchive::CREATE);
+        foreach ($contents as $name => $value) {
+            $zip->addFromString($name, is_string($value) ? $value : json_encode_db($value));
+        }
+        $zip->close();
+        $qreq = (new Qrequest("POST", $args))
+            ->approve_token()
+            ->set_body(file_get_contents($fn), "application/zip");
+        unlink($fn);
+        return $qreq;
+    }
+
+    /** @param array<string,mixed> $args
+     * @return Qrequest */
+    static function delete($args = []) {
+        return (new Qrequest("DELETE", $args))
+            ->approve_token()
+            ->set_body(null, "application/x-www-form-urlencoded");
+    }
+}

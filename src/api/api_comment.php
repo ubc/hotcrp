@@ -1,6 +1,6 @@
 <?php
 // api_comment.php -- HotCRP comment API call
-// Copyright (c) 2008-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2008-2025 Eddie Kohler; see LICENSE.
 
 class Comment_API {
     /** @var Conf */
@@ -107,10 +107,10 @@ class Comment_API {
 
         // check permission, other errors
         $newctype = $xcrow->requested_type($req);
-        $whyNot = $this->user->perm_edit_comment($this->prow, $xcrow, $newctype);
-        if ($whyNot) {
+        $whynot = $this->user->perm_edit_comment($this->prow, $xcrow, $newctype);
+        if ($whynot) {
+            $whynot->set("expand", true)->append_to($this->ms, null, 2);
             $this->ok = false;
-            $whyNot->append_to($this->ms, null, 2);
             return null;
         }
 
@@ -118,7 +118,7 @@ class Comment_API {
         $suser = $this->user;
         if (($token = $qreq->review_token)
             && ($token = decode_token($token, "V"))
-            && in_array($token, $this->user->review_tokens())
+            && in_array($token, $this->user->review_tokens(), true)
             && ($rrow = $this->prow->review_by_token($token))) {
             $suser = $this->conf->user_by_id($rrow->contactId);
         }
@@ -182,10 +182,10 @@ class Comment_API {
             $this->ms->success($this->conf->_("<5>Notified mentioned users {:nblist}", $mentions));
         }
         if ($mentions_missing) {
-            $this->ms->msg_at(null, $this->conf->_("<0>Some mentioned users cannot currently see this comment, so they were not notified."), MessageSet::WARNING_NOTE);
+            $this->ms->append_item(MessageItem::warning_note($this->conf->_("<0>Some mentioned users cannot currently see this comment, so they were not notified.")));
         }
         if ($mentions_censored) {
-            $this->ms->msg_at(null, $this->conf->_("<0>Some notifications were censored to anonymize mentioned users."), MessageSet::WARNING_NOTE);
+            $this->ms->append_item(MessageItem::warning_note($this->conf->_("<0>Some notifications were censored to anonymize mentioned users.")));
         }
         return $xcrow;
     }
@@ -234,8 +234,7 @@ class Comment_API {
             $crow = $rcrow;
         } else if ($c === "new" || $c === "response") {
             $crow = null;
-        } else if (is_int($c) || ctype_digit($c)) {
-            $cn = is_int($c) ? $c : intval($c);
+        } else if (($cn = stoi($c)) !== null) {
             $crow = $this->find_comment("commentId={$cn}");
         } else if ($c === "" && $qreq->is_post()) {
             $c = "new";
@@ -295,7 +294,6 @@ class Comment_API {
         }
         if ($crow && $crow->commentId > 0) {
             $jr["comment"] = $crow->unparse_json($this->user, !$content);
-            $jr["cmt"] = $jr["comment"]; // XXX backward compat
         }
         return $jr;
     }
@@ -306,8 +304,7 @@ class Comment_API {
             return JsonResult::make_parameter_error("text");
         } else if ($qreq->c === "new" && !$qreq->is_post()) {
             return JsonResult::make_parameter_error("c");
-        } else {
-            return (new Comment_API($user, $prow))->run_qreq($qreq);
         }
+        return (new Comment_API($user, $prow))->run_qreq($qreq);
     }
 }

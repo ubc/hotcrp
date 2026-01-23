@@ -1,5 +1,5 @@
 // settings.js -- HotCRP JavaScript library for settings
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 "use strict";
 
@@ -118,10 +118,10 @@ function settings_delete(elt, message) {
 }
 
 function settings_field_unfold(evt) {
-    if (evt.which.n !== 2) {
+    if (evt.detail.n !== 2) {
         return;
     }
-    if (evt.which.open) {
+    if (evt.detail.open) {
         let ch = this.parentElement.firstChild;
         for (; ch; ch = ch.nextSibling) {
             if (ch !== this && hasClass(ch, "fold2o") && !form_differs(ch))
@@ -129,7 +129,7 @@ function settings_field_unfold(evt) {
         }
         $(this).find("textarea").css("height", "auto").autogrow();
         $(this).find("input[type=text]").autogrow();
-        if (!evt.which.nofocus) {
+        if (!evt.detail.nofocus) {
             $(this).scrollIntoView();
         }
     }
@@ -156,6 +156,9 @@ function settings_field_order(parentid) {
         movedown = null;
     for (n = c.firstChild; n; n = n.nextSibling) {
         orde = form.elements[n.id + "/order"];
+        if (!orde) {
+            console.log(n);
+        }
         if (hasClass(n, "deleted")) {
             orde.value = 0;
             continue;
@@ -215,11 +218,9 @@ function field_instantiate(ee, ftfinder, tname, instantiators) {
     for (let pe = ee.firstElementChild; pe; ) {
         const npe = pe.nextElementSibling,
             prop = pe.getAttribute("data-property");
-        if (prop === "type") {
-            field_instantiate_type(pe, ftfinder, ftype);
-        } else if (hasClass(pe, "property-optional")
-                   ? (ftype.properties || {})[prop]
-                   : (ftype.properties || {})[prop] !== false) {
+        if (hasClass(pe, "property-optional")
+            ? (ftype.properties || {})[prop]
+            : (ftype.properties || {})[prop] !== false) {
             if (instantiators && instantiators[prop])
                 instantiators[prop](pe, ftype);
             if ((ftype.placeholders || {})[prop])
@@ -532,7 +533,7 @@ handle_ui.on("js-settings-automatic-tag-new", function () {
         ++ctr;
     h = $("#settings-new-automatic-tag").html().replace(/\/\$/g, "/" + ctr);
     odiv = $(h).appendTo("#settings-automatic-tags");
-    odiv.find("input[type=text]").autogrow();
+    $(odiv).awaken();
     $$("automatic_tag/".concat(ctr, "/tag")).focus();
 });
 
@@ -656,6 +657,27 @@ handle_ui.on("js-settings-submission-round-new", function () {
     this.form.elements["submission/" + i + "/tag"].focus();
 });
 
+handle_ui.on("input.js-settings-submission-round-name change.js-settings-submission-round-name", function () {
+    const e = this.closest(".js-settings-submission-round").querySelector(".js-settings-submission-round-label");
+    if (!e) {
+        return;
+    }
+    if (!this.hasAttribute("data-submission-round-labelled")) {
+        this.setAttribute("data-submission-round-labelled", input_default_value(this) !== input_default_value(e) ? "true" : "");
+    }
+    if (this.getAttribute("data-submission-round-labelled")) {
+        return;
+    }
+    e.value = this.value;
+});
+
+handle_ui.on("input.js-settings-submission-round-label", function (evt) {
+    const e = this.closest(".js-settings-submission-round").querySelector(".js-settings-submission-round-name");
+    if (e) {
+        e.setAttribute("data-submission-round-labelled", "true");
+    }
+});
+
 handle_ui.on("js-settings-submission-round-delete", function () {
     var div = this.closest(".js-settings-submission-round"),
         ne = this.form.elements[div.id + "/tag"];
@@ -713,9 +735,32 @@ function rf_order() {
 }
 
 function rf_fill_control(form, name, value, setdefault) {
-    var elt = form.elements[name];
+    const elt = form.elements[name];
     elt && $(elt).val(value);
     elt && setdefault && elt.setAttribute("data-default-value", value);
+}
+
+function rf_fill_type(form, name, fld, setdefault) {
+    const select = form.elements[name], ftype = rffinder(fld.type);
+    if (!select || !ftype) {
+        // intrinsic field
+        return;
+    }
+    if (!fld.convertible_to) {
+        // no conversion allowed
+        select.closest(".entry").replaceChildren(
+            ftype.title,
+            hidden_input(select.name, ftype.name, {id: select.id})
+        );
+        return;
+    }
+    select.replaceChildren(make_option_element(ftype.name, ftype.title),
+        $e("hr"));
+    for (const rft of rftypes) {
+        if (fld.convertible_to.includes(rft.name))
+            select.add(make_option_element(rft.name, rft.title));
+    }
+    rf_fill_control(form, name, ftype.name, setdefault);
 }
 
 function rf_color() {
@@ -744,7 +789,7 @@ function rf_fill(pos, fld, setdefault) {
     var form = document.getElementById("f-settings"),
         rfid = "rf/" + pos;
     rf_fill_control(form, rfid + "/name", fld.name || "", setdefault);
-    rf_fill_control(form, rfid + "/type", fld.type, setdefault);
+    rf_fill_type(form, rfid + "/type", fld, setdefault);
     rf_fill_control(form, rfid + "/description", fld.description || "", setdefault);
     rf_fill_control(form, rfid + "/visibility", fld.visibility || "re", setdefault);
     rf_fill_control(form, rfid + "/values_text", values_to_text(fld), setdefault);

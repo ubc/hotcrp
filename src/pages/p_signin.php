@@ -1,6 +1,6 @@
 <?php
 // pages/p_signin.php -- HotCRP password reset partials
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Signin_Page {
     /** @var ?string */
@@ -90,25 +90,22 @@ class Signin_Page {
     }
 
     static function signin_request_success(Contact $user, Qrequest $qreq, $cs, $info)  {
-        if (!$info["ok"]) {
-            if (!empty($info["usec"])) {
-                UpdateSession::usec_add_list($qreq, $qreq->email, $info["usec"], 0);
-            }
-            return $info;
-        }
         return LoginHelper::login_complete($info, $qreq);
     }
 
     /** @param string $token
      * @return ?TokenInfo */
     static private function _find_reset_token(Conf $conf, $token) {
-        if ($token) {
-            $is_cdb = str_starts_with($token, "hcpw1");
-            if (($tok = TokenInfo::find($token, $conf, $is_cdb))
-                && $tok->is_active()
-                && $tok->capabilityType === TokenInfo::RESETPASSWORD) {
-                return $tok;
-            }
+        if (!$token) {
+            return null;
+        }
+        if (str_starts_with($token, "hcpw1")) {
+            $tok = TokenInfo::find_cdb($token, $conf);
+        } else {
+            $tok = TokenInfo::find($token, $conf);
+        }
+        if ($tok && $tok->is_active(TokenInfo::RESETPASSWORD)) {
+            return $tok;
         }
         return null;
     }
@@ -121,9 +118,8 @@ class Signin_Page {
             && ($capuser = $cap->user())
             && strcasecmp($capuser->email, trim($qreq->email)) === 0) {
             return $pw;
-        } else {
-            return false;
         }
+        return false;
     }
 
     /** @param ComponentSet $cs */
@@ -160,8 +156,8 @@ class Signin_Page {
 
         $folded = $cs->root !== "signin" && !$qreq->signin;
         self::print_form_start_for($qreq, "signin", $folded);
-        if ($qreq->redirect) {
-            echo Ht::hidden("redirect", $qreq->redirect);
+        if (($redirect = $conf->qreq_redirect_url($qreq))) {
+            echo Ht::hidden("redirect", $redirect);
         }
         if ($folded) {
             echo Ht::unstash_script('hotcrp.fold("f-signin",false)');
@@ -176,11 +172,11 @@ class Signin_Page {
     }
 
     static function print_signin_form_title(Contact $user, Qrequest $qreq) {
-        echo '<h1 class="signin">Sign in</h1>';
+        echo '<h1 id="h-title" class="signin">Sign in</h1>';
     }
 
     static function print_signin_form_accounts(Contact $user, Qrequest $qreq) {
-        if (($su = Contact::session_users($qreq))) {
+        if (($su = Contact::session_emails($qreq))) {
             $nav = $qreq->navigation();
             $links = [];
             foreach ($su as $i => $email) {
@@ -256,11 +252,18 @@ class Signin_Page {
 
     function print_signin_form_oauth(Contact $user, Qrequest $qreq) {
         $conf = $user->conf;
-        if (!$conf->opt("oAuthProviders") && !$conf->opt("oAuthTypes")) {
+        if (!$conf->opt("oAuthProviders")) {
             return;
         }
         $buttons = [];
-        $param = array_merge(["authtype" => null, "post" => $qreq->maybe_post_value()], $this->_oauth_hoturl_param ?? ["redirect" => $qreq->redirect]);
+        $param = ["authtype" => null, "post" => $qreq->maybe_post_value()];
+        if ($this->_oauth_hoturl_param) {
+            $param += $this->_oauth_hoturl_param;
+        } else {
+            $nav = $qreq->navigation();
+            $param["success_redirect"] = $qreq->redirect;
+            $param["failure_redirect"] = $conf->selfurl($qreq, ["signedout" => null], Conf::HOTURL_SITEREL | Conf::HOTURL_RAW);
+        }
         $top = "";
         foreach ($conf->oauth_providers() as $authdata) {
             if ($authdata->button_html && !($authdata->disabled ?? false)) {
@@ -298,7 +301,7 @@ class Signin_Page {
         } else {
             $qreq->print_header("Sign out", "signout", ["action_bar" => "", "hide_title" => true, "body_class" => "body-signin"]);
             self::print_form_start_for($qreq, "signout");
-            echo '<h1 class="signin">Sign out</h1><div class="mb-5">',
+            echo '<h1 id="h-title" class="signin">Sign out</h1><div class="mb-5">',
                 $user->conf->_("Use this page to sign out of the site."),
                 '</div><div class="popup-actions">',
                 Ht::submit("Sign out", ["class" => "btn-danger", "value" => 1]),
@@ -401,7 +404,7 @@ class Signin_Page {
         Ht::stash_script("hotcrp.focus_within(\$(\"#f-signin\"));window.scroll(0,0)");
     }
     static function print_newaccount_form_title() {
-        echo '<h1 class="signin">Create account</h1>';
+        echo '<h1 id="h-title" class="signin">Create account</h1>';
     }
     static function print_newaccount_form_description(Contact $user) {
         $m = $user->conf->_("Enter your email and we’ll create an account and send you instructions for signing in.");
@@ -456,7 +459,7 @@ class Signin_Page {
         Ht::stash_script("hotcrp.focus_within(\$(\"#f-signin\"));window.scroll(0,0)");
     }
     static function print_forgot_form_title() {
-        echo '<h1 class="signin">Forgot password</h1>';
+        echo '<h1 id="h-title" class="signin">Forgot password</h1>';
     }
     static function print_forgot_form_description(Contact $user, Qrequest $qreq, $cs) {
         echo '<p class="mb-5">Enter your email and we’ll send you a link to reset your password.';
@@ -522,11 +525,11 @@ class Signin_Page {
         // look up token
         $token = self::_find_reset_token($conf, $this->_reset_tokstr);
         if (!$token) {
-            $this->ms()->error_at("resetcap", "Unknown or expired password reset code. Please check that you entered the code correctly.");
+            $this->ms()->error_at("resetcap", "<0>Unknown or expired password reset code. Please check that you entered the code correctly.");
             return;
         }
         if (!$token->user()) {
-            $this->ms()->error_at("resetcap", "This password reset code refers to a user who no longer exists. Either create a new account or contact the conference administrator.");
+            $this->ms()->error_at("resetcap", "<0>This password reset code refers to a user who no longer exists. Either create a new account or contact the conference administrator.");
             return;
         }
         $this->_reset_token = $token;
@@ -559,23 +562,23 @@ class Signin_Page {
         $p2 = (string) $qreq->password2;
         if ($p1 === "") {
             if ($p2 !== "" || $qreq->autopassword) {
-                $this->ms()->error_at("password", "Password required.");
+                $this->ms()->error_at("password", "<0>Password required");
             }
             $info["ok"] = false;
         } else if (trim($p1) !== $p1) {
-            $this->ms()->error_at("password", "Passwords cannot begin or end with spaces.");
+            $this->ms()->error_at("password", "<0>Passwords cannot begin or end with spaces");
             $this->ms()->error_at("password2");
             $info["ok"] = false;
         } else if (strlen($p1) <= 5) {
-            $this->ms()->error_at("password", "Passwords must be at least six characters long.");
+            $this->ms()->error_at("password", "<0>Passwords must be at least six characters long");
             $this->ms()->error_at("password2");
             $info["ok"] = false;
         } else if (!Contact::valid_password($p1)) {
-            $this->ms()->error_at("password", "Invalid password.");
+            $this->ms()->error_at("password", "<0>Invalid password");
             $this->ms()->error_at("password2");
             $info["ok"] = false;
         } else if ($p1 !== $p2) {
-            $this->ms()->error_at("password", "The passwords you entered did not match.");
+            $this->ms()->error_at("password", "<0>The passwords you entered did not match");
             $this->ms()->error_at("password2");
             $info["ok"] = false;
         } else {
@@ -620,7 +623,7 @@ class Signin_Page {
         Ht::stash_script("hotcrp.focus_within(\$(\"#f-signin\"));window.scroll(0,0)");
     }
     static function print_reset_form_title() {
-        echo '<h1 class="signin">Reset password</h1>';
+        echo '<h1 id="h-title" class="signin">Reset password</h1>';
     }
     static function print_reset_form_description() {
         echo '<p class="mb-5">Use this form to set a new password. You may want to use the random password we’ve chosen.</p>';

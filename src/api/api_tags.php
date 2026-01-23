@@ -1,5 +1,5 @@
 <?php
-// api/api_tags.php -- HotCRP tags API call
+// api_tags.php -- HotCRP tags API call
 // Copyright (c) 2008-2023 Eddie Kohler; see LICENSE.
 
 class Tags_API {
@@ -44,10 +44,10 @@ class Tags_API {
             $link = $user->conf->hoturl("search", ["q" => "editsort:-#~{$t->tag}"]);
             if ($tv[1] < $t->allotment) {
                 $nleft = $t->allotment - $tv[1];
-                $tmr->message_list[] = new MessageItem(null, "<5><a href=\"{$link}\">#~{$t->tag}</a>: " . plural($nleft, "vote") . " remaining", MessageSet::MARKED_NOTE);
+                $tmr->message_list[] = MessageItem::marked_note("<5><a href=\"{$link}\">#~{$t->tag}</a>: " . plural($nleft, "vote") . " remaining");
             } else if ($tv[1] > $t->allotment) {
-                $tmr->message_list[] = new MessageItem(null, "<5><a href=\"{$link}\">#~{$t->tag}</a>: Too many votes", 1);
-                $tmr->message_list[] = new MessageItem(null, "<0>Your vote total, {$tv[1]}, is over the allotment, {$t->allotment}.", MessageSet::INFORM);
+                $tmr->message_list[] = MessageItem::warning("<5><a href=\"{$link}\">#~{$t->tag}</a>: Too many votes");
+                $tmr->message_list[] = MessageItem::inform("<0>Your vote total, {$tv[1]}, is over the allotment, {$t->allotment}.");
             }
         }
     }
@@ -152,7 +152,7 @@ class Tags_API {
         $pid = -1;
         foreach (preg_split('/[\s,]+/', $qreq->tagassignment) as $w) {
             if ($w !== "" && ctype_digit($w)) {
-                $pid = intval($w);
+                $pid = stoi($w);
             } else if ($w !== "" && $pid > 0) {
                 $x[] = "{$pid},tag," . CsvGenerator::quote($w);
             }
@@ -203,10 +203,9 @@ class Tags_API {
                 $result[] = $user->reviewer_html_for($k) . " ({$v})";
             }
         }
-        if (empty($result)) {
-            return ["ok" => true, "vote_report" => ""];
-        } else {
+        if (!empty($result)) {
             return ["ok" => true, "vote_report" => '<span class="nw">' . join(',</span> <span class="nw">', $result) . '</span>'];
         }
+        return ["ok" => true, "vote_report" => ""];
     }
 }

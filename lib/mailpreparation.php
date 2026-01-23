@@ -82,7 +82,7 @@ class MailPreparation implements JsonSerializable {
     /** @param Contact $u
      * @return string */
     static function recipient_address($u) {
-        $e = $u->preferredEmail ? : $u->email;
+        $e = $u->preferredEmail ?? $u->email;
         return Text::name($u->firstName, $u->lastName, $e, NAME_MAILQUOTE | NAME_E);
     }
 
@@ -149,15 +149,20 @@ class MailPreparation implements JsonSerializable {
     /** @param MailPreparation $p
      * @return bool */
     function can_merge($p) {
-        return !$this->unique_preparation
-            && !$p->unique_preparation
-            && $this->subject === $p->subject
-            && $this->body === $p->body
-            && ($this->headers["cc"] ?? null) === ($p->headers["cc"] ?? null)
-            && ($this->headers["reply-to"] ?? null) === ($p->headers["reply-to"] ?? null)
-            && $this->preparation_owner === $p->preparation_owner
-            && empty($this->errors)
-            && empty($p->errors);
+        if ($this->unique_preparation
+            || $p->unique_preparation
+            || $this->subject !== $p->subject
+            || $this->body !== $p->body
+            || ($this->headers["cc"] ?? null) !== ($p->headers["cc"] ?? null)
+            || ($this->headers["reply-to"] ?? null) !== ($p->headers["reply-to"] ?? null)
+            || $this->preparation_owner !== $p->preparation_owner
+            || !empty($this->errors)
+            || !empty($p->errors)) {
+            return false;
+        }
+        $max_recipients = $this->conf->opt("emailMaxRecipients") ?? 200;
+        return $max_recipients <= 0
+            || count($this->recip) + count($p->recip) <= $max_recipients;
     }
 
     /** @param MailPreparation $p
@@ -191,7 +196,7 @@ class MailPreparation implements JsonSerializable {
         foreach ($this->recip as $ru) {
             if ($ru->can_receive_mail($this->_self_requested)) {
                 continue;
-            } else if (!Contact::is_real_email($ru->preferredEmail ? : $ru->email)) {
+            } else if (!Contact::is_real_email($ru->preferredEmail ?? $ru->email)) {
                 $mx["fake"][] = $ru->email;
             } else if ($ru->is_disabled()) {
                 $mx["disabled"][] = $ru->email;
@@ -233,7 +238,7 @@ class MailPreparation implements JsonSerializable {
         if (!$this->finalized) {
             $this->finalize();
         }
-        if ($this->conf->call_hooks("send_mail", null, $this) === false) {
+        if ($this->conf->call_hooks("send_mail", $this) === false) {
             return false;
         }
         $headers = $this->headers;
@@ -256,7 +261,7 @@ class MailPreparation implements JsonSerializable {
 
         // create valid To: header
         $eol = $this->conf->opt("postfixEOL") ?? "\r\n";
-        $to = (new MimeText($eol))->encode_email_header("To: ", join(", ", $vto));
+        $to = (new MimeText($eol))->encode_email_header("To", join(", ", $vto));
         $headers["to"] = $to . $eol;
         $headers["content-transfer-encoding"] = "Content-Transfer-Encoding: quoted-printable" . $eol;
         // XXX following assumes body is text
@@ -279,7 +284,7 @@ class MailPreparation implements JsonSerializable {
         // actually send
         // first try internal mailer
         if ($sendable
-            && ($this->conf->opt("internalMailer") ?? strncasecmp(PHP_OS, "WIN", 3) != 0)
+            && ($this->conf->opt("internalMailer") ?? strncasecmp(PHP_OS, "WIN", 3) !== 0)
             && ($sendmail = ini_get("sendmail_path"))) {
             $htext = join("", $headers);
             $f = popen($extra ? "$sendmail $extra" : $sendmail, "wb");
@@ -310,7 +315,7 @@ class MailPreparation implements JsonSerializable {
             unset($headers["mime-version"], $headers["content-type"], $headers["content-transfer-encoding"]);
             $text = join("", $headers) . $eol . $this->body;
             if (PHP_SAPI !== "cli") {
-                $this->conf->feedback_msg(new MessageItem(null, "<pre class=\"pw\">" . htmlspecialchars($text) . "</pre>", 0));
+                $this->conf->feedback_msg(MessageItem::plain("<5><pre class=\"pw\">" . htmlspecialchars($text) . "</pre>"));
             } else if (!$this->conf->opt("disablePrintEmail")) {
                 fwrite(STDERR, "========================================\n" . str_replace("\r\n", "\n", $text) .  "========================================\n");
             }

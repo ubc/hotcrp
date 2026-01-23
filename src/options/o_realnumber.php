@@ -1,6 +1,6 @@
 <?php
 // o_realnumber.php -- HotCRP helper class for whole-number options
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class RealNumber_PaperOption extends PaperOption {
     function __construct(Conf $conf, $args) {
@@ -39,16 +39,15 @@ class RealNumber_PaperOption extends PaperOption {
         $ov->set_anno("request", $v);
         return $ov;
     }
-    function parse_json(PaperInfo $prow, $j) {
+    function parse_json_user(PaperInfo $prow, $j, Contact $user) {
         if (is_int($j)) {
             return PaperValue::make($prow, $this, $j, (string) $j);
         } else if (is_float($j)) {
             return PaperValue::make($prow, $this, self::int_version($j), (string) $j);
         } else if ($j === null || $j === false) {
             return PaperValue::make($prow, $this);
-        } else {
-            return PaperValue::make_estop($prow, $this, "<0>Number required");
         }
+        return PaperValue::make_estop($prow, $this, "<0>Number required");
     }
 
     function print_web_edit(PaperTable $pt, $ov, $reqov) {
@@ -70,22 +69,21 @@ class RealNumber_PaperOption extends PaperOption {
         }
     }
 
-    function search_examples(Contact $viewer, $context) {
+    function search_examples(Contact $viewer, $venue) {
         return [
             $this->has_search_example(),
-            new SearchExample(
-                $this, $this->search_keyword() . ":{comparator}",
+            $this->make_search_example(
+                $this->search_keyword() . ":{comparator}",
                 "<0>submission’s {title} field is greater than 12.5",
-                new FmtArg("comparator", ">12.5")
+                new FmtArg("comparator", ">12.5", 0)
             )
         ];
     }
     function parse_search(SearchWord $sword, PaperSearch $srch) {
         if (is_numeric($sword->cword)) {
             return new RealNumberOption_SearchTerm($srch->user, $this, CountMatcher::parse_relation($sword->compar), floatval($sword->cword));
-        } else {
-            return null;
         }
+        return null;
     }
     function present_script_expression() {
         return ["type" => "text_present", "formid" => $this->formid];
@@ -94,12 +92,13 @@ class RealNumber_PaperOption extends PaperOption {
         return ["type" => "numeric", "formid" => $this->formid];
     }
 
-    function parse_fexpr(FormulaCall $fcall, &$t) {
+    function parse_fexpr(FormulaCall $fcall) {
         return new RealNumberOption_Fexpr($this);
     }
 
-    /** @param PaperOption $oldopt @unused-param */
-    static function convert_from_numeric(PaperOption $newopt, PaperOption $oldopt) {
-        $newopt->conf->qe("update PaperOption set data=value where optionId=?", $newopt->id);
+    static function convert_from_numeric_setting(Si $si, Sf_Setting $sfs, SettingValues $sv) {
+        $sv->register_cleanup_function(null, function () use ($sv, $sfs) {
+            $sv->conf->qe("update PaperOption set data=value where optionId=?", $sfs->id);
+        });
     }
 }

@@ -1,6 +1,6 @@
 <?php
 // a_preference.php -- HotCRP assignment helper classes
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Preference_Assignable extends Assignable {
     /** @var int */
@@ -14,11 +14,14 @@ class Preference_Assignable extends Assignable {
      * @param ?int $pref
      * @param ?int $exp */
     function __construct($pid, $cid, $pref = null, $exp = null) {
-        $this->type = "pref";
         $this->pid = $pid;
         $this->cid = $cid;
         $this->_pref = $pref;
         $this->_exp = $exp;
+    }
+    /** @return string */
+    function type() {
+        return "pref";
     }
     /** @return self */
     function fresh() {
@@ -61,7 +64,7 @@ class Preference_AssignmentParser extends AssignmentParser {
             if (!$state->user->can_administer($prow)) {
                 return new AssignmentError($prow->failure_reason(["administer" => true]));
             } else if (!$user->isPC) {
-                return new AssignmentError("<0>User {$user->email} is not a PC member");
+                return new AssignmentError("<0>User ‘{$user->email}’ is not a PC member");
             }
         }
         return true;

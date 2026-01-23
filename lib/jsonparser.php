@@ -81,7 +81,7 @@ class JsonParser {
 
     /** @param ?string $input
      * @return $this */
-    function input($input) {
+    function set_input($input) {
         $this->input = $input;
         $this->error_type = 0;
         $this->error_pos = 0;
@@ -92,7 +92,7 @@ class JsonParser {
      * @param int $maxdepth
      * @param int $flags
      * @return $this */
-    function params($assoc = null, $maxdepth = 512, $flags = 0) {
+    function set_params($assoc = null, $maxdepth = 512, $flags = 0) {
         $this->assoc = $assoc;
         $this->maxdepth = $maxdepth;
         $this->flags = $flags;
@@ -101,28 +101,28 @@ class JsonParser {
 
     /** @param ?bool $assoc
      * @return $this */
-    function assoc($assoc = null) {
+    function set_assoc($assoc = null) {
         $this->assoc = $assoc;
         return $this;
     }
 
     /** @param int $maxdepth
      * @return $this */
-    function maxdepth($maxdepth = 512) {
+    function set_maxdepth($maxdepth = 512) {
         $this->maxdepth = $maxdepth;
         return $this;
     }
 
     /** @param int $flags
      * @return $this */
-    function flags($flags = 0) {
+    function set_flags($flags = 0) {
         $this->flags = $flags;
         return $this;
     }
 
     /** @param ?string $filename
      * @return $this */
-    function filename($filename) {
+    function set_filename($filename) {
         $this->filename = $filename;
         return $this;
     }
@@ -309,7 +309,7 @@ class JsonParser {
             if (($this->flags & (self::JSON5 | self::JSON_EXTENDED_WHITESPACE)) !== 0
                 && ($ch < 0x20 || $ch >= 0xC2)) {
                 $ch = UnicodeHelper::utf8_ord($s, $pos);
-                if (in_array($ch, self::$json5_additional_whitespace)) {
+                if (in_array($ch, self::$json5_additional_whitespace, true)) {
                     $pos += UnicodeHelper::utf8_chrlen($ch);
                     continue;
                 }
@@ -468,7 +468,11 @@ class JsonParser {
         } else if (($ch === 45 || ($ch >= 48 && $ch <= 57))    // `[-0-9]`
                    && preg_match('/\G-?(?:0|[1-9]\d*+)((?:\.\d++)?(?:[Ee][-+]?\d++)?)/', $s, $m, 0, $pos)) {
             $this->pos = $pos + strlen($m[0]);
-            return $m[1] === "" ? intval($m[0]) : floatval($m[0]);
+            $x = stonum($m[0]);
+            if ($m[1] === "" && ($ix = (int) $x) == $x) {
+                return $ix;
+            }
+            return $x;
         } else if ($ch === 93) {     // `]`
             if ($context === self::CTX_ARRAY_ELEMENT) {
                 return $this->set_error($pos, JSON_ERROR_TRAILING_COMMA);
@@ -642,22 +646,22 @@ class JsonParser {
     }
 
     /** @param int $pos
+     * @param bool $include_column
      * @return ?string */
-    function position_landmark($pos) {
-        if ($this->input !== null && $pos <= strlen($this->input)) {
-            $prefix = substr($this->input, 0, $pos);
-            $line = 1 + preg_match_all('/\r\n?|\n/s', $prefix);
-            $cr = strrpos($prefix, "\r");
-            $nl = strrpos($prefix, "\n");
-            $last_line = substr($prefix, max($cr === false ? 0 : $cr + 1, $nl === false ? 0 : $nl + 1));
-            $column = 1 + preg_match_all('/./u', $last_line);
-            if ($this->filename !== null) {
-                return "{$this->filename}:{$line}:{$column}";
-            } else {
-                return "line {$line}, column {$column}";
-            }
-        } else {
+    function position_landmark($pos, $include_column = true) {
+        if ($this->input === null || $pos > strlen($this->input)) {
             return null;
+        }
+        $prefix = substr($this->input, 0, $pos);
+        $line = 1 + preg_match_all('/\r\n?|\n/s', $prefix);
+        $cr = strrpos($prefix, "\r");
+        $nl = strrpos($prefix, "\n");
+        $last_line = substr($prefix, max($cr === false ? 0 : $cr + 1, $nl === false ? 0 : $nl + 1));
+        $column = 1 + preg_match_all('/./u', $last_line);
+        if ($this->filename !== null) {
+            return "{$this->filename}:{$line}" . ($include_column ? ":{$column}" : "");
+        } else {
+            return "line {$line}" . ($include_column ? ", column {$column}" : "");
         }
     }
 
@@ -676,20 +680,19 @@ class JsonParser {
             return "{$path}[{$component}]";
         } else if (ctype_alnum($component) || preg_match('/\A\w+\z/', $component)) {
             return "{$path}.{$component}";
-        } else {
-            $component = preg_replace_callback('/["\/\000-\037\\\\]/', function ($m) {
-                $ch = ord($m[0]);
-                if ($ch === 8 || $ch === 9 || $ch === 10 || $ch === 13) {
-                    $s = "btnxxr";
-                    return "\\" . $s[$ch - 8];
-                } else if ($ch < 32) {
-                    return sprintf("\\u%04X", $ch);
-                } else {
-                    return "\\{$m[0]}";
-                }
-            }, $component);
-            return "{$path}[\"{$component}\"]";
         }
+        $component = preg_replace_callback('/["\/\000-\037\\\\]/', function ($m) {
+            $ch = ord($m[0]);
+            if ($ch === 8 || $ch === 9 || $ch === 10 || $ch === 13) {
+                $s = "btnxxr";
+                return "\\" . $s[$ch - 8];
+            } else if ($ch < 32) {
+                return sprintf("\\u%04X", $ch);
+            } else {
+                return "\\{$m[0]}";
+            }
+        }, $component);
+        return "{$path}[\"{$component}\"]";
     }
 
     /** @param ?string $path
@@ -739,23 +742,23 @@ class JsonParser {
             }
             $ipos = $jpp->vpos1;
         }
-        if ($jpp === null && $ipos === 0) {
-            $ilen = strlen($this->input);
-            while ($ipos !== $ilen && ctype_space($this->input[$ipos])) {
-                ++$ipos;
-            }
-            $vpos2 = $this->skip($ipos);
-            return new JsonParserPosition(null, null, null, $ipos, $vpos2);
-        } else {
+        if ($jpp !== null || $ipos !== 0) {
             return $jpp;
         }
+        $ilen = strlen($this->input);
+        while ($ipos !== $ilen && ctype_space($this->input[$ipos])) {
+            ++$ipos;
+        }
+        $vpos2 = $this->skip($ipos);
+        return new JsonParserPosition(null, null, null, $ipos, $vpos2);
     }
 
     /** @param string $path
+     * @param bool $include_column
      * @return ?string */
-    function path_landmark($path) {
+    function path_landmark($path, $include_column = true) {
         $jpp = $this->path_position($path);
-        return $jpp ? $this->position_landmark($jpp->vpos1) : null;
+        return $jpp ? $this->position_landmark($jpp->vpos1, $include_column) : null;
     }
 
 
@@ -773,14 +776,13 @@ class JsonParser {
     function last_error_msg() {
         if ($this->error_type === 0) {
             return null;
-        } else {
-            $msg = self::$error_messages[$this->error_type] ?? "Unknown error #{$this->error_type}";
-            $msg .= " at character {$this->error_pos}";
-            if (($lm = $this->position_landmark($this->error_pos)) !== null) {
-                $msg .= ", {$lm}";
-            }
-            return $msg;
         }
+        $msg = self::$error_messages[$this->error_type] ?? "Unknown error #{$this->error_type}";
+        $msg .= " at character {$this->error_pos}";
+        if (($lm = $this->position_landmark($this->error_pos)) !== null) {
+            $msg .= ", {$lm}";
+        }
+        return $msg;
     }
 }
 

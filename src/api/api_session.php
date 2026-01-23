@@ -1,6 +1,6 @@
 <?php
 // api_session.php -- HotCRP session API calls
-// Copyright (c) 2008-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2008-2025 Eddie Kohler; see LICENSE.
 
 class Session_API {
     static private function session_result(Contact $user, Qrequest $qreq, $ok) {
@@ -28,6 +28,7 @@ class Session_API {
     static function change_session($qreq, $v) {
         $qreq->open_session();
         $ok = true;
+        $view = [];
         preg_match_all('/(?:\A|\s)(foldpaper|foldpscollab|foldhomeactivity|(?:pl|pf|ul)display|(?:|ul)scoresort)(|\.[^=]*)(=\S*|)(?=\s|\z)/', $v, $ms, PREG_SET_ORDER);
         foreach ($ms as $m) {
             $unfold = intval(substr($m[3], 1) ? : "0") === 0;
@@ -56,7 +57,7 @@ class Session_API {
             } else if ($m[1] === "scoresort" && $m[2] === "" && $m[3] !== "") {
                 $ss = ScoreInfo::parse_score_sort(substr($m[3], 1));
                 if ($ss !== null) {
-                    self::parse_view($qreq, "pl", "sort:[score {$ss}]");
+                    $view["pl"][] = "sort:[score {$ss}]";
                 }
             } else if ($m[1] === "ulscoresort" && $m[2] === "" && $m[3] !== "") {
                 $want = ScoreInfo::parse_score_sort(substr($m[3], 1));
@@ -67,8 +68,7 @@ class Session_API {
                 }
             } else if (($m[1] === "pldisplay" || $m[1] === "pfdisplay")
                        && $m[2] !== "") {
-                $view = ($unfold ? "show:" : "hide:") . substr($m[2], 1);
-                self::parse_view($qreq, substr($m[1], 0, 2), $view);
+                $view[substr($m[1], 0, 2)][] = ($unfold ? "show:" : "hide:") . substr($m[2], 1);
             } else if ($m[1] === "uldisplay"
                        && preg_match('/\A\.[-a-zA-Z0-9_:]+\z/', $m[2])) {
                 self::change_uldisplay($qreq, [substr($m[2], 1) => $unfold]);
@@ -81,6 +81,9 @@ class Session_API {
             } else {
                 $ok = false;
             }
+        }
+        foreach ($view as $report => $viewlist) {
+            self::parse_view($qreq, $report, join(" ", $viewlist));
         }
         return $ok;
     }
@@ -148,5 +151,81 @@ class Session_API {
         } else {
             $qreq->set_csession("uldisplay", " " . join(" ", $curl) . " ");
         }
+    }
+
+    static function whoami(Contact $user, Qrequest $qreq) {
+        $j = [
+            "ok" => true,
+            "email" => $user->email,
+            "given_name" => $user->firstName,
+            "family_name" => $user->lastName,
+            "affiliation" => $user->affiliation
+        ];
+        $roles = UserStatus::unparse_roles_json($user->roles) ?? [];
+        if (!$user->privChair
+            && ($user->is_manager() || $user->is_track_manager())) {
+            $roles[] = "manager";
+        }
+        if ($user->is_author()) {
+            $roles[] = "author";
+        }
+        if ($user->has_review()) {
+            $roles[] = "reviewer";
+        }
+        if (!empty($roles)) {
+            $j["roles"] = $roles;
+        }
+        return $j;
+    }
+
+    static function stashmessages(Contact $user, Qrequest $qreq) {
+        if (isset($qreq->smsg)
+            && (strlen($qreq->smsg) < 10 || strlen($qreq->smsg) > 64 || !ctype_alnum($qreq->smsg))) {
+            return JsonResult::make_parameter_error("smsg");
+        }
+        if (!isset($qreq->message_list)) {
+            return JsonResult::make_missing_error("message_list");
+        }
+        $mlj = json_decode($qreq->message_list);
+        if (!is_array($mlj)) {
+            return JsonResult::make_parameter_error("message_list");
+        }
+        $ml = [];
+        foreach ($mlj as $mx) {
+            $status = $mx->status ?? null;
+            $message = $mx->message ?? "";
+            if (!is_int($status)
+                || $status < MessageSet::MIN_STATUS
+                || $status > MessageSet::MAX_STATUS
+                || !is_string($message)) {
+                continue;
+            }
+            if ($message === "") {
+                $ml[] = new MessageItem($status);
+                continue;
+            }
+            // If nonempty, only formats <0>, <1>, and clean <5> allowed
+            $fmt = Ftext::format($message);
+            if ($fmt === null) {
+                $ml[] = new MessageItem($status, null, "<0>{$message}");
+            } else if ($fmt === 0
+                       || $fmt === 1
+                       || ($fmt === 5 && CleanHtml::basic_clean(substr($message, 3)))) {
+                $ml[] = new MessageItem($status, null, $message);
+            }
+        }
+        if (empty($ml)) {
+            return JsonResult::make_ok()->set("smsg", false);
+        }
+        $smsg = $qreq->smsg ?? base48_encode(random_bytes(6));
+        $qreq->open_session();
+        $smsgs = $qreq->gsession("smsg") ?? [];
+        $smsgs[] = [$smsg, Conf::$now, Ht::feedback_msg_content($ml)];
+        $qreq->set_gsession("smsg", $smsgs);
+        return (new JsonResult(200))->set("smsg", $smsg);
+    }
+
+    static function reauth(Contact $user, Qrequest $qreq) {
+        return $user->authentication_checker($qreq, $qreq->reason ?? "api")->api();
     }
 }

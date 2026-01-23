@@ -12,44 +12,42 @@ function is_number($x) {
 }
 
 /** @param mixed $x
- * @return bool */
+ * @return bool
+ * @deprecated */
 function is_associative_array($x) {
-    // this method is surprisingly fast
-    return is_array($x) && array_values($x) !== $x;
+    return is_array($x) && !array_is_list($x);
 }
 
 /** @param mixed $x
  * @return bool */
 function is_list($x) {
-    return is_array($x) && array_values($x) === $x;
+    return is_array($x) && array_is_list($x);
 }
 
 /** @param mixed $x
  * @return bool */
 function is_int_list($x) {
-    if (is_array($x) && array_values($x) === $x) {
-        foreach ($x as $i) {
-            if (!is_int($i))
-                return false;
-        }
-        return true;
-    } else {
+    if (!is_array($x) || !array_is_list($x)) {
         return false;
     }
+    foreach ($x as $i) {
+        if (!is_int($i))
+            return false;
+    }
+    return true;
 }
 
 /** @param mixed $x
  * @return bool */
 function is_string_list($x) {
-    if (is_array($x) && array_values($x) === $x) {
-        foreach ($x as $i) {
-            if (!is_string($i))
-                return false;
-        }
-        return true;
-    } else {
+    if (!is_array($x) || !array_is_list($x)) {
         return false;
     }
+    foreach ($x as $i) {
+        if (!is_string($i))
+            return false;
+    }
+    return true;
 }
 
 /** @return list */
@@ -78,6 +76,22 @@ function array_sort_unique(&$a) {
 
 
 // string helpers
+
+/** @param string $haystack
+ * @param string $needle
+ * @param int $pos
+ * @return int */
+function strlpos($haystack, $needle, $pos = 0) {
+    $x = strpos($haystack, $needle, $pos);
+    return $x === false ? strlen($haystack) : $x;
+}
+
+if (PHP_VERSION_ID < 80000) {
+    /** @suppress PhanRedefineFunctionInternal */
+    function str_contains($haystack, $needle) {
+        return strpos($haystack, $needle) !== false;
+    }
+}
 
 /** @param string $haystack
  * @param string $needle
@@ -159,43 +173,30 @@ function is_valid_utf8($str) {
     return !!preg_match('//u', $str);
 }
 
-if (function_exists("iconv")) {
-    function windows_1252_to_utf8(string $str) {
-        return iconv("Windows-1252", "UTF-8//IGNORE", $str);
-    }
-    function mac_os_roman_to_utf8(string $str) {
-        return iconv("Mac", "UTF-8//IGNORE", $str);
-    }
-} else if (function_exists("mb_convert_encoding")) {
-    function windows_1252_to_utf8(string $str) {
-        return mb_convert_encoding($str, "UTF-8", "Windows-1252");
-    }
-}
-if (!function_exists("windows_1252_to_utf8")) {
-    function windows_1252_to_utf8(string $str) {
-        return UnicodeHelper::windows_1252_to_utf8($str);
-    }
-}
-if (!function_exists("mac_os_roman_to_utf8")) {
-    function mac_os_roman_to_utf8(string $str) {
-        return UnicodeHelper::mac_os_roman_to_utf8($str);
-    }
-}
-
 /** @param string $str
  * @return string */
 function convert_to_utf8($str) {
-    if (substr($str, 0, 3) === "\xEF\xBB\xBF") {
+    if ($str === "") {
+        return "";
+    } else if (($has_bom = str_starts_with($str, "\xEF\xBB\xBF"))) {
         $str = substr($str, 3);
+    } else if (str_starts_with($str, "\xFE\xFF")) {
+        return UnicodeHelper::to_utf8("UTF-16LE", substr($str, 2));
+    } else if (str_starts_with($str, "\xFF\xFE")) {
+        return UnicodeHelper::to_utf8("UTF-16BE", substr($str, 2));
+    } else {
+        $n = min(strlen($str), 256);
+        if (substr_count($str, "\0", 0, $n) >= min(5, $n / 2)) {
+            $zp = strpos($str, "\0");
+            return UnicodeHelper::to_utf8($zp & 1 ? "UTF-16LE" : "UTF-16BE", $str);
+        }
     }
     if (is_valid_utf8($str)) {
         return $str;
-    }
-    $pfx = substr($str, 0, 5000);
-    if (substr_count($pfx, "\r") > 1.5 * substr_count($pfx, "\n")) {
-        return mac_os_roman_to_utf8($str);
+    } else if ($has_bom) {
+        return UnicodeHelper::utf8_replace_invalid($str);
     } else {
-        return windows_1252_to_utf8($str);
+        return UnicodeHelper::to_utf8("Windows-1252", $str);
     }
 }
 
@@ -369,9 +370,14 @@ function friendly_boolean($x) {
     } else if (is_string($x) || is_int($x)) {
         // 0, false, off, no: false; 1, true, on, yes: true
         return filter_var($x, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
-    } else {
-        return null;
     }
+    return null;
+}
+
+/** @param ?int $x
+ * @return ?bool */
+function nbool($x) {
+    return $x !== null ? $x !== 0 : null;
 }
 
 /** @param ?string $varname
@@ -395,7 +401,8 @@ function ini_get_bytes($varname, $value = null) {
  * @return bool */
 function validate_email($email) {
     // Allow @_.com email addresses.  Simpler than RFC822 validation.
-    return preg_match('/\A[-!#$%&\'*+.\/0-9=?A-Z^_`a-z{|}~]+@(?:_\.|(?:[-0-9A-Za-z]+\.)+)[0-9A-Za-z]+\z/', $email);
+    return $email !== ""
+        && preg_match('/\A[-!#$%&\'*+.\/0-9=?A-Z^_`a-z{|}~]+@(?:_\.|(?:[-0-9A-Za-z]+\.)+)[0-9A-Za-z]+\z/', $email);
 }
 
 /** @param string $s
@@ -405,9 +412,8 @@ function validate_email_at($s, $pos) {
     // Allow @_.com email addresses.  Simpler than RFC822 validation.
     if (preg_match('/\G[-!#$%&\'*+.\/0-9=?A-Z^_`a-z{|}~]+@(?:_\.|(?:[-0-9A-Za-z]+\.)+)[0-9A-Za-z]+(?=\z|[-,.;:()\[\]{}\s]|–|—)/', $s, $m, 0, $pos)) {
         return $m[0];
-    } else {
-        return null;
     }
+    return null;
 }
 
 /** @param string $word
@@ -570,16 +576,15 @@ function str_list_lower_bound($needle, $haystack) {
 
 /** @param mixed $a */
 function array_to_object_recursive($a) {
-    if (is_array($a) && is_associative_array($a)) {
-        $o = (object) [];
-        foreach ($a as $k => $v) {
-            if ($k !== "")
-                $o->$k = array_to_object_recursive($v);
-        }
-        return $o;
-    } else {
+    if (!is_array($a) || array_is_list($a)) {
         return $a;
     }
+    $o = (object) [];
+    foreach ($a as $k => $v) {
+        if ($k !== "")
+            $o->$k = array_to_object_recursive($v);
+    }
+    return $o;
 }
 
 function object_replace($a, $b) {
@@ -605,7 +610,7 @@ function object_replace_recursive($a, $b) {
         }
     }
     foreach ($ba as $k => $v) {
-        if (is_object($v) || is_associative_array($v)) {
+        if (is_object($v) || (is_array($v) && !array_is_list($v))) {
             if (!is_object($a->$k ?? null)) {
                 $a->$k = (object) [];
             }
@@ -690,17 +695,6 @@ function debug_string_backtrace($ex = null, $limit = 32) {
 }
 
 
-// zlib helper
-
-if (!function_exists("zlib_get_coding_type")) {
-    /** @return bool
-     * @phan-suppress-next-line PhanRedefineFunctionInternal */
-    function zlib_get_coding_type() {
-        return false;
-    }
-}
-
-
 // pcntl helpers
 
 if (function_exists("pcntl_wifexited") && pcntl_wifexited(0) !== null) {
@@ -708,14 +702,14 @@ if (function_exists("pcntl_wifexited") && pcntl_wifexited(0) !== null) {
      * @param int $exitstatus
      * @return bool */
     function pcntl_wifexitedwith($status, $exitstatus = 0) {
-        return pcntl_wifexited($status) && pcntl_wexitstatus($status) == $exitstatus;
+        return pcntl_wifexited($status) && pcntl_wexitstatus($status) === $exitstatus;
     }
 } else {
     /** @param int $status
      * @param int $exitstatus
      * @return bool */
     function pcntl_wifexitedwith($status, $exitstatus = 0) {
-        return ($status & 0xff7f) == ($exitstatus << 8);
+        return ($status & 0xff7f) === ($exitstatus << 8);
     }
 }
 
@@ -729,20 +723,23 @@ function rm_rf_tempdir($tempdir) {
 }
 
 /** @param int $mode
- * @return string|false */
+ * @return ?string */
 function tempdir($mode = 0700) {
-    $dir = sys_get_temp_dir() ? : "/";
-    while (substr($dir, -1) === "/") {
+    $dir = sys_get_temp_dir();
+    while (str_ends_with($dir, "/")) {
         $dir = substr($dir, 0, -1);
     }
+    if ($dir === "" || !is_readable($dir)) {
+        $dir = is_readable("/var/tmp") ? "/var/tmp" : "/tmp";
+    }
     for ($i = 0; $i !== 100; $i++) {
-        $path = sprintf("%s/hotcrptmp%07d", $dir, mt_rand(0, 9999999));
-        if (mkdir($path, $mode)) {
+        $path = sprintf("%s/hotcrptmp%09d", $dir, mt_rand(0, 999999999));
+        if (@mkdir($path, $mode)) {
             register_shutdown_function("rm_rf_tempdir", $path);
-            return $path;
+            return $path . "/";
         }
     }
-    return false;
+    return null;
 }
 
 

@@ -1,18 +1,8 @@
 <?php
 // api_user.php -- HotCRP user-related API calls
-// Copyright (c) 2008-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2008-2025 Eddie Kohler; see LICENSE.
 
 class User_API {
-    static function whoami(Contact $user, Qrequest $qreq) {
-        return [
-            "ok" => true,
-            "email" => $user->email,
-            "given_name" => $user->firstName,
-            "family_name" => $user->lastName,
-            "affiliation" => $user->affiliation
-        ];
-    }
-
     /** @return JsonResult */
     static function user(Contact $user, Qrequest $qreq, ?PaperInfo $prow) {
         if (!$user->can_lookup_user()) {
@@ -70,13 +60,13 @@ class User_API {
         }
 
         if (!$found) {
-            return new JsonResult(["ok" => true, "found" => false]);
+            return new JsonResult(["ok" => true, "match" => false]);
         }
 
         $ok = strcasecmp($found->email, $email) === 0;
         $rj = [
-            "ok" => $ok,
-            "found" => true,
+            "ok" => true,
+            "match" => $ok,
             "email" => $found->email,
             "given_name" => $found->firstName,
             "family_name" => $found->lastName,
@@ -90,9 +80,9 @@ class User_API {
         }
         if ($prow
             && $user->allow_view_authors($prow)
-            && $qreq->potential_conflict
-            && ($potconf = $prow->potential_conflict_html($found))) {
-            $rj["potential_conflict"] = PaperInfo::potential_conflict_tooltip_html($potconf);
+            && friendly_boolean($qreq->potential_conflict)
+            && ($potconflist = $prow->potential_conflict_list($found))) {
+            $rj["potential_conflict"] = $potconflist->tooltip_html($prow);
         }
         return new JsonResult($rj);
     }
@@ -116,9 +106,8 @@ class User_API {
             return ["ok" => true];
         } else if ($qreq->clickthrough_accept) {
             return JsonResult::make_error(400, "<0>Parameter error");
-        } else {
-            return ["ok" => false];
         }
+        return ["ok" => false];
     }
 
     /** @param bool $disabled
@@ -130,7 +119,6 @@ class User_API {
             return JsonResult::make_error(400, "<0>You cannot disable your own account");
         }
         $ustatus = new UserStatus($viewer);
-        $ustatus->set_user($user);
         if (!$ustatus->save_user((object) ["disabled" => $disabled], $user)) {
             return new JsonResult(["ok" => false]);
         }
@@ -142,7 +130,7 @@ class User_API {
         if (!$viewer->privChair) {
             return JsonResult::make_permission_error();
         }
-        $user->activate_placeholder(false);
+        $user->activate_placeholder(false, $viewer);
         $prep = $user->prepare_mail("@accountinfo");
         if (!$prep->send()) {
             return new JsonResult(["ok" => false, "message_list" => $prep->message_list()]);

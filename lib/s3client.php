@@ -120,9 +120,8 @@ class S3Client {
         if (!$this->reset_key) {
             $this->s3_scope = $this->s3_signing_key = "";
             return null;
-        } else {
-            return 403;
         }
+        return 403;
     }
 
     /** @param 'GET'|'POST'|'HEAD'|'PUT'|'DELETE' $method
@@ -213,9 +212,9 @@ class S3Client {
         foreach ($chdr as $k => $v) {
             $hdrarr[] = "{$k}: {$v}";
         }
-        foreach (self::$content_headers as $k => $v) {
-            if ($v && isset($hdr[$k])) {
-                $hdrarr[] = "{$v}: {$hdr[$k]}";
+        foreach (self::$content_headers as $k => $hk) {
+            if ($hk && isset($hdr[$k])) {
+                $hdrarr[] = "{$hk}: {$hdr[$k]}";
             }
         }
         $hdrarr[] = "Authorization: AWS4-HMAC-SHA256 Credential="
@@ -231,7 +230,7 @@ class S3Client {
     function signed_headers($skey, $method, $args) {
         $sep = str_starts_with($skey, "/") ? "" : "/";
         $url = "https://{$this->s3_bucket}.s3.{$this->s3_region}.amazonaws.com{$sep}{$skey}";
-        $hdr = ["Date" => gmdate("D, d M Y H:i:s", $this->fixed_time ?? time()) . " GMT"];
+        $hdr = ["Date" => Navigation::http_date($this->fixed_time ?? time())];
         foreach ($args as $key => $value) {
             if ($key === "user_data") {
                 foreach ($value as $xkey => $xvalue) {
@@ -271,16 +270,6 @@ class S3Client {
         return $this->start("/", "DELETE", []);
     }
 
-    /** @return int */
-    static function finish_head_size(S3Result $s3r) {
-        if ($s3r->status === 200
-            && ($fs = $s3r->response_header("content-length")) !== null) {
-            return intval($fs);
-        } else {
-            return -1;
-        }
-    }
-
     /** @return bool */
     static function verbose_success_finisher(S3Result $s3r) {
         error_log($s3r->status . " " . json_encode($s3r->response_headers) . "\n" . $s3r->response_body());
@@ -291,14 +280,17 @@ class S3Client {
      * @param array<string,mixed> $user_data
      * @return array<string,mixed> */
     static function assign_user_data($args, $user_data) {
-        foreach (self::$content_headers as $k => $v) {
-            if (isset($user_data[$k])) {
-                $args[$k] = $user_data[$k];
-                unset($user_data[$k]);
+        $new_user_data = [];
+        foreach ($user_data as $k => $v) {
+            if (isset(self::$content_headers[$k])
+                || str_starts_with($k, "x-amz-")) {
+                $args[$k] = $v;
+            } else {
+                $new_user_data[$k] = $v;
             }
         }
-        if (!empty($user_data)) {
-            $args["user_data"] = $user_data;
+        if (!empty($new_user_data)) {
+            $args["user_data"] = $new_user_data;
         }
         return $args;
     }
@@ -315,19 +307,13 @@ class S3Client {
         return $this->start($skey, "HEAD", [], "S3Client::finish_head_size");
     }
 
-    /** @return ?string */
-    static function finish_get(S3Result $s3r) {
-        if ($s3r->status === 200) {
-            return $s3r->response_body();
-        } else {
-            if ($s3r->status !== 404 && $s3r->status !== 500) {
-                trigger_error("S3 warning: GET {$s3r->skey}: status {$s3r->status}", E_USER_WARNING);
-                if (self::$verbose) {
-                    trigger_error("S3 response: " . var_export($s3r->response_headers, true), E_USER_WARNING);
-                }
-            }
-            return null;
+    /** @return int */
+    static function finish_head_size(S3Result $s3r) {
+        if ($s3r->status === 200
+            && ($fs = $s3r->response_header("content-length")) !== null) {
+            return intval($fs);
         }
+        return -1;
     }
 
     /** @param string $skey
@@ -340,6 +326,51 @@ class S3Client {
      * @return CurlS3Result<?string> */
     function start_curl_get($skey) {
         return new CurlS3Result($this, $skey, "GET", [], "S3Client::finish_get");
+    }
+
+    /** @return ?string */
+    static function finish_get(S3Result $s3r) {
+        if ($s3r->status === 200) {
+            return $s3r->response_body();
+        }
+        if ($s3r->status !== 404 && $s3r->status !== 500) {
+            trigger_error("S3 warning: GET {$s3r->skey}: status {$s3r->status}", E_USER_WARNING);
+            if (self::$verbose) {
+                trigger_error("S3 response: " . var_export($s3r->response_headers, true), E_USER_WARNING);
+            }
+        }
+        return null;
+    }
+
+    /** @param string $skey
+     * @return S3Result<?array<string,string>> */
+    function start_get_tagging($skey) {
+        return $this->start($skey . "?tagging", "GET", [], "S3Client::finish_get_tagging");
+    }
+
+    /** @return ?array<string,string> */
+    static function finish_get_tagging(S3Result $s3r) {
+        if ($s3r->status === 200) {
+            try {
+                $xml = new SimpleXMLElement($s3r->response_body());
+                if ($xml->getName() !== "Tagging"
+                    || !isset($xml->TagSet)) {
+                    return null;
+                }
+                $tags = [];
+                foreach ($xml->TagSet->children() as $te) {
+                    if ($te->getName() !== "Tag"
+                        || !isset($te->Key)
+                        || !isset($te->Value)) {
+                        return null;
+                    }
+                    $tags[(string) $te->Key] = (string) $te->Value;
+                }
+                return $tags;
+            } catch (Exception $ex) {
+            }
+        }
+        return null;
     }
 
     /** @param string $skey
@@ -405,9 +436,8 @@ class S3Client {
         if ($s3r->status === 200
             && preg_match('/<UploadId>(.*?)<\/UploadId>/', $s3r->response_body(), $m)) {
             return $m[1];
-        } else {
-            return false;
         }
+        return false;
     }
 
     /** @param string $skey
@@ -485,6 +515,12 @@ class S3Client {
     }
 
     /** @param string $skey
+     * @return array<string,string> */
+    function get_tagging($skey) {
+        return $this->start_get_tagging($skey)->finish();
+    }
+
+    /** @param string $skey
      * @param string $content
      * @param string $content_type
      * @param array<string,string> $user_data
@@ -545,7 +581,7 @@ class S3Client {
      * @param array{start-after?:int|string,max-keys?:int,continuation-token?:void} $args
      * @return Generator<SimpleXMLElement> */
     function ls_all($prefix, $args = []) {
-        $max_keys = $args["max_keys"] ?? -1;
+        $max_keys = $args["max-keys"] ?? -1;
         $xml = null;
         $xmlpos = 0;
         while ($max_keys !== 0) {
@@ -555,10 +591,10 @@ class S3Client {
                 $max_keys = max($max_keys - 1, -1);
                 continue;
             }
-            if ($xml && !isset($args["continuation_token"])) {
+            if ($xml && !isset($args["continuation-token"])) {
                 break;
             }
-            $args["max_keys"] = $max_keys < 0 ? 600 : min(600, $max_keys);
+            $args["max-keys"] = $max_keys < 0 ? 600 : min(600, $max_keys);
             $content = $this->ls($prefix, $args);
             $xml = new SimpleXMLElement($content);
             $xmlpos = 0;
@@ -567,9 +603,9 @@ class S3Client {
                 throw new Exception("Bad response from S3 List Objects");
             }
             if (isset($xml->IsTruncated) && (string) $xml->IsTruncated === "true") {
-                $args["continuation_token"] = (string) $xml->NextContinuationToken;
+                $args["continuation-token"] = (string) $xml->NextContinuationToken;
             } else {
-                unset($args["continuation_token"]);
+                unset($args["continuation-token"]);
             }
         }
     }

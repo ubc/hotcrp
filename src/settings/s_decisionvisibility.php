@@ -1,6 +1,6 @@
 <?php
 // settings/s_decisionvisibility.php -- HotCRP settings > decisions page
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class DecisionVisibility_SettingParser extends SettingParser {
     function set_oldv(Si $si, SettingValues $sv) {
@@ -24,14 +24,18 @@ class DecisionVisibility_SettingParser extends SettingParser {
                 $sv->save("decision_visibility_reviewer", $v);
             }
             return true;
-        } else if ($si->name === "decision_visibility_author_condition"
-                   && $sv->has_req($si->name)) {
-            $q = $sv->reqstr($si->name);
-            ReviewVisibility_SettingParser::validate_condition($sv, $si->name, $q, 2);
-            $sv->save($si, $q);
+        }
+        if ($si->name === "decision_visibility_author_condition"
+            && $sv->has_req($si->name)) {
+            $sv->save($si, $sv->reqstr($si->name));
+            $sv->request_validate($si);
             return true;
         }
         return false;
+    }
+
+    function validate(Si $si, SettingValues $sv) {
+        ReviewVisibility_SettingParser::validate_condition($sv, $si->name);
     }
 
 
@@ -40,20 +44,21 @@ class DecisionVisibility_SettingParser extends SettingParser {
         $dva = '<div class="d-inline-flex flex-wrap">'
             . Ht::label("Yes, for submissions matching this search:", "decision_visibility_author_condition", ["class" => "mr-2 uic js-settings-radioitem-click"])
             . '<div>' . $sv->feedback_at("decision_visibility_author_condition")
-            . $sv->entry("decision_visibility_author_condition", ["class" => "uii js-settings-radioitem-click papersearch need-suggest"])
+            . $sv->entry("decision_visibility_author_condition", [
+                "class" => "uii js-settings-radioitem-click papersearch need-suggest",
+                "spellcheck" => false, "autocomplete" => "off"
+            ])
             . '</div></div>';
         $sv->print_radio_table("decision_visibility_author", [
                 0 => "No",
                 2 => "Yes",
                 1 => $dva
             ], 'Can <strong>authors see decisions</strong> (accept/reject) for their submissions?',
-            ["fold_values" => [2, 1],
-             "item_class" => "uich js-foldup js-settings-seedec"]);
+            ["item_class" => "uich js-settings-seedec"]);
     }
 
     static function print_reviewer(SettingValues $sv) {
         $extrev_view = $sv->vstr("review_visibility_external");
-        $Rtext = $extrev_view != Conf::VIEWREV_NEVER ? "Reviewers" : "PC reviewers";
         $rtext = $extrev_view != Conf::VIEWREV_NEVER ? "reviewers" : "PC reviewers";
         $accept_auview = $sv->vstr("accepted_author_visibility")
             && $sv->vstr("author_visibility") != Conf::BLIND_NEVER;
@@ -64,7 +69,7 @@ class DecisionVisibility_SettingParser extends SettingParser {
                 Conf::SEEDEC_REV => "Yes",
                 Conf::SEEDEC_NCREV => "Yes, unless they have a conflict"
             ], "Can <strong>{$rtext}</strong> see decisions as soon as they are made?",
-            ["group_class" => $accept_auview ? "fold2c" : "fold2o"]);
+            ["item_class" => "uich js-settings-seedec"]);
     }
 
     static function crosscheck(SettingValues $sv) {
@@ -87,7 +92,7 @@ class DecisionVisibility_SettingParser extends SettingParser {
             && $sv->oldv("decision_visibility_author") == 1
             && $sv->oldv("decision_visibility_author_condition")
             && !$sv->has_error_at("decision_visibility_author_condition")) {
-            ReviewVisibility_SettingParser::validate_condition($sv, "decision_visibility_author_condition", $sv->oldv("decision_visibility_author_condition"), 1);
+            ReviewVisibility_SettingParser::validate_condition($sv, "decision_visibility_author_condition");
         }
 
         if ($sv->has_interest("review_visibility_author")

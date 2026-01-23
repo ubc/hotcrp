@@ -23,8 +23,6 @@ class Tag_PaperColumn extends PaperColumn {
     private $sortmap;
     /** @var ScoreInfo */
     private $statistics;
-    /** @var ?ScoreInfo */
-    private $override_statistics;
     /** @var ?string */
     private $real_format;
     /** @var bool */
@@ -35,8 +33,11 @@ class Tag_PaperColumn extends PaperColumn {
         $this->dtag = $cj->tag;
         $this->is_value = $cj->tagvalue ?? null;
     }
+    static function basic_view_option_schema() {
+        return ["edit", "format$^"];
+    }
     function view_option_schema() {
-        return ["edit", "format!"];
+        return self::basic_view_option_schema();
     }
     function etag() {
         return $this->etag;
@@ -55,9 +56,7 @@ class Tag_PaperColumn extends PaperColumn {
             $this->real_format = "%{$m[1]}";
         }
         $this->ctag = " {$this->etag}#";
-        if ($visible) {
-            $pl->qopts["tags"] = 1;
-        }
+        $pl->qopts["tags"] = 1;
         $this->ti = $pl->conf->tags()->ensure($this->dtag);
         if ($this->as_row
             && $this->ti->has_order_anno()) {
@@ -80,9 +79,9 @@ class Tag_PaperColumn extends PaperColumn {
             if ($pl->conf->tags()->is_automatic($this->etag)) {
                 if ($pl->conf->tags()->is_votish($this->etag)
                     && $pl->user->is_pc_member()) {
-                    $pl->column_error(new MessageItem(null, "<0>This tag is set automatically based on per-user votes. Did you mean ‘edit:#~{$this->dtag}’?", MessageSet::INFORM));
+                    $pl->column_error(MessageItem::inform("<0>This tag is set automatically based on per-user votes. Did you mean ‘edit:#~{$this->dtag}’?"));
                 } else {
-                    $pl->column_error(new MessageItem(null, "<0>This tag is set automatically.", MessageSet::INFORM));
+                    $pl->column_error(MessageItem::inform("<0>This tag is set automatically"));
                 }
             }
             return;
@@ -95,7 +94,7 @@ class Tag_PaperColumn extends PaperColumn {
             }
             $this->is_value = !$dt || !$dt->is(TagInfo::TF_APPROVAL);
         }
-        if (($visible & PaperColumn::PREP_VISIBLE) !== 0
+        if (($visible & FieldRender::CFLIST) !== 0
             && $pl->table_id()
             && !$pl->viewing("facets")) {
             $pl->has_editable_tags = true;
@@ -105,9 +104,6 @@ class Tag_PaperColumn extends PaperColumn {
                 $this->editsort = true;
             }
         }
-    }
-    function completion_name() {
-        return "#{$this->dtag}";
     }
     function sort_name() {
         return "#{$this->dtag}";
@@ -130,8 +126,8 @@ class Tag_PaperColumn extends PaperColumn {
         return $this->sortmap[$a->paperXid] <=> $this->sortmap[$b->paperXid];
     }
     function reset(PaperList $pl) {
-        $this->statistics = new ScoreInfo;
-        $this->override_statistics = null;
+        $this->statistics = (new ScoreInfo)
+            ->set_value_format(new Numeric_ValueFormat($this->real_format));
     }
     function header(PaperList $pl, $is_text) {
         if (($twiddle = strpos($this->dtag, "~")) > 0) {
@@ -157,15 +153,7 @@ class Tag_PaperColumn extends PaperColumn {
         if ($sv !== null && $sv !== true) {
             $this->complex = true;
         }
-        if ($pl->overriding !== 0 && !$this->override_statistics) {
-            $this->override_statistics = clone $this->statistics;
-        }
-        if ($pl->overriding <= 1) {
-            $this->statistics->add($sv);
-        }
-        if ($pl->overriding !== 1 && $this->override_statistics) {
-            $this->override_statistics->add($sv);
-        }
+        $this->statistics->add_overriding($sv, $pl->overriding);
 
         if ($this->editable
             && ($t = $this->edit_content($pl, $row, $v))) {
@@ -219,34 +207,9 @@ class Tag_PaperColumn extends PaperColumn {
     function has_statistics() {
         return !$this->editable;
     }
-    private function unparse_statistic($statistics, $stat) {
-        if (!$this->complex && !$this->is_value && $stat !== ScoreInfo::SUM && $stat !== ScoreInfo::COUNT) {
-            return "";
-        }
-        $x = $statistics->statistic($stat);
-        if ($x === null) {
-            return "";
-        } else if (($stat === ScoreInfo::MEAN || $stat === ScoreInfo::MEDIAN)
-                   && $this->display === 2) {
-            /** @phan-suppress-next-line PhanTypeArraySuspiciousNullable */
-            return Tagger::unparse_emoji_html($this->ti->emoji[0], $x);
-        } else if ($stat === ScoreInfo::COUNT) {
-            return (string) $x;
-        } else if ($this->real_format) {
-            return sprintf($this->real_format, $x);
-        } else if (is_int($x) || round($x) === $x) {
-            return (string) $x;
-        } else {
-            return sprintf("%.2f", $x);
-        }
-    }
-    function statistic_html(PaperList $pl, $stat) {
-        $t = $this->unparse_statistic($this->statistics, $stat);
-        if ($this->override_statistics) {
-            $tt = $this->unparse_statistic($this->override_statistics, $stat);
-            $t = $pl->wrap_conflict($t, $tt);
-        }
-        return $t;
+    function statistics() {
+        // XXX want Emoji_ValueFormat
+        return $this->statistics;
     }
 
     static function expand($name, XtParams $xtp, $xfj, $m) {
@@ -271,11 +234,13 @@ class Tag_PaperColumn extends PaperColumn {
         return $rs;
     }
 
-    static function completions(Contact $user, $xfj) {
-        if ($user->can_view_tags(null)) {
-            return ["#<tag>"];
-        } else {
+    static function examples(Contact $user, $xfj) {
+        if (!$user->can_view_tags(null)) {
             return [];
         }
+        return [
+            new SearchExample("#{tag}", "<0>Tag value",
+                new FmtArg("view_options", Tag_PaperColumn::basic_view_option_schema()))
+        ];
     }
 }

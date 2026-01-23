@@ -9,12 +9,16 @@ class BulkAssign_Page {
     public $user;
     /** @var Qrequest */
     public $qreq;
+    /** @var bool */
+    private $saving;
     /** @var AssignmentSet */
     private $aset;
     /** @var bool */
-    private $csv_preparing = false;
+    private $progress_open = false;
     /** @var float */
-    private $csv_started = 0.0;
+    private $start_time = 0.0;
+    /** @var ?int */
+    private $progress_max;
 
     function __construct(Contact $user, Qrequest $qreq) {
         $this->conf = $user->conf;
@@ -37,39 +41,96 @@ class BulkAssign_Page {
         return $defaults;
     }
 
-    function keep_browser_alive(AssignmentSet $aset, ?CsvRow $line = null) {
+    private function generic_progress($phase, $progv, $progmax, $landmark) {
         $time = microtime(true);
-        if (!$this->csv_started) {
-            $this->csv_started = $time;
-        } else if ($time - $this->csv_started > 1) {
-            if (!$this->csv_preparing) {
-                echo '<div id="foldmail" class="foldc fold2o">',
-                    '<div class="fn fx2 msg msg-warning">',
-                      '<p class="feedback is-warning">Preparing assignments</p>',
-                      '<p class="feedback is-inform" id="mailcount"></p>',
-                    '</div></div>';
-                $this->csv_preparing = true;
+        if (!$this->start_time) {
+            $this->start_time = $time;
+        }
+        if ($time - $this->start_time <= 1) {
+            return;
+        }
+        if (!$this->progress_open) {
+            echo '<div id="foldprogress" class="foldc fold2o">',
+                '<div class="fn fx2 msg msg-warning minw-480">',
+                  '<p class="feedback is-warning">',
+                  $this->saving ? 'Applying assignments' : 'Preparing draft assignments',
+                  '</p>',
+                  '<p class="feedback is-inform" id="progress-info"></p>',
+                  '<progress id="progress-meter"></progress>',
+                '</div></div>';
+            $this->progress_open = true;
+        }
+        if ($progmax === null) {
+            $progpct = null;
+        } else if ($progv >= $progmax) {
+            $progpct = 100;
+        } else {
+            $progpct = 100 * $progv / $progmax;
+        }
+        if ($phase === AssignmentSet::PROGPHASE_PARSE) {
+            $text = "<span class=\"lineno\">" . htmlspecialchars($landmark) . ":</span> Parsing assignment";
+            if ($progpct !== null) {
+                $text .= sprintf(" (%.0f%% done)", $progpct);
             }
-            $text = '<span class="lineno">' . htmlspecialchars($aset->landmark()) . ':</span>';
-            if (!$line) {
-                $text .= " processing";
+        } else if ($phase === AssignmentSet::PROGPHASE_REALIZE) {
+            $text = sprintf("Computing assignments (%.0f%% done)", $progpct);
+        } else if ($phase === AssignmentSet::PROGPHASE_UNPARSE) {
+            $text = "Rendering assignments";
+        } else if ($phase === AssignmentSet::PROGPHASE_SAVE) {
+            $text = sprintf("Saving assignments (%.0f%% done)", $progpct);
+        } else {
+            $text = "Preparing assignment";
+            if ($progpct !== null) {
+                $text .= sprintf(" (%.0f%% done)", $progpct);
+            } else if ($landmark) {
+                $text .= " at <span class=\"lineno\">" . htmlspecialchars($landmark) . "</span>";
+            }
+        }
+        $js = "";
+        if ($text !== null) {
+            $js .= "document.getElementById('progress-info').innerHTML=" . json_encode_browser($text) . ";";
+        }
+        if ($progmax !== $this->progress_max) {
+            if ($progmax === null) {
+                $js .= "document.getElementById('progress-meter').removeAttribute('value');";
             } else {
-                $text .= " <code>" . htmlspecialchars(join(",", $line->as_list())) . "</code>";
+                $js .= "document.getElementById('progress-meter').max=" . json_encode_browser($progmax) . ";";
             }
-            echo Ht::unstash_script("document.getElementById('mailcount').innerHTML=" . json_encode_browser($text) . ";");
-            flush();
-            while (@ob_end_flush()) {
-            }
+            $this->progress_max = $progmax;
+        }
+        if ($progmax !== null) {
+            $js .= "document.getElementById('progress-meter').value=" . json_encode_browser($progv) . ";";
+        }
+        echo Ht::unstash_script($js ? : ";");
+        flush();
+        while (@ob_end_flush()) {
         }
     }
 
-    function finish_browser_alive() {
-        if ($this->csv_preparing) {
-            echo Ht::unstash_script("hotcrp.fold('mail',null)");
+    function aset_progress(AssignmentSet $aset) {
+        $this->generic_progress($aset->progress_phase(),
+            $aset->progress_value(), $aset->progress_max(),
+            $aset->landmark());
+    }
+
+    function finish_progress() {
+        if ($this->progress_open) {
+            echo Ht::unstash_script("hotcrp.fold('progress',null)");
         }
     }
 
     function complete_assignment($callback) {
+        if (isset($this->qreq->data)) {
+            $content = $this->qreq->data;
+        } else if (isset($this->qreq->data_source)
+                   && ($ds = $this->conf->docstore())) {
+            $content = $ds->open_tempfile($this->qreq->data_source, "bulkassign-%s.csv");
+        } else {
+            $content = null;
+        }
+        if (!$content) {
+            return false;
+        }
         $ssel = SearchSelection::make($this->qreq, $this->user);
         $aset = new AssignmentSet($this->user);
         $aset->set_override_conflicts(true);
@@ -80,8 +141,11 @@ class BulkAssign_Page {
             $aset->add_progress_function($callback);
         }
         $aset->enable_papers($ssel->selection());
-        $aset->parse($this->qreq->data, $this->qreq->filename, $this->assignment_defaults());
-        return $aset->execute(true);
+        $this->saving = true;
+        $aset->parse($content, $this->qreq->filename, $this->assignment_defaults());
+        $aset->execute();
+        $aset->feedback_msg(AssignmentSet::FEEDBACK_ASSIGN);
+        return !$aset->has_error();
     }
 
     /** @return bool */
@@ -90,17 +154,16 @@ class BulkAssign_Page {
         while (@ob_end_flush()) {
         }
 
-        if ($this->qreq->has_file("file")) {
-            $text = $this->qreq->file_content("file");
-            $filename = $this->qreq->file_filename("file");
+        if (($qf = $this->qreq->file("file"))) {
+            $qf = $qf->content_or_docstore("bulkassign-%s.csv", $this->conf);
         } else {
-            $text = $this->qreq->data;
-            $filename = "";
+            $qf = QrequestFile::make_string($this->qreq->data, "");
         }
-        if ($text === false) {
-            $this->conf->error_msg("<0>Internal error: could not read uploaded file");
+        if (!$qf) {
+            $this->conf->error_msg("<0>Uploaded file too big to process");
             return false;
         }
+        $qf->convert_to_utf8();
 
         $aset = new AssignmentSet($this->user);
         $aset->set_override_conflicts(true);
@@ -108,47 +171,58 @@ class BulkAssign_Page {
             $aset->set_search_type($this->qreq->t);
         }
         $aset->set_csv_context(true);
-        $aset->add_progress_function([$this, "keep_browser_alive"]);
+        $aset->add_progress_function([$this, "aset_progress"]);
         $defaults = $this->assignment_defaults();
-        $text = convert_to_utf8($text);
-        $aset->parse($text, $filename, $defaults);
-        $this->finish_browser_alive();
+        $this->saving = false;
+        $aset->parse($qf->stream ?? $qf->content, $qf->name, $defaults);
 
         if ($aset->has_error() || $aset->is_empty()) {
-            $aset->report_errors();
+            $this->finish_progress();
+            $aset->feedback_msg(AssignmentSet::FEEDBACK_ASSIGN);
             return false;
         }
 
         $atype = $aset->type_description();
         echo '<h3>Proposed ', $atype ? $atype . " " : "", 'assignment</h3>';
         $this->conf->feedback_msg(
-            new MessageItem(null, "Select “Apply changes” to make the checked assignments.", MessageSet::MARKED_NOTE)
+            MessageItem::marked_note("<0>Select “Apply changes” to make the checked assignments.")
         );
 
         $atypes = $aset->assigned_types();
         $apids = $aset->numjoin_assigned_pids(" ");
+        if (strlen($apids) > 200) {
+            $apids = SessionList::encode_ids($aset->assigned_pids());
+        }
+        if (strlen($apids) > 400) {
+            $apids = "[many]";
+        }
         echo Ht::form($this->conf->hoturl("=bulkassign", [
                 "saveassignment" => 1,
                 "assigntypes" => join(" ", $atypes),
-                "assignpids" => $apids
-            ])),
+                "assignpids" => $apids,
+                "XDEBUG_TRIGGER" => $this->qreq->XDEBUG_TRIGGER
+            ]), ["class" => "ui-submit js-selector-summary"]),
             Ht::hidden("default_action", $defaults["action"] ?? "guess"),
-            Ht::hidden("rev_round", $defaults["round"]),
-            Ht::hidden("data", $text),
-            Ht::hidden("filename", $filename),
+            Ht::hidden("rev_round", $defaults["round"]);
+        if (is_string($qf->content)) {
+            echo Ht::hidden("data", $qf->content);
+        } else {
+            echo Ht::hidden("data_source", $qf->docstore_tmp_name);
+        }
+        echo Ht::hidden("filename", $qf->name),
             Ht::hidden("assignment_size_estimate", max($aset->assignment_count(), $aset->request_count())),
             Ht::hidden("requestreview_notify", $this->qreq->requestreview_notify),
             Ht::hidden("requestreview_subject", $this->qreq->requestreview_subject),
             Ht::hidden("requestreview_body", $this->qreq->requestreview_body);
 
-        $aset->report_errors();
+        $aset->feedback_msg(AssignmentSet::FEEDBACK_ASSIGN);
         $aset->print_unparse_display();
+        $this->finish_progress();
 
         echo Ht::actions([
             Ht::submit("Apply changes", ["class" => "btn-success"]),
             Ht::submit("cancel", "Cancel")
-        ], ["class" => "aab aabig"]),
-            "</form>\n";
+        ], ["class" => "aab aabig"]), "</form>\n";
         $this->qreq->print_footer();
         return true;
     }
@@ -228,10 +302,10 @@ secondary review for submission #2:</p>
         }
         if (isset($qreq->saveassignment)
             && $qreq->valid_post()
-            && isset($qreq->data)
-            && $qreq->assignment_size_estimate >= 1000) {
-            $this->complete_assignment([$this, "keep_browser_alive"]);
-            $this->finish_browser_alive();
+            && ((isset($qreq->data) && $qreq->assignment_size_estimate >= 1000)
+                || isset($qreq->data_source))) {
+            $this->complete_assignment([$this, "aset_progress"]);
+            $this->finish_progress();
         }
 
 
@@ -246,7 +320,7 @@ Assignment methods:
 </ul>
 <hr>
 <p>Types of PC review:</p>
-<dl><dt>', review_type_icon(REVIEW_PRIMARY), ' Primary</dt><dd>Mandatory review</dd>
+<dl class="bsp"><dt>', review_type_icon(REVIEW_PRIMARY), ' Primary</dt><dd>Mandatory review</dd>
   <dt>', review_type_icon(REVIEW_SECONDARY), ' Secondary</dt><dd>May be delegated to external reviewers</dd>
   <dt>', review_type_icon(REVIEW_PC), ' Optional</dt><dd>May be declined</dd>
   <dt>', review_type_icon(REVIEW_META), ' Metareview</dt><dd>Can view all other reviews before completing their own</dd></dl>
@@ -254,7 +328,10 @@ Assignment methods:
 
 
         // Form
-        echo Ht::form($conf->hoturl("=bulkassign", "upload=1"));
+        echo Ht::form($conf->hoturl("=bulkassign", [
+            "upload" => 1,
+            "XDEBUG_TRIGGER" => $qreq->XDEBUG_TRIGGER
+        ]));
 
         // Upload
         echo '<div class="f-i mt-3">',
@@ -267,7 +344,7 @@ Assignment methods:
 
         $limits = PaperSearch::viewable_limits($this->user);
         echo '<p class="mt-5 mb-2"><label>Application collection: ',
-            PaperSearch::limit_selector($this->conf, $limits, in_array("all", $limits) ? "all" : PaperSearch::default_limit($this->user, $limits), ["class" => "ml-1"]),
+            PaperSearch::limit_selector($this->conf, $limits, in_array("all", $limits, true) ? "all" : PaperSearch::default_limit($this->user, $limits), ["class" => "ml-1"]),
             '</label></p>';
 
         echo '<div id="foldoptions" class="mb-5 foldc fold2c fold3c">',
@@ -322,7 +399,7 @@ Assignment methods:
         echo Ht::submit("Prepare assignments", ["class" => "btn-primary"]),
             " &nbsp; <span class=\"hint\">You’ll be able to check the assignments before they are saved.</span>\n";
 
-        echo '<div class="mt-4"><a href="', $conf->hoturl("=search", ["fn" => "get", "getfn" => "pcassignments", "t" => "manager", "q" => "", "p" => "all"]), '">Download current PC review assignments</a></div>';
+        echo '<div class="mt-4"><a href="', $conf->hoturl("=search", ["fn" => "get", "getfn" => "pcassignments", "t" => "alladmin", "q" => "", "p" => "all"]), '">Download current PC review assignments</a></div>';
 
         echo "</form>\n\n";
 

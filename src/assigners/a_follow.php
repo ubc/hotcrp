@@ -1,6 +1,6 @@
 <?php
 // a_follow.php -- HotCRP assignment helper classes
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Follow_Assignable extends Assignable {
     /** @var ?int */
@@ -11,10 +11,13 @@ class Follow_Assignable extends Assignable {
      * @param ?int $cid
      * @param ?int $watch */
     function __construct($pid, $cid, $watch = null) {
-        $this->type = "follow";
         $this->pid = $pid;
         $this->cid = $cid;
         $this->_watch = $watch;
+    }
+    /** @return string */
+    function type() {
+        return "follow";
     }
     /** @return self */
     function fresh() {
@@ -43,15 +46,14 @@ class Follow_AssignmentParser extends AssignmentParser {
     }
     static function parse_follow($s) {
         $s = strtolower(trim($s));
-        if (in_array($s, ["yes", "follow", "follows", "true"])) {
+        if (in_array($s, ["yes", "follow", "follows", "true"], true)) {
             return Contact::WATCH_REVIEW_EXPLICIT | Contact::WATCH_REVIEW;
-        } else if (in_array($s, ["no", "unfollow", "unfollows", "block", "blocks", "false"])) {
+        } else if (in_array($s, ["no", "unfollow", "unfollows", "block", "blocks", "false"], true)) {
             return Contact::WATCH_REVIEW_EXPLICIT;
         } else if ($s === "default" || $s === "clear") {
             return 0;
-        } else {
-            return false;
         }
+        return false;
     }
     function make_follow_state($req, AssignmentState $state) {
         $s = trim((string) $req["following"]);

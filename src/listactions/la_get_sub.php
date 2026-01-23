@@ -40,7 +40,7 @@ class GetCheckFormat_ListAction extends ListAction {
             ob_flush();
             flush();
         }
-        exit();
+        exit(0);
     }
 }
 
@@ -112,7 +112,7 @@ class GetCSV_ListAction extends ListAction {
         $pl->set_view("sel", false, PaperList::VIEWORIGIN_MAX);
         list($header, $data) = $pl->text_csv();
         return $user->conf->make_csvg("data", CsvGenerator::FLAG_ITEM_COMMENTS)
-            ->set_keys(array_keys($header))->set_header(array_values($header))
+            ->set_keys(array_keys($header))->set_header($header)
             ->append($data);
     }
 }

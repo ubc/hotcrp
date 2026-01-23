@@ -104,10 +104,6 @@
         "settings": ["submission"]
     },
     {
-        "name": "__crosscheck/submissionclasses", "order": 301,
-        "crosscheck_function": "Sround_SettingParser::crosscheck"
-    },
-    {
         "name": "submissions/blind", "order": 40,
         "print_function": "Submissions_SettingParser::print_blind",
         "title": "Visibility to reviewers",
@@ -124,6 +120,21 @@
         "print_function": "Submissions_SettingParser::print_pcseeallpdf",
         "settings": ["submitted_document_early_visibility"]
     },
+    {
+        "name": "submissions/preferences", "order": 60,
+        "title": "Review preferences"
+    },
+    {
+        "name": "submissions/prefshuffle", "order": 65,
+        "print_function": "Preference_SettingParser::print_pref_shuffle",
+        "settings": ["preference_shuffle"]
+    },
+    {
+        "name": "submissions/preffuzz", "order": 70,
+        "separator_before": true,
+        "print_function": "Preference_SettingParser::print_pref_fuzz",
+        "settings": ["preference_fuzz", "preference_fuzz_enable", "preference_fuzz_amount"]
+    },
 
 
     {
@@ -137,7 +148,13 @@
         "settings": ["sf_abstract", "sf_pdf_submission", "format"]
     },
     {
-        "name": "subform/conflicts", "order": 20,
+        "name": "subform/authors", "order": 20,
+        "title": "Authors",
+        "print_function": "SubForm_SettingRenderer::print_authors",
+        "settings": ["sf_author_orcid"]
+    },
+    {
+        "name": "subform/conflicts", "order": 30,
         "title": "Conflicts and collaborators",
         "print_function": "SubForm_SettingRenderer::print_conflicts",
         "settings": ["sf_pc_conflicts", "sf_pc_conflict_types", "sf_collaborators", "conflict_description", "conflict_visibility"]
@@ -151,7 +168,7 @@
     {   "name": "opt", "alias": "options"   },
     {
         "name": "__crosscheck/submissionfields", "order": 400,
-        "crosscheck_function": "Options_SettingParser::crosscheck"
+        "crosscheck_function": "*Options_SettingParser::crosscheck"
     },
     {
         "name": "__crosscheck/submissionfieldconditions", "order": 600,
@@ -159,7 +176,7 @@
     },
     {
         "name": "__validate/submissionfields/conditions", "order": 1,
-        "validate_function": "SubFieldCondition_SettingParser::validate"
+        "validate_function": "SubFieldCondition_SettingParser::crosscheck"
     },
     [   "submissionfield/properties/name", 1, "*Options_SettingParser::print_name"   ],
     [   "submissionfield/properties/type", 10, "*Options_SettingParser::print_type"   ],
@@ -235,6 +252,15 @@
         ]
     },
     {
+        "name": "reviews/metareviews", "order": 35,
+        "title": "Metareviews",
+        "print_function": "Review_SettingParser::print_meta",
+        "settings": [
+            "review_visibility_lead",
+            "review_identity_visibility_meta"
+        ]
+    },
+    {
         "name": "reviews/external", "order": 40,
         "title": "External reviews",
         "print_members": true
@@ -261,7 +287,7 @@
         "name": "reviews/ratings", "order": 50,
         "title": "Review ratings",
         "print_function": "Review_SettingParser::print_ratings",
-        "settings": ["review_rating"]
+        "settings": ["review_rating", "review_rating_visibility"]
     },
 
 
@@ -271,7 +297,7 @@
     },
     {
         "name": "reviewform/main", "order": 10,
-        "print_function": "ReviewForm_SettingParser::print",
+        "print_function": "*ReviewForm_SettingParser::print",
         "settings": ["rf"]
     },
     {   "name": "rfo", "alias": "reviewform"   },
@@ -347,7 +373,7 @@
     {
         "name": "tracks", "group": "tags", "order": 750,
         "print_function": "*Track_SettingParser::print",
-        "title": "Tracks", "hashid": "tracks",
+        "title": "Tracks", "hashid": "tracks", "title_class": "label",
         "settings": ["track"]
     },
     {

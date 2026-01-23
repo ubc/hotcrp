@@ -168,7 +168,8 @@ class Permission_Tester {
         // grant user capability to read paper 1, check it doesn't allow PC view
         $user_capability = Contact::make($this->conf);
         xassert(!$user_capability->can_view_paper($paper1));
-        $user_capability->apply_capability_text(AuthorView_Capability::make($paper1));
+        $tok = AuthorView_Capability::make($paper1, AuthorView_Capability::AV_CREATE);
+        $user_capability->apply_capability_text($tok->salt);
         xassert(!$user_capability->contactId);
         xassert($user_capability->can_view_paper($paper1));
         xassert(!$user_capability->allow_administer($paper1));
@@ -234,19 +235,19 @@ class Permission_Tester {
         xassert_search($user_randy, ["q" => "", "t" => "a"], "6");
 
         // correct conflict information returned
-        $j = search_json($this->u_shenker, ["q" => "1 2 3 4 5 15-18", "reviewer" => $user_mgbaker], "id conf");
+        $j = search_json($this->u_shenker, ["q" => "1 2 3 4 5 15-18", "reviewer" => $user_mgbaker], "id conflict");
         xassert_eqq(join(";", array_keys($j)), "1;2;3;4;5;15;16;17;18");
-        xassert_eqq($j[3]["conf"], "Y");
-        xassert_eqq($j[18]["conf"], "Y");
+        xassert_eqq($j[3]["conflict"], "Y");
+        xassert_eqq($j[18]["conflict"], "Y");
         foreach ([1, 2, 4, 5, 15, 16, 17] as $i) {
-            xassert_eqq($j[$i]["conf"], "N");
+            xassert_eqq($j[$i]["conflict"], "N");
         }
 
-        $j = search_json($this->u_shenker, ["q" => "1 2 3 4 5 15-18", "reviewer" => $user_jon], "id conf");
+        $j = search_json($this->u_shenker, ["q" => "1 2 3 4 5 15-18", "reviewer" => $user_jon], "id conflict");
         xassert_eqq(join(";", array_keys($j)), "1;2;3;4;5;15;16;17;18");
-        xassert_eqq($j[17]["conf"], "Y");
+        xassert_eqq($j[17]["conflict"], "Y");
         foreach ([1, 2, 3, 4, 5, 15, 16, 18] as $i) {
-            xassert_eqq($j[$i]["conf"], "N");
+            xassert_eqq($j[$i]["conflict"], "N");
         }
 
         // review search
@@ -1094,20 +1095,20 @@ class Permission_Tester {
 
         // test conflict types
         $user_rguerin = $this->conf->checked_user_by_email("rguerin@ibm.com");
-        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::GENERAL);
+        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::CT_DEFAULT);
         xassert_assign($user_sclin, "paper,action,user,conflict\n3,conflict,rguerin@ibm.com,pinned\n");
         $paper3 = $this->u_chair->checked_paper_by_id(3);
-        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::GENERAL);
+        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::CT_DEFAULT);
         xassert_assign($this->u_chair, "paper,action,user,conflict\n3,conflict,rguerin@ibm.com,pinned\n");
         $paper3->invalidate_conflicts();
-        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::set_pinned(Conflict::GENERAL, true));
+        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::set_pinned(Conflict::CT_DEFAULT, true));
         xassert_assign($user_sclin, "paper,action,user,conflict type\n3,conflict,rguerin@ibm.com,pinned\n");
         $paper3->invalidate_conflicts();
-        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::set_pinned(Conflict::GENERAL, true));
+        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::set_pinned(Conflict::CT_DEFAULT, true));
         xassert_assign($this->u_chair, "paper,action,user,conflicttype\n3,conflict,rguerin@ibm.com,none\n");
         xassert_assign($user_sclin, "paper,action,user,conflicttype\n3,conflict,rguerin@ibm.com,conflict\n");
         $paper3->invalidate_conflicts();
-        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::GENERAL);
+        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::CT_DEFAULT);
 
         xassert_assign($user_sclin, "paper,action,user,conflict\n3,conflict,rguerin@ibm.com,collaborator\n");
         $paper3->invalidate_conflicts();
@@ -1131,12 +1132,43 @@ class Permission_Tester {
         xassert_assign($user_sclin, "paper,action,user,conflict\n3,conflict,rguerin@ibm.com,advisee\n");
         $paper3->invalidate_conflicts();
         xassert_eqq($paper3->conflict_type($user_rguerin), 1);
-        xassert_assign($this->u_chair, "paper,action,user,conflict\n3,conflict,rguerin@ibm.com,unpin\n");
+        xassert_assign($this->u_chair, "paper,action,user,conflict\n3,conflict,rguerin@ibm.com,none\n");
         $paper3->invalidate_conflicts();
         xassert_eqq($paper3->conflict_type($user_rguerin), 0);
         xassert_assign($user_sclin, "paper,action,user,conflict\n3,conflict,rguerin@ibm.com,advisee\n");
         $paper3->invalidate_conflicts();
         xassert_eqq($paper3->conflict_type($user_rguerin), 4);
+
+        // <empty-string> is not a valid conflict type
+        xassert_assign_fail($user_sclin, "paper,action,user,conflicttype\n3,conflict,rguerin@ibm.com,\n");
+
+        // normal user attempt to assign administrative type goes to preexisting
+        // or default
+        xassert_assign($user_sclin, "paper,action,user,conflicttype\n3,conflict,rguerin@ibm.com,administrative\n");
+        $paper3->invalidate_conflicts();
+        xassert_eqq($paper3->conflict_type($user_rguerin), 4);
+        xassert_assign($user_sclin, "paper,action,user,conflicttype\n3,conflict,rguerin@ibm.com,off\n3,conflict,rguerin@ibm.com,administrative\n");
+        $paper3->invalidate_conflicts();
+        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::CT_DEFAULT);
+
+        // assignment of generic type preserves existing type
+        xassert_assign($this->u_chair, "paper,action,user,conflicttype\n3,conflict,rguerin@ibm.com,on\n");
+        $paper3->invalidate_conflicts();
+        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::CT_DEFAULT);
+
+        // admin assignment of generic type goes to administrative type
+        xassert_assign($this->u_chair, "paper,action,user,conflicttype\n3,conflict,rguerin@ibm.com,off\n3,conflict,rguerin@ibm.com,on\n");
+        $paper3->invalidate_conflicts();
+        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::CT_ADMINISTRATIVE);
+
+        // non-admin can assign administrative type once it exists,
+        // or can override it
+        xassert_assign($user_sclin, "paper,action,user,conflicttype\n3,conflict,rguerin@ibm.com,administrative\n");
+        $paper3->invalidate_conflicts();
+        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::CT_ADMINISTRATIVE);
+        xassert_assign($user_sclin, "paper,action,user,conflicttype\n3,conflict,rguerin@ibm.com,collaborator\n");
+        $paper3->invalidate_conflicts();
+        xassert_eqq($paper3->conflict_type($user_rguerin), 2);
 
         $this->conf->save_setting("sub_update", Conf::$now - 5);
         $this->conf->save_refresh_setting("sub_sub", Conf::$now - 5);

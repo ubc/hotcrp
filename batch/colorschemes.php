@@ -48,9 +48,9 @@ class ColorSchemes_Batch {
             || count($this->gradient) > 4
             || !ctype_digit($this->gradient[0])
             || ($n = intval($this->gradient[0])) < 2
-            || !preg_match('/\A#?([0-9a-fA-F]{6})\z/', $this->gradient[1], $m1)
-            || !preg_match('/\A#?([0-9a-fA-F]{6})\z/', $this->gradient[2], $m2)
-            || !in_array($mode, ["shorter", "longer", "increasing", "decreasing"])) {
+            || !preg_match('/\A\#?([0-9a-fA-F]{6})\z/', $this->gradient[1], $m1)
+            || !preg_match('/\A\#?([0-9a-fA-F]{6})\z/', $this->gradient[2], $m2)
+            || !in_array($mode, ["shorter", "longer", "increasing", "decreasing"], true)) {
             throw new CommandLineException("`--gradient` expects NSTOPS COLOR1 COLOR2 [longer]");
         }
         $c1 = self::from_hashcolor($m1[1]);

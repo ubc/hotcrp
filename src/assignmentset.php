@@ -1,17 +1,16 @@
 <?php
 // assignmentset.php -- HotCRP helper classes for assignments
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
-class Assignable {
-    /** @var string */
-    public $type;
+abstract class Assignable {
     /** @var int */
     public $pid;
 
+    /** @return string */
+    abstract function type();
+
     /** @return self */
-    function fresh() {
-        return new Assignable;
-    }
+    abstract function fresh();
 
     /** @param Assignable $q
      * @return bool */
@@ -53,7 +52,7 @@ class AssignmentItem implements ArrayAccess, JsonSerializable {
     }
     /** @return string */
     function type() {
-        return $this->before->type;
+        return $this->before->type();
     }
     /** @return int */
     function pid() {
@@ -157,12 +156,12 @@ class AssignmentItem implements ArrayAccess, JsonSerializable {
         return $r;
     }
     function realize(AssignmentState $astate) {
-        return call_user_func($astate->realizer($this->offsetGet("type")), $this, $astate);
+        return call_user_func($astate->realizer($this->type()), $this, $astate);
     }
     #[\ReturnTypeWillChange]
     function jsonSerialize() {
         $x = [
-            "type" => $this->before->type,
+            "type" => $this->type(),
             "pid" => $this->before->pid,
             "\$status" => $this->deleted
                 ? "DELETED"
@@ -205,6 +204,8 @@ class AssignmentState extends MessageSet {
     public $csv_context = false;
     /** @var int */
     public $potential_conflict_warnings = 0;
+    /** @var bool */
+    public $confirm_potential_conflicts = false;
     /** @var AssignerContacts */
     private $cmap;
     /** @var ?array<int,Contact> */
@@ -217,7 +218,7 @@ class AssignmentState extends MessageSet {
     public $defaults = [];
     /** @var array<int,PaperInfo> */
     private $prows = [];
-    /** @var array<int,true> */
+    /** @var list<int> */
     private $pid_attempts = [];
     /** @var ?PaperInfo */
     private $placeholder_prow;
@@ -233,7 +234,6 @@ class AssignmentState extends MessageSet {
         $this->conf = $user->conf;
         $this->user = $this->reviewer = $user;
         $this->cmap = new AssignerContacts($this->conf, $this->user);
-        $this->set_want_ftext(true);
         $this->overrides = $user->overrides();
     }
 
@@ -241,25 +241,30 @@ class AssignmentState extends MessageSet {
     function set_filename($filename) {
         $this->filename = $filename;
     }
+
     /** @param null|int|string $landmark */
     function set_landmark($landmark) {
         $this->landmark = $landmark;
     }
-    /** @param null|int|string $landmark
+
+    /** @param null|int|string|AssignmentItem $landmark
      * @return string */
     function landmark_near($landmark) {
+        if (is_object($landmark)) {
+            $landmark = $landmark->landmark;
+        }
         if (is_string($landmark)) {
-            return $landmark;
+            return $landmark === "" ? null : $landmark;
         } else if ($this->filename === null) {
-            return "";
+            return null;
         } else if ($landmark === null || $landmark === 0) {
             return $this->filename;
         } else if ($this->filename === "") {
             return "line {$landmark}";
-        } else {
-            return "{$this->filename}:{$landmark}";
         }
+        return "{$this->filename}:{$landmark}";
     }
+
     /** @return string */
     function landmark() {
         return $this->landmark_near($this->landmark);
@@ -270,13 +275,12 @@ class AssignmentState extends MessageSet {
      * @param callable(AssignmentItem,AssignmentState):Assigner $realizer
      * @return bool */
     function mark_type($type, $keys, $realizer) {
-        if (!isset($this->types[$type])) {
-            $this->types[$type] = $keys;
-            $this->realizers[$type] = $realizer;
-            return true;
-        } else {
+        if (isset($this->types[$type])) {
             return false;
         }
+        $this->types[$type] = $keys;
+        $this->realizers[$type] = $realizer;
+        return true;
     }
     /** @param string $type
      * @return callable(AssignmentItem,AssignmentState):Assigner */
@@ -294,8 +298,8 @@ class AssignmentState extends MessageSet {
     /** @param Assignable $x
      * @return ?string */
     private function extract_key($x, $pid = null) {
-        $t = $x->type;
-        foreach ($this->types[$x->type] as $k) {
+        $t = $x->type();
+        foreach ($this->types[$x->type()] as $k) {
             if (isset($x->$k)) {
                 $t .= "`" . $x->$k;
             } else if ($pid !== null && $k === "pid") {
@@ -304,7 +308,7 @@ class AssignmentState extends MessageSet {
                 return null;
             }
         }
-        assert($t !== $x->type);
+        assert($t !== $x->type());
         return $t;
     }
     /** @param Assignable $x */
@@ -323,9 +327,8 @@ class AssignmentState extends MessageSet {
         '@phan-var-force Assignable $q';
         if (isset($q->pid)) {
             return [$q->pid];
-        } else {
-            return array_keys($this->st);
         }
+        return array_keys($this->st);
     }
     const INCLUDE_DELETED = 1;
     /** @param 0|1 $include_deleted
@@ -339,7 +342,7 @@ class AssignmentState extends MessageSet {
             foreach ($k ? [$st->items[$k] ?? null] : $st->items as $item) {
                 if ($item
                     && (!$item->deleted() || $include_deleted)
-                    && $item->before->type === $q->type
+                    && $item->type() === $q->type()
                     && ($item->after ?? $item->before)->match($q)) {
                     $res[] = $item;
                 }
@@ -425,13 +428,13 @@ class AssignmentState extends MessageSet {
         return $item;
     }
 
-    /** @return array<int,list<AssignmentItem>> */
-    function diff() {
+    /** @return list<AssignmentItem> */
+    function diff_list() {
         $diff = [];
         foreach ($this->st as $pid => $st) {
             foreach ($st->items as $item) {
                 if ($item->changed())
-                    $diff[$pid][] = $item;
+                    $diff[] = $item;
             }
         }
         return $diff;
@@ -445,9 +448,10 @@ class AssignmentState extends MessageSet {
      * @return ?PaperInfo */
     function prow($pid) {
         $p = $this->prows[$pid] ?? null;
-        if (!$p && !isset($this->pid_attempts[$pid])) {
-            $this->fetch_prows($pid);
-            $p = $this->prows[$pid] ?? null;
+        if (!$p) {
+            assert(!empty($this->pid_attempts)
+                   && ($this->pid_attempts[0] === -1
+                       || in_array((int) $pid, $this->pid_attempts, true)));
         }
         return $p;
     }
@@ -459,23 +463,31 @@ class AssignmentState extends MessageSet {
         return $this->prows;
     }
     /** @param int|list<int> $pids */
-    function fetch_prows($pids, $initial_load = false) {
+    function fetch_prows($pids) {
+        assert(empty($this->pid_attempts));
         $pids = is_array($pids) ? $pids : [$pids];
-        $fetch_pids = [];
-        foreach ($pids as $pid) {
-            if (!isset($this->prows[$pid]) && !isset($this->pid_attempts[$pid]))
-                $fetch_pids[] = $pid;
+        if (!empty($this->prows)) {
+            $pids = array_values(array_filter($pids, function ($p) {
+                return !isset($this->prows[$p]);
+            }));
         }
-        assert($initial_load || empty($fetch_pids));
-        if (!empty($fetch_pids)) {
-            foreach ($this->user->paper_set(["paperId" => $fetch_pids]) as $prow) {
+        if (!empty($pids)) {
+            foreach ($this->user->paper_set(["paperId" => $pids]) as $prow) {
                 $this->prows[$prow->paperId] = $prow;
             }
-            foreach ($fetch_pids as $pid) {
-                if (!isset($this->prows[$pid]))
-                    $this->pid_attempts[$pid] = true;
-            }
         }
+        $this->pid_attempts = [0];
+        foreach ($pids as $pid) {
+            if (!isset($this->prows[$pid]))
+                $this->pid_attempts[] = $pid;
+        }
+    }
+    function fetch_all_prows() {
+        assert(empty($this->prows) && empty($this->pid_attempts));
+        foreach ($this->user->paper_set([]) as $prow) {
+            $this->prows[$prow->paperId] = $prow;
+        }
+        $this->pid_attempts = [-1];
     }
     /** @return PaperInfo */
     function placeholder_prow() {
@@ -517,7 +529,8 @@ class AssignmentState extends MessageSet {
     /** @param null|int|string $landmark
      * @param string $msg
      * @param -5|-4|-3|-2|-1|0|1|2|3 $status
-     * @return MessageItem */
+     * @return MessageItem
+     * @deprecated */
     function msg_near($landmark, $msg, $status) {
         $l = $this->landmark_near($landmark);
         if (($mi = $this->back_message())
@@ -525,20 +538,38 @@ class AssignmentState extends MessageSet {
             && $mi->message === $msg) {
             $this->change_item_status($mi, $status);
         } else {
-            $mi = $this->msg_at(null, $msg, $status);
+            $mi = $this->append_item(new MessageItem($status, null, $msg));
             $mi->landmark = $l;
         }
         return $mi;
     }
+    /** @param MessageItem $mi
+     * @param null|int|string|AssignmentItem $landmark
+     * @return MessageItem */
+    function append_item_near($mi, $landmark = null) {
+        $mi = $mi->with_landmark($this->landmark_near($landmark));
+        if (($bmi = $this->back_message())
+            && $bmi->landmark === $mi->landmark
+            && $bmi->message === $mi->message) {
+            $this->change_item_status($bmi, $mi->status);
+            return $bmi;
+        }
+        return $this->append_item($mi);
+    }
+    /** @param MessageItem $mi
+     * @return MessageItem */
+    function append_item_here($mi) {
+        return $this->append_item_near($mi, $this->landmark);
+    }
     /** @param string $msg
      * @return void */
     function error($msg) {
-        $this->msg_near($this->landmark, $msg, 2);
+        $this->append_item_here(MessageItem::error($msg));
     }
     /** @param string $msg
      * @return void */
     function warning($msg) {
-        $this->msg_near($this->landmark, $msg, 1);
+        $this->append_item_here(MessageItem::warning($msg));
     }
     /** @param ?string $msg
      * @return void */
@@ -550,9 +581,9 @@ class AssignmentState extends MessageSet {
      * @return void */
     function paper_error($msg) {
         if ($this->paper_exact_match) {
-            $this->msg_near($this->landmark, $msg, 2);
+            $this->append_item_here(MessageItem::error($msg));
         } else {
-            $this->nonexact_msgs[] = $this->msg_near($this->landmark, $msg, 1);
+            $this->nonexact_msgs[] = $this->append_item_here(MessageItem::warning($msg));
         }
     }
     function mark_matching_errors() {
@@ -742,6 +773,14 @@ class AssignmentCsv {
     function count() {
         return count($this->rows);
     }
+    /** @return list<string> */
+    function header() {
+        return array_keys($this->fields);
+    }
+    /** @return list<array<string,int|string>> */
+    function rows() {
+        return $this->rows;
+    }
     /** @param int $i
      * @return ?array<string,int|string> */
     function row($i) {
@@ -794,6 +833,17 @@ abstract class AssignmentParser {
      * @return string */
     function expand_papers($req, AssignmentState $state) {
         return (string) $req["paper"];
+    }
+
+    // Initialize parser for a request.
+    // The request passed to `set_req` is used for subsequent `user_universe`,
+    // `paper_filter`, `expand_*user`, `allow_user`, `allow_paper`, and `apply`
+    // calls. Returns false if `$req` is erroneous and should not be parsed
+    // further.
+    /** @param CsvRow $req
+     * @return bool */
+    function set_req($req, AssignmentState $state) {
+        return true;
     }
 
     // Load relevant state from the database into `$state`.
@@ -886,10 +936,9 @@ abstract class UserlessAssignmentParser extends AssignmentParser {
 }
 
 class Assigner {
-    /** @var AssignmentItem */
+    /** @var AssignmentItem
+     * @readonly */
     public $item;
-    /** @var string */
-    public $type;
     /** @var int */
     public $pid;
     /** @var ?int */
@@ -900,12 +949,15 @@ class Assigner {
     public $next_index;
     function __construct(AssignmentItem $item, AssignmentState $state) {
         $this->item = $item;
-        $this->type = $item["type"];
         $this->pid = $item["pid"];
         $this->cid = $item["cid"] ? : $item["_cid"];
         if ($this->cid) {
             $this->contact = $state->user_by_id($this->cid);
         }
+    }
+    /** @return string */
+    function type() {
+        return $this->item->type();
     }
     /** @return string */
     function unparse_description() {
@@ -1056,16 +1108,26 @@ class AssignmentSet {
     private $search_type = "all";
     /** @var ?array<int,true> */
     private $enabled_pids;
+    /** @var array<string,AssignmentParser> */
+    private $parsers = [];
     /** @var ?array<string,true> */
     private $enabled_actions;
     /** @var int */
     private $request_count = 0;
+    /** @var int */
+    private $progress_phase = 0;
+    /** @var ?int */
+    private $progress_value;
+    /** @var ?int */
+    private $progress_max;
     /** @var list<callable> */
     private $progressf = [];
     /** @var list<Assigner> */
     private $assigners = [];
     /** @var array<int,int> */
     private $assigners_pidhead = [];
+    /** @var int */
+    private $executed = 0;
     /** @var AssignmentState */
     private $astate;
     /** @var array<string,PaperSearch> */
@@ -1081,6 +1143,13 @@ class AssignmentSet {
     private $_cleanup_notify_tracker = [];
     private $qe_stager;
 
+    const PROGPHASE_PARSE = 1;
+    const PROGPHASE_PREAPPLY = 2;
+    const PROGPHASE_REALIZE = 3;
+    const PROGPHASE_APPLY = 4;
+    const PROGPHASE_UNPARSE = 5;
+    const PROGPHASE_SAVE = 6;
+
     function __construct(Contact $user, $overrides = null) {
         $this->conf = $user->conf;
         $this->user = $user;
@@ -1092,19 +1161,25 @@ class AssignmentSet {
         }
     }
 
-    /** @param callable(AssignmentSet,?CsvRow) $progressf
-     * @return $this
-     * @deprecated */
-    function add_progress_handler($progressf) {
-        $this->progressf[] = $progressf;
-        return $this;
-    }
-    /** @param callable(AssignmentSet,?CsvRow) $progressf
+    /** @param callable(AssignmentSet) $progressf
      * @return $this */
     function add_progress_function($progressf) {
         $this->progressf[] = $progressf;
         return $this;
     }
+
+    /** @param ?array{int,?int} $valmax
+     * @param ?CsvRow $row */
+    private function notify_progress($valmax = null, $row = null) {
+        if ($valmax !== null) {
+            $this->progress_value = $valmax[0];
+            $this->progress_max = $valmax[1];
+        }
+        foreach ($this->progressf as $progressf) {
+            call_user_func($progressf, $this, $row);
+        }
+    }
+
     /** @param string $search_type
      * @return $this */
     function set_search_type($search_type) {
@@ -1148,6 +1223,12 @@ class AssignmentSet {
         $this->astate->csv_context = $csv_context;
         return $this;
     }
+    /** @param bool $confirm
+     * @return $this */
+    function set_confirm_potential_conflicts($confirm) {
+        $this->astate->confirm_potential_conflicts = $confirm;
+        return $this;
+    }
 
     /** @param string|list<string> $action
      * @return $this */
@@ -1157,7 +1238,7 @@ class AssignmentSet {
             $this->enabled_actions = [];
         }
         foreach (is_array($action) ? $action : [$action] as $a) {
-            if (($aparser = $this->conf->assignment_parser($a, $this->user)))
+            if (($aparser = $this->assignment_parser($a)))
                 $this->enabled_actions[$aparser->type] = true;
         }
         return $this;
@@ -1167,9 +1248,7 @@ class AssignmentSet {
      * @return $this */
     function enable_papers($paper) {
         assert(empty($this->assigners));
-        if ($this->enabled_pids === null) {
-            $this->enabled_pids = [];
-        }
+        $this->enabled_pids = $this->enabled_pids ?? [];
         foreach (is_array($paper) ? $paper : [$paper] as $p) {
             if ($p instanceof PaperInfo) {
                 $this->astate->add_prow($p);
@@ -1193,10 +1272,33 @@ class AssignmentSet {
     function landmark() {
         return $this->astate->landmark();
     }
+    /** @return int */
+    function progress_phase() {
+        return $this->progress_phase;
+    }
+    /** @return ?int */
+    function progress_value() {
+        return $this->progress_value;
+    }
+    /** @return ?int */
+    function progress_max() {
+        return $this->progress_max;
+    }
 
     /** @return MessageSet */
     function message_set() {
         return $this->astate;
+    }
+    /** @param ?int $max
+     * @return list<MessageItem> */
+    function message_list($max = null) {
+        $ml = $this->astate->message_list();
+        if ($max !== null && count($ml) > $max) {
+            $elided = count($ml) - $max + 1;
+            array_splice($ml, $max - 1);
+            $ml[] = MessageItem::warning_note($this->conf->_("<0>...{} more messages elided", $elided));
+        }
+        return $ml;
     }
     /** @return bool */
     function has_message() {
@@ -1209,56 +1311,91 @@ class AssignmentSet {
     /** @param null|int|string $landmark
      * @param string $msg
      * @param -5|-4|-3|-2|-1|0|1|2|3 $status
-     * @return MessageItem */
+     * @return MessageItem
+     * @deprecated
+     * @suppress PhanDeprecatedFunction */
     function msg_near($landmark, $msg, $status) {
         return $this->astate->msg_near($landmark, $msg, $status);
+    }
+    /** @param MessageItem $mi
+     * @param null|int|string|AssignmentItem $landmark
+     * @return MessageItem */
+    function append_item_near($mi, $landmark = null) {
+        return $this->astate->append_item_near($mi, $landmark);
     }
     /** @param string $msg
      * @return void */
     function error($msg) {
-        $this->astate->msg_near($this->astate->landmark(), $msg, 2);
+        $this->astate->error($msg);
     }
     /** @param string $msg
      * @return void */
     function warning($msg) {
-        $this->astate->msg_near($this->astate->landmark(), $msg, 1);
+        $this->astate->warning($msg);
     }
-
-    /** @return list<MessageItem> */
-    function message_list() {
-        return $this->astate->message_list();
+    /** @param MessageItem $mi
+     * @return void
+     * @deprecated */
+    function prepend_item($mi) {
+        $this->astate->prepend_item($mi);
     }
     /** @param string $msg
      * @param -5|-4|-3|-2|-1|0|1|2|3 $status
-     * @return $this */
+     * @return $this
+     * @deprecated */
     function prepend_msg($msg, $status) {
-        $this->astate->prepend_msg($msg, $status);
+        $this->astate->prepend_item(new MessageItem($status, null, $msg));
         return $this;
     }
     /** @return string */
     function full_feedback_text() {
         return $this->astate->full_feedback_text();
     }
+    /** @deprecated */
     function report_errors() {
-        if ($this->astate->has_message()) {
-            if ($this->astate->has_error()) {
-                $this->astate->prepend_msg("<0>Changes not saved due to errors in the assignment", MessageSet::ERROR);
+        $this->feedback_msg(self::FEEDBACK_ASSIGN);
+    }
+    const FEEDBACK_ASSIGN = 0;
+    const FEEDBACK_CHANGE = 1;
+    const FEEDBACK_PROPOSE = 2;
+    const FEEDBACK_CHANGE_IGNORE = 3;
+    /** @param int $type */
+    function feedback_msg($type) {
+        $fml = [];
+        if ($this->executed > 0) {
+            if ($type === self::FEEDBACK_CHANGE) {
+                $fml[] = MessageItem::success("<0>Changes saved");
+            } else {
+                $fml[] = MessageItem::success("<0>Assignments saved");
+                if ($this->conf->setting("pcrev_assigntime") === $this->executed) {
+                    $fml[] = MessageItem::inform("<5>You may want to " . $this->conf->hotlink("send mail about the new assignments", "mail", "template=newpcrev") . ".");
+                }
             }
-            $this->conf->feedback_msg($this->astate->message_list());
+        } else if ($this->astate->has_error()) {
+            if ($type === self::FEEDBACK_CHANGE) {
+                $fml[] = MessageItem::error("<0>Changes not saved; please correct these errors and try again");
+            } else if ($type === self::FEEDBACK_PROPOSE) {
+                $fml[] = MessageItem::error("<0>Assignment cannot be saved due to errors");
+            } else if ($type === self::FEEDBACK_ASSIGN) {
+                $fml[] = MessageItem::error("<0>Assignments not saved due to errors");
+            }
         } else if (empty($this->assigners)) {
-            $this->conf->feedback_msg([new MessageItem(null, "<0>No changes", MessageSet::WARNING_NOTE)]);
+            $fml[] = MessageItem::warning_note("<0>No changes");
         }
+        if ($this->astate->has_message()) {
+            $fml[] = $this->message_list(1000);
+        }
+        $this->conf->feedback_msg(...$fml);
     }
     /** @return JsonResult */
     function json_result() {
         if ($this->has_error()) {
             $status = $this->astate->has_user_error ? 200 : 403;
-            return new JsonResult($status, ["ok" => false, "message_list" => $this->message_list()]);
+            return new JsonResult($status, ["ok" => false, "message_list" => $this->message_list(3000)]);
         } else if ($this->astate->has_message()) {
-            return new JsonResult(["ok" => true, "message_list" => $this->message_list()]);
-        } else {
-            return new JsonResult(["ok" => true]);
+            return new JsonResult(["ok" => true, "message_list" => $this->message_list(3000)]);
         }
+        return new JsonResult(["ok" => true]);
     }
 
     private static function req_user_text($req) {
@@ -1380,7 +1517,7 @@ class AssignmentSet {
                 return $ret->users();
             } else if (count($ret->user_ids()) > 1) {
                 $this->error("<0>‘" . self::req_user_text($req) . "’ matches more than one {$cset_text}");
-                $this->astate->msg_near($this->astate->landmark(), "<0>Use a full email address to disambiguate.", MessageSet::INFORM);
+                $this->astate->append_item_here(MessageItem::inform("<0>Use a full email address to disambiguate."));
                 return null;
             } else {
                 $this->error("<0>" . ucfirst($cset_text) . " ‘" . self::req_user_text($req) . "’ not found");
@@ -1415,27 +1552,25 @@ class AssignmentSet {
         $def_action = $this->astate->defaults["action"] ?? null;
 
         if (!$csv->header()) {
-            if (!($req = $csv->next_list())) {
-                $this->msg_near(null, "<0>Empty file", 2);
+            if (!($req = $csv->peek_list())) {
+                $this->append_item_near(MessageItem::error("<0>Empty file"));
                 return false;
             }
             if (self::is_csv_header($req)) {
                 // found header
+                $csv->set_header($req);
+                $csv->next_list();
             } else if (!$def_action) {
-                $this->msg_near(null, "<0>CSV header required", 2);
-                $this->msg_near(null, "<5>CSV assignment files must define ‘<code>action</code>’ and ‘<code>paper</code>’ columns. Add a CSV header line to tell me what the columns mean.", MessageSet::INFORM);
+                $this->append_item_near(MessageItem::error("<0>CSV header required"));
+                $this->append_item_near(MessageItem::inform("<5>CSV assignment files must define ‘<code>action</code>’ and ‘<code>paper</code>’ columns. Add a CSV header line to tell me what the columns mean."));
                 return false;
+            } else if ($def_action === "settag") {
+                $csv->set_header(["paper", "tag"]);
+            } else if ($def_action === "preference") {
+                $csv->set_header(["paper", "user", "preference"]);
             } else {
-                $csv->unshift($req);
-                if ($def_action === "settag") {
-                    $req = ["paper", "tag"];
-                } else if ($def_action === "preference") {
-                    $req = ["paper", "user", "preference"];
-                } else {
-                    $req = ["paper", "user"];
-                }
+                $csv->set_header(["paper", "user"]);
             }
-            $csv->set_header($req);
         }
 
         foreach ([["action", "assignment", "type"],
@@ -1451,9 +1586,7 @@ class AssignmentSet {
                   ["new_tag", "newtag"],
                   ["conflict", "conflict_type", "conflicttype"],
                   ["withdraw_reason", "reason"]] as $ks) {
-            for ($i = 1; $i < count($ks) && !$csv->has_column($ks[0]); ++$i) {
-                $csv->add_synonym($ks[0], $ks[$i]);
-            }
+            $csv->add_synonym(...$ks);
         }
 
         $has_action = $csv->has_column("action");
@@ -1476,7 +1609,7 @@ class AssignmentSet {
             }
             if (count($defaults) == 1) {
                 $def_action = $this->astate->defaults["action"] = $defaults[0];
-                if (in_array($defaults[0], ["lead", "shepherd", "manager"])) {
+                if (in_array($defaults[0], ["lead", "shepherd", "manager"], true)) {
                     $csv->add_synonym("user", $defaults[0]);
                 }
             }
@@ -1484,7 +1617,7 @@ class AssignmentSet {
 
         if ((!$has_action && !$def_action)
             || !$csv->has_column("paper")) {
-            $this->msg_near(null, "<0>CSV must define “action” and “paper” columns", 2);
+            $this->append_item_near(MessageItem::error("<0>CSV must define “action” and “paper” columns"));
             return false;
         }
 
@@ -1510,10 +1643,10 @@ class AssignmentSet {
 
     /** @param string $line */
     function parse_csv_comment($line) {
-        if (preg_match('/\A###\s*hotcrp_assign_display_search\s*(\S.*)\s*\z/', $line, $m)) {
+        if (preg_match('/\A\#\#\#\s*hotcrp_assign_display_search\s*(\S.*)\s*\z/', $line, $m)) {
             $this->unparse_search = $m[1];
         }
-        if (preg_match('/\A###\s*hotcrp_assign_show\s+(\w+)\s*\z/', $line, $m)) {
+        if (preg_match('/\A\#\#\#\s*hotcrp_assign_show\s+(\w+)\s*\z/', $line, $m)) {
             $this->show_column($m[1]);
         }
     }
@@ -1528,17 +1661,21 @@ class AssignmentSet {
                 $this->error("<0>Paper required");
             }
             return [];
+        } else if ($pfield === "NONE") {
+            return [];
         }
-        if (preg_match('/\A[\d,\s]+\z/', $pfield)) {
+
+        if (ctype_digit($pfield) && ($pid = stoi($pfield)) > 0) {
+            $pids = [$pid];
+            $this->astate->paper_exact_match = true;
+        } else if (preg_match('/\A[\d,\s]+\z/', $pfield)) {
             $pids = [];
-            foreach (preg_split('/[,\s]+/', $pfield) as $pid) {
-                if ($pid !== "") {
-                    $pids[] = intval($pid);
+            foreach (preg_split('/[,\s]+/', $pfield) as $txt) {
+                if ($txt !== "" && ($pid = stoi($txt)) > 0) {
+                    $pids[] = $pid;
                 }
             }
             $this->astate->paper_exact_match = true;
-        } else if ($pfield === "NONE") {
-            return [];
         } else {
             $search = $this->searches[$pfield] ?? null;
             if ($search === null) {
@@ -1569,12 +1706,19 @@ class AssignmentSet {
     }
 
     /** @return ?AssignmentParser */
+    private function assignment_parser($name) {
+        if (!array_key_exists($name, $this->parsers)) {
+            $this->parsers[$name] = $this->conf->assignment_parser($name, $this->user);
+        }
+        return $this->parsers[$name];
+    }
+
+    /** @return ?AssignmentParser */
     private function collect_parser($req) {
         if (($action = $req["action"]) === null) {
             $action = $this->astate->defaults["action"];
         }
-        $action = strtolower(trim($action));
-        return $this->conf->assignment_parser($action, $this->user);
+        return $this->assignment_parser(strtolower(trim($action)));
     }
 
     /** @return ?list<Contact> */
@@ -1618,15 +1762,20 @@ class AssignmentSet {
         // reset search properties
         $this->astate->paper_exact_match = false;
 
+        // check request
+        if (!$aparser->set_req($req, $this->astate)) {
+            return;
+        }
+
         // parse paper
         $paper_universe = $aparser->paper_universe($req, $this->astate);
-        if ($paper_universe === "none") {
-            $pids = [];
-        } else {
+        if ($paper_universe !== "none") {
             $pids = $this->collect_papers((string) $req["paper"], true);
-            if (empty($pids)) {
-                return;
-            }
+        } else {
+            $pids = [];
+        }
+        if (empty($pids) && $paper_universe === "req") {
+            return;
         }
 
         // load state
@@ -1652,22 +1801,19 @@ class AssignmentSet {
             $pids = $npids;
         }
 
-        // fetch papers
-        $this->astate->fetch_prows($pids);
-
         // check conflicts and perform assignment
         $any_success = false;
         foreach ($pids as $p) {
             $prow = $this->astate->prow($p);
             if (!$prow) {
                 $this->error("<5>" . $this->user->no_paper_whynot($p)->unparse_html());
-            } else {
-                $ret = $this->apply_paper($prow, $contacts, $aparser, $req);
-                if ($ret === 1) {
-                    $any_success = true;
-                } else if ($ret < 0) {
-                    break;
-                }
+                continue;
+            }
+            $ret = $this->apply_paper($prow, $contacts, $aparser, $req);
+            if ($ret === 1) {
+                $any_success = true;
+            } else if ($ret < 0) {
+                break;
             }
         }
         if ($paper_universe === "none" || $paper_universe === "reqpost") {
@@ -1729,24 +1875,34 @@ class AssignmentSet {
         return $ret;
     }
 
-    /** @param CsvParser|string|list<string> $text
+    /** @return CsvParser */
+    function make_csv_parser() {
+        return (new CsvParser)->add_comment_prefix("###", [$this, "parse_csv_comment"]);
+    }
+
+    /** @param CsvParser|string|list<string>|resource $text
      * @param ?string $filename
      * @param ?array<string,mixed> $defaults
      * @return $this */
     function parse($text, $filename = null, $defaults = null) {
         assert(empty($this->assigners));
-
         if ($text instanceof CsvParser) {
             $csv = $text;
-            assert($filename === null || $csv->filename() === $filename);
+            assert($filename === null || $text->filename() === $filename);
         } else {
-            $csv = new CsvParser($text, CsvParser::TYPE_GUESS);
-            $csv->set_comment_start("###");
-            $csv->set_comment_function([$this, "parse_csv_comment"]);
-            $csv->set_filename($filename);
+            $csv = $this->make_csv_parser()
+                ->set_type(CsvParser::TYPE_GUESS)
+                ->set_content($text)
+                ->set_filename($filename);
         }
-        $this->astate->set_filename($csv->filename());
+        return $this->parse_csv($csv, $defaults);
+    }
 
+    /** @param ?array<string,mixed> $defaults
+     * @return $this */
+    function parse_csv(CsvParser $csv, $defaults = null) {
+        assert(empty($this->assigners));
+        $this->astate->set_filename($csv->filename());
         $this->astate->defaults = $defaults ?? [];
 
         if (!$this->install_csv_header($csv)) {
@@ -1756,88 +1912,137 @@ class AssignmentSet {
         $has_landmark = $csv->has_column("landmark");
         $old_overrides = $this->user->set_overrides($this->astate->overrides);
 
-        // parse file, load papers all at once
-        $lines = $pids = [];
-        while (($req = $csv->next_row())) {
-            if (($aparser = $this->collect_parser($req))) {
-                if ($aparser->paper_universe($req, $this->astate) === "none") {
-                    $paper = "NONE";
-                } else {
-                    $paper = $aparser->expand_papers($req, $this->astate);
+        // parse file up to 2000 lines at a time
+        $this->progress_phase = self::PROGPHASE_PARSE;
+        while ($this->parse_batch($csv, $has_landmark)) {
+            /* do nothing */
+        }
+
+        // call preapply functions and compute diff
+        $this->progress_phase = self::PROGPHASE_PREAPPLY;
+        $this->notify_progress([0, null]);
+        $this->astate->call_preapply_functions();
+        $difflist = $this->astate->diff_list();
+
+        // create assigners for difference
+        $this->progress_phase = self::PROGPHASE_REALIZE;
+        $this->notify_progress([0, count($difflist)]);
+        $this->assigners_pidhead = $pidtail = [];
+        $progresscadence = 1000;
+        foreach ($difflist as $item) {
+            try {
+                $this->astate->set_landmark($item->landmark);
+                $a = $item->realize($this->astate);
+                if (!$a) {
+                    continue;
                 }
-            } else {
-                $paper = (string) $req["paper"];
+                if ($a->pid > 0) {
+                    $index = count($this->assigners);
+                    if (isset($pidtail[$a->pid])) {
+                        $pidtail[$a->pid]->next_index = $index;
+                    } else {
+                        $this->assigners_pidhead[$a->pid] = $index;
+                    }
+                    $pidtail[$a->pid] = $a;
+                }
+                $this->assigners[] = $a;
+            } catch (Exception $e) {
+                if ($e->getMessage() !== "") {
+                    $this->astate->error($e->getMessage());
+                }
             }
+            ++$this->progress_value;
+            if ($this->progress_value % $progresscadence === 0) {
+                $this->notify_progress();
+            }
+        }
+        if ($this->progress_value % $progresscadence !== 0) {
+            $this->astate->set_landmark($csv->lineno());
+            $this->notify_progress();
+        }
+
+        $this->user->set_overrides($old_overrides);
+        return $this;
+    }
+
+    /** @return bool */
+    private function parse_batch(CsvParser $csv, $has_landmark) {
+        set_time_limit(30);
+        $rowlimit = 5000;
+        $progresscadence = 1000;
+
+        // read up to 5000 lines; read all their papers at once
+        $reqs = $pids = $progress = [];
+        $nrows = 0;
+        while ($nrows < $rowlimit && ($req = $csv->next_row())) {
             if ($has_landmark) {
-                $landmark = $req["landmark"] ?? $csv->lineno();
+                $reqs[] = $req["landmark"] ?? $csv->lineno();
             } else {
-                $landmark = $csv->lineno();
+                $reqs[] = $csv->lineno();
             }
-            foreach ($this->collect_papers($paper, false) as $pid) {
+            $reqs[] = $aparser = $this->collect_parser($req);
+            $reqs[] = $req;
+
+            ++$nrows;
+            if ($nrows % $progresscadence === $progresscadence - 1) {
+                $progress[] = [$csv->progress_value(), $csv->progress_max()];
+            }
+
+            // only collect papers in first batch
+            if ($this->request_count !== 0) {
+                continue;
+            }
+
+            if (!$aparser) {
+                $ps = (string) $req["paper"];
+            } else if ($aparser->paper_universe($req, $this->astate) === "none") {
+                $ps = "NONE";
+            } else {
+                $ps = $aparser->expand_papers($req, $this->astate);
+            }
+            foreach ($this->collect_papers($ps, false) as $pid) {
                 $pids[$pid] = true;
             }
-            $lines[] = [$landmark, $aparser, $req];
         }
-        if (!empty($pids)) {
+
+        // in first batch, load required papers
+        if ($this->request_count === 0) {
             $this->astate->set_landmark($csv->lineno());
-            $this->astate->fetch_prows(array_keys($pids), true);
+            if ($nrows < $rowlimit) {
+                $this->astate->fetch_prows(array_keys($pids));
+            } else if (isset($this->enabled_pids)) {
+                $this->astate->fetch_prows(array_keys($this->enabled_pids));
+            } else {
+                $this->astate->fetch_all_prows();
+            }
         }
 
         // apply assignment parsers
-        foreach ($lines as $linereq) {
-            $this->astate->set_landmark($linereq[0]);
+        $nreqs = count($reqs);
+        $nrows = 0;
+        for ($i = 0; $i !== $nreqs; $i += 3) {
+            $this->astate->set_landmark($reqs[$i]);
+            $this->apply_req($reqs[$i + 1], $reqs[$i + 2]);
             ++$this->request_count;
-            if ($this->request_count % 100 === 0) {
-                foreach ($this->progressf as $progressf) {
-                    call_user_func($progressf, $this, $linereq[2]);
-                }
-                set_time_limit(30);
-            }
-            $this->apply_req($linereq[1], $linereq[2]);
-        }
-
-        // call preapply functions
-        $this->astate->call_preapply_functions();
-
-        // create assigners for difference
-        $this->assigners_pidhead = $pidtail = [];
-        foreach ($this->astate->diff() as $difflist) {
-            foreach ($difflist as $item) {
-                try {
-                    $this->astate->set_landmark($item->landmark);
-                    if (($a = $item->realize($this->astate))) {
-                        if ($a->pid > 0) {
-                            $index = count($this->assigners);
-                            if (isset($pidtail[$a->pid])) {
-                                $pidtail[$a->pid]->next_index = $index;
-                            } else {
-                                $this->assigners_pidhead[$a->pid] = $index;
-                            }
-                            $pidtail[$a->pid] = $a;
-                        }
-                        $this->assigners[] = $a;
-                    }
-                } catch (Exception $e) {
-                    if ($e->getMessage() !== "") {
-                        $this->astate->error($e->getMessage());
-                    }
-                }
+            ++$nrows;
+            if ($nrows % $progresscadence === $progresscadence - 1) {
+                $this->notify_progress(array_shift($progress));
             }
         }
 
-        $this->astate->set_landmark($csv->lineno());
-        foreach ($this->progressf as $progressf) {
-            call_user_func($progressf, $this, null);
+        // complete
+        if ($nrows === $rowlimit) {
+            return true;
         }
-        $this->user->set_overrides($old_overrides);
-        return $this;
+        $this->notify_progress([$csv->progress_value(), $csv->progress_value()]);
+        return false;
     }
 
     /** @return list<string> */
     function assigned_types() {
         $types = [];
         foreach ($this->assigners as $assigner) {
-            $types[$assigner->type] = true;
+            $types[$assigner->type()] = true;
         }
         ksort($types);
         return array_keys($types);
@@ -1881,6 +2086,7 @@ class AssignmentSet {
                     $this->assignment_type = $desc;
                 } else {
                     $this->assignment_type = "";
+                    break;
                 }
             }
         }
@@ -1908,7 +2114,7 @@ class AssignmentSet {
             } else if ($c1 && !$c2) {
                 return -1;
             } else {
-                return strcmp($assigner1->type, $assigner2->type);
+                return strcmp($assigner1->type(), $assigner2->type());
             }
         });
         $t = [];
@@ -1919,9 +2125,8 @@ class AssignmentSet {
         }
         if (!empty($t)) {
             return '<span class="nw">' . join(',</span> <span class="nw">', $t) . '</span>';
-        } else {
-            return "";
         }
+        return "";
     }
 
     /** @return Assignment_PaperColumn */
@@ -1942,7 +2147,7 @@ class AssignmentSet {
         // Compute query last; unparse/account may show columns
         $q = $this->numjoin_assigned_pids(" ") ? : "NONE";
         if ($this->unparse_search) {
-            $q = "({$this->unparse_search}) THEN LEGEND:none $q";
+            $q = "({$this->unparse_search}) THEN LEGEND:none {$q}";
         }
         foreach ($this->unparse_columns as $k => $v) {
             if ($v)
@@ -1954,6 +2159,8 @@ class AssignmentSet {
     }
 
     function print_unparse_display() {
+        $this->progress_phase = self::PROGPHASE_UNPARSE;
+        $this->notify_progress([0, null]);
         Assignment_PaperColumn::print_unparse_display($this->unparse_paper_column());
     }
 
@@ -1971,20 +2178,22 @@ class AssignmentSet {
         return $this->astate->prow($pid);
     }
 
-    /** @param bool $verbose
-     * @return bool */
-    function execute($verbose = false) {
-        if ($this->has_error() || empty($this->assigners)) {
-            $verbose && $this->report_errors();
-            return !$this->has_error(); // true means no errors
+    /** @return bool */
+    function execute() {
+        assert($this->executed === 0);
+        if ($this->has_error()) {
+            return false;
+        } else if (empty($this->assigners)) {
+            return true;
         }
 
         // mark activity now to avoid DB errors later
         $this->user->mark_activity();
+        $this->executed = Conf::$now;
 
         // create new contacts, collect pids
         $locks = ["ContactInfo" => "read", "Paper" => "read", "PaperConflict" => "read"];
-        $this->conf->delay_logs();
+        $this->conf->pause_log();
         $pids = [];
         foreach ($this->assigners as $assigner) {
             if (($u = $assigner->contact) && $u->contactId < 0) {
@@ -2000,12 +2209,24 @@ class AssignmentSet {
         // execute assignments
         $tables = [];
         foreach ($locks as $t => $type) {
-            $tables[] = "$t $type";
+            $tables[] = "{$t} {$type}";
         }
         $this->conf->qe("lock tables " . join(", ", $tables));
 
+        $progresscadence = 1000;
+        $this->progress_phase = self::PROGPHASE_SAVE;
+        $this->progress_value = 0;
+        $this->progress_max = count($this->assigners);
         foreach ($this->assigners as $assigner) {
             $assigner->execute($this);
+            ++$this->progress_value;
+            if ($this->progress_value % $progresscadence === 0) {
+                set_time_limit(30);
+                $this->notify_progress();
+            }
+        }
+        if ($this->progress_value % $progresscadence !== 0) {
+            $this->notify_progress();
         }
 
         if ($this->qe_stager) {
@@ -2013,22 +2234,12 @@ class AssignmentSet {
         }
         $this->conf->qe("unlock tables");
 
-        // confirmation message
-        if ($verbose && $this->conf->setting("pcrev_assigntime") == Conf::$now) {
-            $this->conf->feedback_msg(
-                MessageItem::success("<0>Assignments saved"),
-                MessageItem::inform("<5>You may want to " . $this->conf->hotlink("send mail about the new assignments", "mail", "template=newpcrev") . ".")
-            );
-        } else if ($verbose) {
-            $this->conf->success_msg("<0>Assignments saved");
-        }
-
         // clean up
         foreach ($this->assigners as $assigner) {
             $assigner->cleanup($this);
         }
         foreach ($this->_cleanup_callbacks as $cb) {
-            call_user_func($cb[0], $cb[1]);
+            call_user_func($cb[0], $this, $cb[1]);
         }
         if (!empty($pids)) {
             $this->conf->update_automatic_tags(array_keys($pids), $this->assigned_types());
@@ -2037,7 +2248,7 @@ class AssignmentSet {
             && $this->conf->opt("trackerCometSite")) {
             MeetingTracker::notify_tracker($this->conf, array_keys($this->_cleanup_notify_tracker));
         }
-        $this->conf->release_logs();
+        $this->conf->resume_log();
 
         return true;
     }
@@ -2129,9 +2340,8 @@ class Assignment_PaperColumn extends PaperColumn {
                 }
             }
             if (!empty($summary)) {
-                echo "<div class=\"g\"></div>\n",
-                    "<h3>Summary</h3>\n",
-                    '<div class="pc-ctable">', join("", $summary), "</div>\n";
+                echo '<div class="assignment-summary mt-4"><h3>Summary</h3>',
+                    '<div class="pc-ctable">', join("", $summary), "</div></div>\n";
             }
         }
     }

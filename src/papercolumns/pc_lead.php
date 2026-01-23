@@ -1,6 +1,6 @@
 <?php
 // pc_lead.php -- HotCRP helper classes for paper list content
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Lead_PaperColumn extends PaperColumn {
     /** @var int */
@@ -14,7 +14,8 @@ class Lead_PaperColumn extends PaperColumn {
     }
     function prepare(PaperList $pl, $visible) {
         if (!$pl->user->can_view_lead(null)
-            || (!$pl->conf->has_any_lead_or_shepherd() && !$visible)) {
+            || (!$pl->conf->has_any_lead_or_shepherd()
+                && $visible === FieldRender::CFSUGGEST)) {
             return false;
         }
         $pl->conf->pc_set(); // prepare cache
@@ -24,9 +25,11 @@ class Lead_PaperColumn extends PaperColumn {
     static private function cid(PaperList $pl, PaperInfo $row) {
         if ($row->leadContactId > 0 && $pl->user->can_view_lead($row)) {
             return $row->leadContactId;
-        } else {
-            return 0;
         }
+        return 0;
+    }
+    function sort_name() {
+        return $this->sort_name_with_options("format");
     }
     function compare(PaperInfo $a, PaperInfo $b, PaperList $pl) {
         $ianno = $this->nameflags & NAME_L ? Contact::SORTSPEC_LAST : Contact::SORTSPEC_FIRST;

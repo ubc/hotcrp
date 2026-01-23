@@ -1,6 +1,6 @@
 <?php
 // o_numeric.php -- HotCRP helper class for whole-number options
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Numeric_PaperOption extends PaperOption {
     function __construct(Conf $conf, $args) {
@@ -28,14 +28,13 @@ class Numeric_PaperOption extends PaperOption {
         $ov->set_anno("request", $v);
         return $ov;
     }
-    function parse_json(PaperInfo $prow, $j) {
+    function parse_json_user(PaperInfo $prow, $j, Contact $user) {
         if (is_int($j)) {
             return PaperValue::make($prow, $this, $j);
         } else if ($j === null || $j === false) {
             return PaperValue::make($prow, $this);
-        } else {
-            return PaperValue::make_estop($prow, $this, "<0>Whole number required");
         }
+        return PaperValue::make_estop($prow, $this, "<0>Whole number required");
     }
     function print_web_edit(PaperTable $pt, $ov, $reqov) {
         $reqx = $reqov->anno("request") ?? $reqov->value ?? "";
@@ -56,22 +55,21 @@ class Numeric_PaperOption extends PaperOption {
         }
     }
 
-    function search_examples(Contact $viewer, $context) {
+    function search_examples(Contact $viewer, $venue) {
         return [
             $this->has_search_example(),
-            new SearchExample(
-                $this, $this->search_keyword() . ":{comparator}",
+            $this->make_search_example(
+                $this->search_keyword() . ":{comparator}",
                 "<0>submission’s {title} field is greater than 100",
-                new FmtArg("comparator", ">100")
+                new FmtArg("comparator", ">100", 0)
             )
         ];
     }
     function parse_search(SearchWord $sword, PaperSearch $srch) {
-        if (preg_match('/\A[-+]?(?:\d+|\d+\.\d*|\.\d+)\z/', $sword->cword)) {
-            return new OptionValue_SearchTerm($srch->user, $this, CountMatcher::parse_relation($sword->compar), (float) $sword->cword);
-        } else {
+        if (!preg_match('/\A[-+]?(?:\d+|\d+\.\d*|\.\d+)\z/', $sword->cword)) {
             return null;
         }
+        return new OptionValue_SearchTerm($srch->user, $this, CountMatcher::parse_relation($sword->compar), (float) $sword->cword);
     }
     function present_script_expression() {
         return ["type" => "text_present", "formid" => $this->formid];
@@ -80,9 +78,7 @@ class Numeric_PaperOption extends PaperOption {
         return ["type" => "numeric", "formid" => $this->formid];
     }
 
-    function parse_fexpr(FormulaCall $fcall, &$t) {
-        $fex = new OptionValue_Fexpr($this);
-        $fex->set_format(Fexpr::FNUMERIC);
-        return $fex;
+    function parse_fexpr(FormulaCall $fcall) {
+        return new OptionValue_Fexpr($this, Fexpr::FNUMERIC, null);
     }
 }

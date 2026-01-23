@@ -3,11 +3,15 @@
         "unparse_json_function": "UserStatus::unparse_json_main",
         "request_function": "UserStatus::parse_qreq_main",
         "parse_csv_function": "UserStatus::parse_csv_main",
-        "save_early_function": "UserStatus::save_main"
+        "save_early_function": "*UserStatus::save_main"
     },
     {
         "name": "__crosscheck/main", "order": 100,
         "crosscheck_function": "UserStatus::crosscheck_main"
+    },
+    {
+        "name": "__crosscheck/alerts", "order": 150,
+        "crosscheck_function": "UserStatus::crosscheck_alerts"
     },
     {   "name": "__field/firstName", "label": "First name", "page": "main"   },
     {   "name": "__field/lastName", "label": "Last name", "page": "main"   },
@@ -16,6 +20,11 @@
     {   "name": "__field/affiliation", "label": "Affiliation", "page": "main"   },
     {   "name": "__field/collaborators", "label": "Collaborators", "page": "main"   },
     {   "name": "__field/topics", "label": "Topics", "page": "main"   },
+
+    {
+        "name": "__reauthenticate", "autosection": false,
+        "print_function": "Security_UserInfo::print_reauthenticate"
+    },
 
     [   "main/main", 1000, "UserStatus::print_main"   ],
     [   "main/country", 3000, "UserStatus::print_country"   ],
@@ -37,17 +46,20 @@
 
 
     {   "name": "security", "title": "Security", "order": 200,
-        "allow_if": "profile_security",
+        "display_if": "*Security_UserInfo::display_if",
         "print_function": "*Security_UserInfo::print",
+        "request_recent_authentication": true,
         "request_function": "*Security_UserInfo::request",
-        "save_members": true,
+        "save_function": "*Security_UserInfo::save",
         "inputs": false   },
-    [   "security/currentpassword", 10, "*Security_UserInfo::print_current_password"   ],
+    {   "name": "security/reauthenticate",
+        "order": 1, "alias": "__reauthenticate"   },
     {   "name": "security/newpassword", "order": 100,
+        "title": "Change password",
         "print_function": "*Security_UserInfo::print_new_password",
         "request_function": "*Security_UserInfo::parse_qreq_new_password",
         "save_function": "Security_UserInfo::save_new_password",
-        "inputs": false   },
+        "autosection": false, "inputs": false   },
 
 
     {   "name": "preferences", "title": "Preferences", "order": 300   },
@@ -59,9 +71,12 @@
 
     {   "name": "developer", "title": "Developer settings", "short_title": "Developer",
         "order": 2000,
-        "allow_if": "auth_self",
+        "display_if": "*Developer_UserInfo::display_if",
+        "request_recent_authentication": true,
         "request_function": "*Developer_UserInfo::request",
-        "save_members": true   },
+        "save_function": "*Developer_UserInfo::save"   },
+    {   "name": "developer/reauthenticate",
+        "order": 1, "alias": "__reauthenticate"   },
     {   "name": "developer/tokens", "title": "API tokens", "order": 10,
         "print_function": "*Developer_UserInfo::print_bearer_tokens",
         "inputs": false   },
@@ -91,7 +106,7 @@
     {   "name": "__bulk/help/f/tags", "order": -70, "description_html": "PC tags (space-separated)"   },
     {   "name": "__bulk/help/f/add_tags", "order": -65, "description_html": "PC tags to add"   },
     {   "name": "__bulk/help/f/remove_tags", "order": -65, "description_html": "PC tags to remove"   },
-    {   "name": "__bulk/help/f/follow", "description_html": "Event notification: blank, “<code>reviews</code>”, “<code>allreviews</code>”, “<code>none</code>”"   },
+    {   "name": "__bulk/help/f/follow", "description_html": "Event notification: blank, “<code>review</code>”, “<code>anyreview</code>”, “<code>none</code>”"   },
     {   "name": "__bulk/help/f/topics", "field": "topic:<TOPICNAME>", "description_html": "Topic interest: blank, “<code>low</code>”, “<code>medium-low</code>”, “<code>medium-high</code>”, or “<code>high</code>”, or numeric (-2 to 2)", "allow_if": "conf.has_topics", "order": 1   },
     {   "name": "__bulk/help/f/topic_override", "field": "topic_override", "description_html": "If “<code>no</code>”, then do not overwrite existing topic interests", "allow_if": "conf.has_topics", "order": 1.2   },
     {   "name": "__bulk/help/f/notify", "description_html": "Notify new accounts (default <code>yes</code>)", "order": 100   }

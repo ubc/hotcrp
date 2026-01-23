@@ -22,7 +22,7 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     /** @var ?string */
     private $_body;
     /** @var ?string */
-    private $_body_filename;
+    private $_body_file;
     /** @var array<string,string> */
     private $_v;
     /** @var array<string,list> */
@@ -40,14 +40,16 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     private $_active_list = false;
     /** @var Qsession */
     private $_qsession;
+    /** @var ?PaperInfo */
+    private $_requested_paper;
 
     /** @var Qrequest */
     static public $main_request;
 
     const ARRAY_MARKER = "__array__";
     const BODY_NONE = 0;
-    const BODY_INPUT = 1;
-    const BODY_SET = 2;
+    const BODY_FILE = 1;
+    const BODY_STRING = 2;
 
     /** @param string $method
      * @param array<string,string> $data */
@@ -67,10 +69,15 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     }
 
     /** @param string $page
-     * @param ?string $path
      * @return $this */
-    function set_page($page, $path = null) {
+    function set_page($page) {
         $this->_page = $page;
+        return $this;
+    }
+
+    /** @param string $path
+     * @return $this */
+    function set_path($path) {
         $this->_path = $path;
         return $this;
     }
@@ -104,6 +111,14 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     /** @return $this */
     function set_qsession(Qsession $qsession) {
         $this->_qsession = $qsession;
+        return $this;
+    }
+
+    /** @return $this
+     * @suppress PhanDeprecatedProperty */
+    function set_paper(?PaperInfo $prow) {
+        $this->_requested_paper = $prow;
+        $this->_conf->paper = $prow;
         return $this;
     }
 
@@ -161,10 +176,18 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
         }
         return null;
     }
+    /** @return ?PaperInfo */
+    function paper() {
+        return $this->_requested_paper;
+    }
 
     /** @return ?string */
     function referrer() {
         return $this->_referrer;
+    }
+    /** @return ?string */
+    function user_agent() {
+        return $this->_headers["HTTP_USER_AGENT"] ?? null;
     }
 
     /** @param string $k
@@ -181,60 +204,77 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
 
     /** @return ?string */
     function body() {
-        if ($this->_body === null && $this->_body_type === self::BODY_INPUT) {
-            $this->_body = file_get_contents("php://input");
+        if ($this->_body !== null || $this->_body_type === self::BODY_NONE) {
+            return $this->_body;
+        }
+        $s = @file_get_contents($this->_body_file ?? "php://input");
+        if ($s !== false) {
+            $this->_body = $s;
+        } else {
+            $this->_body_type = self::BODY_NONE;
+            $this->_body_file = null;
         }
         return $this->_body;
     }
 
     /** @param ?string $extension
      * @return ?string */
-    function body_filename($extension = null) {
-        if ($this->_body_filename === null && $this->_body_type !== self::BODY_NONE) {
-            if (!($tmpdir = tempdir())) {
-                return null;
-            }
-            $extension = $extension ?? Mimetype::extension($this->header("Content-Type"));
-            $fn = $tmpdir . "/" . strtolower(encode_token(random_bytes(6))) . $extension;
-            if ($this->_body_type === self::BODY_INPUT) {
-                $ok = copy("php://input", $fn);
-            } else {
-                $ok = file_put_contents($this->_body, $fn) === strlen($this->_body);
-            }
-            if ($ok) {
-                $this->_body_filename = $fn;
-            }
+    function body_file($extension = null) {
+        if ($this->_body_file !== null || $this->_body_type === self::BODY_NONE) {
+            return $this->_body_file;
         }
-        return $this->_body_filename;
+        $extension = $extension ?? Mimetype::extension($this->header("Content-Type"));
+        $finfo = Filer::create_tempfile(null, "reqbody-%s{$extension}", 5);
+        if (!$finfo) {
+            return null;
+        }
+        if ($this->_body === null) {
+            $if = fopen("php://input", "rb");
+            $nc = stream_copy_to_stream($if, $finfo[1]);
+            fclose($if);
+            $ok = $nc !== false;
+        } else {
+            $nc = fwrite($finfo[1], $this->_body);
+            $ok = $nc === strlen($this->_body);
+        }
+        fclose($finfo[1]);
+        if ($ok) {
+            $this->_body_file = $finfo[0];
+        } else {
+            $this->_body_type = self::BODY_NONE;
+        }
+        return $this->_body_file;
+    }
+
+    /** @param ?string $extension
+     * @return ?string
+     * @deprecated */
+    function body_filename($extension = null) {
+        return $this->body_file($extension);
     }
 
     /** @return ?string */
     function body_content_type() {
-        if ($this->_body_type === self::BODY_NONE) {
+        if (($ct = $this->header("Content-Type"))) {
+            return Mimetype::base($ct);
+        } else if ($this->_body_type === self::BODY_NONE) {
             return null;
-        } else if (($ct = $this->header("Content-Type"))) {
-            return Mimetype::type($ct);
         }
-        $b = $this->_body;
-        if ($b === null && $this->_body_type === self::BODY_INPUT) {
-            $b = file_get_contents("php://input", false, null, 0, 4096);
-        }
-        $b = (string) $b;
+        $b = (string) $this->body();
         if (str_starts_with($b, "\x50\x4B\x03\x04")) {
             return "application/zip";
         } else if (preg_match('/\A\s*[\[\{]/s', $b)) {
             return "application/json";
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @param string $body
      * @param ?string $content_type
      * @return $this */
     function set_body($body, $content_type = null) {
-        $this->_body_type = self::BODY_SET;
-        $this->_body_filename = null;
+        $this->_body_type = self::BODY_STRING;
+        $this->_body_file = null;
         $this->_body = $body;
         if ($content_type !== null) {
             $this->set_header("Content-Type", $content_type);
@@ -304,10 +344,12 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
         return $this->_v[$name] ?? null;
     }
     /** @param string $name
-     * @param string $value */
+     * @param string $value
+     * @return $this */
     function set($name, $value) {
         $this->_v[$name] = $value;
         unset($this->_a[$name]);
+        return $this;
     }
     /** @param string $name
      * @return bool */
@@ -320,10 +362,12 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
         return $this->_a[$name] ?? null;
     }
     /** @param string $name
-     * @param list $value */
+     * @param list $value
+     * @return $this */
     function set_a($name, $value) {
         $this->_v[$name] = self::ARRAY_MARKER;
         $this->_a[$name] = $value;
+        return $this;
     }
     /** @return $this */
     function set_req($name, $value) {
@@ -496,25 +540,26 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
      * @return ?bool */
     function xt_allow($e) {
         if ($e === "post") {
-            return $this->_post_ok && $this->_method === "POST";
+            return $this->_post_ok
+                && $this->_method === "POST";
         } else if ($e === "anypost") {
             return $this->_method === "POST";
         } else if ($e === "getpost") {
-            return in_array($this->_method, ["POST", "GET", "HEAD"]) && $this->_post_ok;
+            return $this->_post_ok
+                && in_array($this->_method, ["POST", "GET", "HEAD"], true);
         } else if ($e === "get") {
             return $this->_method === "GET";
         } else if ($e === "head") {
             return $this->_method === "HEAD";
         } else if (str_starts_with($e, "req.")) {
             return $this->has(substr($e, 4));
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @param ?NavigationState $nav */
     static function make_minimal($nav = null) : Qrequest {
-        $qreq = new Qrequest($_SERVER["REQUEST_METHOD"]);
+        $qreq = new Qrequest($_SERVER["REQUEST_METHOD"] ?? "NONE");
         $qreq->set_navigation($nav ?? Navigation::get());
         if (array_key_exists("post", $_GET)) {
             $qreq->set_req("post", $_GET["post"]);
@@ -538,7 +583,14 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
         if (isset($_SERVER["HTTP_REFERER"])) {
             $qreq->set_referrer($_SERVER["HTTP_REFERER"]);
         }
-        $qreq->_body_type = empty($_POST) ? self::BODY_INPUT : self::BODY_NONE;
+        $qreq->_body_type = empty($_POST) ? self::BODY_FILE : self::BODY_NONE;
+
+        // Work around GET URL length limitations with `:method:` parameter.
+        // A POST request can set `:method:` to GET for GET semantics.
+        if (($v = $qreq->_v[":method:"] ?? null) === "GET"
+            && $qreq->method() === "POST") {
+            $qreq->_method = "GET";
+        }
 
         // $_FILES requires special processing since we want error messages.
         $errors = [];
@@ -560,15 +612,15 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
                 } else if ($fi["error"] != UPLOAD_ERR_NO_FILE) {
                     if ($fi["error"] == UPLOAD_ERR_INI_SIZE
                         || $fi["error"] == UPLOAD_ERR_FORM_SIZE) {
-                        $errors[] = $e = MessageItem::error("Uploaded file too large");
+                        $errors[] = $e = MessageItem::error("<0>Uploaded file too large");
                         if (!$too_big) {
-                            $errors[] = MessageItem::inform("The maximum upload size is " . ini_get("upload_max_filesie") . "B.");
+                            $errors[] = MessageItem::inform("<0>The maximum upload size is " . ini_get("upload_max_filesie") . "B.");
                             $too_big = true;
                         }
                     } else if ($fi["error"] == UPLOAD_ERR_PARTIAL) {
-                        $errors[] = $e = MessageItem::error("File upload interrupted");
+                        $errors[] = $e = MessageItem::error("<0>File upload interrupted");
                     } else {
-                        $errors[] = $e = MessageItem::error("Error uploading file");
+                        $errors[] = $e = MessageItem::error("<0>Error uploading file");
                     }
                     $e->landmark = $fi["name"] ?? null;
                 }
@@ -633,9 +685,9 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     }
 
     function print_footer() {
-        echo '<hr class="c"></div>', // close #p-body
+        echo '<hr class="c"></main>', // close #p-body
             '</div>',                // close #p-page
-            '<div id="p-footer" class="need-banner-offset banner-bottom">',
+            '<footer id="p-footer" class="need-banner-offset banner-bottom">',
             $this->_conf->opt("extraFooter") ?? "",
             '<a class="noq" href="https://hotcrp.com/">HotCRP</a>';
         if (!$this->_conf->opt("noFooterVersion")) {
@@ -650,7 +702,7 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
                 echo "<!-- Version ", HOTCRP_VERSION, " -->";
             }
         }
-        echo '</div>', Ht::unstash(), "</body>\n</html>\n";
+        echo '</footer>', Ht::unstash(), "</body>\n</html>\n";
     }
 
     static function print_footer_hook(Contact $user, Qrequest $qreq) {
@@ -727,9 +779,8 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     function csession($key) {
         if ($this->_conf && $this->_conf->session_key !== null) {
             return $this->_qsession->get2($this->_conf->session_key, $key);
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @param string $key
@@ -758,11 +809,10 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     /** @return string */
     function maybe_post_value() {
         $sid = $this->_qsession->sid ?? "";
-        if ($sid !== "") {
-            return urlencode(substr($sid, strlen($sid) > 16 ? 8 : 0, 12));
-        } else {
+        if ($sid === "") {
             return ".empty";
         }
+        return urlencode(substr($sid, strlen($sid) > 16 ? 8 : 0, 12));
     }
 
 
@@ -807,6 +857,10 @@ class QrequestFile {
     public $content;
     /** @var int */
     public $error;
+    /** @var ?resource */
+    public $stream;
+    /** @var string */
+    public $docstore_tmp_name;
 
     /** @param array{name?:string,type?:string,size?:?int,tmp_name?:?string,content?:?string,error?:int} $finfo
      * @return QrequestFile */
@@ -830,9 +884,39 @@ class QrequestFile {
         $qf->name = $filename ?? "__content__";
         $qf->type = $mimetype ?? "application/octet-stream";
         $qf->size = strlen($content);
-        $qf->tmp_name = null;
         $qf->content = $content;
         $qf->error = 0;
+        return $qf;
+    }
+
+    /** @param resource $stream
+     * @param ?string $filename
+     * @param ?string $mimetype
+     * @return QrequestFile */
+    static function make_stream($stream, $filename = null, $mimetype = null) {
+        $qf = new QrequestFile;
+        $qf->name = $filename ?? "__content__";
+        $qf->type = $mimetype ?? "application/octet-stream";
+        if (($stat = @fstat($stream)) && isset($stat["size"])) {
+            $qf->size = $stat["size"];
+        }
+        $qf->stream = $stream;
+        $qf->error = 0;
+        return $qf;
+    }
+
+    /** @param DocumentInfo $doc
+     * @return ?QrequestFile */
+    static function make_document($doc) {
+        $qf = new QrequestFile;
+        $qf->name = $doc->filename;
+        $qf->type = $doc->mimetype;
+        if (($size = $doc->size()) >= 0) {
+            $qf->size = $size;
+        }
+        if (($qf->tmp_name = $doc->content_file()) === null) {
+            return null;
+        }
         return $qf;
     }
 
@@ -848,5 +932,64 @@ class QrequestFile {
             $data = @file_get_contents($this->tmp_name, false, null, $offset, $maxlen);
         }
         return $data;
+    }
+
+    /** @return bool */
+    function prepare_content() {
+        if ($this->content !== null || $this->stream !== null) {
+            return true;
+        }
+        if (($stream = @fopen($this->tmp_name, "rb"))) {
+            $this->stream = $stream;
+            return true;
+        }
+        return false;
+    }
+
+    /** @param string $template
+     * @return ?QrequestFile */
+    function content_or_docstore($template, ?Conf $conf = null) {
+        if ($this->content !== null || $this->stream !== null) {
+            return $this;
+        }
+        $size = $this->size ?? 0;
+        if ($size <= (4 << 20)
+            || ((!$conf || !$conf->docstore_tempdir())
+                && $size <= (80 << 20))) {
+            $t = @file_get_contents($this->tmp_name);
+            if ($t === false) {
+                return null;
+            }
+            $qf = clone $this;
+            $qf->content = $t;
+            $qf->size = strlen($t);
+            return $qf;
+        }
+        $dstempdir = $conf ? $conf->docstore_tempdir() : null;
+        if (!$dstempdir) {
+            return null;
+        }
+        $tfinfo = Filer::create_tempfile($dstempdir, $template);
+        if ($tfinfo === null) {
+            return null;
+        }
+        if (@move_uploaded_file($this->tmp_name, $tfinfo[0])
+            && ($stream = @fopen($tfinfo[0], "rb"))) {
+            $this->tmp_name = $tfinfo[0];
+            $this->stream = $stream;
+            $this->docstore_tmp_name = substr($tfinfo[0], strrpos($tfinfo[0], "/") + 1);
+        }
+        fclose($tfinfo[1]);
+        return $this->stream ? $this : null;
+    }
+
+    function convert_to_utf8() {
+        assert($this->content !== null || $this->stream !== null);
+        if ($this->content !== null) {
+            $this->content = convert_to_utf8($this->content);
+            $this->size = strlen($this->content);
+        } else {
+            UTF8ConversionFilter::append($this->stream);
+        }
     }
 }

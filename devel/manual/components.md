@@ -25,7 +25,7 @@ setting.
 | Mail keywords                          | `etc/mailkeywords.json`       | `$Opt["mailKeywords"]`    | ✓ | ✓ |   |
 | Mail templates                         | `etc/mailtemplates.json`      | `$Opt["mailTemplates"]`   |   | ✓ |   |
 | Search columns                         | `etc/papercolumns.json`       | `$Opt["paperColumns"]`    | ✓ | ✓ |   |
-| Profile page topics                    | `etc/profilegroups.json`      | `$Opt["profileGroups"]`   |   | ✓ | ✓ |
+| Account settings topics                | `etc/profilegroups.json`      | `$Opt["profileGroups"]`   |   | ✓ | ✓ |
 | Sample review fields                   | `etc/reviewfieldlibrary.json` | `$Opt["reviewFieldLibraries"]` |   | ✓ |   |
 | Review field types                     | `etc/reviewfieldtypes.json`   | `$Opt["reviewFieldTypes"]` |  |   |   |
 | Search keywords                        | `etc/searchkeywords.json`     | `$Opt["searchKeywords"]`  | ✓ | ✓ |   |
@@ -128,8 +128,8 @@ useful to provide synonyms; for example, the search keyword component fragment
 copying a component definition because changes in the source component are
 automatically incorporated in the alias.
 
-An alias may point to another alias, but HotCRP will only follow alias chains
-to a limited depth before giving up.
+An alias may point to another alias, but HotCRP will give up if an alias chain
+goes on too long.
 
 ## Nested components
 

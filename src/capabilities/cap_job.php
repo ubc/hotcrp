@@ -1,49 +1,55 @@
 <?php
 // cap_job.php -- HotCRP batch job capability management
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
-class Job_Capability {
+class Job_Capability extends TokenInfo {
+    function __construct(Conf $conf) {
+        parent::__construct($conf, TokenInfo::JOB);
+    }
+
     /** @param string $batch_class
      * @param list<string> $argv
-     * @return TokenInfo */
+     * @return Job_Capability */
     static function make(Contact $user, $batch_class, $argv = []) {
-        return (new TokenInfo($user->conf, TokenInfo::JOB))
+        return (new Job_Capability($user->conf))
             ->set_user($user)
             ->set_token_pattern("hcj_[24]")
-            ->set_invalid_after(86400)
-            ->set_expires_after(86400)
+            ->set_invalid_in(86400)
+            ->set_expires_in(86400)
             ->set_input(["batch_class" => $batch_class, "argv" => $argv]);
     }
 
-    /** @param string $salt
+    /** @param string $token
      * @return ?string */
-    static function canonical_token($salt) {
-        if ($salt === false || $salt === "e") {
-            $salt = getenv("HOTCRP_JOB");
+    static function canonical_token($token) {
+        if ($token === "e") {
+            $token = getenv("HOTCRP_JOB");
         }
-        if ($salt && strpos($salt, "_") === false) {
-            $salt = "hcj_{$salt}";
+        if ($token === null || strlen($token) < 24) {
+            return null;
         }
-        return $salt ? : null;
+        if (strpos($token, "_") === false) {
+            $token = "hcj_{$token}";
+        }
+        return $token;
     }
 
-    /** @param string $salt
-     * @param ?string $batch_class
-     * @param bool $allow_inactive
-     * @return TokenInfo */
-    static function find(Conf $conf, $salt, $batch_class = null, $allow_inactive = false) {
-        if (!($rsalt = self::canonical_token($salt))
-            || !($tok = TokenInfo::find($rsalt, $conf))
-            || !self::validate($tok, $batch_class)
-            || (!$allow_inactive && !$tok->is_active())) {
-            throw new CommandLineException("Invalid job token `{$salt}`");
+    /** @param string $token
+     * @return ?Job_Capability */
+    static function find($token, Conf $conf) {
+        if (!($rtoken = self::canonical_token($token))) {
+            return null;
         }
+        $result = $conf->ql("select * from Capability where salt=? and capabilityType=?",
+            $rtoken, TokenInfo::JOB);
+        $tok = TokenInfo::fetch($result, $conf, false, "Job_Capability");
+        $result->close();
         return $tok;
     }
 
     /** @param string $batch_class
      * @param list<string> $argv
-     * @return ?TokenInfo */
+     * @return ?Job_Capability */
     static function find_active_match(Contact $user, $batch_class, $argv = []) {
         $result = $user->conf->ql("select * from Capability
                 where capabilityType=? and salt>='hcj' and salt<'hck'
@@ -56,31 +62,34 @@ class Job_Capability {
             $user->contactId > 0 ? $user->contactId : 0,
             Conf::$now, Conf::$now,
             json_encode_db(["batch_class" => $batch_class, "argv" => $argv]));
-        $tok = TokenInfo::fetch($result, $user->conf);
+        $tok = TokenInfo::fetch($result, $user->conf, false, "Job_Capability");
         $result->close();
         return $tok;
     }
 
     /** @param ?string $batch_class
      * @return bool */
-    static function validate(TokenInfo $tok, $batch_class) {
-        return $tok->capabilityType === TokenInfo::JOB
-            && is_string(($bc = $tok->input("batch_class")))
+    function is_batch_class($batch_class) {
+        return $this->capabilityType === TokenInfo::JOB
+            && is_string(($bc = $this->input("batch_class")))
             && ($batch_class === null || $batch_class === $bc);
     }
 
     /** @param string $salt
-     * @param ?string $command
-     * @return TokenInfo */
-    static function claim(Conf $conf, $salt, $command = null) {
-        $tok = self::find($conf, $salt, $command);
+     * @param ?string $batch_class
+     * @return Job_Capability */
+    static function claim($salt, Conf $conf, $batch_class = null) {
+        $tok = self::find($salt, $conf);
+        if (!$tok || !$tok->is_batch_class($batch_class)) {
+            throw new CommandLineException("No such job `{$salt}`");
+        }
         while (true) {
-            if ($tok->data !== null) {
+            if ($tok->encoded_data() !== null) {
                 throw new CommandLineException("Job `{$salt}` has already started");
             }
             $new_data = '{"status":"run"}';
             $result = Dbl::qe($conf->dblink,
-                "update Capability set `data`=? where salt=? and `data` is null",
+                "update Capability set `data`=? where salt=? and `data` is null and dataOverflow is null",
                 $new_data, $tok->salt);
             if ($result->affected_rows > 0) {
                 $tok->assign_data($new_data);
@@ -90,38 +99,68 @@ class Job_Capability {
         }
     }
 
-    /** @param string|callable():string $redirect_uri
+    /** @param bool|string $output
+     * @return JsonResult */
+    function json_result($output = false) {
+        $ok = $this->is_active();
+        $answer = [
+            "ok" => $ok,
+            "status" => "wait",
+            "update_at" => $this->timeUsed ? : $this->timeCreated
+        ];
+        foreach ((array) $this->data() as $k => $v) {
+            if ($k === ""
+                || $k[0] === "_"
+                || $k[0] === "#"
+                || $k === "ok"
+                || $k === "update_at") {
+                continue;
+            }
+            $answer[$k] = $v;
+        }
+        if ($output && $this->outputData !== null) {
+            if ((str_starts_with($this->outputData, "{")
+                 || str_starts_with($this->outputData, "["))
+                && $output !== "text"
+                && ($j = json_decode($this->outputData))) {
+                $answer["output"] = $j;
+            } else if (is_valid_utf8($this->outputData)) {
+                $answer["output"] = $this->outputData;
+            } else {
+                $answer["output_base64"] = base64_encode($this->outputData);
+            }
+        }
+        return new JsonResult($ok ? 200 : 409, $answer);
+    }
+
+    /** @param callable():void $detach_function
      * @return 'forked'|'detached'|'done' */
-    static function run_live(TokenInfo $tok, ?Qrequest $qreq = null, $redirect_uri = null) {
-        assert(self::validate($tok, null));
-        $batch_class = $tok->input("batch_class");
+    function run_live($detach_function = null) {
+        $batch_class = $this->input("batch_class");
 
         $status = "done";
-        $detacher = function () use (&$status, $qreq, $redirect_uri) {
-            if (PHP_SAPI === "fpm-fcgi" && $status === "done") {
-                $status = "detached";
-                if ($redirect_uri) {
-                    $u = is_string($redirect_uri) ? $redirect_uri : call_user_func($redirect_uri);
-                    header("Location: {$u}");
+        $detacher = null;
+        if (PHP_SAPI === "fpm-fcgi" && $detach_function) {
+            $detacher = function () use (&$status, $detach_function) {
+                if ($status === "done") {
+                    $status = "detached";
+                    call_user_func($detach_function);
+                    fastcgi_finish_request();
                 }
-                if ($qreq) {
-                    $qreq->qsession()->commit();
-                }
-                fastcgi_finish_request();
-            }
-        };
-        putenv("HOTCRP_JOB={$tok->salt}");
+            };
+        }
+        putenv("HOTCRP_JOB={$this->salt}");
 
         try {
             $argv = [$batch_class];
-            if (($confid = $tok->conf->opt("confid"))) {
+            if (($confid = $this->conf->opt("confid"))) {
                 // The `-n` option is not normally needed: the batch class
                 // calls initialize_conf, which does nothing as Conf::$main
                 // is already initialized. But we should include it anyway
                 // for consistency.
                 $argv[] = "-n{$confid}";
             }
-            array_push($argv, ...$tok->input("argv"));
+            array_push($argv, ...$this->input("argv"));
             $x = call_user_func("{$batch_class}_Batch::make_args", $argv, $detacher);
             $x->run();
         } catch (CommandLineException $ex) {
@@ -133,15 +172,13 @@ class Job_Capability {
 
     /** @param 'foreground'|'background' $batchmode
      * @return int */
-    static function run_child(TokenInfo $tok, $batchmode = "foreground") {
-        assert(self::validate($tok, null));
-
+    function run_child($batchmode = "foreground") {
         // Requirements:
-        // * `$B = $tok->input("batch_class")` is set
+        // * `$B = $this->input("batch_class")` is set
         // * The class `{$B}_Batch` can be loaded
         // * The file defining `{$B}_Batch` contains the string
         //   `/*{hotcrp {$B}_Batch}*/` in the first 1024 characters
-        $batch_class = $tok->input("batch_class");
+        $batch_class = $this->input("batch_class");
         if (!$batch_class) {
             return -1;
         }
@@ -157,20 +194,20 @@ class Job_Capability {
 
         $cmd = [];
         if ($batchmode === "background"
-            && ($daemonize = $tok->conf->opt("daemonizeCommand"))) {
+            && ($daemonize = $this->conf->opt("daemonizeCommand"))) {
             $cmd[] = $daemonize;
         }
-        $cmd[] = self::shell_quote_light($tok->conf->opt("phpCommand") ?? "php");
+        $cmd[] = self::shell_quote_light($this->conf->opt("phpCommand") ?? "php");
         $cmd[] = self::shell_quote_light($paths[0]);
-        if (($confid = $tok->conf->opt("confid"))) {
+        if (($confid = $this->conf->opt("confid"))) {
             $cmd[] = self::shell_quote_light("-n{$confid}");
         }
-        foreach ($tok->input("argv") as $w) {
+        foreach ($this->input("argv") as $w) {
             $cmd[] = self::shell_quote_light($w);
         }
 
         $env = getenv();
-        $env["HOTCRP_JOB"] = $tok->salt;
+        $env["HOTCRP_JOB"] = $this->salt;
         $env["HOTCRP_BATCHMODE"] = $batchmode;
 
         $redirect = PHP_VERSION_ID >= 70400 ? ["redirect", 1] : ["file", "/dev/null", "a"];
@@ -185,8 +222,7 @@ class Job_Capability {
     static function shell_quote_light($word) {
         if (preg_match('/\A[-_.,:+\/a-zA-Z0-9][-_.,:=+\/a-zA-Z0-9~]*\z/', $word)) {
             return $word;
-        } else {
-            return escapeshellarg($word);
         }
+        return escapeshellarg($word);
     }
 }

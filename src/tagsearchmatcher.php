@@ -77,7 +77,7 @@ class TagSearchMatcher {
             }
             if ($this->user->can_view_some_peruser_tag()) {
                 $xcids = $cids;
-            } else if (in_array($this->user->contactId, $cids)) {
+            } else if (in_array($this->user->contactId, $cids, true)) {
                 $xcids = [$this->user->contactId];
             } else {
                 $this->_errors[] = "<0>You can’t search other users’ twiddle tags";
@@ -158,9 +158,9 @@ class TagSearchMatcher {
     }
 
 
-    /** @return string|false */
+    /** @return ?string */
     function single_tag() {
-        return $this->_mtype === 2 ? $this->_tagpat[0] : false;
+        return $this->_mtype === 2 ? $this->_tagpat[0] : null;
     }
 
     /** @return list<string> */

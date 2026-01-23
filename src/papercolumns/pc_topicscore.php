@@ -1,6 +1,6 @@
 <?php
 // pc_topicscore.php -- HotCRP helper classes for paper list content
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class TopicScore_PaperColumn extends PaperColumn {
     /** @var Contact */
@@ -22,9 +22,7 @@ class TopicScore_PaperColumn extends PaperColumn {
                 && !$pl->user->is_manager())) {
             return false;
         }
-        if ($visible) {
-            $pl->qopts["topics"] = 1;
-        }
+        $pl->qopts["topics"] = 1;
         return true;
     }
     function compare(PaperInfo $a, PaperInfo $b, PaperList $pl) {
@@ -32,8 +30,8 @@ class TopicScore_PaperColumn extends PaperColumn {
     }
     function content(PaperList $pl, PaperInfo $row) {
         $v = $row->topic_interest_score($this->contact);
-        $this->statistics->add($v);
-        return htmlspecialchars((string) $v);
+        $this->statistics->add_overriding($v, $pl->overriding);
+        return self::unparse_value($v);
     }
     function text(PaperList $pl, PaperInfo $row) {
         return (string) $row->topic_interest_score($this->contact);
@@ -44,9 +42,20 @@ class TopicScore_PaperColumn extends PaperColumn {
     function has_statistics() {
         return true;
     }
-    function statistic_html(PaperList $pl, $stat) {
-        $v = $this->statistics->statistic($stat);
-        return is_int($v) ? (string) $v : sprintf("%.2f", $v);
+    function statistics() {
+        return $this->statistics;
+    }
+
+    /** @param int|float $v
+     * @return string */
+    static function unparse_value($v) {
+        if (!is_int($v)) {
+            if (abs(fmod($v, 1)) >= 0.01) {
+                return $v < 0 ? sprintf("−%.2f", -$v) : sprintf("%.2f", $v);
+            }
+            $v = (int) round($v);
+        }
+        return $v < 0 ? "−" /*U+2122*/ . (-$v) : (string) $v;
     }
 
     static function expand($name, XtParams $xtp, $xfj, $m) {

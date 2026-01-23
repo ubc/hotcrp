@@ -1,16 +1,39 @@
 <?php
 // u_developer.php -- HotCRP Profile > Developer
-// Copyright (c) 2008-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2008-2025 Eddie Kohler; see LICENSE.
 
 class Developer_UserInfo {
+    /** @var UserStatus */
+    private $us;
     /** @var ?TokenInfo */
     private $_new_token;
     /** @var list<array{int,bool,string}> */
     private $_delete_tokens = [];
 
-    function request(UserStatus $us) {
-        if ($us->is_auth_self() && !$us->user->security_locked()) {
-            $us->request_group("developer");
+    function __construct(UserStatus $us) {
+        $this->us = $us;
+    }
+
+    function display_if() {
+        if ($this->us->is_actas_self()) {
+            return "dim";
+        }
+        return $this->us->is_auth_self();
+    }
+
+    function allow() {
+        return $this->us->is_auth_self() && !$this->us->user->security_locked();
+    }
+
+    function request() {
+        if ($this->allow()) {
+            $this->us->request_group("developer");
+        }
+    }
+
+    function save() {
+        if ($this->allow()) {
+            $this->us->save_members("developer");
         }
     }
 
@@ -44,12 +67,12 @@ class Developer_UserInfo {
     }
 
     function print_bearer_tokens(UserStatus $us) {
-        echo '<p class="w-text">API tokens let you access HotCRP’s API programmatically. Supply a token using an HTTP <code>Authorization</code> header, as in “<code>Authorization: Bearer <em>token-name</em></code>”.</p>';
-        if ($us->is_auth_self()) {
-            $us->conf->warning_msg('<0>Treat tokens like passwords and keep them secret. Anyone who knows your tokens can access this site with your privileges.');
-        } else {
-            $us->conf->warning_msg('<0>You can only create and delete API tokens when logged in to your own account.');
+        if (!$us->is_auth_self()) {
+            $us->conf->warning_msg('<0>API tokens cannot be edited when acting as another user.');
+            return false;
         }
+        echo '<p class="w-text">API tokens let you access <a href="https://hotcrp.com/devel/api/">HotCRP’s API</a> programmatically. Supply a token using an HTTP <code>Authorization</code> header, as in “<code>Authorization: Bearer <em>token-name</em></code>”.</p>';
+        $us->conf->warning_msg('<0>Treat tokens like passwords and keep them secret. Anyone who knows your tokens can access this site with your privileges.');
     }
 
     function print_current_bearer_tokens(UserStatus $us) {
@@ -82,7 +105,9 @@ class Developer_UserInfo {
 
     /** @param int $n */
     private function print_bearer_token_deleter(UserStatus $us, TokenInfo $tok, $n) {
-        if (!$us->is_auth_self() || $us->user->security_locked()) {
+        if (!$us->is_auth_self()
+            || $us->user->security_locked()
+            || !$us->has_recent_authentication()) {
             return;
         }
         $dbid = $tok->is_cdb ? "A" : "L";
@@ -98,8 +123,7 @@ class Developer_UserInfo {
 
     /** @param int $n */
     function print_bearer_token(UserStatus $us, TokenInfo $tok, $n) {
-        $data = json_decode($tok->data ?? "{}", true) ?? [];
-        $note = $data["note"] ?? "";
+        $note = $tok->data("note") ?? "";
         echo '<div class="f-i w-text"><label class="f-c">',
             $note === "" ? "[Unnamed token]" : htmlspecialchars($note);
         $this->print_bearer_token_deleter($us, $tok, $n);
@@ -114,8 +138,7 @@ class Developer_UserInfo {
 
     /** @param int $n */
     function print_fresh_bearer_token(UserStatus $us, TokenInfo $tok, $n) {
-        $data = json_decode($tok->data ?? "{}", true) ?? [];
-        $note = $data["note"] ?? "";
+        $note = $tok->data("note") ?? "";
         echo '<div class="form-section form-outline-section mb-4 tag-yellow">',
             '<div class="f-i w-text mb-0"><label class="f-c">',
             $note === "" ? "[Unnamed token]" : htmlspecialchars($note),
@@ -146,7 +169,8 @@ class Developer_UserInfo {
     }
 
     function print_new_bearer_token(UserStatus $us) {
-        if (!$us->is_auth_self()) {
+        if (!$us->is_auth_self()
+            || !$us->has_recent_authentication()) {
             return;
         } else if ($us->user->security_locked()) {
             $us->conf->warning_msg("<0>This account’s security settings are locked, so its API tokens cannot be changed.");
@@ -188,7 +212,7 @@ class Developer_UserInfo {
     }
 
     function request_new_bearer_token(UserStatus $us) {
-        assert($us->allow_some_security());
+        assert($us->is_auth_self());
         if (!$us->qreq["bearer_token/new/enable"]
             || $us->user->security_locked()) {
             return;
@@ -206,7 +230,7 @@ class Developer_UserInfo {
             $token->set_invalid_at(0)->set_expires_at(0);
         } else {
             $expiry = (ctype_digit($exp) ? intval($exp) : 30) * 86400;
-            $token->set_invalid_after($expiry)->set_expires_after($expiry + 604800);
+            $token->set_invalid_in($expiry)->set_expires_in($expiry + 604800);
         }
 
         $sites = $us->qreq["bearer_token/new/sites"] ?? "here";
@@ -219,19 +243,20 @@ class Developer_UserInfo {
     }
 
     function save_new_bearer_token(UserStatus $us) {
-        if ($this->_new_token !== null) {
-            $this->_new_token->set_token_pattern("hct_[30]")->insert();
-            if ($this->_new_token->stored()) {
-                $us->diffs["API tokens"] = true;
-            } else {
-                $us->error_at(null, "<0>Error while creating new API token");
-                $this->_new_token = null;
-            }
+        if ($this->_new_token === null) {
+            return;
+        }
+        $this->_new_token->set_token_pattern("hct_[30]")->insert();
+        if ($this->_new_token->stored()) {
+            $us->diffs["API tokens"] = true;
+        } else {
+            $us->error_at(null, "<0>Error while creating new API token");
+            $this->_new_token = null;
         }
     }
 
     function request_delete_bearer_tokens(UserStatus $us) {
-        assert($us->allow_some_security());
+        assert($us->is_auth_self());
         if ($us->user->security_locked()) {
             return;
         }
@@ -244,25 +269,26 @@ class Developer_UserInfo {
     }
 
     function save_delete_bearer_tokens(UserStatus $us) {
-        if ($this->_delete_tokens !== null) {
-            $toks = self::all_active_bearer_tokens($us->user);
-            $deleteables = [];
-            foreach ($toks as $tok) {
-                foreach ($this->_delete_tokens as $dt) {
-                    if ($tok->timeCreated === $dt[0]
-                        && $tok->is_cdb === $dt[1]
-                        && str_starts_with($tok->salt, $dt[2])) {
-                        $deleteables[] = $tok;
-                    }
+        if ($this->_delete_tokens === null) {
+            return;
+        }
+        $toks = self::all_active_bearer_tokens($us->user);
+        $deleteables = [];
+        foreach ($toks as $tok) {
+            foreach ($this->_delete_tokens as $dt) {
+                if ($tok->timeCreated === $dt[0]
+                    && $tok->is_cdb === $dt[1]
+                    && str_starts_with($tok->salt, $dt[2])) {
+                    $deleteables[] = $tok;
                 }
             }
-            if (!empty($deleteables)
-                && count($deleteables) <= count($this->_delete_tokens)) {
-                foreach ($deleteables as $tok) {
-                    $tok->delete();
-                }
-                $us->diffs["API tokens"] = true;
+        }
+        if (!empty($deleteables)
+            && count($deleteables) <= count($this->_delete_tokens)) {
+            foreach ($deleteables as $tok) {
+                $tok->delete();
             }
+            $us->diffs["API tokens"] = true;
         }
     }
 }

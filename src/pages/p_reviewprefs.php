@@ -1,6 +1,6 @@
 <?php
 // pages/p_reviewprefs.php -- HotCRP review preference global settings page
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class ReviewPrefs_Page {
     // Update preferences
@@ -22,16 +22,17 @@ class ReviewPrefs_Page {
             }
         }
         if ($csvg->is_empty()) {
-            $user->conf->feedback_msg([new MessageItem(null, "<0>No changes", MessageSet::WARNING_NOTE)]);
+            $user->conf->feedback_msg(MessageItem::warning_note("<0>No changes"));
             return;
         }
 
         $aset = (new AssignmentSet($user))->set_override_conflicts(true);
         $aset->parse($csvg->unparse());
-        $ok = $aset->execute();
-        $ok && $aset->prepend_msg("<0>Preferences saved", MessageSet::SUCCESS);
-        $user->conf->feedback_msg($aset->message_list());
-        $ok && $user->conf->redirect_self($qreq);
+        $aset->execute();
+        $aset->feedback_msg(AssignmentSet::FEEDBACK_CHANGE);
+        if (!$aset->has_error()) {
+            $user->conf->redirect_self($qreq);
+        }
     }
 
     /** @param PaperList $pl
@@ -39,7 +40,7 @@ class ReviewPrefs_Page {
     static private function pref_element($pl, $name, $text, $extra = []) {
         return '<li class="' . rtrim("checki " . ($extra["item_class"] ?? ""))
             . '"><span class="checkc">'
-            . Ht::checkbox("show$name", 1, $pl->viewing($name), [
+            . Ht::checkbox("show{$name}", 1, $pl->viewing($name), [
                 "class" => "uich js-plinfo ignore-diff" . (isset($extra["fold_target"]) ? " js-foldup" : ""),
                 "data-fold-target" => $extra["fold_target"] ?? null
             ]) . "</span>" . Ht::label($text) . '</span>';
@@ -203,7 +204,7 @@ class ReviewPrefs_Page {
             }
         }
         if (!$correct_reviewer) {
-            $conf->feedback_msg([new MessageItem(null, "<0>Requested reviewer ‘{$qreq->reviewer}’ is not on the PC", MessageSet::ERROR)]);
+            $conf->feedback_msg(MessageItem::error("<0>Requested reviewer ‘{$qreq->reviewer}’ is not on the PC"));
         }
 
         // cancel action
@@ -219,7 +220,7 @@ class ReviewPrefs_Page {
         }
         if (isset($qreq->fn)
             && !str_starts_with($qreq->fn, "get/")
-            && !in_array($qreq->fn, ["uploadpref", "tryuploadpref", "applyuploadpref", "setpref", "saveprefs"])) {
+            && !in_array($qreq->fn, ["uploadpref", "tryuploadpref", "applyuploadpref", "setpref", "saveprefs"], true)) {
             unset($qreq->fn);
         }
 
@@ -233,7 +234,7 @@ class ReviewPrefs_Page {
                 if ($correct_reviewer) {
                     self::save_preferences($user, $reviewer, $qreq);
                 } else {
-                    $conf->feedback_msg([new MessageItem(null, "<0>Changes not saved", MessageSet::ERROR)]);
+                    $conf->feedback_msg(MessageItem::error("<0>Changes not saved"));
                 }
             }
         } else if ($qreq->fn !== null) {

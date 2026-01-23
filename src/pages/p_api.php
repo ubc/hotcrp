@@ -35,26 +35,7 @@ class API_Page {
                 $jr = MeetingTracker::track_api($user, $qreq);
             }
         }
-        $jr = $jr ?? self::status_api($fn, $user, $qreq);
-
-        // maybe save messages in session under a token
-        if ($qreq->smsg
-            && !isset($jr->content["_smsg"])) {
-            $conf->feedback_msg(self::export_messages($jr));
-            $ml = $conf->take_saved_messages();
-            if (empty($ml)) {
-                $jr->content["_smsg"] = false;
-            } else {
-                $jr->content["_smsg"] = $smsg = base48_encode(random_bytes(6));
-                $qreq->open_session();
-                $smsgs = $qreq->gsession("smsg") ?? [];
-                array_unshift($ml, $smsg, Conf::$now);
-                $smsgs[] = $ml;
-                $qreq->set_gsession("smsg", $smsgs);
-            }
-        }
-
-        return $jr;
+        return $jr ?? self::status_api($fn, $user, $qreq);
     }
 
     /** @param string $fn
@@ -68,13 +49,15 @@ class API_Page {
         if (($validate = $uf && $conf->opt("validateApiSpec"))) {
             SpecValidator_API::request($uf, $qreq);
         }
-        $jr = $conf->call_api_on($uf, $fn, $user, $qreq, $conf->paper);
+        $jr = $conf->call_api_on($uf, $fn, $user, $qreq);
         if ($validate) {
             SpecValidator_API::response($uf, $qreq, $jr);
         }
         if ($jr instanceof Downloader) {
             $jr->emit();
-            exit();
+            exit(0);
+        } else if ($jr instanceof PageCompletion) {
+            exit(0);
         }
         if ($uf
             && ($uf->redirect ?? false)
@@ -90,7 +73,7 @@ class API_Page {
      * @param Qrequest $qreq
      * @return JsonResult */
     static private function status_api($fn, $user, $qreq) {
-        $prow = $user->conf->paper;
+        $prow = $qreq->paper();
         // default status API to not being pretty printed; it's frequently called
         $jr = (new JsonResult($user->status_json($prow ? [$prow] : [])))
             ->set_pretty_print(false);
@@ -120,10 +103,10 @@ class API_Page {
             }
         }
         if (empty($ml) && isset($jr->content["error"])) { // XXX backward compat
-            $ml[] = new MessageItem(null, "<0>" . $jr->content["error"], 2);
+            $ml[] = MessageItem::error("<0>" . $jr->content["error"]);
         }
         if (empty($ml) && !($jr->content["ok"] ?? ($jr->status <= 299))) {
-            $ml[] = new MessageItem(null, "<0>Internal error", 2);
+            $ml[] = MessageItem::error("<0>Internal error");
         }
         return $ml;
     }
@@ -143,9 +126,9 @@ class API_Page {
                     header("Access-Control-Allow-Headers: {$hdrs}");
                 }
                 header("Access-Control-Allow-Credentials: true");
-                header("Access-Control-Allow-Methods: OPTIONS, GET, HEAD, POST");
+                header("Access-Control-Allow-Methods: OPTIONS, GET, HEAD, POST, DELETE");
                 header("Access-Control-Max-Age: 86400");
-            } else if (in_array($nav->page, ["cacheable", "scorechart", "images", "scripts", "stylesheets"])) {
+            } else if (in_array($nav->page, ["cacheable", "scorechart", "images", "scripts", "stylesheets"], true)) {
                 header("Access-Control-Allow-Origin: *");
                 header("Access-Control-Allow-Methods: OPTIONS, GET, HEAD");
                 header("Access-Control-Max-Age: 86400");
@@ -153,10 +136,10 @@ class API_Page {
                 $ok = false;
             }
         } else {
-            header("Allow: OPTIONS, GET, HEAD, POST"); // XXX other methods?
+            header("Allow: OPTIONS, GET, HEAD, POST, DELETE"); // XXX other methods?
         }
         http_response_code($ok ? 200 : 403);
-        exit();
+        exit(0);
     }
 
     /** @param NavigationState $nav
@@ -165,7 +148,7 @@ class API_Page {
         // argument cleaning
         if (!isset($_GET["fn"])) {
             $fn = $nav->path_component(0, true);
-            if ($fn && ctype_digit($fn)) {
+            if ($fn && (ctype_digit($fn) || $fn === "new")) {
                 if (!isset($_GET["p"])) {
                     $_GET["p"] = $fn;
                 }
@@ -179,7 +162,7 @@ class API_Page {
                 http_response_code(400);
                 header("Content-Type: application/json; charset=utf-8");
                 echo '{"ok": false, "message_list": [{"field": "fn", "message": "<0>Parameter missing", "status": 2}]}', "\n";
-                exit();
+                exit(0);
             }
         }
         if ($_GET["fn"] === "deadlines") {
@@ -187,17 +170,18 @@ class API_Page {
         }
         if (!isset($_GET["p"])
             && ($p = $nav->path_component(1, true))
-            && ctype_digit($p)) {
+            && (ctype_digit($p) || $p === "new")) {
             $_GET["p"] = $p;
         }
 
         // trackerstatus is a special case: prevent session creation
         if ($_GET["fn"] === "trackerstatus") {
-            initialize_request(["no_main_user" => true]);
+            initialize_request($conf, $nav);
             MeetingTracker::trackerstatus_api(Contact::make($conf));
         } else {
-            list($user, $qreq) = initialize_request(["bearer" => true]);
+            $qreq = initialize_request($conf, $nav);
             try {
+                $user = initialize_user($qreq, ["bearer" => true]);
                 $jr = self::go($user, $qreq);
             } catch (JsonCompletion $jc) {
                 $jr = $jc->result;

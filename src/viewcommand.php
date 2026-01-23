@@ -19,6 +19,7 @@ class ViewCommand {
     const F_SHOW = 1;
     const F_HIDE = 2;
     const F_SORT = 4;
+    const FM_VISIBILITY = 3;
     const FM_ACTION = 7;
 
     const ORIGIN_REPORT = 0x000;
@@ -98,15 +99,18 @@ class ViewCommand {
             $d = substr($d, $lbrack + 1, strlen($d) - $lbrack - 2);
         }
 
-        $splitter = new SearchParser($d);
-        while ($splitter->skip_span(" \n\r\t\v\f,")) {
-            $w = $splitter->shift_balanced_parens(" \n\r\t\v\f,");
-            if ($w === "") {
-                continue;
-            } else if ($keyword === null) {
-                $keyword = $w;
-            } else if (($pair = ViewOptionList::parse_pair($w))) {
-                $view_options->add($pair[0], $pair[1]);
+        $sp = new SearchParser($d);
+        while (true) {
+            $sp->skip_span(" ,");
+            if ($sp->is_empty()) {
+                break;
+            }
+            if (($w = $sp->shift_balanced_parens(" ,")) !== "") {
+                if ($keyword === null) {
+                    $keyword = $w;
+                } else if (($pair = ViewOptionList::parse_pair($w))) {
+                    $view_options->add($pair[0], $pair[1]);
+                }
             }
         }
 
@@ -126,7 +130,7 @@ class ViewCommand {
             return [];
         }
 
-        if ($edit) {
+        if ($edit && !$view_options->has("edit")) {
             $view_options->add("edit", true);
         }
 

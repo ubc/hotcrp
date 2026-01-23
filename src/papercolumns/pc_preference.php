@@ -1,6 +1,6 @@
 <?php
 // pc_preference.php -- HotCRP helper classes for paper list content
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Preference_PaperColumn extends PaperColumn {
     /** @var bool */
@@ -21,18 +21,21 @@ class Preference_PaperColumn extends PaperColumn {
     private $secondary_sort_topic_score = false;
     /** @var ScoreInfo */
     private $statistics;
-    /** @var ?ScoreInfo */
-    private $override_statistics;
     function __construct(Conf $conf, $cj) {
         parent::__construct($conf, $cj);
         $this->override = PaperColumn::OVERRIDE_IFEMPTY;
         if (isset($cj->user)) {
             $this->user = $conf->pc_member_by_email($cj->user);
         }
-        $this->editable = $cj->edit ?? false;
+        if ($cj->edit ?? false) {
+            $this->add_view_option("edit", true);
+        }
+    }
+    static function basic_view_option_schema() {
+        return ["topics", "topicscore/topics", "topic_score/topics", "edit", "all"];
     }
     function view_option_schema() {
-        return ["topics", "topicscore/topics", "topic_score/topics", "edit", "all"];
+        return self::basic_view_option_schema();
     }
     function prepare(PaperList $pl, $visible) {
         $this->viewer = $pl->user;
@@ -42,14 +45,14 @@ class Preference_PaperColumn extends PaperColumn {
             || ($this->not_me && !$this->viewer->can_view_preference(null))) {
             return false;
         }
-        $this->editable = $this->view_option("edit") ?? $this->editable;
+        $this->editable = $this->view_option("edit") ?? false;
         if ($this->editable) {
             $this->override = PaperColumn::OVERRIDE_BOTH;
             $this->className = "pl_editrevpref";
         }
         $this->secondary_sort_topic_score = $this->view_option("topics") ?? false;
         $this->all = $this->view_option("all") ?? false;
-        if ($visible || $this->secondary_sort_topic_score) {
+        if ($this->secondary_sort_topic_score) {
             $pl->qopts["topics"] = 1;
         }
         $this->prefix =  "";
@@ -76,6 +79,9 @@ class Preference_PaperColumn extends PaperColumn {
         }
         return $pf;
     }
+    function sort_name() {
+        return $this->sort_name_with_options("topics", "edit");
+    }
     function compare(PaperInfo $a, PaperInfo $b, PaperList $pl) {
         $cmp = PaperReviewPreference::compare($this->sortable_preference($a), $this->sortable_preference($b));
         if ($cmp === 0 && $this->secondary_sort_topic_score) {
@@ -99,16 +105,14 @@ class Preference_PaperColumn extends PaperColumn {
                 || $rtuid[0] !== $this->user->contactId;
         }
         $this->statistics = new ScoreInfo;
-        $this->override_statistics = null;
     }
     function header(PaperList $pl, $is_text) {
         if ($this->user === $this->viewer || $this->as_row) {
             return "Preference";
         } else if ($is_text) {
             return $this->viewer->reviewer_text_for($this->user) . " preference";
-        } else {
-            return $this->viewer->reviewer_html_for($this->user) . "<br>preference";
         }
+        return $this->viewer->reviewer_html_for($this->user) . "<br>preference";
     }
     function content_empty(PaperList $pl, PaperInfo $row) {
         return $this->not_me && !$this->viewer->allow_view_preference($row);
@@ -118,7 +122,6 @@ class Preference_PaperColumn extends PaperColumn {
         $pf_exists = $pf->exists();
         $conflicted = $row->has_conflict($this->user);
         $editable = $this->editable
-            && (!$this->not_me || $this->user->can_view_paper($row))
             && ($this->all || $this->user->pc_track_assignable($row));
 
         // compute HTML
@@ -150,50 +153,26 @@ class Preference_PaperColumn extends PaperColumn {
             && $t !== "") {
             $tag = $this->as_row ? "div" : "span";
             $t = "<{$tag} class=\"fx5\">{$t}</{$tag}>";
-            if (!$this->override_statistics) {
-                $this->override_statistics = clone $this->statistics;
-            }
             if ($pf_exists) {
-                $this->override_statistics->add($pf->preference);
+                $this->statistics->add_overriding($pf->preference, 2);
             }
-        } else if ($pf_exists) {
-            $this->statistics->add($pf->preference);
-            if ($this->override_statistics) {
-                $this->override_statistics->add($pf->preference);
-            }
+        } else if ($pf_exists && !$this->editable) {
+            $this->statistics->add_overriding($pf->preference, $pl->overriding);
         }
 
         return $t;
     }
     function text(PaperList $pl, PaperInfo $row) {
-        if (!$this->not_me || $this->viewer->can_view_preference($row)) {
-            return $row->preference($this->user)->unparse();
-        } else {
+        if ($this->not_me && !$this->viewer->can_view_preference($row)) {
             return "";
         }
+        return $row->preference($this->user)->unparse();
     }
     function has_statistics() {
         return !$this->as_row && !$this->editable;
     }
-    private function unparse_statistic($statistics, $stat) {
-        $x = $statistics->statistic($stat);
-        if ($x == 0
-            && $stat !== ScoreInfo::COUNT
-            && $statistics->statistic(ScoreInfo::COUNT) == 0) {
-            return "";
-        } else if (in_array($stat, [ScoreInfo::COUNT, ScoreInfo::SUM, ScoreInfo::MEDIAN])) {
-            return $x;
-        } else {
-            return sprintf("%.2f", $x);
-        }
-    }
-    function statistic_html(PaperList $pl, $stat) {
-        $t = $this->unparse_statistic($this->statistics, $stat);
-        if ($this->override_statistics) {
-            $tt = $this->unparse_statistic($this->override_statistics, $stat);
-            $t = $pl->wrap_conflict($t, $tt);
-        }
-        return $t;
+    function statistics() {
+        return $this->statistics;
     }
 
     static function expand($name, XtParams $xtp, $xfj, $m) {
@@ -214,11 +193,11 @@ class Preference_PaperColumn extends PaperColumn {
         return $rs;
     }
 
-    static function completions(Contact $user, $xfj) {
-        if ($user->isPC && $user->can_view_preference(null)) {
-            return ["pref:<user>"];
-        } else {
+    static function examples(Contact $user, $xfj) {
+        if (!$user->can_view_preference(null)) {
             return [];
         }
+        return [new SearchExample("pref:{user}", "<0>Review preference for PC member",
+                    new FmtArg("view_options", Preference_PaperColumn::basic_view_option_schema()))];
     }
 }

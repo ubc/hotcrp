@@ -1,6 +1,6 @@
 <?php
 // cleandocstore.php -- HotCRP maintenance script
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 if (realpath($_SERVER["PHP_SELF"]) === __FILE__) {
     require_once(dirname(__DIR__) . "/src/init.php");
@@ -151,8 +151,8 @@ class CleanDocstore_Batch {
             return 0;
         }
 
-        if (empty($this->docstores) || !$this->conf->docstore()) {
-            throw new CommandLineException("No docstore to clean");
+        if (empty($this->docstores)) {
+            throw new CommandLineException("No docstore");
         }
 
         preg_match('/\A((?:\/[^\/%]*(?=\/|\z))+)/', $this->docstores[0], $m);
@@ -186,7 +186,8 @@ class CleanDocstore_Batch {
                 $this->ftrees[] = new DocumentFileTree($dp, $this->hash_matcher, 0);
             }
             if (!$this->keep_temp) {
-                $this->ftrees[] = new DocumentFileTree(Filer::docstore_fixed_prefix($dp) . "tmp/%w", $this->hash_matcher, 1);
+                $ds = Docstore::make($dp);
+                $this->ftrees[] = new DocumentFileTree($ds->root_pattern() . "tmp/%w", $this->hash_matcher, 1);
             }
         }
 
@@ -253,11 +254,23 @@ Usage: php batch/cleandocstore.php [-c COUNT|-u FRAC] [-V] [-d] [DOCSTORES...]\n
         }
 
         $conf = initialize_conf($arg["config"] ?? null, $arg["name"] ?? null);
-        $confdp = $conf->docstore();
-        if ($confdp) {
-            $confdps = array_merge([$confdp], $arg["_"]);
+        $confds = $conf->docstore();
+        $confdps = [];
+        if (empty($arg["_"])) {
+            if ($confds) {
+                $confdps[] = $confds->full_pattern();
+            }
         } else {
-            $confdps = $arg["_"];
+            foreach ($arg["_"] as $confdp) {
+                if ($confdp === "-" || $confdp === "default") {
+                    if (!$confds) {
+                        throw new CommandLineException("No default docstore");
+                    }
+                    $confdps[] = $confds->full_pattern();
+                } else {
+                    $confdps[] = $confdp;
+                }
+            }
         }
         return new CleanDocstore_Batch($conf, $confdps, $arg);
     }

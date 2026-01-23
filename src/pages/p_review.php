@@ -1,6 +1,6 @@
 <?php
 // pages/p_review.php -- HotCRP paper review display/edit page
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Review_Page {
     /** @var Conf */
@@ -50,7 +50,8 @@ class Review_Page {
         // determine whether request names a paper
         try {
             $pr = new PaperRequest($this->qreq, true);
-            $this->prow = $this->conf->paper = $pr->prow;
+            $this->qreq->set_paper($pr->prow);
+            $this->prow = $pr->prow;
             if ($pr->rrow) {
                 $this->rrow = $pr->rrow;
                 $this->rrow_explicit = true;
@@ -61,9 +62,10 @@ class Review_Page {
         } catch (Redirection $redir) {
             throw $redir;
         } catch (FailureReason $perm) {
+            $perm->set("expand", true);
             $perm->set("listViewable", $this->user->is_author() || $this->user->is_reviewer());
             if (!$perm->secondary || $this->conf->saved_messages_status() < 2) {
-                $this->conf->error_msg("<5>" . $perm->unparse_html());
+                $this->conf->feedback_msg($perm->message_list());
             }
             $this->error_exit();
         }
@@ -144,12 +146,12 @@ class Review_Page {
             $rv->clear_req();
         }
         if (!$match && !$other) {
-            $rv->msg_at(null, "<0>Uploaded file had no valid review forms", MessageSet::ERROR);
+            $rv->error_at(null, "<0>Uploaded file had no valid review forms");
         } else if (!$match) {
-            $rv->msg_at(null, "<0>Uploaded form was not for this {submission}", MessageSet::ERROR);
+            $rv->error_at(null, "<0>Uploaded form was not for this {submission}");
         } else if ($other) {
-            $rv->msg_at(null, "<0>Reviews for other {submissions} ignored", MessageSet::WARNING);
-            $rv->msg_at(null, "<5>Upload multiple-review files " . Ht::link("here", $this->conf->hoturl("offline")) . ".", MessageSet::INFORM);
+            $rv->warning_at(null, "<0>Reviews for other {submissions} ignored");
+            $rv->inform_at(null, "<5>Upload multiple-review files " . Ht::link("here", $this->conf->hoturl("offline")) . ".");
         }
         $rv->report();
         if (!$rv->has_error()) {
@@ -239,38 +241,24 @@ class Review_Page {
         } else if (!$this->user->can_administer($this->prow)) {
             return;
         }
-        $result = $this->conf->qe("delete from PaperReview where paperId=? and reviewId=?", $this->prow->paperId, $this->rrow->reviewId);
-        if ($result->affected_rows) {
-            $this->user->log_activity_for($this->rrow->contactId, "Review {$this->rrow->reviewId} deleted", $this->prow);
+        if ($this->rrow->delete($this->user)) {
             $this->conf->success_msg("<0>Review deleted");
-            $this->conf->qe("delete from ReviewRating where paperId=? and reviewId=?", $this->prow->paperId, $this->rrow->reviewId);
-            if ($this->rrow->reviewToken !== 0) {
-                $this->conf->update_rev_tokens_setting(-1);
-            }
-            if ($this->rrow->reviewType === REVIEW_META) {
-                $this->conf->update_metareviews_setting(-1);
-            }
-
-            // perhaps a delegator needs to redelegate
-            if ($this->rrow->reviewType < REVIEW_SECONDARY
-                && $this->rrow->requestedBy > 0) {
-                $this->conf->update_review_delegation($this->prow->paperId, $this->rrow->requestedBy, -1);
-            }
         }
         $this->conf->redirect_self($this->qreq, ["r" => null, "reviewId" => null]);
     }
 
     function handle_unsubmit() {
-        if ($this->rrow
-            && $this->rrow->reviewStatus >= ReviewInfo::RS_DELIVERED
-            && $this->user->can_administer($this->prow)) {
-            $rv = new ReviewValues($this->conf);
-            $rv->set_can_unsubmit(true)->set_req_ready(false);
-            if ($rv->check_and_save($this->user, $this->prow, $this->rrow)) {
-                $this->conf->success_msg("<0>Review unsubmitted");
-            }
-            $this->conf->redirect_self($this->qreq);
+        if (!$this->rrow
+            || $this->rrow->reviewStatus < ReviewInfo::RS_DELIVERED
+            || !$this->user->can_administer($this->prow)) {
+            return;
         }
+        $rv = new ReviewValues($this->conf);
+        $rv->set_can_unsubmit(true)->set_req_ready(false);
+        if ($rv->check_and_save($this->user, $this->prow, $this->rrow)) {
+            $this->conf->success_msg("<0>Review unsubmitted");
+        }
+        $this->conf->redirect_self($this->qreq);
     }
 
     function handle_valid_post() {
@@ -323,11 +311,11 @@ class Review_Page {
                     $m = "<5><p class=\"mb-0\">{$mx} If you wish, you can reassign the linked review to one your current accounts.</p>"
                         . Ht::form("", ["class" => "has-fold foldo"])
                         . '<div class="aab mt-2 fx">';
-                    foreach ($this->user->session_users($this->qreq) as $e) {
+                    foreach ($this->user->session_emails($this->qreq) as $e) {
                         if ($e === "") {
                             continue;
                         }
-                        $url = $this->conf->hoturl("=api/claimreview", ["p" => $this->prow->paperId, "r" => $this->rrow->reviewId, "email" => $e, "smsg" => 1]);
+                        $url = $this->conf->hoturl("=api/claimreview", ["p" => $this->prow->paperId, "r" => $this->rrow->reviewId, "email" => $e]);
                         $m .= '<div class="aabut">'
                             . Ht::submit("Reassign to " . htmlspecialchars($e), [
                                 "formaction" => $url, "class" => "ui js-acceptish-review"
@@ -340,7 +328,7 @@ class Review_Page {
             } else {
                 $m = "<5>You’re accessing this review using a special link for reviewer {$hemail}. " . Ht::link("Sign in to the site", $this->conf->hoturl("signin", ["email" => $u->email, "cap" => null]), ["class" => "nw"]);
             }
-            $this->pt()->add_pre_status_feedback(new MessageItem(null, $m, MessageSet::WARNING_NOTE));
+            $this->pt()->add_pre_status_feedback(MessageItem::warning_note($m));
         }
     }
 

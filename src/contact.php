@@ -1,17 +1,21 @@
 <?php
 // contact.php -- HotCRP helper class representing system users
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class ContactDecorations {
     /** @var string */
-    public $colors;
+    public $rn_classes;
+    /** @var ?string */
+    public $ra_classes;
     /** @var string */
     public $decorations;
 
-    /** @param string $colors
+    /** @param string $rn_classes
+     * @param ?string $ra_classes
      * @param string $decorations */
-    function __construct($colors, $decorations) {
-        $this->colors = $colors;
+    function __construct($rn_classes, $ra_classes, $decorations) {
+        $this->rn_classes = $rn_classes;
+        $this->ra_classes = $ra_classes;
         $this->decorations = $decorations;
     }
 }
@@ -26,8 +30,6 @@ class Contact implements JsonSerializable {
     static public $no_main_user = false;
     /** @var int */
     static public $next_xid = -2;
-    /** @var ?list<string> */
-    static public $session_users;
 
     /** @var Conf */
     public $conf;
@@ -41,17 +43,19 @@ class Contact implements JsonSerializable {
     /** @var int */
     public $cdb_confid = 0; // nonzero iff this is a CDB user
 
-    /** @var string */
+    /** @var string
+     * @readonly */
     public $email = "";
-    /** @var string */
+    /** @var string
+     * @readonly */
     public $firstName = "";
-    /** @var string */
+    /** @var string
+     * @readonly */
     public $lastName = "";
     /** @var ?string */
     public $unaccentedName;
-    /** @var ?bool */
-    public $name_usascii;
-    /** @var string */
+    /** @var string
+     * @readonly */
     public $affiliation = "";
     /** @var int */
     public $roles = 0;
@@ -59,7 +63,7 @@ class Contact implements JsonSerializable {
     public $role_mask = self::ROLE_DBMASK;
     /** @var int
      * @deprecated */
-    private $disabled = 0;
+    private $disabled; // XXX delete this
     /** @var ?int */
     public $primaryContactId;
     /** @var ?string */
@@ -76,8 +80,10 @@ class Contact implements JsonSerializable {
     const SLICEBIT_PASSWORD = 0x2;
     const SLICEBIT_COUNTRY = 0x4;
     const SLICEBIT_ORCID = 0x8;
-    const SLICEBIT_REST = 0x10;
-    const SLICE_MINIMAL = 0x1F;
+    const SLICEBIT_DEFAULTWATCH = 0x10;
+    const SLICEBIT_PREFERREDEMAIL = 0x20;
+    const SLICEBIT_REST = 0x40;
+    const SLICE_MINIMAL = 0x7F;
 
     /** @var ?bool */
     public $nameAmbiguous;
@@ -90,7 +96,8 @@ class Contact implements JsonSerializable {
 
     /** @var ?string */
     private $collaborators;
-    public $preferredEmail = "";
+    /** @var ?string */
+    public $preferredEmail;
     /** @var ?string */
     private $country;
     /** @var ?string */
@@ -129,6 +136,7 @@ class Contact implements JsonSerializable {
     const WATCH_REVIEW_ALL = 0x04;
     const WATCH_REVIEW_MANAGED = 0x08;
     const WATCH_REVIEW_ANY = 0x0E; // REVIEW + REVIEW_ALL + REVIEW_MANAGED
+    const WATCH_REVIEW_MASK = 0x0F;
     const WATCH_PAPER_NEWSUBMIT_ALL = 0x10;
     const WATCH_FINAL_UPDATE_ALL = 0x20;
     const WATCH_PAPER_REGISTER_ALL = 0x40;
@@ -140,6 +148,8 @@ class Contact implements JsonSerializable {
     private $_topic_interest_map;
     /** @var array<int,ContactDecorations> */
     private $_name_decorations_map = [];
+    /** @var ?int */
+    private $_name_decorations_flags;
 
     // Roles
     const ROLE_PC = 0x0001; // value matters
@@ -155,6 +165,7 @@ class Contact implements JsonSerializable {
     const ROLE_EXPLICIT_MANAGER = 0x8000;
     const ROLE_APPROVABLE = 0x10000;
     const ROLE_VIEW_SOME_REVIEW_ID = 0x20000;
+    const ROLE_OUTSTANDING_REQUEST = 0x40000;
 
     const ROLE_DBMASK = 0x000F;
     const ROLE_CDBMASK = 0x003F; // DBMASK | AUTHOR | REVIEWER
@@ -232,9 +243,12 @@ class Contact implements JsonSerializable {
     const CF_GDISABLED = 0x10;
     const CF_UNCONFIRMED = 0x20;
     const CF_SECURITYLOCK = 0x40;
+    const CF_PRIMARY = 0x80;
+    const CF_NEANONASCII = 0x100;
 
     const CFM_DISABLEMENT = 0x1F;
-    const CFM_DB = ~0xC;
+    const CFM_DB = ~0x4;
+    const CFM_PLACEHOLDER = 0xA;
 
     const PROP_LOCAL = 0x01;
     const PROP_CDB = 0x02;
@@ -255,7 +269,7 @@ class Contact implements JsonSerializable {
         "email" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_STRING | self::PROP_SIMPLIFY | self::PROP_SLICE,
         "firstName" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_STRING | self::PROP_SIMPLIFY | self::PROP_SLICE | self::PROP_NAME | self::PROP_UPDATE | self::PROP_IMPORT,
         "lastName" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_STRING | self::PROP_SIMPLIFY | self::PROP_SLICE | self::PROP_NAME | self::PROP_UPDATE | self::PROP_IMPORT,
-        "preferredEmail" => self::PROP_LOCAL | self::PROP_NULL | self::PROP_STRING | self::PROP_SIMPLIFY,
+        "preferredEmail" => self::PROP_LOCAL | self::PROP_NULL | self::PROP_STRING | self::PROP_SIMPLIFY | self::PROP_IMPORT,
         "affiliation" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_STRING | self::PROP_SIMPLIFY | self::PROP_SLICE | self::PROP_UPDATE | self::PROP_IMPORT,
         "phone" => self::PROP_LOCAL | self::PROP_NULL | self::PROP_STRING | self::PROP_SIMPLIFY | self::PROP_UPDATE | self::PROP_IMPORT,
         "country" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_NULL | self::PROP_STRING | self::PROP_SIMPLIFY | self::PROP_UPDATE | self::PROP_IMPORT,
@@ -267,10 +281,9 @@ class Contact implements JsonSerializable {
         "updateTime" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_INT | self::PROP_NOUPDATECDB,
         "lastLogin" => self::PROP_LOCAL | self::PROP_INT,
         "defaultWatch" => self::PROP_LOCAL | self::PROP_INT,
-        "primaryContactId" => self::PROP_LOCAL | self::PROP_INT | self::PROP_SLICE,
+        "primaryContactId" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_INT | self::PROP_SLICE | self::PROP_NOUPDATECDB,
         "roles" => self::PROP_LOCAL | self::PROP_INT | self::PROP_SLICE | self::PROP_SPECIAL,
         "cdbRoles" => self::PROP_LOCAL | self::PROP_INT,
-        "disabled" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_INT | self::PROP_SLICE | self::PROP_NOUPDATECDB,
         "contactTags" => self::PROP_LOCAL | self::PROP_NULL | self::PROP_STRING | self::PROP_SLICE,
         "cflags" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_INT | self::PROP_SLICE | self::PROP_NOUPDATECDB | self::PROP_SPECIAL,
         "address" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_DATA | self::PROP_NULL | self::PROP_STRINGLIST | self::PROP_SIMPLIFY | self::PROP_UPDATE,
@@ -287,38 +300,36 @@ class Contact implements JsonSerializable {
 
     /** @return Contact */
     static function make(Conf $conf) {
+        return self::make_email_cflags($conf, "", self::CF_UNCONFIRMED);
+    }
+
+    /** @param ?string $email
+     * @param int $cflags
+     * @return Contact
+     * @suppress PhanAccessReadOnlyProperty */
+    static function make_email_cflags(Conf $conf, $email, $cflags) {
         $u = new Contact($conf);
         $u->contactXid = self::$next_xid--;
-        $u->cflags = self::CF_UNCONFIRMED;
+        $u->email = $email ?? "";
+        $u->cflags = $cflags;
         $u->set_roles_properties();
         return $u;
     }
 
     /** @param ?string $email
-     * @param bool $confirmed
      * @return Contact */
-    static function make_email(Conf $conf, $email, $confirmed = false) {
-        $u = new Contact($conf);
-        $u->contactXid = self::$next_xid--;
-        $u->email = $email ?? "";
-        $u->cflags = $confirmed ? 0 : self::CF_UNCONFIRMED;
-        $u->set_roles_properties();
-        return $u;
+    static function make_email(Conf $conf, $email) {
+        return self::make_email_cflags($conf, $email, self::CF_UNCONFIRMED);
     }
 
     /** @return Contact */
     static function make_placeholder(Conf $conf) {
-        $u = new Contact($conf);
-        $u->contactXid = self::$next_xid--;
-        $u->cflags = self::CF_PLACEHOLDER | self::CF_UNCONFIRMED;
-        /** @phan-suppress-next-line PhanDeprecatedProperty */
-        $u->disabled = self::CF_PLACEHOLDER;
-        $u->set_roles_properties();
-        return $u;
+        return self::make_email_cflags($conf, "", self::CF_PLACEHOLDER | self::CF_UNCONFIRMED);
     }
 
     /** @param int $contactId
-     * @return Contact */
+     * @return Contact
+     * @suppress PhanAccessReadOnlyProperty */
     static function make_deleted(Conf $conf, $contactId) {
         $u = new Contact($conf);
         $u->contactId = $contactId;
@@ -332,17 +343,14 @@ class Contact implements JsonSerializable {
     /** @param ?string $email
      * @return Contact */
     static function make_cdb_email(Conf $conf, $email) {
-        $u = new Contact($conf);
-        $u->contactXid = self::$next_xid--;
-        $u->email = $email ?? "";
+        $u = self::make_email_cflags($conf, $email, self::CF_UNCONFIRMED);
         $u->cdb_confid = $conf->cdb_confid();
-        $u->cflags = self::CF_UNCONFIRMED;
-        $u->set_roles_properties();
         return $u;
     }
 
     /** @param array{contactId?:int,email?:string,given_name?:string,firstName?:string,first?:string,family_name?:string,lastName?:string,last?:string,name?:string,affiliation?:string,disabled?:void,disablement?:int} $args
-     * @return Contact */
+     * @return Contact
+     * @suppress PhanAccessReadOnlyProperty */
     static function make_keyed(Conf $conf, $args) {
         // email, firstName, lastName, affiliation, disablement, contactId, first, last:
         // the importable properties
@@ -352,19 +360,36 @@ class Contact implements JsonSerializable {
         $u->email = trim($args["email"] ?? "");
         $u->firstName = $args["given_name"] ?? $args["firstName"] ?? $args["first"] ?? "";
         $u->lastName = $args["family_name"] ?? $args["lastName"] ?? $args["last"] ?? "";
-        if (isset($args["name"]) && $u->firstName === "" && $u->lastName === "") {
+        if (isset($args["name"])
+            && $u->firstName === ""
+            && $u->lastName === "") {
             list($u->firstName, $u->lastName, $unused) = Text::split_name($args["name"]);
         }
         $u->affiliation = simplify_whitespace($args["affiliation"] ?? "");
-        $u->orcid = trim($args["orcid"] ?? "");
+        if (isset($args["orcid"])
+            && strlen($args["orcid"]) <= 25) {
+            $u->orcid = trim($args["orcid"]);
+        }
+        if (isset($args["country"])
+            && ctype_alpha($args["country"])
+            && strlen($args["country"]) <= 3) {
+            $u->country = $args["country"];
+        }
+        if (isset($args["preferredEmail"])
+            && ($preferred_email = trim($args["preferredEmail"])) !== ""
+            && validate_email($preferred_email)) {
+            $u->preferredEmail = $preferred_email;
+        }
         $u->cflags = ($args["disablement"] ?? 0) | self::CF_UNCONFIRMED;
-        /** @phan-suppress-next-line PhanDeprecatedProperty */
-        $u->disabled = $u->cflags & self::CFM_DISABLEMENT & self::CFM_DB;
+        if (!is_usascii($u->firstName . $u->lastName . $u->affiliation)) {
+            $u->cflags |= self::CF_NEANONASCII;
+        }
         $u->set_roles_properties();
         return $u;
     }
 
-    /** @return Contact */
+    /** @return Contact
+     * @suppress PhanAccessReadOnlyProperty */
     static function make_root_user(Conf $conf) {
         $u = new Contact($conf);
         $u->contactXid = self::$next_xid--;
@@ -407,8 +432,6 @@ class Contact implements JsonSerializable {
         $this->role_mask = (int) ($this->role_mask ?? self::ROLE_DBMASK);
         $this->roles = (int) $this->roles;
         $this->cflags = (int) $this->cflags;
-        /** @phan-suppress-next-line PhanDeprecatedProperty */
-        $this->disabled = (int) $this->disabled;
         if (isset($this->primaryContactId)) {
             $this->primaryContactId = (int) $this->primaryContactId;
         }
@@ -436,6 +459,9 @@ class Contact implements JsonSerializable {
     }
 
     private function set_roles_properties() {
+        // see also ConfInvariants::generate_cdb_roles
+        $this->_session_roles = (($this->_session_roles ?? 0) & ~self::ROLE_DBMASK)
+            | ($this->roles & self::ROLE_DBMASK);
         $this->isPC = ($this->roles & self::ROLE_PCLIKE) !== 0;
         $this->privChair = ($this->roles & (self::ROLE_ADMIN | self::ROLE_CHAIR)) !== 0;
         if ($this->isPC || !$this->conf->disable_non_pc()) {
@@ -453,12 +479,20 @@ class Contact implements JsonSerializable {
 
 
     /** @param object $x
-     * @param bool $all */
-    function unslice_using($x, $all = false) {
-        assert($all || $this->cdb_confid === 0);
-        $shapemask = self::PROP_LOCAL | self::PROP_DATA | ($all ? 0 : self::PROP_SLICE);
+     * @param bool $import_all */
+    function unslice_using($x, $import_all = false) {
+        if ($import_all) {
+            $shapemask = self::PROP_LOCAL | self::PROP_DATA;
+            $wantshape = self::PROP_LOCAL;
+        } else if ($this->cdb_confid === 0) {
+            $shapemask = self::PROP_LOCAL | self::PROP_DATA | self::PROP_SLICE;
+            $wantshape = self::PROP_LOCAL;
+        } else {
+            $shapemask = self::PROP_CDB | self::PROP_DATA | self::PROP_SLICE;
+            $wantshape = self::PROP_CDB;
+        }
         foreach (self::$props as $prop => $shape) {
-            if (($shape & $shapemask) === self::PROP_LOCAL) {
+            if (($shape & $shapemask) === $wantshape) {
                 $value = $x->$prop;
                 if ($value === null || ($shape & self::PROP_STRING) !== 0) {
                     $this->$prop = $value;
@@ -470,11 +504,15 @@ class Contact implements JsonSerializable {
                 }
             }
         }
-        if ($all) {
+        // unaccentedName and activity_at are special
+        if ($wantshape === self::PROP_LOCAL) {
+            $this->unaccentedName = $x->unaccentedName;
+            $this->activity_at = $this->lastLogin;
+        }
+        if ($import_all) {
             $this->contactId = $this->contactXid = $x->contactId;
             $this->cdb_confid = $this->contactDbId = 0;
         }
-        $this->activity_at = $this->lastLogin;
         $this->data = $x->data;
         $this->_jdata = null;
         $this->_slice = 0;
@@ -482,7 +520,7 @@ class Contact implements JsonSerializable {
 
     function unslice() {
         if ($this->_slice !== 0) {
-            assert($this->contactId > 0);
+            assert(($this->cdb_confid !== 0 ? $this->contactDbId : $this->contactId) > 0);
             $this->conf->unslice_user($this);
         }
     }
@@ -515,7 +553,7 @@ class Contact implements JsonSerializable {
 
     /** @return Generator<AuthorMatcher> */
     function collaborator_generator() {
-        return AuthorMatcher::make_collaborator_generator($this->collaborators());
+        return AuthorMatcher::make_collaborator_generator($this->collaborators(), Author::USER_COLLABORATOR_INDEX);
     }
 
     /** @return string */
@@ -529,12 +567,6 @@ class Contact implements JsonSerializable {
     /** @return string */
     function country_name() {
         return Countries::code_to_name($this->country_code());
-    }
-
-    /** @return string
-     * @deprecated */
-    function country() {
-        return $this->country_name();
     }
 
     /** @return ?string */
@@ -696,25 +728,33 @@ class Contact implements JsonSerializable {
 
     // initialization
 
-    /** @param Qrequest $qreq
+    /** @param Qrequest|Qsession $qreq
      * @return list<string> */
-    static function session_users($qreq) {
-        if (isset(self::$session_users)) {
-            return self::$session_users;
-        } else if (($us = $qreq->gsession("us")) !== null) {
+    static function session_emails($qreq) {
+        $qs = $qreq instanceof Qsession ? $qreq : $qreq->qsession();
+        if (($us = $qs->get("us")) !== null) {
             return $us;
-        } else if (($u = $qreq->gsession("u")) !== null) {
+        } else if (($u = $qs->get("u")) !== null) {
             return [$u];
-        } else {
-            return [];
         }
+        return [];
     }
 
-    /** @param Qrequest $qreq
+    /** @param Qrequest|Qsession $qreq
+     * @return list<string>
+     * @deprecated */
+    static function session_users($qreq) {
+        return self::session_emails($qreq);
+    }
+
+    /** @param Qrequest|Qsession $qreq
      * @param string $email
      * @return int */
     static function session_index_by_email($qreq, $email) {
-        foreach (self::session_users($qreq) as $i => $u) {
+        if (!$email) {
+            return -1;
+        }
+        foreach (self::session_emails($qreq) as $i => $u) {
             if (strcasecmp($u, $email) === 0) {
                 return $i;
             }
@@ -725,8 +765,8 @@ class Contact implements JsonSerializable {
     /** @return Contact */
     private function actas_user($x) {
         // translate to email
-        if (ctype_digit($x)) {
-            $acct = $this->conf->user_by_id(intval($x));
+        if (ctype_digit($x) && ($uid = stoi($x)) > 0) {
+            $acct = $this->conf->user_by_id($uid);
             $email = $acct ? $acct->email : null;
         } else if ($x === "admin") {
             $email = $this->email;
@@ -771,6 +811,7 @@ class Contact implements JsonSerializable {
     }
 
     /** @param Qrequest $qreq
+     * @param bool $signin
      * @return Contact */
     function activate($qreq, $signin, $userindex = 0) {
         $this->_activated |= 1 | ($userindex << 8);
@@ -806,51 +847,23 @@ class Contact implements JsonSerializable {
         // print, resave, and/or gc named saved messages
         if (($cmsgs = $qreq->csession("msgs"))) {
             foreach ($cmsgs as $mx) {
-                if (is_array($mx) && is_string($mx[0] ?? null) && is_int($mx[1] ?? null)) {
+                if (is_array($mx)
+                    && is_string($mx[0] ?? null)
+                    && is_int($mx[1] ?? null)) {
                     Conf::msg_on($this->conf, $mx[0], $mx[1]);
                 }
             }
             $qreq->unset_csession("msgs");
         }
         if (($smsgs = $qreq->gsession("smsg"))) {
-            $nsmsgs = [];
-            foreach ($smsgs as $ml) {
-                if ($ml[0] === $qreq->_smsg) {
-                    for ($i = 2; $i !== count($ml); ++$i) {
-                        Conf::msg_on($this->conf, $ml[$i][0], $ml[$i][1]);
-                    }
-                } else if ($ml[1] >= Conf::$now - 30) {
-                    $nsmsgs[] = $ml;
-                }
-            }
-            if (empty($nsmsgs)) {
-                $qreq->unset_gsession("smsg");
-            } else if (count($nsmsgs) !== count($smsgs)) {
-                $qreq->set_gsession("smsg", $nsmsgs);
-            }
+            $this->_activate_smsg($qreq, $smsgs);
         }
 
         // maybe auto-create a user
         if (($this->_activated & 2) === 0 && $this->email) {
-            $this->activate_placeholder(($this->_activated & 7) === 1);
-            $trueuser_aucheck = $qreq->csession("trueuser_author_check") ?? 0;
-            if (!$this->has_account_here()
-                && $trueuser_aucheck + 600 < Conf::$now) {
-                $qreq->set_csession("trueuser_author_check", Conf::$now);
-                $aupapers = self::email_authored_papers($this->conf, $this->email, $this);
-                if (!empty($aupapers)) {
-                    $this->ensure_account_here();
-                }
-            }
-            if ($this->has_account_here()
-                && $trueuser_aucheck
-                && $this->conf->session_key !== null) {
-                foreach ($_SESSION as $k => $v) {
-                    if (is_array($v)
-                        && isset($v["trueuser_author_check"])
-                        && $v["trueuser_author_check"] + 600 < Conf::$now)
-                        unset($_SESSION[$k]["trueuser_author_check"]);
-                }
+            $this->activate_placeholder(($this->_activated & 7) === 1, $this);
+            if ($qreq->csession("trueuser_author_check")) {
+                $qreq->unset_csession("trueuser_author_check");
             }
         }
 
@@ -868,6 +881,26 @@ class Contact implements JsonSerializable {
         }
 
         return $this;
+    }
+
+    /** @param Qrequest $qreq */
+    function _activate_smsg($qreq, $smsgs) {
+        $nsmsgs = [];
+        foreach ($smsgs as $ml) {
+            if ($ml[0] === $qreq->_smsg
+                || isset($_COOKIE["hotcrp-smsg-{$ml[0]}"])) {
+                for ($i = 2; $i !== count($ml); ++$i) {
+                    Conf::msg_on($this->conf, $ml[$i][0], $ml[$i][1]);
+                }
+            } else if ($ml[1] >= Conf::$now - 30) {
+                $nsmsgs[] = $ml;
+            }
+        }
+        if (empty($nsmsgs)) {
+            $qreq->unset_gsession("smsg");
+        } else if (count($nsmsgs) !== count($smsgs)) {
+            $qreq->set_gsession("smsg", $nsmsgs);
+        }
     }
 
     /** @return int */
@@ -901,19 +934,14 @@ class Contact implements JsonSerializable {
         return $this->set_overrides($this->_overrides & ~$overrides);
     }
 
-    /** @param int $overrides
-     * @param string $method
-     * @deprecated */
-    function call_with_overrides($overrides, $method, ...$args) {
-        $old_overrides = $this->set_overrides($overrides);
-        $result = call_user_func_array([$this, $method], $args);
-        $this->_overrides = $old_overrides;
-        return $result;
-    }
-
     /** @return bool */
     function is_cdb_user() {
         return $this->cdb_confid !== 0;
+    }
+
+    /** @return \mysqli */
+    function dblink() {
+        return $this->is_cdb_user() ? $this->conf->contactdb() : $this->conf->dblink;
     }
 
     /** @return $this */
@@ -939,7 +967,8 @@ class Contact implements JsonSerializable {
         } else if ($this->_cdb_user !== false) {
             return $this->_cdb_user;
         }
-        if ($this->conf->prefetch_cdb_user_by_email($this->email) && $this->_row_set) {
+        if ($this->conf->prefetch_cdb_user_by_email($this->email)
+            && $this->_row_set) {
             foreach ($this->_row_set as $u) {
                 if ($u->email)
                     $this->conf->prefetch_cdb_user_by_email($u->email);
@@ -963,7 +992,7 @@ class Contact implements JsonSerializable {
         if (!$u
             && $this->conf->contactdb()
             && $this->has_email()
-            && self::is_real_email($this->email)) {
+            && self::cdb_allows_email($this->email)) {
             $u = $this->_cdb_user = Contact::make_cdb_email($this->conf, $this->email);
             if ($this->contactId > 0) {
                 $u->contactXid = $this->contactId;
@@ -973,30 +1002,47 @@ class Contact implements JsonSerializable {
     }
 
     function update_cdb_roles() {
-        $roles = $this->cdb_roles();
-        if (($cdbu = $this->cdb_user())
-            && ($roles !== $cdbu->roles
-                || ($roles !== 0 && (int) $cdbu->activity_at <= Conf::$now - 604800))) {
-            assert($cdbu->cdb_confid < 0 || $cdbu->cdb_confid === $this->conf->opt["contactdbConfid"]);
-            if ($roles !== 0) {
-                Dbl::ql($this->conf->contactdb(), "insert into Roles set contactDbId=?, confid=?, roles=?, activity_at=? on duplicate key update roles=?, activity_at=?", $cdbu->contactDbId, $this->conf->cdb_confid(), $roles, Conf::$now, $roles, Conf::$now);
-            } else {
-                Dbl::ql($this->conf->contactdb(), "delete from Roles where contactDbId=? and confid=?", $cdbu->contactDbId, $this->conf->cdb_confid());
+        $this->conf->register_cdb_user_update($this, Conf::CDB_UPDATE_ROLES);
+    }
+
+    static function update_cdb_roles_list(Conf $conf, $uids) {
+        $role_updates = $role_deletes = [];
+        $qstager = Dbl::make_multi_qe_stager($conf->dblink);
+        foreach (array_unique($uids) as $uid) {
+            $u = $conf->user_by_id($uid);
+            $cu = $u ? $u->cdb_user() : null;
+            if (!$cu
+                || !self::cdb_allows_email($u->email)) {
+                continue;
             }
-            $cdbu->roles = $roles;
+            $r = $u->cdb_roles();
+            if ($r === 0 && $cu->roles > 0) {
+                $role_deletes[] = $cu->contactDbId;
+            } else if ($r !== $cu->roles
+                       || ($r !== 0 && (int) $cu->activity_at <= Conf::$now - 604800)) {
+                $role_updates[] = [$cu->contactDbId, $conf->cdb_confid(), $r, Conf::$now];
+            }
+            if ($r !== $u->cdbRoles) {
+                $qstager("update ContactInfo set cdbRoles=? where contactId=?", $r, $u->contactId);
+            }
         }
-        if ($this->contactId > 0
-            && $roles !== $this->cdbRoles) {
-            Dbl::ql($this->conf->dblink, "update ContactInfo set cdbRoles=? where contactId=?", $roles, $this->contactId);
-            $this->cdbRoles = $roles;
+        $qstager(null);
+        if (!empty($role_deletes)) {
+            Dbl::qe($conf->contactdb(), "delete from Roles where contactDbId?a and confid=?",
+                $role_deletes, $conf->cdb_confid());
+        }
+        if (!empty($role_updates)) {
+            Dbl::qe($conf->contactdb(), "insert into Roles (contactDbId, confid, roles, activity_at) values ?v ?U
+                on duplicate key update roles=?U(roles), activity_at=?U(activity_at)",
+                $role_updates);
         }
     }
 
-    /** @return int|false */
+    /** @return bool */
     function update_cdb() {
         if (!$this->conf->contactdb()
             || !$this->has_account_here()
-            || !self::is_real_email($this->email)) {
+            || !self::cdb_allows_email($this->email)) {
             return false;
         }
 
@@ -1023,26 +1069,27 @@ class Contact implements JsonSerializable {
         if (($this->cflags & self::CF_UNCONFIRMED) === 0) {
             $cdbux->set_prop("cflags", $cdbux->cflags & ~Contact::CF_UNCONFIRMED);
         }
+        $changed = false;
         if (!empty($cdbux->_mod_undo)) {
             assert($cdbux->cdb_confid !== 0);
             $cdbux->save_prop();
             $cdbur = $cdbux;
+            $changed = true;
         }
-        if (($this->_cdb_user = $cdbur)) {
-            $this->update_cdb_roles();
-            return $cdbur->contactDbId;
-        } else {
+        $this->_cdb_user = $cdbur;
+        if (!$cdbur) {
             return false;
         }
+        $this->update_cdb_roles();
+        return $changed;
     }
 
     /** @return Contact */
     function populated_user() {
         if ($this->contactId <= 0 && $this->has_email()) {
             return $this->cdb_user() ?? $this;
-        } else {
-            return $this;
         }
+        return $this;
     }
 
 
@@ -1089,13 +1136,18 @@ class Contact implements JsonSerializable {
 
     /** @return bool */
     function is_placeholder() {
-        return ($this->cflags & self::CF_PLACEHOLDER) !== 0;
+        return ($this->cflags & self::CFM_PLACEHOLDER) === self::CF_PLACEHOLDER;
+    }
+
+    /** @return bool */
+    function is_deleted() {
+        return ($this->cflags & self::CF_DELETED) !== 0;
     }
 
     /** @return bool */
     function contactdb_disabled() {
         $cdbu = $this->cdb_user();
-        return $cdbu && ($cdbu->cflags & self::CFM_DISABLEMENT & ~self::CF_PLACEHOLDER) !== 0;
+        return $cdbu && ($cdbu->cflags & (self::CF_UDISABLED | self::CF_GDISABLED | self::CF_DELETED)) !== 0;
     }
 
     /** @return int */
@@ -1108,6 +1160,22 @@ class Contact implements JsonSerializable {
         return ($this->cflags & self::CF_UNCONFIRMED) !== 0;
     }
 
+    /** @return bool */
+    function allow_self_register() {
+        // see also Conf::allow_user_self_register
+        return $this->contactId > 0 /* already registered */
+            || ((!$this->conf->disable_non_pc() || $this->isPC)
+                && !$this->conf->opt("disableNewUsers"));
+    }
+
+    /** @param 'extrev'|'pc'|'import' $for
+     * @return bool */
+    function should_use_primary($for) {
+        return $this->primaryContactId > 0
+            && ($this->cflags & (self::CF_UDISABLED | self::CF_GDISABLED)) === 0
+            && ($for !== "pc" || ($this->roles & self::ROLE_PCLIKE) === 0);
+    }
+
     /** @param bool $self_requested
      * @return bool */
     function can_receive_mail($self_requested = false) {
@@ -1118,13 +1186,21 @@ class Contact implements JsonSerializable {
                    && $this->conf->opt("sendEmailUnconfirmed") === false) {
             $disabled |= self::CF_UNCONFIRMED;
         }
-        $e = $this->preferredEmail ? : $this->email;
+        $e = $this->preferredEmail ?? $this->email;
         return ($this->cflags & $disabled) === 0 && self::is_real_email($e);
     }
 
     /** @return int */
     function session_index() {
         return $this->_activated > 0 ? $this->_activated >> 8 : -1;
+    }
+
+    /** @param Qrequest $qreq
+     * @param string $reason
+     * @return AuthenticationChecker */
+    function authentication_checker($qreq, $reason) {
+        $class = $this->conf->opt("authenticationCheckerClass") ?? "AuthenticationChecker";
+        return new $class($this, $qreq, $reason);
     }
 
     /** @param int $flags
@@ -1189,6 +1265,21 @@ class Contact implements JsonSerializable {
         return self::make_db_searchable_name($this->firstName, $this->lastName, $this->affiliation);
     }
 
+    /** @return bool */
+    function is_nea_nonascii() {
+        return ($this->cflags & Contact::CF_NEANONASCII) !== 0;
+    }
+
+    /** @param 'firstName'|'lastName'|'affiliation' $key
+     * @return string */
+    function searchable_nea($key) {
+        $s = $this->$key;
+        if (($this->cflags & Contact::CF_NEANONASCII) !== 0) {
+            $s = UnicodeHelper::deaccent($s);
+        }
+        return strtolower($s);
+    }
+
     /** @return array{email?:string,first?:string,last?:string,affiliation?:string} */
     function unparse_nea_json() {
         return Author::unparse_nea_json_for($this);
@@ -1218,6 +1309,75 @@ class Contact implements JsonSerializable {
         return $items;
     }
 
+    /** @param int $uid
+     * @param Contact $u
+     * @return ?ContactDecorations */
+    private function _name_decorations($uid, $u) {
+        if (array_key_exists($uid, $this->_name_decorations_map)) {
+            return $this->_name_decorations_map[$uid];
+        }
+
+        if (!$this->can_view_user_tags()) {
+            if ($u->contactXid === $this->contactXid) {
+                return new ContactDecorations("my-mention", null, "");
+            }
+            return null;
+        }
+
+        $fl = $this->_name_decorations_flags;
+        if ($fl === null) {
+            $dt = $this->conf->tags();
+            $test = ($dt->has_role_decoration ? " pc#0" : "") . " dim#0";
+            $test = $dt->censor(TagMap::CENSOR_VIEW, $test, $this, null);
+            $this->_name_decorations_flags = $fl = (str_contains($test, "pc") ? 1 : 0)
+                | (str_contains($test, "dim") ? 2 : 0);
+        }
+        $pc = ($fl & 1) !== 0 && ($u->roles & self::ROLE_PC) !== 0;
+        $disabled = ($fl & 2) !== 0 && $u->disabled_flags() !== 0;
+        if ($u->contactTags === null
+            && !$pc
+            && !$disabled
+            && $uid !== $this->contactId) {
+            return null;
+        }
+
+        $dt = $this->conf->tags();
+        if ($u->contactTags !== null) {
+            $aut = $dt->censor(TagMap::CENSOR_VIEW, $u->contactTags, $this, null);
+        } else {
+            $aut = "";
+        }
+        if ($pc) {
+            $aut .= " pc#0";
+        }
+
+        $cc_rn = $aut !== "" ? $dt->color_classes($aut) : "";
+        if ($disabled) {
+            $cc_ra = $cc_rn !== "" ? "{$cc_rn} tag-dim" : "tag-dim";
+        } else {
+            $cc_ra = $cc_rn;
+        }
+        $c_rn = $cc_rn !== "" ? "{$cc_rn} taghh" : "";
+        $c_ra = $cc_ra !== "" ? "{$cc_ra} taghh" : "";
+        if ($uid === $this->contactId) {
+            $c_rn = $c_rn !== "" ? "{$c_rn} my-mention" : "my-mention";
+            $c_ra = $c_ra !== "" ? "{$c_ra} my-mention" : "my-mention";
+        }
+        if ($aut !== "" && $dt->has(TagInfo::TFM_DECORATION)) {
+            $decor = (new Tagger($this))->unparse_decoration_html($aut, Tagger::DECOR_USER);
+        } else {
+            $decor = "";
+        }
+
+        if ($c_rn !== "" || $c_ra !== "" || $decor !== "") {
+            $nd = new ContactDecorations($c_rn, $c_rn === $c_ra ? null : $c_ra, $decor);
+        } else {
+            $nd = null;
+        }
+        $this->_name_decorations_map[$uid] = $nd;
+        return $nd;
+    }
+
     /** @param 'n'|'t'|'r'|'ra'|'rn' $type
      * @param ReviewInfo|Contact|int $x
      * @param int $flags
@@ -1230,8 +1390,8 @@ class Contact implements JsonSerializable {
             $u = $this->conf->user_by_id($uid, USER_SLICE);
         } else if ($x instanceof ReviewInfo) {
             $u = $x->reviewer();
-            if ($x->nameAmbiguous && $type === "r" && !$u->nameAmbiguous) {
-                $type = "ra";
+            if ($x->nameAmbiguous && $type === "r") {
+                $flags |= NAME_E;
             }
         } else {
             $u = $x;
@@ -1239,33 +1399,6 @@ class Contact implements JsonSerializable {
 
         if (!$u) {
             return "";
-        }
-
-        $userdecor = null;
-        if ($type[0] === "r"
-            && ($this->isPC || $this->tracker_kiosk_state > 0)
-            && $this->can_view_user_tags()) {
-            if (array_key_exists($uid, $this->_name_decorations_map)) {
-                $userdecor = $this->_name_decorations_map[$uid];
-            } else {
-                $dt = $this->conf->tags();
-                $ctflags = ($dt->has_role_decoration ? self::CTFLAG_ROLES : 0)
-                    | ($type !== "rn" ? self::CTFLAG_DISABLED : 0);
-                $act = self::all_user_tags_for($u, $ctflags);
-                if ($act !== ""
-                    && ($viewable = $dt->censor(TagMap::CENSOR_VIEW, $act, $this, null))) {
-                    $colors = $dt->color_classes($viewable);
-                    if ($dt->has(TagInfo::TFM_DECORATION)) {
-                        $decorations = (new Tagger($this))->unparse_decoration_html($viewable, Tagger::DECOR_USER);
-                    } else {
-                        $decorations = "";
-                    }
-                    if ($colors !== "" || $decorations !== "") {
-                        $userdecor = new ContactDecorations($colors, $decorations);
-                    }
-                }
-                $this->_name_decorations_map[$uid] = $userdecor;
-            }
         }
 
         $flags |= NAME_P;
@@ -1277,12 +1410,19 @@ class Contact implements JsonSerializable {
         if ($type !== "t") {
             $n = htmlspecialchars($n);
         }
-        if ($userdecor !== null) {
-            if ($userdecor->colors !== "") {
-                $n = "<span class=\"{$userdecor->colors} taghh\">{$n}</span>";
-            }
-            $n .= $userdecor->decorations;
+
+        if ($type[0] === "r"
+            && ($this->isPC || $this->tracker_kiosk_state > 0)
+            && ($nd = $this->_name_decorations($uid, $u))) {
+            $k = $type === "rn" ? $nd->rn_classes : $nd->ra_classes ?? $nd->rn_classes;
+            $n = ($k !== "" ? "<span class=\"{$k}\">{$n}</span>" : $n) . $nd->decorations;
         }
+
+        if ($type === "rx") {
+            $t = $uid === $this->contactId ? "This is you" : $u->email;
+            $n = "<span class=\"taghl\" title=\"{$t}\">{$n}</span>";
+        }
+
         return $n;
     }
 
@@ -1302,6 +1442,12 @@ class Contact implements JsonSerializable {
      * @return string */
     function reviewer_html_for($x) {
         return $this->name_for($this->isPC ? "r" : "n", $x);
+    }
+
+    /** @param int|Contact|ReviewInfo $x
+     * @return string */
+    function reviewer_extended_html_for($x) {
+        return $this->name_for($this->isPC ? "rx" : "n", $x);
     }
 
     /** @param int|Contact|ReviewInfo $x
@@ -1333,7 +1479,8 @@ class Contact implements JsonSerializable {
         return !!$this->email;
     }
 
-    /** @return bool */
+    /** @param string $email
+     * @return bool */
     static function is_anonymous_email($email) {
         // see also PaperSearch, Mailer
         return substr_compare($email, "anonymous", 0, 9, true) === 0
@@ -1350,6 +1497,14 @@ class Contact implements JsonSerializable {
                 || ($at + 12 <= $len
                     && (ord($email[$len - 11]) | 0x20) === 0x65 /* 'e' */
                     && preg_match('/\G[@.]example\.(?:com|net|org|edu)\z/i', $email, $m, 0, $len - 12)));
+    }
+
+    /** @param string $email
+     * @return bool */
+    static function cdb_allows_email($email) {
+        return $email !== ""
+            && !self::is_anonymous_email($email)
+            && !self::is_example_email($email);
     }
 
     /** @param string $email
@@ -1433,7 +1588,8 @@ class Contact implements JsonSerializable {
     /** @param string $t
      * @return bool */
     function has_tag($t) {
-        if (($this->roles & self::ROLE_PC) && strcasecmp($t, "pc") == 0) {
+        if (($this->roles & self::ROLE_PC) !== 0
+            && strcasecmp($t, "pc") === 0) {
             return true;
         }
         if ($this->contactTags) {
@@ -1454,20 +1610,8 @@ class Contact implements JsonSerializable {
         } else if ($this->contactTags
                    && ($p = stripos($this->contactTags, " {$t}#")) !== false) {
             return (float) substr($this->contactTags, $p + strlen($t) + 2);
-        } else {
-            return null;
         }
-    }
-
-    /** @param string $perm
-     * @return ?bool */
-    function perm_tag_allows($perm) {
-        if ($this->contactTags
-            && ($pos = stripos($this->contactTags, " perm:{$perm}#")) !== false) {
-            return $this->contactTags[$pos + strlen($perm) + 7] !== "-";
-        } else {
-            return null;
-        }
+        return null;
     }
 
     const CTFLAG_ROLES = 1;
@@ -1477,6 +1621,8 @@ class Contact implements JsonSerializable {
      * @param 0|1|2|3 $ctags
      * @return string */
     static function all_user_tags_for($x, $ctags) {
+        // See also _name_decorations, which depends on the tags used for roles
+        // and disablement
         $tags = $x->contactTags ?? "";
         if (($ctags & self::CTFLAG_ROLES) !== 0
             && ($x->roles & self::ROLE_PC) !== 0) {
@@ -1494,44 +1640,36 @@ class Contact implements JsonSerializable {
         return self::all_user_tags_for($this, self::CTFLAG_ROLES);
     }
 
-    /** @param Contact|Author $x
-     * @param 0|1|2|3 $ctags
-     * @return string
-     * @deprecated */
-    static function all_contact_tags_for($x, $ctags) {
-        return self::all_user_tags_for($x, $ctags);
-    }
-
-    /** @return string
-     * @deprecated */
-    function all_contact_tags() {
-        return $this->all_user_tags();
-    }
-
     /** @return string */
     function viewable_tags(Contact $viewer) {
         // see also Contact::calculate_name_for
         if ($viewer->can_view_user_tags() || $viewer->contactXid === $this->contactXid) {
             $tags = $this->all_user_tags();
             return $this->conf->tags()->censor(TagMap::CENSOR_VIEW, $tags, $viewer, null);
-        } else {
-            return "";
         }
+        return "";
     }
 
     /** @return string */
     function viewable_color_classes(Contact $viewer) {
         if (($tags = $this->viewable_tags($viewer))) {
             return $this->conf->tags()->color_classes($tags);
-        } else {
-            return "";
         }
+        return "";
     }
 
     /** @param string $perm
      * @return bool */
     function has_permission($perm) {
+        // other code assumes `has_permission(null)` is always true
         return !$perm || $this->has_tag(substr($perm, 1)) === ($perm[0] === "+");
+    }
+
+    /** @param string $xright
+     * @return bool */
+    function check_xtrack($xright) {
+        $p = $this->conf->xtrack_permission($xright);
+        return $p ? $this->has_permission($p) : !str_ends_with($xright, "!");
     }
 
 
@@ -1556,13 +1694,12 @@ class Contact implements JsonSerializable {
         $d = $this->make_data();
         if ($key) {
             return $d->$key ?? null;
-        } else {
-            return $d;
         }
+        return $d;
     }
 
     /** @param string $key */
-    function set_data($key, $value) {
+    function set_data_prop($key, $value) {
         $d = $this->make_data();
         if (($d->$key ?? null) !== $value) {
             if (!array_key_exists("data", $this->_mod_undo ?? [])) {
@@ -1573,6 +1710,22 @@ class Contact implements JsonSerializable {
             } else {
                 unset($d->$key);
             }
+        }
+    }
+
+    /** @param string $key
+     * @deprecated */
+    function set_data($key, $value) {
+        $this->set_data_prop($key, $value);
+    }
+
+    function clear_data_prop() {
+        $this->_slice !== 0 && $this->unslice();
+        if ($this->_jdata !== null || $this->data !== null) {
+            if (!array_key_exists("data", $this->_mod_undo ?? [])) {
+                $this->_mod_undo["data"] = $this->data;
+            }
+            $this->data = $this->_jdata = null;
         }
     }
 
@@ -1589,27 +1742,29 @@ class Contact implements JsonSerializable {
     }
 
     /** @param object|array $data */
-    function merge_data($data) {
-        object_replace_recursive($this->make_data(), array_to_object_recursive($data));
+    function merge_and_save_data($data) {
+        $change = array_to_object_recursive($data);
+        $this->modify_data(function ($u) use ($change) {
+            object_replace_recursive($u->make_data(), $change);
+        });
     }
 
-    /** @param object|array $data */
-    function merge_and_save_data($data) {
+    /** @param callable(Contact) $f */
+    function modify_data($f) {
         $cdb = $this->cdb_confid !== 0;
         $key = $cdb ? "contactDbId" : "contactId";
-        $cid = $cdb ? $this->contactDbId : $this->contactId;
-        $change = array_to_object_recursive($data);
-        assert($cid > 0);
+        $uid = $cdb ? $this->contactDbId : $this->contactId;
+        assert($uid > 0);
         Dbl::compare_exchange(
-            $cdb ? $this->conf->contactdb() : $this->conf->dblink,
-            "select `data` from ContactInfo where {$key}=?", [$cid],
-            function ($old) use ($change) {
+            $this->dblink(),
+            "select `data` from ContactInfo where {$key}=?", [$uid],
+            function ($old) use ($f) {
                 $this->data = $old;
                 $this->_jdata = null;
-                object_replace_recursive($this->make_data(), $change);
+                $f($this);
                 return $this->encode_data();
             },
-            "update ContactInfo set data=?{desired} where {$key}=? and data?{expected}e", [$cid]
+            "update ContactInfo set data=?{desired} where {$key}=? and data?{expected}e", [$uid]
         );
     }
 
@@ -1619,9 +1774,8 @@ class Contact implements JsonSerializable {
         if ($this->_jdata === null
             && ($this->data === null || is_string($this->data))) {
             return $this->data === "{}" ? null : $this->data;
-        } else {
-            return $this->encode_data();
         }
+        return $this->encode_data();
     }
 
 
@@ -1673,9 +1827,8 @@ class Contact implements JsonSerializable {
         $pid = is_int($p) ? $p : $p->paperId;
         if (($rcid = $this->_capabilities["@ra{$pid}"] ?? null)) {
             return $this->conf->user_by_id($rcid, USER_SLICE);
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @param string $name
@@ -1683,20 +1836,19 @@ class Contact implements JsonSerializable {
      * @return bool */
     function set_capability($name, $value) {
         $oldval = $this->capability($name);
-        if (($value ? : null) !== $oldval) {
-            if ($value) {
-                $this->_capabilities[$name] = $value;
-            } else {
-                unset($this->_capabilities[$name]);
-                if (empty($this->_capabilities)) {
-                    $this->_capabilities = null;
-                }
-            }
-            $this->update_my_rights();
-            return true;
-        } else {
+        if (($value ? : null) === $oldval) {
             return false;
         }
+        if ($value) {
+            $this->_capabilities[$name] = $value;
+        } else {
+            unset($this->_capabilities[$name]);
+            if (empty($this->_capabilities)) {
+                $this->_capabilities = null;
+            }
+        }
+        $this->update_my_rights();
+        return true;
     }
 
     /** @param string $text */
@@ -1750,7 +1902,8 @@ class Contact implements JsonSerializable {
             }
             $jr = JsonResult::make_error(403, $m);
             if (!$this->is_signed_in()) {
-                $jr->content["loggedout"] = true;
+                $jr->set("signedout", true);
+                $jr->set("loggedout", true); // XXX backward compat
             }
             json_exit($jr);
         }
@@ -1766,7 +1919,10 @@ class Contact implements JsonSerializable {
         $url = $this->conf->selfurl($qreq, $x, Conf::HOTURL_RAW | Conf::HOTURL_SITEREL);
 
         if (!$qreq->valid_post()) {
-            Multiconference::fail($qreq, 403, $this->conf->_i("signin_required", new FmtArg("action", $qreq->page()), new FmtArg("url", $this->conf->hoturl_raw("signin", ["redirect" => $url]), 0)));
+            Multiconference::fail($qreq, 403, new FailureReason($this->conf, [
+                "signin" => $qreq->page(),
+                "signinUrl" => $this->conf->hoturl_raw("signin", ["redirect" => $url])
+            ]));
         }
 
         // Preserve post values across session expiration.
@@ -1782,73 +1938,6 @@ class Contact implements JsonSerializable {
 
     const SAVE_ANY_EMAIL = 1;
     const SAVE_SELF_REGISTER = 2;
-
-    function change_email($email) {
-        assert($this->has_account_here());
-        assert($this->_slice === 0);
-        $old_email = $this->email;
-        $aupapers = self::email_authored_papers($this->conf, $email, $this);
-        $this->conf->ql("update ContactInfo set email=? where contactId=?", $email, $this->contactId);
-        $this->save_authored_papers($aupapers);
-
-        if (!$this->password
-            && ($cdbu = $this->cdb_user())
-            && $cdbu->password) {
-            $this->password = $cdbu->password;
-            $this->passwordTime = $cdbu->passwordTime;
-            $this->passwordUseTime = $cdbu->passwordUseTime;
-        }
-        $this->email = $email;
-        $this->update_cdb();
-
-        if ($this->roles & Contact::ROLE_PCLIKE) {
-            $this->conf->invalidate_caches(["pc" => true]);
-        }
-        $this->conf->log_for($this, $this, "Account edited: email ({$old_email} to {$email})");
-    }
-
-    /** @param string $email
-     * @param object $reg
-     * @return list<int> */
-    static function email_authored_papers(Conf $conf, $email, $reg) {
-        $aupapers = [];
-        $result = $conf->q("select paperId, authorInformation from Paper where authorInformation like " . Dbl::utf8ci("'%\t?ls\t%'"), $email);
-        while (($row = $result->fetch_row())) {
-            foreach (PaperInfo::parse_author_list($row[1]) as $au) {
-                if (strcasecmp($au->email, $email) !== 0) {
-                    continue;
-                }
-                $aupapers[] = (int) $row[0];
-                if ($reg
-                    && ($au->firstName !== "" || $au->lastName !== "")
-                    && ($reg->firstName ?? "") === ""
-                    && ($reg->lastName ?? "") === "") {
-                    $reg->firstName = $au->firstName;
-                    $reg->lastName = $au->lastName;
-                }
-                if ($reg
-                    && $au->affiliation !== ""
-                    && ($reg->affiliation ?? "") === "") {
-                    $reg->affiliation = $au->affiliation;
-                }
-            }
-        }
-        Dbl::free($result);
-        return $aupapers;
-    }
-
-    /** @param list<int> $aupapers */
-    private function save_authored_papers($aupapers) {
-        if (empty($aupapers) || $this->contactId <= 0) {
-            return;
-        }
-        $ps = [];
-        foreach ($aupapers as $pid) {
-            $ps[] = [$pid, $this->contactId, CONFLICT_AUTHOR];
-        }
-        $this->conf->ql("insert into PaperConflict (paperId, contactId, conflictType) values ?v on duplicate key update conflictType=(conflictType|" . CONFLICT_AUTHOR . ")", $ps);
-    }
-
 
     /** @param string $prop
      * @param int $shape */
@@ -1867,10 +1956,9 @@ class Contact implements JsonSerializable {
             return $value & ($this->cdb_confid === 0 ? self::ROLE_DBMASK : self::ROLE_CDBMASK);
         } else if ($prop === "cflags") {
             return $value > 0 ? $value & self::CFM_DB : $value;
-        } else {
-            assert(false);
-            return $value;
         }
+        assert(false);
+        return $value;
     }
 
     /** @param string $prop */
@@ -1949,7 +2037,7 @@ class Contact implements JsonSerializable {
         }
         // save
         if (($shape & self::PROP_DATA) !== 0) {
-            $this->set_data($prop, $value);
+            $this->set_data_prop($prop, $value);
         } else {
             $this->_mod_undo = $this->_mod_undo ?? [];
             $has_old = array_key_exists($prop, $this->_mod_undo);
@@ -1979,24 +2067,34 @@ class Contact implements JsonSerializable {
             }
             $this->updateTime = Conf::$now;
         }
-        if ($this->_aucollab_matchers
-            && in_array($prop, ["firstName", "lastName", "email", "affiliation"])) {
-            $this->_aucollab_matchers = $this->_aucollab_general_pregexes = null;
-        }
-        if ($prop === "cflags") {
+        if ($prop === "roles" || $prop === "cflags") {
             $this->set_roles_properties();
-            $this->set_prop("disabled", $this->cflags & Contact::CFM_DISABLEMENT & Contact::CFM_DB);
+        }
+        $neaidx = array_search($prop, ["firstName", "lastName", "email", "affiliation"], true);
+        if ($neaidx !== false) {
+            $this->_aucollab_matchers = $this->_aucollab_general_pregexes = null;
+            if ($neaidx !== 2) {
+                $nonascii = is_usascii($this->firstName . $this->lastName . $this->affiliation)
+                    ? 0 : self::CF_NEANONASCII;
+                if (($this->cflags & self::CF_NEANONASCII) !== $nonascii) {
+                    $this->set_prop("cflags", ($this->cflags & ~self::CF_NEANONASCII) | $nonascii);
+                }
+            }
         }
     }
 
     /** @param string $tag
      * @param false|int|float $value
+     * @param bool $ifunset
      * @return void */
-    function change_tag_prop($tag, $value) {
-        assert(strcasecmp($tag, "pc") !== 0 && strcasecmp($tag, "chair") !== 0);
+    function change_tag_prop($tag, $value, $ifunset = false) {
+        assert(!preg_match('/\A(?:any|all|none|enabled|disabled|pc|chair|admin|sysadmin)\z/i', $tag));
         $shape = self::$props["contactTags"];
         $svalue = $this->prop1("contactTags", $shape) ?? "";
         if (($pos = stripos($svalue, " {$tag}#")) !== false) {
+            if ($ifunset) {
+                return;
+            }
             $epos = $pos + strlen($tag) + 2;
             $space = strpos($svalue, " ", $epos);
             $space = $space === false ? strlen($svalue) : $space;
@@ -2020,34 +2118,20 @@ class Contact implements JsonSerializable {
         return $prop ? array_key_exists($prop, $this->_mod_undo ?? []) : !empty($this->_mod_undo);
     }
 
-    /** @param bool $confirm
-     * @return bool */
-    private function activate_placeholder_prop($confirm) {
-        $changed = false;
-        if (($this->cflags & self::CF_PLACEHOLDER) !== 0) {
-            $this->set_prop("cflags", $this->cflags & ~self::CF_PLACEHOLDER);
-            $changed = true;
-        }
-        if (($this->cflags & self::CF_UNCONFIRMED) !== 0 && $confirm) {
-            $this->set_prop("cflags", $this->cflags & ~self::CF_UNCONFIRMED);
-            $changed = true;
-        }
-        return $changed;
-    }
-
     /** @return bool */
     function save_prop() {
         if ($this->cdb_confid !== 0) {
-            $db = $this->conf->contactdb();
             $idk = "contactDbId";
             $flag = self::PROP_CDB;
         } else {
-            $db = $this->conf->dblink;
             $idk = "contactId";
             $flag = self::PROP_LOCAL;
         }
+        if (empty($this->_mod_undo) && $this->$idk > 0) {
+            return true;
+        }
+        $this->_mod_undo = $this->_mod_undo ?? [];
         if ($this->$idk <= 0) {
-            $this->_mod_undo = $this->_mod_undo ?? [];
             if (!array_key_exists("password", $this->_mod_undo)) {
                 $this->password = validate_email($this->email) ? " unset" : " nologin";
                 $this->passwordTime = Conf::$now;
@@ -2056,8 +2140,9 @@ class Contact implements JsonSerializable {
                 && !array_key_exists("cdbRoles", $this->_mod_undo)) {
                 $this->cdbRoles = 0;
             }
-        } else if (empty($this->_mod_undo)) {
-            return true;
+            if (!array_key_exists("primaryContactId", $this->_mod_undo)) {
+                $this->primaryContactId = 0;
+            }
         }
         $qf = $qv = [];
         foreach (self::$props as $prop => $shape) {
@@ -2091,10 +2176,10 @@ class Contact implements JsonSerializable {
         }
         if ($this->$idk > 0) {
             $qv[] = $this->$idk;
-            $result = Dbl::qe_apply($db, "update ContactInfo set " . join(", ", $qf) . " where {$idk}=?", $qv);
+            $result = Dbl::qe_apply($this->dblink(), "update ContactInfo set " . join(", ", $qf) . " where {$idk}=?", $qv);
         } else {
             assert($this->email !== "");
-            $result = Dbl::qe_apply($db, "insert into ContactInfo set " . join(", ", $qf) . " on duplicate key update cflags=cflags", $qv);
+            $result = Dbl::qe_apply($this->dblink(), "insert into ContactInfo set " . join(", ", $qf) . " on duplicate key update cflags=cflags", $qv);
             if ($result->affected_rows > 0) {
                 $this->$idk = (int) $result->insert_id;
                 if ($this->cdb_confid === 0) {
@@ -2110,10 +2195,31 @@ class Contact implements JsonSerializable {
             return false;
         }
         // otherwise, success
-        // maybe mark CDB update
+        // maybe enqueue CDB update and/or invalidate caches
         if ($this->cdb_confid !== 0
             && array_key_exists("updateTime", $this->_mod_undo)) {
-            $this->conf->register_cdb_user_update($this->contactDbId, $this->updateTime);
+            $this->conf->register_cdb_user_update($this, Conf::CDB_UPDATE_PROFILE);
+        }
+        if ($this->cdb_confid === 0
+            && array_key_exists("roles", $this->_mod_undo)) {
+            $this->conf->register_cdb_user_update($this, Conf::CDB_UPDATE_ROLES);
+            $this->conf->invalidate_caches(["pc" => true]);
+        }
+        if ($this->cdb_confid === 0
+            && array_key_exists("cflags", $this->_mod_undo)) {
+            $cf0 = $this->_mod_undo["cflags"];
+            $cf1 = $this->cflags;
+            $dmask = self::CFM_DISABLEMENT & self::CFM_DB;
+            if ((($cf0 & $dmask) !== 0) !== (($cf1 & $dmask) !== 0)
+                && !array_key_exists("roles", $this->_mod_undo)) {
+                $this->conf->register_cdb_user_update($this, Conf::CDB_UPDATE_ROLES);
+            }
+            if (($cf0 & ~$cf1 & self::CF_PLACEHOLDER) !== 0) {
+                $this->conf->register_cdb_user_update($this, Conf::CDB_UPDATE_PLACEHOLDER);
+            }
+            if (($cf0 & ~$cf1 & self::CF_UNCONFIRMED) !== 0) {
+                $this->conf->register_cdb_user_update($this, Conf::CDB_UPDATE_CONFIRMED);
+            }
         }
         // invalidate caches
         $this->_mod_undo = null;
@@ -2125,21 +2231,30 @@ class Contact implements JsonSerializable {
         foreach ($this->_mod_undo as $prop => $value) {
             $this->$prop = $value;
         }
+        $this->commit_prop();
+    }
+
+    function commit_prop() {
         $this->_mod_undo = $this->_jdata = null;
         $this->_aucollab_matchers = $this->_aucollab_general_pregexes = null;
         $this->set_roles_properties();
     }
 
     /** @param bool $confirm
+     * @param ?Contact $actor
      * @return bool */
-    function activate_placeholder($confirm) {
-        if (!$this->activate_placeholder_prop($confirm)) {
+    function activate_placeholder($confirm, $actor = null) {
+        // see also PaperStatus::_execute_author_changes
+        $mask = self::CF_PLACEHOLDER | ($confirm ? self::CF_UNCONFIRMED : 0);
+        if (($this->cflags & $mask) === 0
+            || ($this->cflags & self::CFM_DISABLEMENT & ~self::CF_PLACEHOLDER) !== 0) {
             return false;
         }
+        $create = ($this->cflags & self::CF_PLACEHOLDER) !== 0;
+        $this->set_prop("cflags", $this->cflags & ~$mask);
         $this->save_prop();
-        if (($cdbu = $this->cdb_user())
-            && $cdbu->activate_placeholder_prop($confirm)) {
-            $cdbu->save_prop();
+        if ($actor && $create) {
+            $this->log_create($actor);
         }
         return true;
     }
@@ -2147,11 +2262,13 @@ class Contact implements JsonSerializable {
 
     /** @param int $new_roles
      * @param ?Contact $actor
-     * @param bool $skip_log
      * @return int */
-    function save_roles($new_roles, $actor, $skip_log = false) {
-        assert(($new_roles & self::ROLE_DBMASK) === $new_roles);
-        $old_roles = $this->roles & self::ROLE_DBMASK;
+    function save_roles($new_roles, $actor) {
+        if (($new_roles & self::ROLE_DBMASK) !== $new_roles) {
+            $new_roles &= self::ROLE_DBMASK;
+            error_log("bad \$new_roles {$new_roles}: " . debug_string_backtrace());
+        }
+        $old_roles = ($this->_mod_undo["roles"] ?? $this->roles) & self::ROLE_DBMASK;
         if (($old_roles & (self::ROLE_ADMIN | self::ROLE_CHAIR)) !== 0
             && ($new_roles & (self::ROLE_ADMIN | self::ROLE_CHAIR)) === 0) {
             // ensure there's at least one chair or system administrator
@@ -2164,26 +2281,24 @@ class Contact implements JsonSerializable {
             $result = $this->conf->qe("update ContactInfo set roles=? where contactId=?",
                 $new_roles, $this->contactId);
         }
+        unset($this->_mod_undo["roles"]);
         // save the roles bits
-        if ($result->affected_rows > 0) {
-            if (!$skip_log) {
-                $this->conf->log_for($actor ?? $this, $this, "Account edited: roles [" . UserStatus::unparse_roles_diff($old_roles, $new_roles) . "]");
-            }
-            $this->roles = $new_roles;
-            $this->_session_roles = (($this->_session_roles ?? 0) & ~self::ROLE_DBMASK) | $new_roles;
-            $this->set_roles_properties();
-            $this->conf->invalidate_caches(["pc" => true]);
-            $this->conf->invalidate_user($this, true);
-            $this->update_cdb_roles();
-            return $new_roles;
-        } else {
+        if ($result->affected_rows === 0) {
             return $old_roles;
         }
+        $this->conf->log_for($actor ?? $this, $this, "Account edited: roles [" . UserStatus::unparse_roles_diff($old_roles, $new_roles) . "]");
+        $this->roles = ($this->roles & ~self::ROLE_DBMASK) | $new_roles;
+        $this->set_roles_properties();
+        $this->conf->invalidate_caches(["pc" => true]);
+        $this->conf->invalidate_user($this, true);
+        $this->update_cdb_roles();
+        return $new_roles;
     }
 
-    static function importable_props() {
+    private function importable_props() {
+        $f = self::PROP_IMPORT | ($this->cdb_confid !== 0 ? self::PROP_CDB : self::PROP_LOCAL);
         foreach (self::$props as $prop => $shape) {
-            if (($shape & self::PROP_IMPORT) !== 0)
+            if (($shape & $f) === $f)
                 yield $prop => $shape;
         }
     }
@@ -2191,7 +2306,7 @@ class Contact implements JsonSerializable {
     /** @param Contact $src
      * @param 0|1|2 $ifempty */
     function import_prop($src, $ifempty) {
-        foreach (self::importable_props() as $prop => $shape) {
+        foreach ($this->importable_props() as $prop => $shape) {
             if (($value = $src->prop1($prop, $shape)) !== null
                 && $value !== "") {
                 $this->set_prop($prop, $value, $ifempty);
@@ -2204,25 +2319,35 @@ class Contact implements JsonSerializable {
         if ($sdflags !== 0
             && $this->cdb_confid !== 0
             && $this->contactDbId === 0) {
-            $this->set_prop("cflags", $this->cflags | self::CF_PLACEHOLDER);
+            $this->set_prop("cflags", ($this->cflags & ~self::CF_DELETED) | self::CF_PLACEHOLDER);
         }
-        // source is non-disabled local user: this is not placeholder
+        // source is non-placeholder local user: this is not placeholder
         if ($src->cdb_confid === 0
             && $sdflags === 0
             && ($this->cflags & self::CF_PLACEHOLDER) !== 0) {
             $this->set_prop("cflags", $this->cflags & ~self::CF_PLACEHOLDER);
         }
-        // source is globally disabled: this local user is disabled
-        if (($sdflags & self::CF_GDISABLED) !== 0
+        // source is globally disabled/deleted cdb user:
+        // this local user is disabled/deleted
+        $sdflags_del = $sdflags & (self::CF_GDISABLED | self::CF_DELETED);
+        if ($sdflags_del !== 0
             && $src->cdb_confid !== 0
             && $this->cdb_confid === 0) {
-            $this->set_prop("cflags", $this->cflags | self::CF_GDISABLED);
+            $this->set_prop("cflags", $this->cflags | $sdflags_del);
         }
 
         // unconfirmed import is special
         // source is confirmed: this is confirmed
         if (($src->cflags & self::CF_UNCONFIRMED) === 0) {
             $this->set_prop("cflags", $this->cflags & ~self::CF_UNCONFIRMED);
+        }
+    }
+
+    /** @param 0|1|2 $ifempty */
+    function export_prop($ifempty) {
+        if (($cdbu = $this->cdb_user())) {
+            $cdbu->import_prop($this, $ifempty);
+            $cdbu->save_prop();
         }
     }
 
@@ -2233,16 +2358,15 @@ class Contact implements JsonSerializable {
         // clean registration
         assert(is_string($this->email));
         assert($this->email === trim($this->email));
-        assert(empty($this->_mod_undo));
         assert($this->contactId <= 0);
 
         // maybe refuse to create
         $localu = null;
         $valid_email = validate_email($this->email);
-        if ((!$valid_email
-             && ($flags & self::SAVE_ANY_EMAIL) === 0)
+        if ((($flags & self::SAVE_ANY_EMAIL) === 0
+             && !validate_email($this->email))
             || (($flags & self::SAVE_SELF_REGISTER) !== 0
-                && !$this->conf->allow_user_self_register())) {
+                && !$this->allow_self_register())) {
             $localu = $this->conf->fresh_user_by_email($this->email);
             if (!$localu) {
                 return null;
@@ -2251,6 +2375,7 @@ class Contact implements JsonSerializable {
 
         // `$this` will become a non-cdb user, so invalidate it
         if ($this->cdb_confid !== 0) {
+            $this->unslice();
             $this->conf->invalidate_user($this);
             $this->cdb_confid = $this->contactDbId = 0;
             $this->_cdb_user = false;
@@ -2258,48 +2383,17 @@ class Contact implements JsonSerializable {
 
         // look up cdb account
         $cdbu = null;
-        if ($valid_email
-            && self::is_real_email($this->email)
+        if (self::cdb_allows_email($this->email)
             && ($cdb = $this->conf->contactdb())) {
             $cdbu = $this->cdb_user() ?? Contact::make_cdb_email($this->conf, $this->email);
         }
 
         // import properties from cdb
         if (!$localu) {
-            $this->_mod_undo = ["disabled" => -1, "cflags" => -1];
-            foreach (self::importable_props() as $prop => $shape) {
-                $this->_mod_undo[$prop] = ($shape & self::PROP_NULL) !== 0 ? null : "";
-            }
-            if ($cdbu) {
-                $this->password = "";
-                if ($cdbu->contactDbId > 0) {
-                    $this->import_prop($cdbu, $cdbu->is_placeholder() ? 2 : 0);
-                    $this->passwordTime = $cdbu->passwordTime;
-                } else {
-                    $this->passwordTime = 0;
-                }
-                $this->passwordUseTime = 0;
-                $this->_mod_undo["password"] = null;
-                $this->_mod_undo["passwordTime"] = null;
-                $this->_mod_undo["passwordUseTime"] = null;
-            }
-            $this->_cdb_user = $cdbu;
-
-            if ($this->save_prop()) {
-                // log creation (except for placeholder accounts)
-                if (($this->cflags & self::CF_PLACEHOLDER) === 0) {
-                    $msg = "Account created";
-                    if (($this->cflags & self::CFM_DISABLEMENT & ~self::CF_ROLEDISABLED) !== 0) {
-                        $msg .= ", disabled";
-                    }
-                    $this->conf->log_for($actor && $actor->has_email() ? $actor : $this, $this, $msg);
-                }
-            } else {
-                // maybe user already existed
-                $localu = $this->conf->fresh_user_by_email($this->email);
-                if (!$localu) {
-                    return null;
-                }
+            $localu = $this->_store_create($cdbu, $actor);
+            if (!$localu && $this->contactId <= 0) {
+                // failed to create user
+                return null;
             }
         }
 
@@ -2320,6 +2414,60 @@ class Contact implements JsonSerializable {
         return $this;
     }
 
+    /** @param ?Contact $cdbu
+     * @param ?Contact $actor
+     * @return ?Contact */
+    private function _store_create($cdbu, $actor) {
+        $this->_mod_undo = ["cflags" => -1];
+        foreach ($this->importable_props() as $prop => $shape) {
+            $this->_mod_undo[$prop] = ($shape & self::PROP_NULL) !== 0 ? null : "";
+        }
+
+        if ($cdbu) {
+            $this->password = "";
+            if ($cdbu->contactDbId > 0) {
+                $this->import_prop($cdbu, $cdbu->is_placeholder() ? 2 : 0);
+                $this->passwordTime = $cdbu->passwordTime;
+            } else {
+                $this->passwordTime = 0;
+            }
+            $this->passwordUseTime = 0;
+            $this->_mod_undo["password"] = null;
+            $this->_mod_undo["passwordTime"] = null;
+            $this->_mod_undo["passwordUseTime"] = null;
+        }
+        $this->_cdb_user = $cdbu;
+
+        if (!$this->save_prop()) {
+            // maybe user actually already existed; return it as `$localu`
+            return $this->conf->fresh_user_by_email($this->email);
+        }
+
+        // log creation of non-placeholder accounts
+        if (($this->cflags & self::CF_PLACEHOLDER) === 0) {
+            $this->log_create($actor);
+        }
+
+        // if importing a secondary user, automatically import the primary
+        if ($cdbu
+            && $cdbu->primaryContactId > 0
+            && ($cdbpri = $this->conf->cdb_user_by_id($cdbu->primaryContactId))) {
+            (new ContactPrimary($this))->link($this, $cdbpri);
+        }
+
+        // we created the user, so no `$localu` (preexisting local user)
+        return null;
+    }
+
+    /** @param ?Contact $actor */
+    function log_create($actor) {
+        $msg = "Account created";
+        if (($this->cflags & self::CFM_DISABLEMENT & ~self::CF_ROLEDISABLED) !== 0) {
+            $msg .= ", disabled";
+        }
+        $this->conf->log_for($actor && $actor->has_email() ? $actor : $this, $this, $msg);
+    }
+
 
     // PASSWORDS
     //
@@ -2335,7 +2483,8 @@ class Contact implements JsonSerializable {
     //   on successful login.
     // * " [hashmethod] [keyid] [salt][hash_hmac]": Legacy hashed password
     //   using hash_hmac. `salt` is 16 bytes. Reset to hashed password on
-    //   successful login.
+    //   successful login. As of 2025 the code to check legacy hashed passwords
+    //   has been removed.
     //
     // Password checking guiding principles
     // * Contactdb password generally takes preference. On successful signin
@@ -2347,46 +2496,50 @@ class Contact implements JsonSerializable {
         return strlen($input) > 5 && trim($input) === $input;
     }
 
-    /** @return bool */
-    function password_unset() {
+    /** @return array{string,string} */
+    private function effective_passwords() {
         assert(($this->_slice & self::SLICEBIT_PASSWORD) === 0);
         $cdbu = $this->cdb_user();
-        return (!$cdbu
-                || (string) $cdbu->password === ""
-                || str_starts_with($cdbu->password, " unset"))
-            && ((string) $this->password === ""
-                || str_starts_with($this->password, " unset")
-                || ($cdbu && (string) $cdbu->password !== "" && $cdbu->passwordTime >= $this->passwordTime));
+        $cdbpw = $cdbu ? (string) $cdbu->password : "";
+        if ($this->contactId <= 0
+            || ($cdbpw !== "" && $cdbu->passwordTime >= $this->passwordTime)) {
+            return [$cdbpw, ""];
+        }
+        return [$cdbpw, (string) $this->password];
+    }
+
+    /** @return bool */
+    function password_unset() {
+        list($cdbpw, $localpw) = $this->effective_passwords();
+        return ($cdbpw === "" || str_starts_with($cdbpw, " unset"))
+            && ($localpw === "" || str_starts_with($localpw, " unset"));
+    }
+
+    /** @return bool */
+    function can_use_password() {
+        if ($this->conf->external_login()) {
+            return false;
+        }
+        list($cdbpw, $localpw) = $this->effective_passwords();
+        return ($cdbpw !== ""
+                && ($cdbpw[0] !== " " || $cdbpw[1] === "\$"))
+            || ($localpw !== ""
+                && ($localpw[0] !== " " || $localpw[1] === "\$")
+                && ($cdbpw === "" || str_starts_with($cdbpw, " unset")));
     }
 
     /** @return bool */
     function can_reset_password() {
-        assert(($this->_slice & self::SLICEBIT_PASSWORD) === 0);
-        $cdbu = $this->cdb_user();
-        return !$this->conf->external_login()
-            && !str_starts_with((string) $this->password, " nologin")
-            && (!$cdbu || !str_starts_with((string) $cdbu->password, " nologin"));
+        if ($this->conf->external_login()
+            || $this->security_locked()
+            || $this->is_deleted()) {
+            return false;
+        }
+        list($cdbpw, $localpw) = $this->effective_passwords();
+        return !str_starts_with($cdbpw, " nologin")
+            && !str_starts_with($localpw, " nologin");
     }
 
-
-    // obsolete
-    private function password_hmac_key($keyid) {
-        if ($keyid === null) {
-            $keyid = $this->conf->opt("passwordHmacKeyid") ?? 0;
-        }
-        $key = $this->conf->opt("passwordHmacKey.$keyid");
-        if (!$key && $keyid == 0) {
-            $key = $this->conf->opt("passwordHmacKey");
-        }
-        if (!$key) { /* backwards compatibility */
-            $key = $this->conf->setting_data("passwordHmacKey.$keyid");
-        }
-        if (!$key) {
-            error_log("missing passwordHmacKey.{$keyid}, using default");
-            $key = "NdHHynw6JwtfSZyG3NYPTSpgPFG8UN8NeXp4tduTk2JhnSVy";
-        }
-        return $key;
-    }
 
     /** @param string $input
      * @param string $pwhash
@@ -2401,18 +2554,8 @@ class Contact implements JsonSerializable {
             return $pwhash === $input;
         } else if ($pwhash[1] === "\$") {
             return password_verify($input, substr($pwhash, 2));
-        } else if (($method_pos = strpos($pwhash, " ", 1)) !== false
-                   && ($keyid_pos = strpos($pwhash, " ", $method_pos + 1)) !== false
-                   && strlen($pwhash) > $keyid_pos + 17
-                   && function_exists("hash_hmac")) {
-            $method = substr($pwhash, 1, $method_pos - 1);
-            $keyid = substr($pwhash, $method_pos + 1, $keyid_pos - $method_pos - 1);
-            $salt = substr($pwhash, $keyid_pos + 1, 16);
-            return hash_hmac($method, $salt . $input, $this->password_hmac_key($keyid), true)
-                === substr($pwhash, $keyid_pos + 17);
-        } else {
-            return false;
         }
+        return false;
     }
 
     /** @return int|string */
@@ -2436,20 +2579,16 @@ class Contact implements JsonSerializable {
     }
 
     /** @param string $input
-     * @return array{ok:true,user:$this}|array{ok:false} */
+     * @return array{ok:true,user:$this,usec:list<UserSecurityEvent>}|array{ok:false,usec?:list<UserSecurityEvent>} */
     function check_password_info($input) {
         assert(!$this->conf->external_login());
         assert($this->_slice === 0);
         $cdbu = $this->cdb_user();
+        list($cdbpw, $localpw) = $this->effective_passwords();
 
         // check passwords
-        $local_ok = $this->contactId > 0
-            && $this->password
-            && $this->check_hashed_password($input, $this->password);
-        $cdb_password = $cdbu ? (string) $cdbu->password : "";
-        $cdb_ok = $cdb_password
-            && $this->check_hashed_password($input, $cdbu->password);
-        $cdb_older = !$cdbu || $cdbu->passwordTime < $this->passwordTime;
+        $local_ok = $localpw && $this->check_hashed_password($input, $localpw);
+        $cdb_ok = $cdbpw && $this->check_hashed_password($input, $cdbpw);
 
         // invalid passwords cannot be used to log in
         if (trim($input) === "") {
@@ -2459,49 +2598,55 @@ class Contact implements JsonSerializable {
         }
 
         // users with reset passwords cannot log in
-        if (str_starts_with($cdb_password, " reset")
-            || ($cdb_older
-                && !$cdb_ok
-                && str_starts_with($this->password, " reset"))) {
+        if (str_starts_with($cdbpw, " reset")
+            || (!$cdb_ok && str_starts_with($localpw, " reset"))) {
             return ["ok" => false, "reset" => true];
+        }
+
+        // users with nologin passwords cannot log in
+        if (str_starts_with($cdbpw, " nologin")
+            || (!$cdb_ok && str_starts_with($localpw, " nologin"))) {
+            return ["ok" => false, "email" => true, "disabled" => true];
+        }
+
+        // deleted users cannot log in
+        if (($cdbu && $cdbu->is_deleted())
+            || $this->is_deleted()) {
+            return ["ok" => false, "email" => true, "noaccount" => true, "deleted" => true];
         }
 
         // users with unset passwords cannot log in
         // This logic should match Contact::password_unset().
-        if (((!$cdb_older || !$local_ok)
-             && str_starts_with($cdb_password, " unset"))
-            || ($cdb_password === ""
-                && str_starts_with($this->password, " unset"))
-            || ($cdb_password === ""
-                && (string) $this->password === "")) {
+        if (($cdbpw === "" || str_starts_with($cdbpw, " unset"))
+            && ($localpw === "" || str_starts_with($localpw, " unset"))) {
             if (($this->contactId > 0 && !$this->is_dormant())
                 || ($cdbu && !$cdbu->is_dormant())) {
                 return ["ok" => false, "email" => true, "unset" => true, "can_reset" => $this->can_reset_password()];
-            } else {
-                return ["ok" => false, "email" => true, "noaccount" => true];
             }
+            return ["ok" => false, "email" => true, "noaccount" => true];
         }
 
         // deny if no match
         if (!$cdb_ok && !$local_ok) {
             $x = [
-                "ok" => false, "invalid" => true, "usec" => [[0, false]],
+                "ok" => false, "invalid" => true,
+                "usec" => [UserSecurityEvent::make($this->email)->set_success(false)],
                 "can_reset" => $this->can_reset_password()
             ];
             // report information about passwords
-            if ($this->password) {
-                if ($this->password[0] === " "
-                    && $this->password[1] !== "$") {
-                    $x["local_password"] = $this->password;
+            if ($localpw) {
+                if ($localpw[0] === " "
+                    && $localpw[1] !== "$") {
+                    $x["local_password"] = $localpw;
                 }
                 if ($this->passwordTime > 0) {
                     $x["local_password_age"] = ceil((Conf::$now - $this->passwordTime) / 8640) / 10;
                 }
             }
-            if ($cdb_password !== "") {
-                if ($cdb_password[0] === " "
-                    && $cdb_password[1] !== "$") {
-                    $x["cdbu_password"] = $cdb_password;
+            if ($cdbpw !== "") {
+                if ($cdbpw[0] === " "
+                    && $cdbpw[1] !== "$") {
+                    $x["cdb_password"] = $cdbpw;
                 }
                 if ($cdbu->passwordTime > 0) {
                     $x["cdb_password_age"] = ceil((Conf::$now - $cdbu->passwordTime) / 8640) / 10;
@@ -2527,8 +2672,8 @@ class Contact implements JsonSerializable {
 
         // update cdb password
         if ($cdb_ok
-            || ($cdbu && $cdb_password === "")) {
-            if (!$cdb_ok || $this->password_needs_rehash($cdb_password)) {
+            || ($cdbu && $cdbpw === "")) {
+            if (!$cdb_ok || $this->password_needs_rehash($cdbpw)) {
                 $cdbu->set_prop("password", $this->hash_password($input));
             }
             if (!$cdb_ok || !$cdbu->passwordTime) {
@@ -2538,7 +2683,7 @@ class Contact implements JsonSerializable {
             $cdbu->save_prop();
 
             // clear local password
-            if ($this->contactId > 0 && (string) $this->password !== "") {
+            if ($this->contactId > 0 && $localpw !== "") {
                 $this->set_prop("password", "");
                 $this->set_prop("passwordTime", Conf::$now);
                 $this->set_prop("passwordUseTime", Conf::$now);
@@ -2549,7 +2694,7 @@ class Contact implements JsonSerializable {
 
         // update local password
         if ($local_ok) {
-            if ($this->password_needs_rehash($this->password)) {
+            if ($this->password_needs_rehash($localpw)) {
                 $this->set_prop("password", $this->hash_password($input));
             }
             if (!$this->passwordTime) {
@@ -2566,7 +2711,10 @@ class Contact implements JsonSerializable {
             }
         }
 
-        return ["ok" => true, "user" => $this, "usec" => [[0, true]]];
+        return [
+            "ok" => true, "user" => $this,
+            "usec" => [UserSecurityEvent::make($this->email)]
+        ];
     }
 
     /** @param string $input
@@ -2596,7 +2744,7 @@ class Contact implements JsonSerializable {
             $saveu->set_prop("password", $hash);
             $saveu->set_prop("passwordTime", Conf::$now);
             $saveu->set_prop("passwordUseTime", $use_time);
-            $saveu->activate_placeholder_prop(false);
+            $saveu->set_prop("cflags", $saveu->cflags & ~self::CF_PLACEHOLDER);
             $saveu->save_prop();
         }
         if ($saveu !== $this && $this->contactId) {
@@ -2605,9 +2753,10 @@ class Contact implements JsonSerializable {
                 $this->set_prop("passwordTime", Conf::$now);
                 $this->set_prop("passwordUseTime", $use_time);
             }
-            $this->activate_placeholder_prop(false);
+            $this->set_prop("cflags", $this->cflags & ~self::CF_PLACEHOLDER);
             $this->save_prop();
         }
+        $this->conf->call_hooks("change_password", $this, null);
     }
 
 
@@ -2627,12 +2776,13 @@ class Contact implements JsonSerializable {
     }
 
     function mark_activity() {
-        if ((!$this->activity_at || $this->activity_at < Conf::$now)
-            && !$this->is_anonymous_user()) {
-            $this->activity_at = Conf::$now;
-            if ($this->contactId) {
-                $this->conf->ql("update ContactInfo set lastLogin=" . Conf::$now . " where contactId={$this->contactId}");
-            }
+        if (($this->activity_at && $this->activity_at >= Conf::$now)
+            || $this->is_anonymous_user()) {
+            return;
+        }
+        $this->activity_at = Conf::$now;
+        if ($this->contactId) {
+            $this->conf->ql("update ContactInfo set lastLogin=? where contactId=?", Conf::$now, $this->contactId);
             $this->update_cdb_roles();
         }
     }
@@ -2746,14 +2896,15 @@ class Contact implements JsonSerializable {
     }
 
     function check_rights_version() {
-        if ($this->_rights_version !== self::$rights_version) {
-            $this->role_mask = self::ROLE_DBMASK;
-            $this->roles = $this->roles & self::ROLE_DBMASK;
-            $this->_session_roles = $this->roles;
-            $this->_conflict_types = $this->_can_view_pc = $this->_dangerous_track_mask =
-                $this->_has_approvable = $this->_authored_papers = null;
-            $this->_rights_version = self::$rights_version;
+        if ($this->_rights_version === self::$rights_version) {
+            return;
         }
+        $this->role_mask = self::ROLE_DBMASK;
+        $this->roles = $this->roles & self::ROLE_DBMASK;
+        $this->_session_roles = $this->roles;
+        $this->_conflict_types = $this->_can_view_pc = $this->_dangerous_track_mask =
+            $this->_has_approvable = $this->_authored_papers = null;
+        $this->_rights_version = self::$rights_version;
     }
 
     /** @return bool */
@@ -2766,7 +2917,11 @@ class Contact implements JsonSerializable {
     function authored_papers() {
         $this->check_rights_version();
         if ($this->_authored_papers === null) {
-            $this->_authored_papers = $this->is_author() ? $this->paper_set(["author" => true, "tags" => true]) : new PaperInfoSet;
+            if ($this->is_author()) {
+                $this->_authored_papers = $this->paper_set(["author" => true, "tags" => true]);
+            } else {
+                $this->_authored_papers = new PaperInfoSet($this->conf);
+            }
         }
         return $this->_authored_papers;
     }
@@ -2809,12 +2964,12 @@ class Contact implements JsonSerializable {
 
     /** @return int */
     function cdb_roles() {
+        // see also ConfInvariants::generate_cdb_roles
         if ($this->is_disabled()) {
             return 0;
-        } else {
-            $this->check_author_reviewer_status(self::ROLE_CDBMASK);
-            return $this->roles & self::ROLE_CDBMASK;
         }
+        $this->check_author_reviewer_status(self::ROLE_CDBMASK);
+        return $this->roles & self::ROLE_CDBMASK;
     }
 
     /** @return bool */
@@ -2828,6 +2983,19 @@ class Contact implements JsonSerializable {
             }
         }
         return ($this->roles & self::ROLE_OUTSTANDING_REVIEW) !== 0;
+    }
+
+    /** @return bool */
+    function has_outstanding_request() {
+        $this->check_rights_version();
+        if (($this->role_mask & self::ROLE_OUTSTANDING_REQUEST) === 0) {
+            $this->role_mask |= self::ROLE_OUTSTANDING_REQUEST;
+            if ($this->has_email()
+                && $this->conf->fetch_ivalue("select exists (select * from ReviewRequest where email=?) from dual", $this->email)) {
+                $this->roles |= self::ROLE_OUTSTANDING_REQUEST;
+            }
+        }
+        return ($this->roles & self::ROLE_OUTSTANDING_REQUEST) !== 0;
     }
 
     /** @return bool */
@@ -2887,12 +3055,12 @@ class Contact implements JsonSerializable {
                     $search = new PaperSearch($this, "re:pending-approval OR (has:proposal admin:me) HIGHLIGHT:pink re:pending-my-approval HIGHLIGHT:green re:pending-approval HIGHLIGHT:yellow (has:proposal admin:me)");
                     if (($hmap = $search->highlights_by_paper_id())) {
                         $colors = call_user_func_array("array_merge", array_values($hmap));
-                        if (in_array("pink", $colors)) {
+                        if (in_array("pink", $colors, true)) {
                             $this->_has_approvable |= 3;
-                        } else if (in_array("green", $colors)) {
+                        } else if (in_array("green", $colors, true)) {
                             $this->_has_approvable |= 1;
                         }
-                        if (in_array("yellow", $colors)) {
+                        if (in_array("yellow", $colors, true)) {
                             $this->_has_approvable |= 4;
                         }
                     }
@@ -3181,13 +3349,6 @@ class Contact implements JsonSerializable {
         return $this->rights($prow);
     }
 
-    /** @param ?PaperContactInfo $rights
-     * @return bool
-     * @deprecated */
-    function override_deadlines($rights) {
-        return $rights ? $rights->can_administer() : $this->privChair;
-    }
-
     /** @return bool */
     function allow_administer_all() {
         return $this->_root_user
@@ -3198,22 +3359,20 @@ class Contact implements JsonSerializable {
 
     /** @return bool */
     function allow_administer(?PaperInfo $prow = null) {
-        if ($prow) {
-            return $this->rights($prow)->allow_administer();
-        } else {
+        if (!$prow) {
             return $this->privChair;
         }
+        return $this->rights($prow)->allow_administer();
     }
 
     /** @return bool */
     function has_overridable_conflict(PaperInfo $prow) {
-        if ($this->is_manager()) {
-            $rights = $this->rights($prow);
-            return $rights->allow_administer()
-                && $rights->conflicted();
-        } else {
+        if (!$this->is_manager()) {
             return false;
         }
+        $rights = $this->rights($prow);
+        return $rights->allow_administer()
+            && $rights->conflicted();
     }
 
     /** @return bool */
@@ -3232,7 +3391,8 @@ class Contact implements JsonSerializable {
                 && ($prow->managerContactId
                     ? $prow->managerContactId === $this->contactXid
                     : !$this->privChair
-                      || !$this->conf->check_paper_track_sensitivity($prow, Track::ADMIN));
+                      || !$this->conf->check_paper_track_sensitivity($prow, Track::ADMIN)
+                      || $this->conf->check_admin_tracks($prow, $this));
         }
         return $rights->primary_administrator;
     }
@@ -3241,9 +3401,8 @@ class Contact implements JsonSerializable {
     function act_pc(?PaperInfo $prow = null) {
         if ($prow) {
             return $this->rights($prow)->allow_pc();
-        } else {
-            return $this->isPC;
         }
+        return $this->isPC;
     }
 
     /** @return bool */
@@ -3267,10 +3426,9 @@ class Contact implements JsonSerializable {
     function can_lookup_user() {
         if ($this->privChair) {
             return true;
-        } else {
-            $x = $this->conf->opt("allowLookupUser");
-            return $x || ($x === null && $this->can_view_pc());
         }
+        $x = $this->conf->opt("allowLookupUser");
+        return $x || ($x === null && $this->can_view_pc());
     }
 
     /** @return bool */
@@ -3309,7 +3467,7 @@ class Contact implements JsonSerializable {
     /** @return bool */
     function can_edit_password(Contact $acct) {
         return !$acct->security_locked()
-            && ((($this->_activated & 7) === 1
+            && ((($this->_activated & 7) === 1 /* activated, not actas, not token */
                  && $this->contactId > 0
                  && $this->contactId === $acct->contactId)
                 || $this->can_edit_any_password());
@@ -3319,7 +3477,7 @@ class Contact implements JsonSerializable {
     function can_view_tracker($tracker_json = null) {
         return $this->privChair
             || ($this->isPC
-                && $this->conf->check_default_track($this, Track::VIEWTRACKER)
+                && $this->check_xtrack("viewtracker")
                 && (!$tracker_json
                     || ($tracker_json->visibility ?? "") === ""
                     || ($this->has_tag(substr($tracker_json->visibility, 1))
@@ -3330,7 +3488,7 @@ class Contact implements JsonSerializable {
     /** @return bool */
     function include_tracker_conflict($tracker_json = null) {
         return $this->isPC
-            && (!($perm = $this->conf->track_permission("", Track::VIEWTRACKER))
+            && (!($perm = $this->conf->xtrack_permission("viewtracker"))
                 || $perm === "+none"
                 || $this->has_permission($perm))
             && (!$tracker_json
@@ -3343,9 +3501,8 @@ class Contact implements JsonSerializable {
     function view_conflict_type(?PaperInfo $prow) {
         if ($prow) {
             return $this->rights($prow)->view_conflict_type;
-        } else {
-            return 0;
         }
+        return 0;
     }
 
     /** @return bool */
@@ -3365,17 +3522,15 @@ class Contact implements JsonSerializable {
         }
         if (empty($m) && $this->contactId && $only_if_complex) {
             return null;
-        } else {
-            if ($this->contactId) {
-                assert($table !== null);
-                $m[] = "$table.conflictType>=" . CONFLICT_AUTHOR;
-            }
-            if (count($m) > 1) {
-                return "(" . join(" or ", $m) . ")";
-            } else {
-                return empty($m) ? "false" : $m[0];
-            }
         }
+        if ($this->contactId) {
+            assert($table !== null);
+            $m[] = "{$table}.conflictType>=" . CONFLICT_AUTHOR;
+        }
+        if (count($m) > 1) {
+            return "(" . join(" or ", $m) . ")";
+        }
+        return empty($m) ? "false" : $m[0];
     }
 
     function act_reviewer_sql($table) {
@@ -3405,23 +3560,10 @@ class Contact implements JsonSerializable {
     }
 
     /** @param bool $allow_no_email
-     * @return ?FailureReason */
+     * @return ?FailureReason
+     * @deprecated */
     function perm_start_paper(PaperInfo $prow, $allow_no_email = false) {
-        if (($sl = $this->conf->site_lock("paper:start")) > 0
-            && ($sl > 1 || !$this->can_administer($prow))) {
-            return new FailureReason($this->conf, ["site_lock" => "paper:start"]);
-        }
-        if ($this->can_administer($prow)) {
-            return null;
-        }
-        $sr = $prow->submission_round();
-        if (!$sr->time_register(true)) {
-            return new FailureReason($this->conf, ["deadline" => "sub_reg", "override" => $this->privChair]);
-        } else if (!$this->email && !$allow_no_email) {
-            return new FailureReason($this->conf, ["signin" => "paper:start"]);
-        } else {
-            return null;
-        }
+        return $this->perm_edit_paper($prow);
     }
 
     /** @return bool */
@@ -3438,20 +3580,19 @@ class Contact implements JsonSerializable {
         $rights = $this->rights($prow);
         if ($prow->is_new()
             && ($sl = $this->conf->site_lock("paper:start")) > 0
-            && ($sl > 1 || !$rights->can_administer())) {
+            && ($sl > 1 || !$rights->allow_administer())) {
             return 0;
         }
         if ($rights->can_administer()) {
             if ($prow->phase() === PaperInfo::PHASE_FINAL) {
                 return 2;
-            } else {
-                return 1;
             }
-        } else if ($rights->allow_author_edit()) {
-            return $prow->author_edit_state();
-        } else {
-            return 0;
+            return 1;
         }
+        if ($rights->allow_author_edit()) {
+            return $prow->author_edit_state();
+        }
+        return 0;
     }
 
     /** @return bool */
@@ -3460,10 +3601,14 @@ class Contact implements JsonSerializable {
     }
 
     /** @return FailureReason */
-    private function perm_edit_paper_failure(PaperInfo $prow, PaperContactInfo $rights, $kind = "") {
+    private function perm_edit_paper_failure(PaperInfo $prow, PaperContactInfo $rights, $kind) {
         $whyNot = $prow->failure_reason();
+        $sr = $prow->submission_round();
+        $whyNot["sclass"] = $sr->tag;
         if (!$rights->allow_author_edit()) {
-            if ($rights->allow_author_view()) {
+            if ($prow->is_new()) {
+                $whyNot["signin"] = "paper:start";
+            } else if ($rights->allow_author_view()) {
                 $whyNot["signin"] = "paper:edit";
             } else {
                 $whyNot["author"] = true;
@@ -3475,7 +3620,7 @@ class Contact implements JsonSerializable {
         }
         if ($prow->timeSubmitted > 0
             && strpos($kind, "f") !== false
-            && $prow->submission_round()->freeze) {
+            && $sr->freeze) {
             $whyNot["frozen"] = true;
         }
         if ($rights->allow_administer()) {
@@ -3490,20 +3635,52 @@ class Contact implements JsonSerializable {
             return null;
         }
         $rights = $this->rights($prow);
+        if ($prow->is_new()
+            && ($sl = $this->conf->site_lock("paper:start")) > 0
+            && ($sl > 1 || !$rights->allow_administer())) {
+            return new FailureReason($this->conf, ["site_lock" => "paper:start"]);
+        }
         $whyNot = $this->perm_edit_paper_failure($prow, $rights, "f");
         if ($prow->outcome_sign < 0
             && $rights->can_view_decision()) {
             $whyNot["frozen"] = true;
-        } else if (!$rights->can_administer()) {
-            if ($prow->phase() === PaperInfo::PHASE_FINAL
-                && $rights->can_view_decision()
-                && !$this->conf->time_edit_final_paper()) {
-                $whyNot["deadline"] = "final_done";
-            } else if (!$prow->submission_round()->time_update(true)) {
+            return $whyNot;
+        }
+        if ($prow->phase() === PaperInfo::PHASE_FINAL
+            && $rights->can_view_decision()
+            && !$this->conf->time_edit_final_paper()) {
+            $whyNot["deadline"] = "final_done";
+            return $whyNot;
+        }
+        $sr = $prow->submission_round();
+        if ($prow->is_new() && !$sr->time_register(true)) {
+            $whyNot["deadline"] = "sub_reg";
+        } else if (!$sr->time_edit($prow->timeSubmitted > 0, true)) {
+            if ($prow->timeSubmitted <= 0 || $sr->submit === $sr->resubmit) {
                 $whyNot["deadline"] = "sub_update";
+            } else {
+                $whyNot["deadline"] = "sub_resub";
             }
         }
         return $whyNot;
+    }
+
+    /** @return bool */
+    function can_unsubmit_paper(PaperInfo $prow) {
+        return $this->can_edit_paper($prow)
+            && ($this->can_administer($prow)
+                || $prow->submission_round()->time_unsubmit(true));
+    }
+
+    /** @return ?FailureReason */
+    function perm_unsubmit_paper(PaperInfo $prow) {
+        $whynot = $this->perm_edit_paper($prow);
+        if (!$whynot && !$this->can_unsubmit_paper($prow)) {
+            $rights = $this->rights($prow);
+            $whynot = $this->perm_edit_paper_failure($prow, $rights, "");
+            $whynot["noUnsubmit"] = true;
+        }
+        return $whynot;
     }
 
     /** @return bool */
@@ -3529,6 +3706,7 @@ class Contact implements JsonSerializable {
         if (!$sr->time_submit(true)
             && !$rights->can_administer()) {
             $whyNot["deadline"] = "sub_sub";
+            $whyNot["sclass"] = $sr->tag;
         }
         return $whyNot;
     }
@@ -3556,7 +3734,7 @@ class Contact implements JsonSerializable {
             return null;
         }
         $rights = $this->rights($prow);
-        $whyNot = $this->perm_edit_paper_failure($prow, $rights);
+        $whyNot = $this->perm_edit_paper_failure($prow, $rights, "");
         if ($rights->allow_author_edit() && !$rights->can_administer()) {
             $whyNot["permission"] = "paper:withdraw";
             $sub_withdraw = $this->conf->setting("sub_withdraw") ?? 0;
@@ -3591,6 +3769,7 @@ class Contact implements JsonSerializable {
         if (!$rights->can_administer()
             && !$prow->submission_round()->time_submit(true)) {
             $whyNot["deadline"] = "sub_sub";
+            $whyNot["sclass"] = $prow->submission_round()->tag;
         }
         return $whyNot;
     }
@@ -3714,10 +3893,11 @@ class Contact implements JsonSerializable {
     function can_pc_view_paper_track(PaperInfo $prow) {
         assert($this->isPC);
         $rights = $this->rights($prow);
-        return $rights->allow_pc_broad()
-            && $this->conf->time_pc_view($prow, false)
-            && (!$this->conf->check_track_view_sensitivity()
-                || $this->conf->check_tracks($prow, $this, Track::VIEW));
+        return $rights->allow_administer()
+            || ($rights->allow_pc_broad()
+                && $this->conf->time_pc_view($prow, false)
+                && (!$this->conf->check_track_view_sensitivity()
+                    || $this->conf->check_tracks($prow, $this, Track::VIEW)));
     }
 
     /** @return bool */
@@ -3739,18 +3919,17 @@ class Contact implements JsonSerializable {
 
     /** @return bool */
     function needs_bulk_download_warning(PaperInfo $prow) {
-        if ($this->needs_some_bulk_download_warning()) {
-            $rights = $this->rights($prow);
-            return !$rights->allow_administer()
-                && $rights->allow_pc_broad()
-                && $rights->review_status === 0
-                && !$rights->allow_author_view()
-                && ($prow->outcome_sign <= 0 || !$rights->can_view_decision())
-                && $this->conf->time_pc_view($prow, true)
-                && $this->conf->check_tracks($prow, $this, Track::VIEWPDF);
-        } else {
+        if (!$this->needs_some_bulk_download_warning()) {
             return false;
         }
+        $rights = $this->rights($prow);
+        return !$rights->allow_administer()
+            && $rights->allow_pc_broad()
+            && $rights->review_status === 0
+            && !$rights->allow_author_view()
+            && ($prow->outcome_sign <= 0 || !$rights->can_view_decision())
+            && $this->conf->time_pc_view($prow, true)
+            && $this->conf->check_tracks($prow, $this, Track::VIEWPDF);
     }
 
     /** @return bool */
@@ -3759,47 +3938,49 @@ class Contact implements JsonSerializable {
             return true;
         } else if (!$this->can_view_pc()) {
             return false;
-        } else if ($prow) {
-            $rights = $this->rights($prow);
-            return $rights->allow_administer()
-                || (($rights->allow_pc() || $rights->is_reviewer())
-                    && !$this->conf->opt("hideManager"));
-        } else {
+        } else if (!$prow) {
             return ($this->isPC
                     && $this->is_explicit_manager())
                 || ($this->is_reviewer()
                     && !$this->conf->opt("hideManager"));
         }
+        $rights = $this->rights($prow);
+        return $rights->allow_administer()
+            || (($rights->allow_pc() || $rights->is_reviewer())
+                && !$this->conf->opt("hideManager"));
     }
 
     /** @return bool */
-    function can_view_lead(?PaperInfo $prow = null) {
-        if ($prow) {
-            $rights = $this->rights($prow);
-            return $rights->can_administer()
-                || $prow->leadContactId === $this->contactXid
-                || (($rights->allow_pc() || $rights->is_reviewer())
-                    && $this->can_view_review_identity($prow, null));
-        } else {
+    function can_view_lead(?PaperInfo $prow) {
+        if (!$prow) {
             return $this->isPC;
         }
+        $rights = $this->rights($prow);
+        return $rights->can_administer()
+            || $prow->leadContactId === $this->contactXid
+            || (($rights->allow_pc() || $rights->is_reviewer())
+                && $this->can_view_review_identity($prow, null));
     }
 
     /** @return bool */
-    function can_view_shepherd(?PaperInfo $prow = null) {
+    function can_view_shepherd(?PaperInfo $prow) {
         // XXX Allow shepherd view when outcome == 0 && can_view_decision.
         // This is a mediocre choice, but people like to reuse the shepherd field
         // for other purposes, and I might hear complaints.
-        if ($prow) {
-            return $this->act_pc($prow)
-                || (!$this->conf->setting("shepherd_hide")
-                    && $this->can_view_decision($prow)
-                    && $this->can_view_submitted_review($prow));
-        } else {
+        if (!$prow) {
             return $this->isPC
                 || (!$this->conf->setting("shepherd_hide")
                     && $this->can_view_some_decision());
         }
+        $rights = $this->rights($prow);
+        return $rights->can_administer()
+            || $prow->shepherdContactId === $this->contactXid
+            || ($this->conf->setting("shepherd_hide")
+                ? ($rights->allow_pc() || $rights->is_reviewer())
+                  && $this->can_view_review_identity($prow, null)
+                : $rights->allow_pc()
+                  || ($this->can_view_decision($prow)
+                      && $this->can_view_submitted_review($prow)));
     }
 
     /** @param PaperInfo $prow
@@ -3897,10 +4078,11 @@ class Contact implements JsonSerializable {
     }
 
     /** @param PaperOption $opt
+     * @param 0|4 $override
      * @return 0|1|2 */
-    function view_option_state(PaperInfo $prow, $opt) {
+    function view_option_state(PaperInfo $prow, $opt, $override = 0) {
         if (!$this->can_view_paper($prow, $opt->has_document())
-            || !$opt->test_exists($prow, ($this->_overrides & self::OVERRIDE_EDIT_CONDITIONS) !== 0)
+            || !$opt->test_exists($prow, (($override | $this->_overrides) & self::OVERRIDE_EDIT_CONDITIONS) !== 0)
             || ($opt->is_final() && !$this->can_view_decision($prow))) {
             return 0;
         }
@@ -3909,9 +4091,8 @@ class Contact implements JsonSerializable {
         if ($rights->allow_administer()) {
             if ($oview === PaperOption::VIS_AUTHOR) {
                 return $this->__view_authors_state($prow, $rights);
-            } else {
-                return 2;
             }
+            return 2;
         } else if ($oview === PaperOption::VIS_SUB || $rights->act_author_view()) {
             return 2;
         } else if ($oview === PaperOption::VIS_AUTHOR) {
@@ -3921,15 +4102,15 @@ class Contact implements JsonSerializable {
         } else if ($oview === PaperOption::VIS_REVIEW) {
             return $rights->review_status >= PaperContactInfo::CIRS_PROXIED
                 || $this->__can_view_submitted_review($prow, $rights) ? 2 : 0;
-        } else {
-            return 0;
         }
+        return 0;
     }
 
     /** @param PaperOption $opt
+     * @param 0|4 $override
      * @return bool */
-    function can_view_option(PaperInfo $prow, $opt) {
-        $vos = $this->view_option_state($prow, $opt);
+    function can_view_option(PaperInfo $prow, $opt, $override = 0) {
+        $vos = $this->view_option_state($prow, $opt, $override);
         return $vos === 2
             || ($vos === 1 && $this->is_admin_force());
     }
@@ -3952,9 +4133,8 @@ class Contact implements JsonSerializable {
             return 0;
         } else if (!$opt->test_exists($prow)) {
             return $opt->exists_script_expression($prow) ? 1 : 0;
-        } else {
-            return 2;
         }
+        return 2;
     }
 
     /** @param PaperOption $opt
@@ -4051,16 +4231,25 @@ class Contact implements JsonSerializable {
                     && ($rights->allow_pc()
                         || $rights->review_status > 0
                         || $this->can_view_review($prow, $rrow)));
-        } else {
-            // this branch is ReviewRequestInfo or ReviewRefusalInfo
-            return $this->can_view_review_identity($prow, $rrow);
         }
+        // this branch is ReviewRequestInfo or ReviewRefusalInfo
+        return $this->can_view_review_identity($prow, $rrow);
+    }
+
+    /** @return list<SubmissionRound> */
+    function relevant_submission_rounds() {
+        $srds = [];
+        foreach ($this->conf->submission_round_list() as $srd) {
+            if ($srd->relevant($this))
+                $srds[] = $srd;
+        }
+        return $srds;
     }
 
     /** @return list<ResponseRound> */
     function relevant_response_rounds() {
         $rrds = [];
-        foreach ($this->conf->response_rounds() as $rrd) {
+        foreach ($this->conf->response_round_list() as $rrd) {
             if ($rrd->relevant($this))
                 $rrds[] = $rrd;
         }
@@ -4243,14 +4432,27 @@ class Contact implements JsonSerializable {
 
     /** @param null|ReviewInfo|ReviewRequestInfo|ReviewRefusalInfo $rbase
      * @param PaperContactInfo $rights
-     * @return -1|0|1 */
+     * @return bool */
     private function seerevid_setting(PaperInfo $prow, $rbase, $rights) {
         if ((!$rights->allow_pc() && !$rights->is_reviewer())
             || !$this->conf->check_reviewer_tracks($prow, $this, Track::VIEWREVID)) {
-            return -1;
+            return false;
         }
         $round = $rbase ? $rbase->reviewRound : "max";
-        return $this->conf->round_setting($rights->allow_pc() ? "viewrevid" : "viewrevid_ext", $round) ?? 0;
+        $rs = null;
+        if ($rbase && $rbase->reviewType === REVIEW_META) {
+            $rs = $this->conf->round_setting("viewmetarevid", $round);
+        }
+        $rs = $rs ?? $this->conf->round_setting($rights->allow_pc() ? "viewrevid" : "viewrevid_ext", $round) ?? 0;
+        if ($rs < 0) {
+            return false;
+        }
+        return $rights->review_status > PaperContactInfo::CIRS_UNSUBMITTED
+            || $rs === Conf::VIEWREV_ALWAYS
+            || ($rs === Conf::VIEWREV_IFASSIGNED
+                && $rights->is_reviewer()
+                && !$rights->self_assigned()
+                && $rights->review_status > 0);
     }
 
     /** @param null|ReviewInfo|ReviewRequestInfo|ReviewRefusalInfo $rbase
@@ -4277,14 +4479,7 @@ class Contact implements JsonSerializable {
                 && !$this->conf->is_review_blind(!$rbase || $rbase->reviewType < 0 || (bool) $rbase->reviewBlind))) {
             return true;
         }
-        $seerevid_setting = $this->seerevid_setting($prow, $rbase, $rights);
-        return $seerevid_setting === Conf::VIEWREV_ALWAYS
-            || ($seerevid_setting >= 0
-                && $rights->review_status > PaperContactInfo::CIRS_UNSUBMITTED)
-            || ($seerevid_setting === Conf::VIEWREV_IFASSIGNED
-                && $rights->is_reviewer()
-                && !$rights->self_assigned()
-                && $rights->review_status > 0);
+        return $this->seerevid_setting($prow, $rbase, $rights);
     }
 
     /** @return bool */
@@ -4405,9 +4600,8 @@ class Contact implements JsonSerializable {
             return $aggregate
                 ? $rights->allow_pc() && $this->can_view_pc()
                 : $rights->allow_administer();
-        } else {
-            return $this->is_manager();
         }
+        return $this->is_manager();
     }
 
     /** @return bool */
@@ -4607,18 +4801,23 @@ class Contact implements JsonSerializable {
             || $override_self
             || $rrow->contactId != $this->contactId
             || $this->can_administer($prow)
+            || $this->conf->review_ratings_visible() > 0
             || $this->conf->setting("viewrev") === Conf::VIEWREV_ALWAYS
             || $rrow->has_multiple_ratings()) {
             return true;
         }
         // Do not show rating counts if rater identity is unambiguous.
-        // See also PaperSearch::unusable_ratings.
+        // See also Home_Page::unusable_ratings.
         $nsubraters = 0;
         foreach ($prow->all_reviews() as $rrow) {
+            if ($rrow->reviewType === REVIEW_META) {
+                return true;
+            }
             if ($rrow->reviewNeedsSubmit === 0
                 && $rrow->contactId !== $this->contactId
-                && ($rs > 0 || $rrow->reviewType > REVIEW_EXTERNAL))
+                && ($rs > 0 || $rrow->reviewType > REVIEW_EXTERNAL)) {
                 ++$nsubraters;
+            }
         }
         return $nsubraters >= 2;
     }
@@ -4662,13 +4861,12 @@ class Contact implements JsonSerializable {
             return 0;
         }
         $ctype = 0;
-        if (($prow->timeSubmitted > 0
-             || $rights->review_status > 0
-             || $rights->allow_administer_forced())
-            && ($rights->can_administer()
-                || $rights->is_reviewer()
-                || $prow->leadContactId === $this->contactXid
-                || $prow->shepherdContactId === $this->contactXid)) {
+        if ($rights->can_administer()
+            || (($prow->timeSubmitted > 0
+                 || $rights->review_status > 0)
+                && ($rights->is_reviewer()
+                    || $prow->leadContactId === $this->contactXid
+                    || $prow->shepherdContactId === $this->contactXid))) {
             // administrator, assigned reviewer, lead, shepherd:
             // can comment on paper and on reviews
             $ctype |= CommentInfo::CT_TOPIC_PAPER | CommentInfo::CT_TOPIC_REVIEW;
@@ -4723,18 +4921,20 @@ class Contact implements JsonSerializable {
         if ($ctype === 0) {
             return $ctype;
         }
-        if ($prow->has_author($this)) {
-            $ctype |= CommentInfo::CT_BYAUTHOR;
-        } else if ($prow->shepherdContactId > 0) {
-            if ($this->contactId === $prow->shepherdContactId
-                || ($this->contactId === 0
-                    && ($reviewer = $this->reviewer_capability_user($prow->paperId))
-                    && $reviewer->contactId === $prow->shepherdContactId)) {
-                $ctype |= CommentInfo::CT_BYSHEPHERD;
-            }
-        }
         if ($rights->can_administer()) {
             $ctype |= CommentInfo::CT_BYADMINISTRATOR;
+        }
+        if ($prow->has_author($this)) {
+            return $ctype | CommentInfo::CT_BYAUTHOR;
+        }
+        $reviewer = $this->contactId > 0 ? $this : $this->reviewer_capability_user($prow->paperId);
+        if ($reviewer) {
+            if ($prow->shepherdContactId > 0
+                && $prow->shepherdContactId === $reviewer->contactId) {
+                $ctype |= CommentInfo::CT_BYSHEPHERD;
+            } else if ($prow->review_type($reviewer) === REVIEW_META) {
+                $ctype |= CommentInfo::CT_BYMETAREVIEWER;
+            }
         }
         return $ctype;
     }
@@ -4861,7 +5061,7 @@ class Contact implements JsonSerializable {
     function preferred_response_round(PaperInfo $prow) {
         $rights = $this->rights($prow);
         if ($rights->is_author()) {
-            foreach ($prow->conf->response_rounds() as $rrd) {
+            foreach ($prow->conf->response_round_list() as $rrd) {
                 if ($rrd->time_allowed(true))
                     return $rrd;
             }
@@ -4869,12 +5069,11 @@ class Contact implements JsonSerializable {
         return null;
     }
 
-    /** @param ?CommentInfo $crow
-     * @return bool */
-    function can_view_comment(PaperInfo $prow, $crow, $textless = false) {
-        $ctype = $crow ? $crow->commentType : CommentInfo::CTVIS_AUTHOR;
+    /** @return bool */
+    function can_view_comment(PaperInfo $prow, CommentInfo $crow, $textless = false) {
+        $ctype = $crow->commentType;
         $rights = $this->rights($prow);
-        if (($crow && $this->is_my_comment($prow, $crow))
+        if ($this->is_my_comment($prow, $crow)
             || $rights->can_administer()) {
             return true;
         }
@@ -4891,7 +5090,7 @@ class Contact implements JsonSerializable {
         if (!$rights->view_conflict_type
             && $ctype >= ($rights->allow_pc() ? CommentInfo::CTVIS_PCONLY : CommentInfo::CTVIS_REVIEWER)
             && (($ctype & CommentInfo::CT_DRAFT) === 0
-                || ($textless && ($ctype & CommentInfo::CT_RESPONSE)) !== 0)
+                || ($textless && ($ctype & CommentInfo::CT_RESPONSE) !== 0))
             && ($ctype >= CommentInfo::CTVIS_AUTHOR
                 || $this->conf->setting("cmt_revid")
                 || $this->can_view_comment_identity($prow, $crow))
@@ -4904,19 +5103,10 @@ class Contact implements JsonSerializable {
         return false;
     }
 
-    /** @param ?CommentInfo $crow
-     * @return bool
-     * @deprecated */
-    function can_view_comment_contents(PaperInfo $prow, $crow) {
-        return $this->can_view_comment_content($prow, $crow);
-    }
-
-    /** @param ?CommentInfo $crow
-     * @return bool */
-    function can_view_comment_content(PaperInfo $prow, $crow) {
+    /** @return bool */
+    function can_view_comment_content(PaperInfo $prow, CommentInfo $crow) {
         // assume can_view_comment is true
-        if (!$crow
-            || ($crow->commentType & (CommentInfo::CT_RESPONSE | CommentInfo::CT_DRAFT)) !== (CommentInfo::CT_RESPONSE | CommentInfo::CT_DRAFT)) {
+        if (($crow->commentType & (CommentInfo::CT_RESPONSE | CommentInfo::CT_DRAFT)) !== (CommentInfo::CT_RESPONSE | CommentInfo::CT_DRAFT)) {
             return true;
         }
         $rights = $this->rights($prow);
@@ -4932,18 +5122,18 @@ class Contact implements JsonSerializable {
         return $rights->can_administer() || $rights->allow_pc();
     }
 
-    /** @param ?CommentInfo $crow
-     * @return bool */
-    function can_view_comment_identity(PaperInfo $prow, $crow) {
-        $ct = $crow ? $crow->commentType : CommentInfo::CT_BLIND;
-        if (($ct & CommentInfo::CTM_BYAUTHOR) !== 0) {
+    /** @return bool */
+    function can_view_comment_identity(PaperInfo $prow, CommentInfo $crow) {
+        $ctype = $crow->commentType;
+        if (($ctype & CommentInfo::CTM_BYAUTHOR) !== 0) {
             return $this->can_view_authors($prow);
         }
-        if (($crow
-             && $crow->contactId === $this->contactId)
-            || (($ct & CommentInfo::CT_BYSHEPHERD) !== 0
-                && $this->can_view_shepherd($prow))
-            || (($ct & CommentInfo::CT_BYADMINISTRATOR) !== 0
+        if ($crow->contactId === $this->contactId
+            || (($ctype & CommentInfo::CT_BYSHEPHERD) !== 0
+                && $this->can_view_shepherd($prow)
+                && ($prow->shepherdContactId === $crow->contactId
+                    || !$this->conf->setting("shepherd_hide")))
+            || (($ctype & CommentInfo::CT_BYADMINISTRATOR) !== 0
                 && $this->can_view_manager($prow))) {
             return true;
         }
@@ -4952,27 +5142,19 @@ class Contact implements JsonSerializable {
             || ($rights->reviewType === REVIEW_META
                 && $this->conf->check_tracks($prow, $this, Track::VIEWREVID))
             || ($rights->act_author_view()
-                && !$this->conf->is_review_blind(($ct & CommentInfo::CT_BLIND) !== 0))) {
+                && !$this->conf->is_review_blind(($ctype & CommentInfo::CT_BLIND) !== 0))) {
             return true;
         }
-        $seerevid = $this->seerevid_setting($prow, null, $rights);
-        if ($seerevid !== 0) {
-            return $seerevid > 0;
-        } else {
-            return $rights->review_status > PaperContactInfo::CIRS_UNSUBMITTED
-                || ($crow && $prow->can_view_review_identity_of($crow->contactId, $this));
-        }
+        return $this->seerevid_setting($prow, $prow->review_by_user($crow->contactId), $rights);
     }
 
-    /** @param ?CommentInfo $crow
-     * @return bool */
-    function can_view_comment_time(PaperInfo $prow, $crow) {
+    /** @return bool */
+    function can_view_comment_time(PaperInfo $prow, CommentInfo $crow) {
         return $this->can_view_comment_identity($prow, $crow);
     }
 
-    /** @param ?CommentInfo $crow
-     * @return bool */
-    function can_view_comment_tags(PaperInfo $prow, $crow) {
+    /** @return bool */
+    function can_view_comment_tags(PaperInfo $prow, CommentInfo $crow) {
         $rights = $this->rights($prow);
         return $rights->allow_pc() || $rights->review_status > 0;
     }
@@ -5023,8 +5205,10 @@ class Contact implements JsonSerializable {
     }
 
     /** @return bool */
-    function can_view_formula(Formula $formula) {
-        return $formula->viewable_by($this);
+    function can_view_named_formula(NamedFormula $nf) {
+        return $nf->createdBy === $this->contactId
+            || $this->privChair
+            || $nf->realize($this)->viewable();
     }
 
     /** @param object $sj
@@ -5061,7 +5245,7 @@ class Contact implements JsonSerializable {
     }
 
     /** @return bool */
-    function can_edit_formula(?Formula $formula = null) {
+    function can_edit_named_formula(?NamedFormula $formula = null) {
         // XXX one PC member can edit another's formulas?
         return $this->privChair
             || ($this->isPC && (!$formula || $formula->createdBy > 0));
@@ -5095,9 +5279,8 @@ class Contact implements JsonSerializable {
             return VIEWSCORE_AUTHOR - 1;
         } else if ($rights->allow_pc()) {
             return VIEWSCORE_PC - 1;
-        } else {
-            return VIEWSCORE_REVIEWER - 1;
         }
+        return VIEWSCORE_REVIEWER - 1;
     }
 
     /** @return int */
@@ -5124,25 +5307,23 @@ class Contact implements JsonSerializable {
     /** @return bool */
     function can_view_tags(?PaperInfo $prow = null) {
         // see also AllTags_API::alltags, PaperInfo::{searchable,viewable}_tags
-        if ($prow) {
-            $rights = $this->rights($prow);
-            return $rights->allow_pc()
-                || ($rights->allow_pc_broad() && $this->conf->pc_can_view_conflicted_tags())
-                || ($this->privChair && $this->conf->tags()->has(TagInfo::TF_SITEWIDE));
-        } else {
+        if (!$prow) {
             return $this->isPC;
         }
+        $rights = $this->rights($prow);
+        return $rights->allow_pc()
+            || ($rights->allow_pc_broad() && $this->conf->pc_can_view_conflicted_tags())
+            || ($this->privChair && $this->conf->tags()->has(TagInfo::TF_SITEWIDE));
     }
 
     /** @return bool */
     function can_view_most_tags(?PaperInfo $prow = null) {
-        if ($prow) {
-            $rights = $this->rights($prow);
-            return $rights->allow_pc()
-                || ($rights->allow_pc_broad() && $this->conf->pc_can_view_conflicted_tags());
-        } else {
+        if (!$prow) {
             return $this->isPC;
         }
+        $rights = $this->rights($prow);
+        return $rights->allow_pc()
+            || ($rights->allow_pc_broad() && $this->conf->pc_can_view_conflicted_tags());
     }
 
     /** @return bool */
@@ -5244,10 +5425,9 @@ class Contact implements JsonSerializable {
     function can_view_peruser_tag(?PaperInfo $prow, $tag) {
         if ($prow) {
             return $this->can_view_tag($prow, ($this->contactId + 1) . "~{$tag}");
-        } else {
-            return $this->is_manager()
-                || ($this->isPC && $this->conf->tags()->is_public_peruser($tag));
         }
+        return $this->is_manager()
+            || ($this->isPC && $this->conf->tags()->is_public_peruser($tag));
     }
 
     /** @return bool */
@@ -5284,28 +5464,38 @@ class Contact implements JsonSerializable {
         $tw = strpos($tag, "~");
         if ($tw === false || ($tw === 0 && $tag[1] === "~")) {
             $t = $tagmap->find($tag);
-            return ($rights->allow_pc()
-                    || ($t && $t->is(TagInfo::TF_CONFLICT_FREE)))
-                && ($tw === false || $this->privChair)
-                && (!$t || !$t->is(TagInfo::TF_AUTOMATIC))
-                && (!$t || !$t->is(TagInfo::TF_CHAIR) || $this->privChair)
-                && (!$t || !$t->is(TagInfo::TF_HIDDEN) || $this->can_view_hidden_tags($prow))
-                && (!$t
-                    || !$t->is(TagInfo::TF_READONLY | TagInfo::TF_RANK)
+            // chair tags can only be changed by chairs
+            if ($tw === 0 && !$this->privChair) {
+                return false;
+            }
+            // conflicted PC can only change conflict-free tags
+            if (!$rights->allow_pc() && (!$t || !$t->is(TagInfo::TF_CONFLICT_FREE))) {
+                return false;
+            }
+            // all other flags only limit rights
+            if (!$t) {
+                return true;
+            }
+            // check remaining flags
+            return !$t->is(TagInfo::TF_AUTOMATIC)
+                && (!$t->is(TagInfo::TF_CHAIR)
+                    || $this->privChair)
+                && (!$t->is(TagInfo::TF_HIDDEN)
+                    || $this->can_view_hidden_tags($prow))
+                && (!$t->is(TagInfo::TF_READONLY | TagInfo::TF_RANK)
                     || $rights->can_administer()
                     || ($this->privChair && $t->is(TagInfo::TF_SITEWIDE)));
-        } else {
-            $t = $tagmap->find(substr($tag, $tw + 1));
-            return ($rights->allow_pc()
-                    || ($t && $t->is(TagInfo::TF_CONFLICT_FREE)))
-                && ($tw === 0
-                    || $rights->can_administer()
-                    || ($tw === strlen((string) $this->contactId)
-                        && str_starts_with($tag, (string) $this->contactId)))
-                && (!($index < 0)
-                    || !$t
-                    || !$t->allotment);
         }
+        $t = $tagmap->find(substr($tag, $tw + 1));
+        return ($rights->allow_pc()
+                || ($t && $t->is(TagInfo::TF_CONFLICT_FREE)))
+            && ($tw === 0
+                || $rights->can_administer()
+                || ($tw === strlen((string) $this->contactId)
+                    && str_starts_with($tag, (string) $this->contactId)))
+            && (!($index < 0)
+                || !$t
+                || !$t->allotment);
     }
 
     /** @param string $tag
@@ -5451,7 +5641,9 @@ class Contact implements JsonSerializable {
     /** @return non-empty-list<AuthorMatcher> */
     function aucollab_matchers() {
         if ($this->_aucollab_matchers === null) {
-            $this->_aucollab_matchers = [new AuthorMatcher($this, Author::STATUS_AUTHOR)];
+            $this->_aucollab_matchers = [
+                AuthorMatcher::make_user($this, Author::STATUS_AUTHOR)
+            ];
             foreach ($this->collaborator_generator() as $m) {
                 $this->_aucollab_matchers[] = $m;
             }
@@ -5562,13 +5754,6 @@ class Contact implements JsonSerializable {
     // deadlines
 
     /** @param ?list<PaperInfo> $prows
-     * @return object
-     * @deprecated */
-    function my_deadlines($prows = null) {
-        return $this->status_json($prows);
-    }
-
-    /** @param ?list<PaperInfo> $prows
      * @return object */
     function status_json($prows = null) {
         // Return cleaned deadline-relevant settings that this user can see.
@@ -5588,9 +5773,12 @@ class Contact implements JsonSerializable {
         $graces = [];
 
         // submissions
+        // XXX submission rounds
         $sr = $prows ? $prows[0]->submission_round() : $this->conf->unnamed_submission_round();
         $dl->sub->open = $sr->open > 0 && $sr->open <= Conf::$now;
-        $dl->sub->sub = $sr->submit;
+        if ($sr->submit > 0) {
+            $dl->sub->sub = $sr->submit;
+        }
         $sub_graces = [];
         if ($sr->register > 0
             && ($sr->update <= 0 || $sr->register < $sr->update)) {
@@ -5691,7 +5879,7 @@ class Contact implements JsonSerializable {
         for ($i = 0; $i !== count($graces); $i += 3) {
             $dlx = $graces[$i];
             foreach ($graces[$i + 2] as $k) {
-                if ($dlx->$k
+                if (($dlx->$k ?? 0) > 0
                     && $dlx->$k - 30 < Conf::$now
                     && $dlx->$k + $graces[$i + 1] >= Conf::$now) {
                     $kgrace = "{$k}_ingrace";
@@ -5801,7 +5989,10 @@ class Contact implements JsonSerializable {
             || $this->is_disabled()) {
             return [];
         }
-        return $relevant ? $this->relevant_response_rounds() : $this->conf->response_rounds();
+        if ($relevant) {
+            return $this->relevant_response_rounds();
+        }
+        return $this->conf->response_round_list();
     }
 
     /** @return array<int,string> */
@@ -5816,24 +6007,12 @@ class Contact implements JsonSerializable {
 
     /** @return bool */
     function has_reportable_deadline() {
-        $dl = $this->status_json();
-        // XXX multiple submission rounds
-        if (isset($dl->sub->reg) || isset($dl->sub->update) || isset($dl->sub->sub)) {
-            return true;
+        foreach ($this->relevant_submission_rounds() as $sr) {
+            if ($sr->register > 0 || $sr->update > 0 || $sr->submit > 0)
+                return true;
         }
-        if (isset($dl->resps)) {
-            foreach ($dl->resps as $dlr) {
-                if (isset($dlr->open) && $dlr->open < Conf::$now && ($dlr->done ?? null))
-                    return true;
-            }
-        }
-        if (isset($dl->rev) && isset($dl->rev->open) && $dl->rev->open < Conf::$now) {
-            foreach ($dl->revs as $dlr) {
-                if ($dlr->done ?? null)
-                    return true;
-            }
-        }
-        return false;
+        return !empty($this->reportable_response_rounds(true))
+            || !empty($this->reportable_review_rounds());
     }
 
 
@@ -5911,6 +6090,13 @@ class Contact implements JsonSerializable {
             $type = REVIEW_PC;
         }
 
+        // new external reviews are redirected to the primary
+        if ($type === REVIEW_EXTERNAL
+            && $oldtype === 0
+            && $reviewer->primaryContactId > 0) {
+            return $this->assign_review($pid, $this->conf->user_by_id($reviewer->primaryContactId), $type, $extra);
+        }
+
         // change database
         if ($type === $oldtype
             && ($type === 0 || $round === null || $round === $rrow->reviewRound)) {
@@ -5927,7 +6113,8 @@ class Contact implements JsonSerializable {
                 "paperId" => $pid, "contactId" => $reviewer->contactId,
                 "reviewType" => $type, "reviewRound" => $round,
                 "timeRequested" => $time, "requestedBy" => $new_requester_cid,
-                "reviewBlind" => $reviewBlind, "rflags" => $rflags
+                "reviewBlind" => $reviewBlind, "rflags" => $rflags,
+                "reviewNeedsSubmit" => 1
             ];
             if ($extra["mark_notify"] ?? null) {
                 $fields["timeRequestNotified"] = $time;
@@ -5935,7 +6122,7 @@ class Contact implements JsonSerializable {
             if ($extra["token"] ?? null) {
                 $fields["reviewToken"] = $this->unassigned_review_token();
             }
-            $reviewId = $this->conf->id_randomizer()->insert("PaperReview", "reviewId", $fields, 5);
+            $reviewId = $this->conf->id_randomizer()->insert(DatabaseIDRandomizer::REVIEWID, $fields, 5);
             $result = Dbl_Result::make_empty();
         } else if ($type === 0) {
             $rflags = 0;
@@ -5976,13 +6163,18 @@ class Contact implements JsonSerializable {
 
         // on new review, update PaperReviewRefused, ReviewRequest, delegation
         if ($type > 0 && $oldtype === 0) {
-            $reviewer->activate_placeholder(false);
-            $this->conf->ql("delete from PaperReviewRefused where paperId={$pid} and contactId={$reviewer->contactId}");
+            $reviewer->activate_placeholder(false, $this);
+            $this->conf->ql("delete from PaperReviewRefused where paperId=? and contactId=?", $pid, $reviewer->contactId);
             if (($req_email = $extra["requested_email"] ?? null)) {
-                $this->conf->qe("delete from ReviewRequest where paperId={$pid} and email=?", $req_email);
+                $this->conf->qe("delete from ReviewRequest where paperId=? and email=?", $pid, $req_email);
             }
             if ($type < REVIEW_SECONDARY) {
                 $this->conf->update_review_delegation($pid, $new_requester_cid, 1);
+            } else if ($type === REVIEW_SECONDARY) {
+                // We must update delegation even on a newly inserted review
+                // because maybe this reviewer requested reviews before being
+                // assigned. (e.g. a previous secondary review got deleted)
+                $this->conf->update_review_delegation($pid, $reviewer->contactId, -2);
             }
             if ($type >= REVIEW_PC
                 && ($this->conf->setting("pcrev_assigntime") ?? 0) < Conf::$now) {
@@ -6009,15 +6201,10 @@ class Contact implements JsonSerializable {
         if (!($extra["no_autosearch"] ?? false)) {
             $this->conf->update_automatic_tags($pid, "review");
         }
+        if (($type > 0) !== ($oldtype > 0)) {
+            $reviewer->update_cdb_roles();
+        }
         return $reviewId;
-    }
-
-    /** @param int $pid
-     * @param int $cid
-     * @param 1|0|-1 $direction
-     * @deprecated */
-    function update_review_delegation($pid, $cid, $direction) {
-        $this->conf->update_review_delegation($pid, $cid, $direction);
     }
 
 

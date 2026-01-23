@@ -1,6 +1,6 @@
 <?php
 // autoassigner.php -- HotCRP helper classes for autoassignment
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class AutoassignerElement {
     /** @var int */
@@ -100,24 +100,6 @@ class AutoassignerPaper {
 class AutoassignerComputed {
 }
 
-class AutoassignerParameter {
-    /** @var string */
-    public $name;
-    /** @var bool */
-    public $required;
-    /** @var string */
-    public $argname;
-    /** @var string */
-    public $description;
-
-    function __construct($name, $required, $argname, $description) {
-        $this->name = $name;
-        $this->required = $required;
-        $this->argname = $argname;
-        $this->description = $description;
-    }
-}
-
 abstract class Autoassigner extends MessageSet {
     /** @var Conf
      * @readonly */
@@ -127,10 +109,10 @@ abstract class Autoassigner extends MessageSet {
     public $user;
     /** @var array<int,AutoassignerUser>
      * @readonly */
-    private $acs = [];
+    private $acs;
     /** @var array<int,AutoassignerPaper>
      * @readonly */
-    private $aps = [];
+    private $aps;
     /** @var array<int,list<int>> */
     private $avoid_lists = [];
     /** @var bool */
@@ -145,12 +127,16 @@ abstract class Autoassigner extends MessageSet {
     private $ass_extra = [];
     /** @var bool */
     private $has_pref_index = false;
+    /** @var ViewOptionSchema */
+    private $oschema;
+    /** @var ViewOptionList */
+    private $olist;
     /** @var int */
     protected $method = self::METHOD_MCMF;
     /** @var int */
     protected $balance = self::BALANCE_NEW;
     /** @var int */
-    protected $review_gadget;
+    protected $review_gadget = self::REVIEW_GADGET_PLAIN;
     /** @var int */
     public $assignment_cost = 100;
     /** @var int */
@@ -163,6 +149,8 @@ abstract class Autoassigner extends MessageSet {
     public $expertise_x_cost = -200;
     /** @var int */
     public $expertise_y_cost = -140;
+    /** @var int */
+    public $preference_fuzz = 0;
     private $progressf = [];
     /** @var ?MinCostMaxFlow */
     protected $mcmf;
@@ -198,156 +186,244 @@ abstract class Autoassigner extends MessageSet {
     // EOLDASSIGN: Prevents assignment, counts for ensure
     // ENEWASSIGN: Possibly reassignable, counts for ensure
 
-    /** @var array<string,?int> */
-    static private $known_costs = [
-        "assignment" => 1, "paper_assignment" => 1, "remove_assignment" => null,
-        "preference" => 1, "expertise_x" => null, "expertise_y" => null
-    ];
-
-    /** @param ?list<int> $pcids
-     * @param list<int> $papersel */
-    function __construct(Contact $user, $pcids, $papersel) {
+    function __construct(Contact $user) {
         $this->conf = $user->conf;
         $this->user = $user;
-        $pcids = $pcids ?? array_keys($this->conf->pc_members());
-        foreach ($pcids as $cid) {
-            if (($p = $this->conf->pc_member_by_id($cid))) {
-                $this->acs[$cid] = new AutoassignerUser($p);
+        $this->oschema = new ViewOptionSchema;
+        foreach ($this->option_schema() as $x) {
+            $this->oschema->define($x);
+        }
+        $this->olist = new ViewOptionList;
+        if (($jc = json_decode_object($this->conf->opt("autoassignCosts")))) {
+            foreach ((array) $jc as $name => $value) {
+                $k = "{$name}_cost";
+                if (property_exists($this, $k)) {
+                    $this->$k = $value;
+                }
             }
         }
-        foreach ($papersel as $pid) {
+    }
+
+    /** @return list<string> */
+    function option_schema() {
+        return [];
+    }
+
+    /** @param string $name
+     * @return bool */
+    function has_option($name) {
+        return $this->olist->has($name);
+    }
+
+    /** @param string $name
+     * @return mixed */
+    function option($name) {
+        return $this->olist->get($name);
+    }
+
+    /** @param ?list<int> $uids
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_user_ids($uids) {
+        assert($this->acs === null);
+        $this->acs = [];
+        foreach ($uids ?? array_keys($this->conf->pc_members()) as $uid) {
+            if (($u = $this->conf->pc_member_by_id($uid))) {
+                $this->acs[$uid] = new AutoassignerUser($u);
+            }
+        }
+        return $this;
+    }
+
+    /** @param list<int> $pids
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_paper_ids($pids) {
+        assert($this->aps === null);
+        $this->aps = [];
+        foreach ($pids as $pid) {
             $this->aps[$pid] = new AutoassignerPaper($pid);
         }
-        if ($this->conf->opt("autoassignReviewGadget") === "expertise") {
-            $this->review_gadget = self::REVIEW_GADGET_EXPERTISE;
+        return $this;
+    }
+
+    /** @param string $name
+     * @param int $flags
+     * @return ?non-empty-string */
+    function tag_option($name, $flags = 0) {
+        $tagger = new Tagger($this->user);
+        $v = trim((string) $this->option($name));
+        $tag = $tagger->check($v, Tagger::NOVALUE | $flags);
+        if ($tag === "") {
+            return null;
+        } else if ($tag !== false) {
+            return $tag;
+        }
+        $this->error_at($name, $tagger->error_ftext(true));
+        return null;
+    }
+
+    /** @param string $name
+     * @param mixed $value
+     * @return $this */
+    function set_option($name, $value) {
+        if (($pair = $this->oschema->validate($name, $value))) {
+            $this->olist->add($pair[0], $pair[1]);
+        } else if ($this->oschema->has($name)) {
+            $this->error_at($name, "<0>Invalid parameter value");
         } else {
-            $this->review_gadget = self::REVIEW_GADGET_PLAIN;
+            $this->warning_at($name, "<0>Unknown parameter");
         }
-        if (($jc = json_decode_object($this->conf->opt("autoassignCosts")))) {
-            foreach (self::$known_costs as $n => $mv) {
-                if (isset($jc->$n))
-                    $this->{"{$n}_cost"} = $jc->$n;
-            }
-        }
+        return $this;
     }
 
     /** @param int $cid1
-     * @param int $cid2 */
+     * @param int $cid2
+     * @return $this */
     function avoid_coassignment($cid1, $cid2) {
         assert($cid1 > 0 && $cid2 > 0);
         if ($cid1 !== $cid2
-            && !in_array($cid2, $this->avoid_lists[$cid1] ?? [])) {
+            && !in_array($cid2, $this->avoid_lists[$cid1] ?? [], true)) {
             $this->avoid_lists[$cid1][] = $cid2;
             $this->avoid_lists[$cid2][] = $cid1;
         }
+        return $this;
     }
 
-    /** @param array<string,mixed> $args
-     * @param string $field
-     * @return ?non-empty-string */
-    function extract_tag($args, $field) {
-        $tag = trim((string) ($args[$field] ?? ""));
-        if ($tag === "") {
-            return null;
-        }
-        $tagger = new Tagger($this->user);
-        $tag = $tagger->check($tag, Tagger::NOVALUE | Tagger::ALLOWNONE);
-        if ($tag !== false) {
-            return $tag;
+
+    /** @return void */
+    abstract function configure();
+
+
+    /** @return list<string> */
+    static function balance_method_schema() {
+        return [
+            "balance=new|all",
+            "balance_offset_tag:tag",
+            "method=default,mincost|random|stupid"
+        ];
+    }
+
+    function configure_balance_method() {
+        $b = $this->option("balance") ?? "new";
+        if ($b === "new") {
+            $this->balance = self::BALANCE_NEW;
+        } else if ($b === "all") {
+            $this->balance = self::BALANCE_ALL;
         } else {
-            $this->error_at($field, $tagger->error_ftext(true));
-            return null;
+            $this->error_at("balance", "<0>Expected ‘new’ or ‘all’");
         }
-    }
 
-    /** @param array<string,mixed> $args */
-    function extract_balance_method($args) {
-        if (($b = $args["balance"] ?? null) !== null) {
-            if ($b === "all") {
-                $this->balance = self::BALANCE_ALL;
-            } else if ($b === "new") {
-                $this->balance = self::BALANCE_NEW;
-            } else {
-                $this->error_at("balance", "<0>Balance should be ‘all’ or ‘new’");
-            }
-        }
-        $bt = $this->extract_tag($args, "balance_offset_tag") ?? "";
-        if ($bt !== "") {
+        $bt = $this->tag_option("balance_offset_tag", Tagger::ALLOWNONE);
+        if ($bt !== null) {
             foreach ($this->acs as $ac) {
-                if (($tv = $ac->user->tag_value($bt))) {
+                if (($tv = $ac->user->tag_value($bt)))
                     $ac->balance += $tv;
-                }
             }
         }
-        if (($m = $args["method"] ?? null) !== null) {
-            if ($m === "default" || $m === "mincost") {
-                $this->method = self::METHOD_MCMF;
-            } else if ($m === "random") {
-                $this->method = self::METHOD_RANDOM;
-            } else if ($m === "stupid") {
-                $this->method = self::METHOD_STUPID;
-            } else {
-                $this->error_at("method", "<0>Method should be ‘default’ or ‘random’");
-            }
+
+        $m = $this->option("method") ?? "default";
+        if ($m === "default" || $m === "mincost") {
+            $this->method = self::METHOD_MCMF;
+        } else if ($m === "random") {
+            $this->method = self::METHOD_RANDOM;
+        } else if ($m === "stupid") {
+            $this->method = self::METHOD_STUPID;
+        } else {
+            $this->error_at("method", "<0>Expected ‘default’ or ‘random’");
         }
     }
 
-    /** @param array<string,mixed> $args
-     * @param string $key
-     * @param ?int $min
-     * @return ?int */
-    function extract_intval($args, $key, $min) {
-        if (!isset($args[$key])) {
-            return null;
-        }
-        $n = stoi($args[$key]);
-        if ($n === null || ($min !== null && $n < $min)) {
-            $this->error_at($key, $min !== null && $min >= 0 ? "<0>Positive whole number expected" : "<0>Whole number expected");
-            return null;
-        }
-        return $n;
+    /** @return list<string> */
+    static function max_load_schema() {
+        return ["max_load#", "max_load_tag:tag"];
     }
 
-    /** @param array<string,mixed> $args */
-    function extract_max_load($args) {
-        $ml = $this->extract_tag($args, "max_load_tag")
-            ?? $this->conf->setting_data("autoassign_review_max_load_tag") ?? "";
-        if ($ml !== "") {
+    function configure_max_load() {
+        $ml = $this->option("max_load");
+        if (is_int($ml) && $ml >= 1) {
             foreach ($this->acs as $ac) {
-                $tv = $ac->user->tag_value($ml);
+                $ac->max_load = min($ac->max_load, $ml);
+            }
+        }
+
+        if ($this->has_option("max_load_tag")) {
+            $mlt = $this->tag_option("max_load_tag", Tagger::ALLOWNONE);
+        } else {
+            $mlt = $this->conf->setting_data("autoassign_review_max_load_tag");
+        }
+        if ($mlt !== null) {
+            foreach ($this->acs as $ac) {
+                $tv = $ac->user->tag_value($mlt);
                 if ($tv !== null && $tv >= 0) {
-                    $ac->max_load = min((int) round($tv), $ac->max_load);
+                    $ac->max_load = min($ac->max_load, (int) round($tv));
                 }
-            }
-        }
-        if (($m = $this->extract_intval($args, "max_load", 1)) !== null) {
-            foreach ($this->acs as $ac) {
-                $ac->max_load = min($m, $ac->max_load);
             }
         }
     }
 
-    /** @param array<string,mixed> $args */
-    function extract_gadget_costs($args) {
-        $gadget = $args["gadget"] ?? null;
-        if ($gadget === "default") {
-            $gadget = null;
-        } else if ($gadget !== "expertise" && $gadget !== "plain" && $gadget !== null) {
-            $this->error_at("gadget", "<0>Review gadget should be ‘plain’ or ‘expertise’");
-            $gadget = null;
+    /** @return list<string> */
+    static function gadget_schema() {
+        return [
+            "review_gadget=plain|expertise",
+            "expertise"
+        ];
+    }
+
+    function configure_gadget() {
+        $g = $this->option("review_gadget");
+        if ($g === null || $g === "default") {
+            $g = "plain";
+            $exp = $this->option("expertise");
+            if ($exp
+                || ($exp === null
+                    && $this->conf->opt("autoassignReviewGadget") === "expertise")) {
+                $g = "expertise";
+            }
         }
-        $x = friendly_boolean($args["expertise"] ?? null);
-        if ($gadget === "expertise"
-            || ($gadget === null && $x === true)) {
+        if ($g === "expertise") {
             $this->review_gadget = self::REVIEW_GADGET_EXPERTISE;
-        } else if ($gadget === "plain"
-                   || ($gadget === null && $x === false)) {
+        } else if ($g === "plain") {
             $this->review_gadget = self::REVIEW_GADGET_PLAIN;
+        } else {
+            $this->error_at("review_gadget", "<0>Expected ‘plain’ or ‘expertise’");
         }
-        foreach (self::$known_costs as $n => $mv) {
-            $ncost = "{$n}_cost";
-            if (($v = $this->extract_intval($args, $ncost, $mv)) !== null) {
-                $this->$ncost = $v;
+    }
+
+    /** @return list<string> */
+    static function costs_schema() {
+        return [
+            "assignment_cost#+",
+            "remove_assignment_cost#",
+            "paper_assignment_cost#+",
+            "preference_cost#+",
+            "expertise_x_cost#",
+            "expertise_y_cost#"
+        ];
+    }
+
+    function configure_costs() {
+        foreach ($this->olist as $key => $value) {
+            if (str_ends_with($key, "_cost") && $this->oschema->has($key))
+                $this->$key = $value;
+        }
+    }
+
+    /** @return list<string> */
+    static function preference_fuzz_schema() {
+        return ["preference_fuzz$"];
+    }
+
+    function configure_preference_fuzz() {
+        $fuzz = $this->option("preference_fuzz")
+            ?? $this->conf->setting("pref_fuzz");
+        if ($fuzz !== null) {
+            if (($ifuzz = stoi($fuzz)) !== null) {
+                $this->preference_fuzz = $ifuzz;
+            } else if (($bfuzz = friendly_boolean($fuzz)) !== null) {
+                $this->preference_fuzz = $bfuzz ? 10 : 0;
+            } else {
+                $this->error_at("preference_fuzz", "<0>Expected integer");
             }
         }
     }
@@ -400,7 +476,7 @@ abstract class Autoassigner extends MessageSet {
 
     /** @param string $column */
     function set_computed_assignment_column($column) {
-        assert(in_array($column, ["preference", "expertise", "topic_score", "unhappiness", "name"]));
+        assert(in_array($column, ["preference", "expertise", "topic_score", "unhappiness", "name"], true));
         /** @phan-suppress-next-line PhanTypeMismatchArgumentProbablyReal */
         $this->set_assignment_column($column, new AutoassignerComputed);
     }
@@ -530,17 +606,16 @@ abstract class Autoassigner extends MessageSet {
         return count($this->ass) > 1;
     }
 
-    function sort_assignments() {
-        if (count($this->ass) > 1) {
-            $this->ass[0] = "\1" . $this->ass[0];
-            natsort($this->ass);
-            $this->ass[0] = substr($this->ass[0], 1);
-        }
-    }
-
     /** @return list<string> */
     function assignments() {
         return count($this->ass) > 1 ? $this->ass : [];
+    }
+
+    /** @return CsvParser */
+    function csv_assignments() {
+        $csvp = new CsvParser($this->ass, CsvParser::TYPE_COMMA | CsvParser::TYPE_HEADER);
+        $csvp->add_synonym("pid", "paper");
+        return $csvp;
     }
 
     /** @return array<int,int> */
@@ -721,10 +796,7 @@ abstract class Autoassigner extends MessageSet {
     }
 
 
-    protected function compute_pref_index() {
-        if ($this->has_pref_index) {
-            return;
-        }
+    protected function compute_pref_index_direct() {
         foreach ($this->acs as $ac) {
             $pf = $this->ainfo[$ac->cid] ?? [];
             usort($pf, function ($a1, $a2) {
@@ -735,13 +807,49 @@ abstract class Autoassigner extends MessageSet {
             foreach ($pf as $a) {
                 if (!$last || $a->cpref != $last->cpref) {
                     ++$pgidx;
-                    $last = $a;
                 }
                 $a->pref_index = $pgidx;
+                $last = $a;
             }
             $ac->pref_index_bound = $pgidx + 1;
         }
         $this->has_pref_index = true;
+    }
+
+    protected function compute_pref_index_fuzz() {
+        foreach ($this->acs as $ac) {
+            $idp = StableIDPermutation::make_assignment($ac->user);
+            $pf = $this->ainfo[$ac->cid] ?? [];
+            foreach ($pf as $a) {
+                $idp->prefetch($a->pid);
+            }
+            usort($pf, function ($a1, $a2) use ($idp) {
+                return $a2->cpref <=> $a1->cpref
+                    ? : $idp->get($a1->pid) <=> $idp->get($a2->pid);
+            });
+            $pgidx = -1;
+            $nidx = 0;
+            $last = null;
+            foreach ($pf as $a) {
+                if (!$last || ($a->cpref != $last->cpref && $nidx >= $this->preference_fuzz)) {
+                    ++$pgidx;
+                    $nidx = 0;
+                }
+                $a->pref_index = $pgidx;
+                ++$nidx;
+                $last = $a;
+            }
+            $ac->pref_index_bound = $pgidx + 1;
+        }
+        $this->has_pref_index = true;
+    }
+
+    protected function compute_pref_index() {
+        if ($this->preference_fuzz > 1) {
+            $this->compute_pref_index_fuzz();
+        } else {
+            $this->compute_pref_index_direct();
+        }
     }
 
     /** @param bool $prefsort */
@@ -805,7 +913,10 @@ abstract class Autoassigner extends MessageSet {
                     || !$ac->user->pc_track_assignable($prow))) {
                 $a->eass = self::ENOASSIGN;
             }
-            $a->cpref = max($a->pref, -1000) + ((float) $a->topicscore / 100.0);
+            $a->cpref = max($a->pref, -1000);
+            if ($a->cpref == 0) {
+                $a->cpref = (float) $a->topicscore / 100.0;
+            }
         }
     }
 
@@ -829,7 +940,9 @@ abstract class Autoassigner extends MessageSet {
         Dbl::free($result);
         gc_collect_cycles();
 
-        $this->compute_pref_index();
+        if (!$this->has_pref_index) {
+            $this->compute_pref_index();
+        }
         $this->process_avoid_lists(true);
         $this->profile["preferences"] = microtime(true) - $time;
     }
@@ -1072,7 +1185,7 @@ abstract class Autoassigner extends MessageSet {
      * @return bool */
     private function mcmf_assignment_conflicts($acp, $cid, $pid) {
         foreach ($this->avoid_lists[$cid] as $cid2) {
-            if (in_array($pid, $acp[$cid2] ?? []))
+            if (in_array($pid, $acp[$cid2] ?? [], true))
                 return true;
         }
         return false;
@@ -1080,19 +1193,19 @@ abstract class Autoassigner extends MessageSet {
 
     /** @param bool $adjusting
      * @return bool */
-    private function mcmf_apply(MinCostMaxFlow $m, $adjusting) {
+    private function mcmf_apply(MinCostMaxFlow $mcmf, $adjusting) {
         // collect resulting assignments
         $changed = false;
         $acp = [];
         foreach ($this->aausers() as $cid => $ac) {
-            foreach ($m->downstream("u{$cid}", "p") as $v) {
+            foreach ($mcmf->downstream("u{$cid}", "p") as $v) {
                 $acp[$cid][] = (int) substr($v->name, 1);
             }
             if ($adjusting) {
                 $pids = $acp[$cid] ?? [];
                 foreach ($this->ainfo[$cid] as $a) {
                     if ($a->eass === self::ENEWASSIGN
-                        && !in_array($a->pid, $pids)) {
+                        && !in_array($a->pid, $pids, true)) {
                         $this->unassign1($ac, $a->pid);
                         $changed = true;
                     }
@@ -1126,15 +1239,17 @@ abstract class Autoassigner extends MessageSet {
         // make those that are still valid
         $nacp_cost = [];
         foreach ($nacp as $a) {
-            $cost = $this->mcmf_assignment_preference_cost($a, $this->acs[$a->cid]);
-            if ($this->review_gadget === self::REVIEW_GADGET_EXPERTISE) {
-                if ($a->exp > 0) {
-                    $cost += $this->expertise_x_cost;
-                } else if ($a->exp === 0) {
-                    $cost += $this->expertise_y_cost;
+            $cost = null;
+            foreach ($mcmf->paths_between("u{$a->cid}", "p{$a->pid}") as $p) {
+                $c0 = 0;
+                foreach ($p as $e) {
+                    $c0 += $e->cost;
+                }
+                if ($cost === null || $cost < $c0) {
+                    $cost = $c0;
                 }
             }
-            $nacp_cost[] = $cost;
+            $nacp_cost[] = $cost ?? 0;
         }
         uksort($nacp, function ($i, $j) use ($nacp_cost) {
             return $nacp_cost[$i] <=> $nacp_cost[$j];
@@ -1185,65 +1300,40 @@ abstract class Autoassigner extends MessageSet {
 
 
     /** @param ?list<string> $parameters
-     * @return list<AutoassignerParameter> */
-    static function expand_parameters(Conf $conf, $parameters) {
+     * @param ?ViewOptionSchema $vos
+     * @return ViewOptionSchema */
+    static function expand_parameters(Conf $conf, $parameters, $vos = null) {
+        $vos = $vos ?? new ViewOptionSchema;
         $result = [];
         foreach ($parameters ?? [] as $s) {
             if (!is_string($s)) {
                 continue;
             } else if (str_starts_with($s, "\$")) {
-                if (($gj = $conf->autoassigner(substr($s, 1)))) {
-                    array_push($result, ...self::expand_parameters($conf, $gj->parameters ?? []));
-                }
-            } else if (($o = self::expand_parameter_help($s))) {
-                $result[] = $o;
+                $gj = $conf->autoassigner(substr($s, 1));
+                self::expand_parameters($conf, $gj->parameters ?? [], $vos);
+            } else if (($sx = self::expand_parameter($s))) {
+                $vos->define($sx);
             }
         }
-        return $result;
+        return $vos;
     }
 
-    /** @param string $help
-     * @return ?AutoassignerParameter */
-    static function expand_parameter_help($help) {
-        if (!preg_match('/\A(\??)(\S+)\s*(|\{\S*\})\s*(|[^{].*)\z/', $help, $m)) {
-            return null;
+    /** @param string $param
+     * @return string */
+    static function expand_parameter($param) {
+        if ($param === "rtype") {
+            return "rtype:rtype Review type";
+        } else if ($param === "round") {
+            return "round:round Review round";
+        } else if ($param === "method") {
+            return "method=default,mincost|random|stupid Assignment method";
+        } else if ($param === "balance") {
+            return "balance=all|new Load-balancing method";
+        } else if ($param === "max_load") {
+            return "max_load:n Maximum load per PC";
+        } else if ($param === "max_load_tag") {
+            return "max_load_tag:tag PC tag defining maximum load per PC";
         }
-        if ($m[4] === "") {
-            if ($m[2] === "count") {
-                $m[3] = $m[3] ? : "{n}";
-                $m[4] = "Number of assignments";
-            } else if ($m[2] === "rtype") {
-                $m[4] = "Review type";
-            } else if ($m[2] === "method") {
-                $m[4] = "Assignment method (default, random, stupid) [default]";
-            } else if ($m[2] === "balance") {
-                $m[4] = "Load-balancing method (all, new) [all]";
-            } else if ($m[2] === "max_load") {
-                $m[3] = $m[3] ? : "{n}";
-                $m[4] = "Maximum load per PC";
-            } else if ($m[2] === "max_load_tag") {
-                $m[3] = $m[3] ? : "{tag}";
-                $m[4] = "PC tag defining maximum load per PC";
-            } else if ($m[2] === "round") {
-                $m[4] = "Review round";
-            }
-        }
-        if ($m[3] === "") {
-            $argname = strtoupper($m[2]);
-        } else {
-            $argname = strtoupper(substr($m[3], 1, -1));
-        }
-        return new AutoassignerParameter($m[2], $m[1] === "", $argname, $m[4]);
-    }
-
-    /** @param string $name
-     * @param list<AutoassignerParameter> $params
-     * @return ?AutoassignerParameter */
-    static function find_parameter($name, $params) {
-        foreach ($params as $p) {
-            if ($p->name === $name)
-                return $p;
-        }
-        return null;
+        return $param;
     }
 }

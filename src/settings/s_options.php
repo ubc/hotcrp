@@ -1,6 +1,6 @@
 <?php
 // settings/s_options.php -- HotCRP settings > submission form page
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Options_SettingParser extends SettingParser {
     /** @var Conf
@@ -35,12 +35,14 @@ class Options_SettingParser extends SettingParser {
     private $_intermediate_ijmap;
     /** @var list<int> */
     private $_delete_optionids = [];
-    /** @var list<array{string,PaperOption}> */
-    private $_conversions = [];
+    /** @var list<int> */
+    private $_delete_document_optionids = [];
     /** @var array<int,PaperOption> */
     private $_new_options = [];
     /** @var array<int,array<int,int>> */
     private $_value_renumberings = [];
+    /** @var FieldConversions_Setting */
+    private $_fcvts;
     /** @var array<int,int> */
     public $option_id_to_ctr = [];
 
@@ -53,7 +55,10 @@ class Options_SettingParser extends SettingParser {
     /** @param SettingValues $sv */
     function __construct($sv) {
         $this->conf = $sv->conf;
-        $this->pt = new PaperTable($sv->user, new Qrequest("GET"), PaperInfo::make_new($sv->user, null));
+        $prow = PaperInfo::make_new($sv->user, null);
+        $prow->set_prop("title", "Example paper");
+        $prow->set_prop("authorInformation", "Author\tOne\tauthor1@example.com\t\nAuthor\tTwo\tauthor2@example.com\t\n" . Author::make_user($sv->user)->unparse_tabbed());
+        $this->pt = new PaperTable($sv->user, new Qrequest("GET"), $prow);
         $this->pt->settings_mode = true;
     }
 
@@ -70,6 +75,14 @@ class Options_SettingParser extends SettingParser {
      * @return object */
     function basic_intrinsic_json($id) {
         return ($this->basic_intrinsic_json_map())[$id] ?? null;
+    }
+
+    /** @return FieldConversions_Setting */
+    private function fcvts() {
+        if ($this->_fcvts === null) {
+            $this->_fcvts = new FieldConversions_Setting($this->conf->option_type_map(), $this->conf);
+        }
+        return $this->_fcvts;
     }
 
     /** @param int $id
@@ -194,9 +207,9 @@ class Options_SettingParser extends SettingParser {
     function prepare_oblist(Si $si, SettingValues $sv) {
         if ($si->name === "sf") {
             $sfss = [];
-            foreach (self::configurable_options($sv->conf) as $i => $opt) {
+            foreach (self::configurable_options($sv->conf) as $opt) {
                 $sfs = $opt->export_setting();
-                $sfs->order = $i + 1;
+                $sfs->order = count($sfss) + 1;
                 $sfss[] = $sfs;
             }
             $sv->append_oblist("sf", $sfss, "name");
@@ -215,9 +228,8 @@ class Options_SettingParser extends SettingParser {
                     $ot[] = $uf->name;
             }
             return $ot;
-        } else {
-            return null;
         }
+        return null;
     }
 
     function member_list(Si $si, SettingValues $sv) {
@@ -261,15 +273,20 @@ class Options_SettingParser extends SettingParser {
             $ij = $this->basic_intrinsic_json($this->sfs->option_id);
             $content = "Intrinsic field (" . htmlspecialchars($ij->name) . ")";
         } else {
+            $conversions = [];
+            foreach ($this->fcvts()->find_from($this->sfs->type) as $cvt) {
+                if ($this->fcvts()->allow($cvt, $this->sfs, $sv, null))
+                    $conversions[] = $cvt->to;
+            }
             $types = $this->conf->option_type_map();
             $curt = $types[$this->sfs->type];
-            $conversions = (array) ($curt->convert_from_functions ?? []);
             if (empty($conversions)) {
                 $content = htmlspecialchars($curt->title) . Ht::hidden("sf/{$this->ctr}/type", $curt->name);
             } else {
-                $sel = [$curt->name => $curt->title];
-                foreach ($conversions as $k => $v) {
-                    $sel[$k] = $types[$k]->title;
+                $sel = [$curt->name => $curt->title, "_sep" => null];
+                foreach ($types as $t) {
+                    if (in_array($t->name, $conversions, true))
+                        $sel[$t->name] = $t->title;
                 }
                 $content = $sv->select("sf/{$this->ctr}/type", $sel);
             }
@@ -321,7 +338,7 @@ class Options_SettingParser extends SettingParser {
                 MessageItem::marked_note("<5>Submitters must check this field before <span class=\"verb\">completing</span> their submissions.")
             ], ["class" => "hidden mt-1"]);
         }
-        $sv->print_close_control_group(["horizontal" => true]);
+        $sv->print_group_close(["horizontal" => true]);
     }
 
     function print_visibility(SettingValues $sv) {
@@ -341,7 +358,7 @@ class Options_SettingParser extends SettingParser {
             "fold_values" => ["review"]
         ]);
         echo '<div class="hint fx">The field will be visible to reviewers who have submitted a review, and to PC members who can see all reviews.</div>';
-        $sv->print_close_control_group(["horizontal" => true]);
+        $sv->print_group_close(["horizontal" => true]);
     }
 
     function print_display(SettingValues $sv) {
@@ -380,31 +397,31 @@ class Options_SettingParser extends SettingParser {
             '<div class="settings-xf-viewport"><div class="settings-xf-view">';
         if ($disabled) {
             if ($io->id === PaperOption::PCCONFID) {
-                $this->pt->msg_at($io->formid, "<0>Field disabled for submitters (but accessible to administrators)", MessageSet::URGENT_NOTE);
+                $this->pt->append_item(MessageItem::urgent_note_at($io->formid, "<0>Field disabled for submitters (but accessible to administrators)"));
             } else {
-                $this->pt->msg_at($io->formid, "<0>Field disabled", MessageSet::URGENT_NOTE);
+                $this->pt->append_item(MessageItem::urgent_note_at($io->formid, "<0>Field disabled"));
             }
         } else if (strcasecmp($this->sfs->exists_if, "all") !== 0
                    && strcasecmp($this->sfs->exists_if, "phase:final") !== 0) {
-            $this->pt->msg_at($io->formid, "<0>Present on submissions matching ‘" . $this->sfs->exists_if . "’", MessageSet::WARNING_NOTE);
+            $this->pt->append_item(MessageItem::warning_note_at($io->formid, "<0>Present on submissions matching ‘" . $this->sfs->exists_if . "’"));
         }
         if ($io->is_final()) {
-            $this->pt->msg_at($io->formid, "<0>Present in the final-version phase", MessageSet::WARNING_NOTE);
+            $this->pt->append_item(MessageItem::warning_note_at($io->formid, "<0>Present in the final-version phase"));
         }
         if ($disabled
             || strcasecmp($this->sfs->editable_if, "all") === 0) {
             // no editable comment
         } else if (strcasecmp($this->sfs->editable_if, "none") === 0) {
-            $this->pt->msg_at($io->formid, "<0>Frozen on all submissions (not editable)", MessageSet::WARNING_NOTE);
+            $this->pt->append_item(MessageItem::warning_note_at($io->formid, "<0>Frozen on all submissions (not editable)"));
         } else if (strcasecmp($this->sfs->editable_if, "phase:review") === 0) {
-            $this->pt->msg_at($io->formid, "<0>Editable in the review phase", MessageSet::WARNING_NOTE);
+            $this->pt->append_item(MessageItem::warning_note_at($io->formid, "<0>Editable in the review phase"));
         } else if (strcasecmp($this->sfs->editable_if, "phase:final") !== 0) {
-            $this->pt->msg_at($io->formid, "<0>Editable in the final-version phase", MessageSet::WARNING_NOTE);
+            $this->pt->append_item(MessageItem::warning_note_at($io->formid, "<0>Editable in the final-version phase"));
         } else {
-            $this->pt->msg_at($io->formid, "<0>Editable on submissions matching ‘" . $this->sfs->editable_if . "’", MessageSet::WARNING_NOTE);
+            $this->pt->append_item(MessageItem::warning_note_at("<0>Editable on submissions matching ‘" . $this->sfs->editable_if . "’"));
         }
         foreach ($sv->message_list_at_prefix("sf/{$ctr}/") as $mi) {
-            $this->pt->msg_at($io->formid, $mi->message, $mi->status > 0 ? MessageSet::WARNING_NOTE : $mi->status);
+            $this->pt->append_item(new MessageItem($mi->status > 0 ? MessageSet::WARNING_NOTE : $mi->status, $io->formid, $mi->message));
         }
         $ei = $io->editable_condition();
         $io->set_editable_condition(true);
@@ -450,12 +467,12 @@ class Options_SettingParser extends SettingParser {
             echo Ht::hidden("sf/{$ctr}/template", $sv->reqstr("sf/{$ctr}/template"));
         }
         $props = $this->typej->properties ?? ["common"];
-        $has_common = in_array("common", $props);
+        $has_common = in_array("common", $props, true);
         foreach ($sv->cs()->members("submissionfield/properties") as $j) {
             $prop = substr($j->name, strlen($j->group) + 1);
-            if (in_array($prop, ["name", "type", "actions"])
+            if (in_array($prop, ["name", "type", "actions"], true)
                 || ($has_common && ($j->common ?? false))
-                || in_array($prop, $props)) {
+                || in_array($prop, $props, true)) {
                 $sv->print($j->name);
             }
         }
@@ -518,7 +535,7 @@ class Options_SettingParser extends SettingParser {
 
         ob_start();
         $vopt = $this->make_sample_option($sampj, true);
-        $ov = $vopt->parse_json($this->pt->prow, $sampj->value ?? null)
+        $ov = $vopt->parse_json_user($this->pt->prow, $sampj->value ?? null, $this->pt->user)
             ?? PaperValue::make($this->pt->prow, $vopt);
         $vopt->print_web_edit($this->pt, $ov, $ov);
         $ret->sf_view_html = ob_get_clean();
@@ -540,14 +557,9 @@ class Options_SettingParser extends SettingParser {
 
     /** @return list<array> */
     static function make_types_json($tmap) {
-        $cvts = ReviewForm_SettingParser::make_convertible_to_map($tmap);
         $typelist = [];
         foreach ($tmap as $sf) {
-            $j = [
-                "name" => $sf->name,
-                "title" => $sf->title,
-                "convertible_to" => $cvts[$sf->name]
-            ];
+            $j = ["name" => $sf->name, "title" => $sf->title];
             if (!empty($sf->placeholders)) {
                 $j["placeholders"] = $sf->placeholders;
             }
@@ -557,8 +569,7 @@ class Options_SettingParser extends SettingParser {
     }
 
 
-    /** @return bool */
-    private function _apply_req_name(Si $si, SettingValues $sv) {
+    private function _apply_req_name(Si $si, Sf_Setting $sfs, SettingValues $sv) {
         $n = $sv->base_parse_req($si);
         if ($n === "") {
             $tname = $sv->vstr("sf/{$si->name1}/type");
@@ -567,7 +578,6 @@ class Options_SettingParser extends SettingParser {
                 $sv->error_at($si, "<0>Entry required");
             }
         } else if (preg_match('/\A(?:paper|submission|title|authors?|final|none|any|all|true|false|opt(?:ion)?[-:_ ]?\d+)\z/i', $n)) {
-            $sfs = $sv->oldv("sf/{$si->name1}");
             if ((strcasecmp($n, "paper") !== 0 || $sfs->option_id !== DTYPE_SUBMISSION)
                 && (strcasecmp($n, "submission") !== 0 || $sfs->option_id !== DTYPE_SUBMISSION)
                 && (strcasecmp($n, "final") !== 0 || $sfs->option_id !== DTYPE_FINAL)
@@ -581,31 +591,34 @@ class Options_SettingParser extends SettingParser {
         if ($n !== "") {
             $sv->error_if_duplicate_member($si->name0, $si->name1, $si->name2, "Field name");
         }
-        return true;
     }
 
-    /** @return bool */
-    private function _apply_req_type(Si $si, SettingValues $sv) {
-        if (($nj = $sv->conf->option_type($sv->reqstr($si->name)))) {
-            $of = $sv->oldv($si->name0 . $si->name1);
-            if ($nj->name !== $of->type && $of->type !== "none") {
-                $conversion = $nj->convert_from_functions->{$of->type} ?? null;
-                if (!$conversion) {
-                    $oj = $sv->conf->option_type($of->type);
-                    $sv->error_at($si, "<0>Cannot convert " . ($oj ? $oj->title : $of->type) . " field to {$nj->title}");
-                } else if ($conversion !== true) {
-                    $this->_conversions[] = [$conversion, $sv->conf->option_by_id($of->id)];
-                }
-            }
-            $sv->save($si, $nj->name);
-        } else {
-            $sv->error_at($si, "<0>Field type not found");
+    private function _apply_req_type(Si $si, Sf_Setting $fs, SettingValues $sv) {
+        assert($sv->has_req($si->name));
+        $v = $sv->base_parse_req($si);
+        $ft = $sv->conf->option_type($v);
+        if (!$ft) {
+            $sv->error_at($si, "<0>Unknown field type");
+            return;
         }
-        return true;
+        $cvt = null;
+        if ($fs->type !== "none" && $fs->type !== $ft->name) {
+            $cvt = $this->fcvts()->find($fs->type, $ft->name);
+            if (!$cvt
+                || !$this->fcvts()->allow($cvt, $fs, $sv, $si)) {
+                if (!$sv->has_error_at($si->name)) {
+                    $sv->error_at($si, "<0>Cannot convert submission field to this type");
+                }
+                return;
+            }
+        }
+        $sv->save($si, $ft->name);
+        if ($cvt && isset($cvt->setting_function)) {
+            call_user_func($cvt->setting_function, $si, $fs, $sv);
+        }
     }
 
-    /** @return bool */
-    private function _apply_req_values_text(Si $si, SettingValues $sv) {
+    private function _apply_req_values_text(Si $si, Sf_Setting $fs, SettingValues $sv) {
         $cleanreq = cleannl($sv->reqstr($si->name));
         $i = 1;
         $vpfx = "sf/{$si->name1}/values";
@@ -618,16 +631,14 @@ class Options_SettingParser extends SettingParser {
         }
         if (!$sv->has_req($vpfx)) {
             $sv->set_req("sf/{$si->name1}/values_reset", "1");
-            $this->_apply_req_values($sv->si($vpfx), $sv);
+            $this->_apply_req_values($sv->si($vpfx), $fs, $sv);
         }
-        return true;
     }
 
-    /** @return bool */
-    private function _apply_req_values(Si $si, SettingValues $sv) {
+    private function _apply_req_values(Si $si, Sf_Setting $fs, SettingValues $sv) {
         $jtype = $sv->conf->option_type($sv->vstr("sf/{$si->name1}/type"));
-        if (!$jtype || !in_array("values", $jtype->properties ?? [])) {
-            return true;
+        if (!$jtype || !in_array("values", $jtype->properties ?? [], true)) {
+            return;
         }
         $fpfx = "sf/{$si->name1}";
         $vpfx = "sf/{$si->name1}/values";
@@ -644,10 +655,10 @@ class Options_SettingParser extends SettingParser {
                 }
             }
         }
-        if (empty($newsfv)) {
+        if ($error) {
+            return;
+        } else if (empty($newsfv)) {
             $sv->error_at($si, "<0>Entry required");
-        }
-        if ($error || empty($newsfv)) {
             return;
         }
 
@@ -673,11 +684,11 @@ class Options_SettingParser extends SettingParser {
                 if ($sfv->old_value !== $want_value) {
                     $renumberings[$sfv->old_value] = $want_value;
                 }
-            } else if (!in_array($want_value, $known_ids)) {
+            } else if (!in_array($want_value, $known_ids, true)) {
                 $id = $want_value;
                 $known_ids[] = $id;
             } else {
-                for ($id = 1; in_array($id, $known_ids); ++$id) {
+                for ($id = 1; in_array($id, $known_ids, true); ++$id) {
                 }
                 $known_ids[] = $id;
             }
@@ -685,16 +696,13 @@ class Options_SettingParser extends SettingParser {
         }
 
         // record renumberings
-        if (!empty($renumberings)
-            && ($of = $sv->oldv($fpfx))
-            && $of->type !== "none") {
-            $this->_value_renumberings[$of->id] = $renumberings;
+        if (!empty($renumberings) && $fs->type !== "none") {
+            $this->_value_renumberings[$fs->id] = $renumberings;
         }
 
         // save values
         $sv->save("{$fpfx}/values_storage", $values);
         $sv->save("{$fpfx}/ids", $ids);
-        return true;
     }
 
     /** @param Sf_Setting $sfs */
@@ -832,7 +840,7 @@ class Options_SettingParser extends SettingParser {
                 continue;
             }
             $mname = $msi->storage_name();
-            if (!in_array($mname, $isfsj->properties)) {
+            if (!in_array($mname, $isfsj->properties, true)) {
                 if ($sfs->$mname !== $osfs->$mname) {
                     $sv->error_at($msi, "<0>This property cannot be configured");
                 }
@@ -895,7 +903,6 @@ class Options_SettingParser extends SettingParser {
     // * If any non-title intrinsic field is reordered relative to the default,
     //   then all of them are
 
-    /** @return bool */
     private function _apply_req_sf(Si $si, SettingValues $sv) {
         if ($sv->has_req("options_version")
             && (int) $sv->reqstr("options_version") !== (int) $sv->conf->setting("options")) {
@@ -977,60 +984,65 @@ class Options_SettingParser extends SettingParser {
 
         // update settings database
         if ($sv->update("options", empty($nsfss) ? "" : json_encode_db($nsfss))) {
-            $this->_validate_consistency($sv);
             $sv->update("options_version", (int) $sv->conf->setting("options") + 1);
+            $sv->request_validate($si);
             $sv->request_store_value($si);
             $sv->mark_invalidate_caches(["options" => true]);
+            foreach ($this->_delete_optionids as $oid) {
+                if (($opt = $sv->conf->option_by_id($oid))
+                    && $opt->has_document()) {
+                    $this->_delete_document_optionids[] = $oid;
+                }
+            }
             if (!empty($this->_delete_optionids)
-                || !empty($this->_conversions)
                 || !empty($this->_value_renumberings)) {
                 $sv->request_write_lock("PaperOption");
             }
+            if (!empty($this->_delete_document_optionids)) {
+                $sv->request_write_lock("PaperStorage");
+            }
         }
         $sv->save("ioptions", empty($insfss) ? "" : json_encode_db($insfss));
-        return true;
     }
 
-    private function _validate_consistency(SettingValues $sv) {
-        $old_oval = $sv->conf->setting("options");
-        $old_options = $sv->conf->setting_data("options");
-        if (($new_options = $sv->newv("options") ?? "") === "") {
-            $sv->conf->change_setting("options", null);
-        } else {
-            $sv->conf->change_setting("options", $old_oval + 1, $new_options);
-        }
-        $sv->conf->refresh_settings();
-
+    function validate(Si $si, SettingValues $sv) {
         foreach ($sv->cs()->members("__validate/submissionfields", "validate_function") as $gj) {
             $sv->cs()->call_function($gj, $gj->validate_function, $gj);
         }
-
-        $sv->conf->change_setting("options", $old_oval, $old_options);
-        $sv->conf->refresh_settings();
     }
 
     function apply_req(Si $si, SettingValues $sv) {
         if ($si->name === "sf") {
-            return $this->_apply_req_sf($si, $sv);
-        } else if ($si->name2 === "/name") {
-            return $this->_apply_req_name($si, $sv);
-        } else if ($si->name2 === "/type") {
-            return $this->_apply_req_type($si, $sv);
-        } else if ($si->name2 === "/values_text") {
-            return $this->_apply_req_values_text($si, $sv);
-        } else if ($si->name2 === "/values") {
-            return $this->_apply_req_values($si, $sv);
-        } else {
-            return false;
+            $this->_apply_req_sf($si, $sv);
+            return true;
         }
+        assert($si->name0 === "sf/");
+        $fs = $sv->oldv($si->name0 . $si->name1);
+        if ($si->name2 === "/name") {
+            $this->_apply_req_name($si, $fs, $sv);
+            return true;
+        }
+        if ($si->name2 === "/type") {
+            $this->_apply_req_type($si, $fs, $sv);
+            return true;
+        }
+        if ($si->name2 === "/values_text") {
+            $this->_apply_req_values_text($si, $fs, $sv);
+            return true;
+        }
+        if ($si->name2 === "/values") {
+            $this->_apply_req_values($si, $fs, $sv);
+            return true;
+        }
+        return false;
     }
 
     function store_value(Si $si, SettingValues $sv) {
         if (!empty($this->_delete_optionids)) {
             $sv->conf->qe("delete from PaperOption where optionId?a", $this->_delete_optionids);
         }
-        foreach ($this->_conversions as $conv) {
-            call_user_func($conv[0], $this->_new_options[$conv[1]->id], $conv[1]);
+        if (!empty($this->_delete_document_optionids)) {
+            $sv->conf->qe("update PaperStorage set inactive=1 where documentType?a", $this->_delete_document_optionids);
         }
         foreach ($this->_value_renumberings as $oid => $renumberings) {
             $ndelete = 0;
@@ -1056,16 +1068,21 @@ class Options_SettingParser extends SettingParser {
     }
 
 
-    static function crosscheck(SettingValues $sv) {
+    function crosscheck(SettingValues $sv) {
         if (($sv->has_interest("sf") || $sv->has_interest("author_visibility"))
             && $sv->oldv("author_visibility") == Conf::BLIND_ALWAYS) {
-            $opts = self::configurable_options($sv->conf);
-            foreach ($opts as $ctrz => $f) {
-                if ($f->visibility() === PaperOption::VIS_AUTHOR
-                    && $f->id > 0) {
-                    $visname = "sf/" . ($ctrz + 1) . "/visibility";
-                    $sv->warning_at($visname, "<5>" . $sv->setting_link("All submissions are anonymous", "author_visibility") . ", so this field is always hidden from reviewers");
+            foreach (self::configurable_options($this->conf) as $ctrz => $f) {
+                if ($f->visibility() !== PaperOption::VIS_AUTHOR) {
+                    continue;
                 }
+                $ot = $f->id <= 0
+                    ? $this->basic_intrinsic_json($f->id)
+                    : $this->conf->option_type($f->type);
+                if (!$ot || ($ot->authorlike ?? false)) {
+                    continue;
+                }
+                $visname = "sf/" . ($ctrz + 1) . "/visibility";
+                $sv->warning_at($visname, "<5>" . $sv->setting_link("All submissions are anonymous", "author_visibility") . ", so this field is always hidden from reviewers");
             }
         }
     }

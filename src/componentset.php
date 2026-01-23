@@ -28,9 +28,13 @@ class ComponentSet {
     /** @var string */
     private $_section_class = "";
     /** @var string */
+    private $_next_section_tag = "";
+    /** @var string */
     private $_next_section_class = "";
     /** @var string */
     private $_title_class = "";
+    /** @var string */
+    private $_next_title_class = "";
     /** @var string */
     private $_separator = "";
     /** @var bool */
@@ -112,6 +116,7 @@ class ComponentSet {
         $this->_raw = [];
         $this->_callables = ["Conf" => $this->conf];
         $this->_next_section_class = $this->_section_class;
+        $this->_next_title_class = $this->_title_class;
         $this->_section_closer = null;
         return $this;
     }
@@ -167,25 +172,31 @@ class ComponentSet {
 
 
     /** @param string $name
+     * @return bool */
+    function might_exist($name) {
+        return !empty($this->_jall[$name]);
+    }
+
+    /** @param string $name
      * @return ?object */
-    function get_raw($name) {
-        if (!array_key_exists($name, $this->_raw)) {
-            if (($xt = $this->xtp->search_list($this->_jall[$name] ?? []))
-                && Conf::xt_enabled($xt)) {
-                $this->_raw[$name] = $xt;
-            } else {
-                $this->_raw[$name] = null;
-            }
+    private function get_noalias($name) {
+        if (array_key_exists($name, $this->_raw)) {
+            return $this->_raw[$name];
         }
-        return $this->_raw[$name];
+        $xt = $this->xtp->search_list($this->_jall[$name] ?? []);
+        if ($xt && !Conf::xt_enabled($xt)) {
+            $xt = null;
+        }
+        $this->_raw[$name] = $xt;
+        return $xt;
     }
 
     /** @param string $name
      * @return ?object */
     function get($name) {
-        $gj = $this->get_raw($name);
+        $gj = $this->get_noalias($name);
         for ($nalias = 0; $gj && isset($gj->alias) && $nalias < 5; ++$nalias) {
-            $gj = $this->get_raw($gj->alias);
+            $gj = $this->get_noalias($gj->alias);
         }
         return $gj;
     }
@@ -194,12 +205,11 @@ class ComponentSet {
      * @return ?string */
     function canonical_group($x) {
         $gj = is_string($x) ? $this->get($x) : $x;
-        if ($gj) {
-            $pos = strpos($gj->group, "/");
-            return $pos === false ? $gj->group : substr($gj->group, 0, $pos);
-        } else {
+        if (!$gj) {
             return null;
         }
+        $pos = strpos($gj->group, "/");
+        return $pos === false ? $gj->group : substr($gj->group, 0, $pos);
     }
 
     /** @param string $name
@@ -213,7 +223,7 @@ class ComponentSet {
         $r = [];
         $alias = false;
         foreach (array_unique($this->_potential_members[$name] ?? []) as $subname) {
-            if (($gj = $this->get_raw($subname))
+            if (($gj = $this->get_noalias($subname))
                 && $gj->group === ($name === "" ? $gj->name : $name)
                 && $gj->name !== $name
                 && (!isset($gj->alias) || isset($gj->order))
@@ -224,19 +234,18 @@ class ComponentSet {
             }
         }
         usort($r, "Conf::xt_order_compare");
-        if ($alias && !empty($r)) {
-            $rr = [];
-            foreach ($r as $gj) {
-                if (!isset($gj->alias)
-                    || (($gj = $this->get($gj->alias))
-                        && (!$require_key || isset($gj->$require_key)))) {
-                    $rr[] = $gj;
-                }
-            }
-            return $rr;
-        } else {
+        if (!$alias || empty($r)) {
             return $r;
         }
+        $rr = [];
+        foreach ($r as $gj) {
+            if (!isset($gj->alias)
+                || (($gj = $this->get($gj->alias))
+                    && (!$require_key || isset($gj->$require_key)))) {
+                $rr[] = $gj;
+            }
+        }
+        return $rr;
     }
 
     /** @return list<object> */
@@ -299,7 +308,7 @@ class ComponentSet {
     /** @param string $s
      * @return $this */
     function set_title_class($s) {
-        $this->_title_class = $s;
+        $this->_title_class = $this->_next_title_class = $s;
         return $this;
     }
 
@@ -377,14 +386,11 @@ class ComponentSet {
         return $this->on_leave([$this, "print"], $name);
     }
 
-    /** @param string $cleaner
-     * @deprecated */
-    function push_print_cleanup($cleaner) {
-        if (is_string($cleaner)) {
-            $this->print_on_leave($cleaner);
-        } else {
-            $this->on_leave($cleaner);
-        }
+    /** @param string $tag
+     * @return $this */
+    function set_section_tag($tag) {
+        $this->_next_section_tag = $tag;
+        return $this;
     }
 
     /** @param string $classes
@@ -394,27 +400,44 @@ class ComponentSet {
         return $this;
     }
 
+    /** @param string $classes
+     * @return $this */
+    function add_title_class($classes) {
+        $this->_next_title_class = Ht::add_tokens($this->_next_title_class, $classes);
+        return $this;
+    }
+
     /** @param ?string $title
      * @param ?string $hashid */
     function print_start_section($title = null, $hashid = null) {
         $title = $title ?? "";
         $hashid_notitle = $title === "" && (string) $hashid !== "";
+        $tag = $this->_next_section_tag ? : "div";
         $this->print_end_section();
         $this->trigger_separator();
-        if ($this->_next_section_class !== "" || $hashid_notitle) {
-            echo '<div';
+        if ($this->_next_section_tag !== ""
+            || $this->_next_section_class !== ""
+            || $hashid_notitle) {
+            echo "<{$tag}";
             if ($this->_next_section_class !== "") {
                 echo " class=\"", $this->_next_section_class, "\"";
             }
-            $this->_next_section_class = $this->_section_class;
             if ($hashid_notitle) {
                 echo " id=\"", htmlspecialchars($hashid), "\"";
             }
             echo '>';
-            $this->_section_closer = "</div>";
+            $this->_section_closer = "</{$tag}>";
+            $this->_next_section_tag = "";
+            $this->_next_section_class = $this->_section_class;
         }
         if ($title !== "") {
+            if ($tag === "fieldset") {
+                echo "<legend>";
+            }
             $this->print_title($title, $hashid);
+            if ($tag === "fieldset") {
+                echo "</legend>";
+            }
         }
     }
 
@@ -434,14 +457,15 @@ class ComponentSet {
      * @param ?string $hashid */
     function print_title($ftext, $hashid = null) {
         echo '<h3';
-        if ($this->_title_class) {
-            echo ' class="', $this->_title_class, '"';
+        if ($this->_next_title_class) {
+            echo ' class="', $this->_next_title_class, '"';
         }
+        $this->_next_title_class = $this->_title_class;
         $hashid = $hashid ?? self::title_hashid($ftext);
         if ((string) $hashid !== "") {
             echo ' id="', htmlspecialchars($hashid), '"';
         }
-        echo '>', Ftext::as(5, $ftext, 0), "</h3>\n";
+        echo '>', Ftext::as(5, $ftext, 0), "</h3>";
     }
 
     /** @param string $ftext
@@ -466,9 +490,8 @@ class ComponentSet {
             return $gj->hashid !== "" ? $gj->hashid : null;
         } else if (($gj->title ?? "") !== "") {
             return self::title_hashid($gj->title);
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @param string|object $gj */
@@ -481,29 +504,26 @@ class ComponentSet {
         }
 
         $sepgroup = $gj->separator_group ?? null;
-        if ($sepgroup !== null
-            && $this->_separator_group !== null
-            && $this->_separator_group !== $sepgroup) {
-            $this->mark_separator();
-            $this->trigger_separator();
-        } else if ($gj->separator_before ?? false) {
-            $this->mark_separator();
+        if (($gj->separator_before ?? false)
+            || $sepgroup !== null) {
+            $this->mark_separator($sepgroup);
         }
 
-        $title = ($gj->print_title ?? true) ? $gj->title ?? "" : "";
+        $title = $gj->title ?? "";
         $hashid = $gj->hashid ?? null;
-        if ($title !== ""
-            || ($this->_section_closer === null && $this->_next_section_class !== "")
-            || (string) $hashid !== "") {
+        if (($title !== ""
+             || (string) $hashid !== ""
+             || ($this->_section_closer === null && $this->_next_section_class !== ""))
+            && ($gj->autosection ?? true) !== false) {
             // create default hashid from title
+            if (isset($gj->title_class)) {
+                $this->add_title_class($gj->title_class);
+            }
             $this->print_start_section($title, $hashid);
         } else {
             $this->trigger_separator();
         }
 
-        if ($sepgroup !== null) {
-            $this->_separator_group = $sepgroup;
-        }
         return $this->_print_body($gj, false);
     }
 
@@ -536,14 +556,6 @@ class ComponentSet {
     }
 
     /** @param string $name
-     * @param bool $top
-     * @return mixed
-     * @deprecated */
-    function print_group($name, $top = false) {
-        return $top ? $this->print_body_members($name) : $this->print_members($name);
-    }
-
-    /** @param string $name
      * @return mixed */
     function print_body_members($name) {
         if (($gj = $this->get($name))) {
@@ -573,7 +585,8 @@ class ComponentSet {
 
     /** @param string $name
      * @param null|string $reducer
-     * @return mixed */
+     * @return mixed
+     * @deprecated */
     function call_members($name, $reducer = null) {
         $result = $reducer === null ? [] : null;
         foreach ($this->members($name) as $gj) {
@@ -593,16 +606,25 @@ class ComponentSet {
         return $result;
     }
 
-    function mark_separator() {
-        $this->_need_separator = true;
+    /** @param ?string $group
+     * @return $this */
+    function mark_separator($group = null) {
+        if ($group === null
+            || ($this->_separator_group !== null
+                && $group !== $this->_separator_group)) {
+            $this->_need_separator = true;
+        }
+        $this->_separator_group = $group;
+        return $this;
     }
 
+    /** @return $this */
     function trigger_separator() {
         if ($this->_need_separator) {
             echo $this->_separator;
+            $this->_need_separator = false;
         }
-        $this->_need_separator = false;
-        $this->_separator_group = null;
+        return $this;
     }
 
     /** @param string $name

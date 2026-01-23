@@ -1,18 +1,17 @@
 <?php
 // listactions/la_getdocument.php -- HotCRP helper classes for list actions
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class GetDocument_ListAction extends ListAction {
     private $dt;
     function __construct($conf, $fj) {
-        $this->dt = $fj->dtype;
+        $this->dt = $fj->dt;
     }
     static private function list_action_json(Contact $user, PaperOption $opt) {
         return (object) [
             "name" => "get/" . $opt->dtype_name(),
             "get" => true,
-            "allow_api" => true,
-            "dtype" => $opt->id,
+            "dt" => $opt->id,
             "title" => "Documents/" . $opt->title(),
             "order" => $opt->page_order(),
             "display_if" => "listhas:" . $opt->field_key(),
@@ -40,13 +39,13 @@ class GetDocument_ListAction extends ListAction {
                     $docset->add_as($doc, $doc->export_filename());
                 }
             } else {
-                $docset->message_set()->msg_at(null, "<0>#{$row->paperId} has no ‘" . $opt->title() . "’ documents", MessageSet::WARNING_NOTE);
+                $docset->message_set()->append_item(MessageItem::warning_note("<0>#{$row->paperId} has no ‘" . $opt->title() . "’ documents"));
             }
         }
         $user->set_overrides($old_overrides);
         if ($docset->is_empty()) {
             return JsonResult::make_message_list($docset->message_set(),
-                new MessageItem(null, "<0>Nothing to download", MessageSet::MARKED_NOTE));
+                MessageItem::marked_note("<0>Nothing to download"));
         }
         $qreq->qsession()->commit();
         $dopt = new Downloader;

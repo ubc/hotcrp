@@ -86,21 +86,10 @@ abstract class CheckboxesBase_PaperOption extends PaperOption {
     }
 
     function value_store(PaperValue $ov, PaperStatus $ps) {
-        if ($ov->has_anno("new_values") && count($ov->anno("new_values")) > 0) {
-            $this->value_store_new_values($ov, $ps);
-        }
-
-        $vs = $ov->value_list();
-        $this->topic_set()->sort($vs); // to reduce unnecessary diffs
-        $ov->set_value_data($vs, array_fill(0, count($vs), null));
-
         $badvs = $ov->anno("bad_values") ?? [];
         if (!empty($badvs)) {
             $ov->warning($ps->_("<0>Options {:list} not found", $badvs, new FmtArg("type", $this->type)));
         }
-    }
-
-    function value_store_new_values(PaperValue $ov, PaperStatus $ps) {
     }
 
     function parse_qreq(PaperInfo $prow, Qrequest $qreq) {
@@ -115,16 +104,16 @@ abstract class CheckboxesBase_PaperOption extends PaperOption {
         if ($v !== "" && $v !== "0" && ctype_digit($v)) {
             $tid = intval($v);
             if ($this->topic_set()->name($tid) !== null
-                && !in_array($tid, $vs)) {
+                && !in_array($tid, $vs, true)) {
                 $vs[] = $tid;
             }
         }
         return PaperValue::make_multi($prow, $this, $vs, array_fill(0, count($vs), null));
     }
 
-    function parse_json(PaperInfo $prow, $j) {
+    function parse_json_user(PaperInfo $prow, $j, Contact $user) {
         $bad = false;
-        if (is_object($j) || is_associative_array($j)) {
+        if (is_object($j) || (is_array($j) && !array_is_list($j))) {
             $j = array_keys(array_filter((array) $j, function ($x) use (&$bad) {
                 if ($x !== null && $x !== false && $x !== true) {
                     $bad = true;
@@ -152,78 +141,76 @@ abstract class CheckboxesBase_PaperOption extends PaperOption {
             } else if (!is_string($tk)) {
                 return PaperValue::make_estop($prow, $this, "<0>Validation error");
             } else if (($tk = trim($tk)) !== "") {
-                $tid = array_search($tk, $topicset->as_array(), true);
-                if ($tid !== false) {
+                $tid = $topicset->find_exact($tk);
+                if ($tid !== null) {
                     $vs[] = $tid;
-                } else if (!ctype_digit($tk)) {
-                    $tids = [];
-                    foreach ($topicset as $xtid => $tname) {
-                        if (strcasecmp($tk, $tname) == 0)
-                            $tids[] = $xtid;
-                    }
-                    if (count($tids) === 1) {
-                        $vs[] = $tids[0];
-                    } else {
-                        $badvs[] = $tk;
-                        if (empty($tids)) {
-                            $newvs[] = $tk;
-                        }
-                    }
+                } else if (empty($tids) && $topicset->auto_add()) {
+                    $newvs[] = $tk;
+                    $topicset->mark_auto_add($tk);
+                } else {
+                    $badvs[] = $tk;
                 }
             }
         }
 
         $ov = PaperValue::make_multi($prow, $this, $vs, array_fill(0, count($vs), null));
-        $ov->set_anno("bad_values", $badvs);
-        $ov->set_anno("new_values", $newvs);
+        if (!empty($badvs)) {
+            $ov->set_anno("bad_values", $badvs);
+        }
+        if (!empty($newvs)) {
+            $ov->set_anno("new_values", $newvs);
+        }
         return $ov;
     }
 
     /** @param FieldChangeSet $fcs */
     function strip_unchanged_qreq(PaperInfo $prow, Qrequest $qreq, $fcs) {
-        if ($this->max_count !== 1) {
+        if ($this->min_count !== 1 || $this->max_count !== 1) {
             $basev = $prow->base_option($this);
             foreach ($this->topic_set() as $tid => $tname) {
                 if ($fcs->test("{$this->formid}:{$tid}") === FieldChangeSet::UNCHANGED) {
-                    $qreq["{$this->formid}:{$tid}"] = in_array($tid, $basev->value_list()) ? "1" : "";
+                    $qreq["{$this->formid}:{$tid}"] = in_array($tid, $basev->value_list(), true) ? "1" : "";
                 }
             }
         }
     }
 
     private function render_checkbox($tid, $checked, $arg) {
-        if ($this->max_count === 1) {
+        if ($this->min_count === 1 && $this->max_count === 1) {
             return Ht::radio($this->formid, $tid, $checked, $arg);
-        } else {
-            return Ht::checkbox("{$this->formid}:{$tid}", 1, $checked, $arg);
         }
+        return Ht::checkbox("{$this->formid}:{$tid}", 1, $checked, $arg);
     }
 
     function print_web_edit(PaperTable $pt, $ov, $reqov) {
         $pt->print_editable_option_papt($this, null, [
-            "id" => $this->readable_formid(),
-            "for" => false,
+            "id" => $this->readable_formid(), "for" => false, "fieldset" => true
         ]);
         $topicset = $this->topic_set();
-        echo '<fieldset class="papev fieldset-covert" name="', $this->formid,
-            '"><ul class="ctable',
+        echo '<div class="papev"><ul class="ctable',
             $this->compact ? ' compact' : '',
             count($topicset) < 7 ? ' column-count-1' : '',
             '">';
-        foreach ($topicset->group_list() as $tg) {
-            $arg = ["class" => "uic js-range-click topic-entry", "id" => false,
+        if ($this->min_count === 1 && $this->max_count === 1) {
+            $arg = ["id" => false];
+        } else if ($this->max_count === 1) {
+            $arg = ["id" => false, "class" => "uic js-range-radio",
                     "data-range-type" => $this->formid];
+        } else {
+            $arg = ["id" => false, "class" => "uic js-range-click",
+                    "data-range-type" => $this->formid];
+        }
+        foreach ($topicset->group_list() as $tg) {
             if (($isgroup = $tg->nontrivial())) {
                 echo '<li class="ctelt cteltg"><div class="ctelti">';
-                if ($tg->improper()) {
-                    $arg["data-default-checked"] = in_array($tg->tid, $ov->value_list());
-                    $checked = in_array($tg->tid, $reqov->value_list());
+                if ($tg->has_group_topic()) {
+                    $arg["data-default-checked"] = in_array($tg->tid, $ov->value_list(), true);
+                    $checked = in_array($tg->tid, $reqov->value_list(), true);
                     echo '<label class="checki cteltx"><span class="checkc">',
                         $this->render_checkbox($tg->tid, $checked, $arg),
                         '</span>', $topicset->unparse_name_html($tg->tid), '</label>';
                 } else {
-                    echo '<div class="cteltx"><span class="topicg">',
-                        htmlspecialchars($tg->name), '</span></div>';
+                    echo '<div class="cteltx">', $tg->unparse_name_html(), '</div>';
                 }
                 echo '<div class="checki">';
             }
@@ -233,8 +220,8 @@ abstract class CheckboxesBase_PaperOption extends PaperOption {
                 } else {
                     $tname = $topicset->unparse_name_html($tid);
                 }
-                $arg["data-default-checked"] = in_array($tid, $ov->value_list());
-                $checked = in_array($tid, $reqov->value_list());
+                $arg["data-default-checked"] = in_array($tid, $ov->value_list(), true);
+                $checked = in_array($tid, $reqov->value_list(), true);
                 echo ($isgroup ? '<label class="checki cteltx">' : '<li class="ctelt"><label class="checki ctelti">'),
                     '<span class="checkc">',
                     $this->render_checkbox($tid, $checked, $arg),
@@ -248,7 +235,23 @@ abstract class CheckboxesBase_PaperOption extends PaperOption {
         if ($topicset->count() === 0) {
             echo '<li class="ctelt celtg"><div class="ctelti"><em>(No options defined)</em></div></li>';
         }
-        echo "</ul></fieldset></div>\n\n";
+        echo "</ul></div></fieldset>\n\n";
+    }
+
+    function print_web_edit_hidden(PaperTable $pt, $ov) {
+        if ($this->min_count === 1 && $this->max_count === 1) {
+            parent::print_web_edit_hidden($pt, $ov);
+            return;
+        }
+        echo '<fieldset name="', $this->formid, '" role="none" hidden>';
+        $topicset = $this->topic_set();
+        foreach ($topicset->group_list() as $tg) {
+            foreach ($tg->members() as $tid) {
+                $checked = in_array($tid, $ov->value_list(), true);
+                echo $this->render_checkbox($tid, $checked, ["disabled" => true]);
+            }
+        }
+        echo '</fieldset>';
     }
 
     function render(FieldRender $fr, PaperValue $ov) {
@@ -283,10 +286,16 @@ abstract class CheckboxesBase_PaperOption extends PaperOption {
     }
 
     function present_script_expression() {
+        if ($this->min_count === 1 && $this->max_count === 1) {
+            return ["type" => "dropdown", "formid" => $this->formid];
+        }
         return ["type" => "checkboxes", "formid" => $this->formid];
     }
 
     function match_script_expression($values) {
+        if ($this->min_count === 1 && $this->max_count === 1) {
+            return ["type" => "in", "child" => [$this->present_script_expression()], "values" => $values];
+        }
         return ["type" => "checkboxes", "formid" => $this->formid, "values" => $values];
     }
 }

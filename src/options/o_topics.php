@@ -3,14 +3,15 @@
 // Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
 
 class Topics_PaperOption extends CheckboxesBase_PaperOption {
-    /** @var bool */
-    private $_add_topics = false;
-
     function __construct(Conf $conf, $args) {
         parent::__construct($conf, $args);
-        if (!$this->conf->has_topics()) {
-            $this->override_exists_condition(false);
-        }
+        $this->refresh_topic_set();
+    }
+
+    function refresh_topic_set() {
+        $ts = $this->topic_set();
+        $empty = $ts->count() === 0 && !$ts->auto_add();
+        $this->override_exists_condition($empty ? false : null);
     }
 
     function topic_set() {
@@ -21,38 +22,6 @@ class Topics_PaperOption extends CheckboxesBase_PaperOption {
         return $user ? $user->topic_interest_map() : [];
     }
 
-    /** @param bool $allow */
-    function allow_new_topics($allow) {
-        $this->_add_topics = $allow;
-        $x = $allow || $this->conf->has_topics() ? null : false;
-        $this->override_exists_condition($x);
-    }
-
-    function value_store_new_values(PaperValue $ov, PaperStatus $ps) {
-        if (!$this->_add_topics) {
-            return;
-        }
-        $vs = $ov->value_list();
-        $newvs = $ov->anno("new_values");
-        '@phan-var list<string> $newvs';
-        $lctopics = $newids = [];
-        foreach ($newvs as $tk) {
-            if (in_array(strtolower($tk), $lctopics)) {
-                continue;
-            }
-            $lctopics[] = strtolower($tk);
-            $result = $ps->conf->qe("insert into TopicArea set topicName=?", $tk);
-            $vs[] = $result->insert_id;
-        }
-        if (!$this->conf->has_topics()) {
-            $this->conf->save_refresh_setting("has_topics", 1);
-        }
-        $this->conf->invalidate_topics();
-        $ov->set_value_data($vs, array_fill(0, count($vs), null));
-        $ov->set_anno("bad_values", array_values(array_diff($ov->anno("bad_values"), $newvs)));
-    }
-
-
     function value_force(PaperValue $ov) {
         if ($this->id === PaperOption::TOPICSID) {
             $vs = $ov->prow->topic_list();
@@ -60,13 +29,34 @@ class Topics_PaperOption extends CheckboxesBase_PaperOption {
         }
     }
 
+    private function _store_new_values(PaperValue $ov, PaperStatus $ps) {
+        $this->topic_set()->commit_auto_add();
+        $vs = $ov->value_list();
+        $newvs = $ov->anno("new_values");
+        '@phan-var list<string> $newvs';
+        foreach ($newvs as $tk) {
+            if (($tid = $this->topic_set()->find_exact($tk)) !== null) {
+                $vs[] = $tid;
+            }
+        }
+        $this->topic_set()->sort($vs); // to reduce unnecessary diffs
+        $ov->set_value_data($vs, array_fill(0, count($vs), null));
+        $ov->set_anno("new_values", null);
+    }
+
     function value_save(PaperValue $ov, PaperStatus $ps) {
-        if ($this->id === PaperOption::TOPICSID) {
-            $ps->change_at($this);
+        if ($ov->anno("new_values")) {
+            if (!$ps->save_status_prepared()) {
+                $ps->request_resave($this);
+                $ps->change_at($this);
+                return;
+            } else {
+                $this->_store_new_values($ov, $ps);
+            }
+        }
+        if ($this->id === PaperOption::TOPICSID
+            && !$ov->equals($ov->prow->base_option($this->id))) {
             $ov->prow->set_prop("topicIds", join(",", $ov->value_list()));
-            return true;
-        } else {
-            return false;
         }
     }
 }

@@ -234,7 +234,6 @@ class NavigationState {
         $origsn = $server["ORIG_SCRIPT_NAME"] ?? null;
         $origsfn = $server["ORIG_SCRIPT_FILENAME"] ?? null;
         if ($origsn === null && $origsfn === null) {
-            $nsn = strlen($sn);
             $sfx = substr($sfn, strrpos($sfn, "/") + 1);
             $npfx = strlen($sn) - strlen($sfx);
             if ($npfx > 0
@@ -658,13 +657,14 @@ class NavigationState {
     /** @param bool $allow_http_if_localhost
      * @return void */
     function redirect_http_to_https($allow_http_if_localhost = false) {
-        if ($this->protocol === "http://"
-            && (!$allow_http_if_localhost
-                || ($_SERVER["REMOTE_ADDR"] !== "127.0.0.1"
-                    && $_SERVER["REMOTE_ADDR"] !== "::1"))) {
-            Navigation::redirect_absolute("https://" . ($this->host ? : "localhost")
-                . $this->siteurl_path("{$this->page}{$this->php_suffix}{$this->path}{$this->query}"));
+        if ($this->protocol !== "http://"
+            || ($allow_http_if_localhost
+                && ($_SERVER["REMOTE_ADDR"] !== "127.0.0.1"
+                    || $_SERVER["REMOTE_ADDR"] !== "::1"))) {
+            return;
         }
+        Navigation::redirect_absolute("https://" . ($this->host ? : "localhost")
+            . $this->siteurl_path("{$this->page}{$this->php_suffix}{$this->path}{$this->query}"), 301);
     }
 }
 
@@ -690,12 +690,14 @@ class Navigation {
     }
 
     /** @param string $url
+     * @param 301|302|303|307|308 $status
      * @return never */
-    static function redirect_absolute($url) {
+    static function redirect_absolute($url, $status = 302) {
         assert(substr_compare($url, "https://", 0, 8) === 0
                || substr_compare($url, "http://", 0, 7) === 0);
         // Might have an HTML-encoded URL; decode at least &amp;.
         $url = str_replace("&amp;", "&", $url);
+        http_response_code($status);
         header("Location: {$url}");
         echo "<!DOCTYPE html>
 <html lang=\"en\"><head>
@@ -704,6 +706,23 @@ class Navigation {
 <title>Redirection</title>
 <script>location=", json_encode($url), ";</script></head>
 <body><p>You should be redirected <a href=\"", htmlspecialchars($url), "\">to here</a>.</p></body></html>\n";
-        exit();
+        exit(0);
+    }
+
+    /** @param int $t
+     * @return string */
+    static function http_date($t) {
+        return gmdate("D, d M Y H:i:s", $t) . " GMT";
+    }
+
+    /** @param string $s
+     * @return ?int */
+    static function parse_http_date($s) {
+        try {
+            $dt = DateTimeImmutable::createFromFormat("!D, d M Y H:i:s T", $s);
+            return $dt !== false ? $dt->getTimestamp() : null;
+        } catch (Exception $ex) {
+            return null;
+        }
     }
 }

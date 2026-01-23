@@ -1,6 +1,6 @@
 <?php
 // listactions/la_getreviews.php -- HotCRP helper classes for list actions
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class GetReviews_ListAction extends GetReviewBase_ListAction {
     /** @var bool */
@@ -20,11 +20,13 @@ class GetReviews_ListAction extends GetReviewBase_ListAction {
         $rf = $user->conf->review_form();
         $old_overrides = $user->add_overrides(Contact::OVERRIDE_CONFLICT);
         $texts = $pids = [];
-        $ms = (new MessageSet)->set_ignore_duplicates(true)->set_want_ftext(true, 0);
+        $ms = (new MessageSet)->set_ignore_duplicates(true);
         foreach ($ssel->paper_set($user) as $prow) {
             if (($whyNot = $user->perm_view_paper($prow))) {
-                $mi = $ms->error_at(null, "<0>" . $whyNot->unparse_text());
-                $mi->landmark = "#{$prow->paperId}";
+                foreach ($whyNot->message_list() as $mi) {
+                    $mi->landmark = "#{$prow->paperId}";
+                    $ms->append_item($mi);
+                }
                 continue;
             }
             $rctext = "";
@@ -63,10 +65,12 @@ class GetReviews_ListAction extends GetReviewBase_ListAction {
                 $texts[] = [$prow->paperId, $rctext, $time];
                 $pids[] = $prow->paperId;
             } else if (($whyNot = $viewer->perm_view_review($prow, null))) {
-                $mi = $ms->error_at(null, "<0>" . $whyNot->unparse_text());
-                $mi->landmark = "#{$prow->paperId}";
+                foreach ($whyNot->message_list() as $mi) {
+                    $mi->landmark = "#{$prow->paperId}";
+                    $ms->append_item($mi);
+                }
             } else {
-                $ms->msg_at(null, "<0>{$prow->paperId} has no visible reviews", MessageSet::WARNING_NOTE);
+                $ms->append_item(MessageItem::warning_note("<0>#{$prow->paperId} has no visible reviews"));
             }
             $viewer->set_overrides($old_viewer_overrides);
         }

@@ -25,8 +25,7 @@ $Opt["dbName"] = "FIXME";
 //                   strings. Wildcards are expanded (e.g., "conf/*.conf");
 //                   relative paths are interpreted based on HOTCRPDIR.
 //   multiconference, multiconferenceAnalyzer
-//                   Support multiple conferences from a single installation.
-//                   See README.md.
+//                   Serve multiple conferences from a single directory.
 
 
 // NAMES AND SITES
@@ -61,6 +60,8 @@ $Opt["dbName"] = "FIXME";
 //                   the mail tool. Does not apply to email sent automatically.
 //   emailReplyTo    If set, default "Reply-To:" address for email sent by
 //                   HotCRP.
+//   emailMaxRecipients  The maximum number of recipients per email. Defaults
+//                   to 200.
 //   sendmailParam   Extra parameters to be passed to your mailer. The default
 //                   is derived from $Opt["emailSender"]. If your system's
 //                   mailer is not sendmail, you may need to change the
@@ -174,10 +175,12 @@ $Opt["emailSender"] = null;
 //   noFooterVersion Set to true to avoid a version comment in footer HTML.
 //   strictJavascript If true, send Javascript with "use strict".
 //   hideManager     If set, PC members are not shown paper managers.
-//   disableCapabilities If set, emails to authors will not have a
-//                   token enabling them to view their papers without logging in.
+//   authorSharing   Controls whether authors can create sharing links.
+//                   If -1, they cannot. If +1, authors get sharing links
+//                   by default. If 0, authors can request sharing links.
 
 $Opt["smartScoreCompare"] = true;
+$Opt["authorSharing"] = 0;
 
 
 // SESSIONS AND SECURITY

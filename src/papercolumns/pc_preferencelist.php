@@ -19,11 +19,11 @@ class PreferenceList_PaperColumn extends PaperColumn {
         }
         $this->topics = ($this->view_option("topics") ?? $this->topics)
             && $pl->conf->has_topics();
-        if ($visible) {
-            $pl->qopts["allReviewerPreference"] = true;
-            if ($this->topics) {
-                $pl->qopts["topics"] = true;
-            }
+        $pl->qopts["allReviewerPreference"] = true;
+        if ($this->topics) {
+            $pl->qopts["topics"] = true;
+        }
+        if (($visible & FieldRender::CFLIST) !== 0) {
             $pl->conf->stash_hotcrp_pc($pl->user);
         }
         return true;
@@ -44,12 +44,11 @@ class PreferenceList_PaperColumn extends PaperColumn {
             }
         }
         $pl->row_attr["data-allpref"] = join(" ", $ts);
-        if (!empty($ts)) {
-            $t = '<span class="need-allpref">Loading</span>';
-            $pl->need_render = true;
-            return $t;
-        } else {
-            return '';
+        if (empty($ts)) {
+            return "";
         }
+        $t = '<span class="need-allpref">Loading</span>';
+        $pl->need_render = true;
+        return $t;
     }
 }

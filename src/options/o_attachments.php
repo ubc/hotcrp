@@ -32,12 +32,11 @@ class Attachments_PaperOption extends PaperOption {
         }
         if ($j && isset($j->all_dids)) {
             return $j->all_dids;
-        } else {
-            $values = $ov->value_list();
-            $data = $ov->data_list();
-            array_multisort($data, SORT_NUMERIC, $values);
-            return $values;
         }
+        $values = $ov->value_list();
+        $data = $ov->data_list();
+        array_multisort($data, SORT_NUMERIC, $values);
+        return $values;
     }
     function value_export_json(PaperValue $ov, PaperExport $pex) {
         $attachments = [];
@@ -83,10 +82,8 @@ class Attachments_PaperOption extends PaperOption {
         $dxlist = [];
         for ($ctr = 1; isset($qreq["{$prefix}:{$ctr}"]); ++$ctr) {
             $name = "{$prefix}:{$ctr}";
-            $did = $qreq[$name];
             $thisdoc = null;
-            if (is_int($did) || ctype_digit($did)) {
-                $did = is_int($did) ? $did : intval($did);
+            if (($did = stoi($qreq[$name])) > 0) {
                 for ($idx = 0; $idx !== count($dlist); ++$idx) {
                     $d = $dlist[$idx];
                     if ($d === $did
@@ -123,24 +120,23 @@ class Attachments_PaperOption extends PaperOption {
         $ov->set_anno("documents", $docs);
         return $ov;
     }
-    function parse_json(PaperInfo $prow, $j) {
+    function parse_json_user(PaperInfo $prow, $j, Contact $user) {
         if ($j === false) {
             return PaperValue::make($prow, $this);
         } else if ($j === null) {
             return null;
-        } else {
-            $ja = is_array($j) ? $j : [$j];
-            $ov = PaperValue::make($prow, $this, -1);
-            $ov->set_anno("documents", $ja);
-            foreach ($ja as $docj) {
-                if (is_object($docj) && isset($docj->error_html)) {
-                    $ov->error("<5>" . $docj->error_html);
-                } else if (!DocumentInfo::check_json_upload($docj)) {
-                    $ov->estop("<0>Format error");
-                }
-            }
-            return $ov;
         }
+        $ja = is_array($j) ? $j : [$j];
+        $ov = PaperValue::make($prow, $this, -1);
+        $ov->set_anno("documents", $ja);
+        foreach ($ja as $docj) {
+            if (is_object($docj) && isset($docj->error_html)) {
+                $ov->error("<5>" . $docj->error_html);
+            } else if (!DocumentInfo::check_json_upload($docj)) {
+                $ov->estop("<0>Format error");
+            }
+        }
+        return $ov;
     }
     function print_web_edit(PaperTable $pt, $ov, $reqov) {
         // XXX does not consider $reqov
@@ -149,8 +145,10 @@ class Attachments_PaperOption extends PaperOption {
         if ($max_size > 0) {
             $title .= ' <span class="n">(max ' . unparse_byte_size($max_size) . ' per file)</span>';
         }
-        $pt->print_editable_option_papt($this, $title, ["id" => $this->readable_formid(), "for" => false]);
-        echo '<div class="papev has-editable-attachments" data-document-prefix="', $this->formid, '" data-dtype="', $this->id, '" id="', $this->formid, ':attachments"';
+        $pt->print_editable_option_papt($this, $title, [
+            "id" => $this->readable_formid(), "for" => false, "fieldset" => true
+        ]);
+        echo '<div class="papev has-editable-attachments" data-document-prefix="', $this->formid, '" data-dt="', $this->id, '" id="', $this->formid, ':attachments"';
         if ($this->max_size > 0) {
             echo ' data-document-max-size="', (int) $this->max_size, '"';
         }
@@ -158,7 +156,7 @@ class Attachments_PaperOption extends PaperOption {
         foreach ($ov->document_set() as $i => $doc) {
             $ctr = $i + 1;
             $oname = "{$this->formid}:{$ctr}";
-            echo '<div class="has-document" data-dtype="', $this->id,
+            echo '<div class="has-document" data-dt="', $this->id,
                 '" data-document-name="', $oname, '"><div class="document-file">',
                 Ht::hidden($oname, $doc->paperStorageId),
                 $doc->link_html(htmlspecialchars($doc->member_filename())),
@@ -170,7 +168,18 @@ class Attachments_PaperOption extends PaperOption {
         }
         echo '</div><div class="mt-2">',
             Ht::button("Add attachment", ["class" => "ui js-add-attachment", "data-editable-attachments" => "{$this->formid}:attachments"]),
-            "</div></div>\n\n";
+            "</div></fieldset>\n\n";
+    }
+    function print_web_edit_hidden(PaperTable $pt, $ov) {
+        echo '<fieldset name="', $this->formid, '" role="none" hidden>';
+        foreach ($ov->document_set() as $i => $doc) {
+            $ctr = $i + 1;
+            $oname = "{$this->formid}:{$ctr}";
+            echo '<div class="has-document" data-document-name="', $oname, '">',
+                Ht::hidden($oname, $doc->paperStorageId, ["disabled" => true]),
+                '</div>';
+        }
+        echo '</fieldset>';
     }
 
     function render(FieldRender $fr, PaperValue $ov) {
@@ -199,11 +208,7 @@ class Attachments_PaperOption extends PaperOption {
                 } else {
                     $dif = DocumentInfo::L_SMALL;
                 }
-                $t = $d->link_html($linkname, $dif);
-                if ($d->is_archive()) {
-                    $t = '<span class="archive foldc"><button type="button" class="q ui js-expand-archive">' . expander(null, 0) . '</button> ' . $t . '</span>';
-                }
-                $ts[] = $t;
+                $ts[] = Document_PaperOption::link_html($d, $linkname, $dif);
             }
         }
         if (empty($ts)) {
@@ -229,16 +234,16 @@ class Attachments_PaperOption extends PaperOption {
         }
     }
 
-    function search_examples(Contact $viewer, $context) {
+    function search_examples(Contact $viewer, $venue) {
         return [
             $this->has_search_example(),
-            new SearchExample(
-                $this, $this->search_keyword() . ":{comparator}",
+            $this->make_search_example(
+                $this->search_keyword() . ":{comparator}",
                 "<0>submission has three or more {title} attachments",
                 new FmtArg("comparator", ">2", 0)
             ),
-            new SearchExample(
-                $this, $this->search_keyword() . ":\"{filename}\"",
+            $this->make_search_example(
+                $this->search_keyword() . ":{filename}",
                 "<0>submission has {title} attachment matching ‘{filename}’",
                 new FmtArg("filename", "*.gif", 0)
             )
@@ -249,11 +254,10 @@ class Attachments_PaperOption extends PaperOption {
             return new DocumentCount_SearchTerm($srch->user, $this, $sword->compar, (int) $sword->cword);
         } else if ($sword->compar === "" || $sword->compar === "!=") {
             return new DocumentName_SearchTerm($srch->user, $this, $sword->compar !== "!=", $sword->cword);
-        } else {
-            return null;
         }
+        return null;
     }
     function present_script_expression() {
-        return ["type" => "document_count", "formid" => $this->formid, "dtype" => $this->id];
+        return ["type" => "document_count", "fieldset" => $this->formid];
     }
 }

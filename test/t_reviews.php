@@ -220,7 +220,7 @@ class Reviews_Tester {
             "rf/1/values_text" => "1. Reject\n2. Weak reject\n3. Weak accept\n4. Accept\n5. Strong accept\nNo entry\n"
         ]);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
         $rfield = $this->conf->checked_review_field("s01");
         xassert(!$rfield->required);
 
@@ -250,7 +250,7 @@ class Reviews_Tester {
             "rf/1/values_text" => "1. Reject\n2. Weak reject\n3. Weak accept\nNo entry\n"
         ]);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
 
         // overall-merit 4 has been removed, revexp has not
         xassert_search_ignore_warnings($this->u_chair, "ovemer:4", "");
@@ -265,7 +265,7 @@ class Reviews_Tester {
             "rf/1/values_text" => "1. Reject\n2. Weak reject\n3. Weak accept\n4. Accept\n5. Strong accept\n"
         ]);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
     }
 
     function test_remove_review_field() {
@@ -279,7 +279,7 @@ class Reviews_Tester {
             "rf/1/order" => 0
         ]);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
 
         // Add reviewer expertise back
         $sv = SettingValues::make_request($this->u_chair, [
@@ -291,7 +291,7 @@ class Reviews_Tester {
             "rf/1/order" => 1.5
         ]);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
 
         // It has been removed from the review
         xassert_search($this->u_chair, "has:revexp", "");
@@ -358,7 +358,7 @@ class Reviews_Tester {
             "rf/22/name" => "Text 11", "rf/22/order" => 5.11, "rf/22/id" => "t11"
         ]);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
 
         save_review(1, $this->u_mgbaker, [
             "ovemer" => 2, "revexp" => 1, "papsum" => "This is the summary",
@@ -407,7 +407,7 @@ class Reviews_Tester {
             "rf/3/name" => "Text 10", "rf/3/order" => 0, "rf/3/id" => "t10"
         ]);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
 
         $sv = SettingValues::make_request($this->u_chair, [
             "has_rf" => 1,
@@ -415,7 +415,7 @@ class Reviews_Tester {
             "rf/2/name" => "Text 10", "rf/2/order" => 101, "rf/2/id" => "t10"
         ]);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
 
         $rrow = fresh_review(1, $this->u_mgbaker);
         xassert($rrow->fidval("s15") === null || (string) $rrow->fidval("s15") === "0");
@@ -614,7 +614,19 @@ class Reviews_Tester {
         }
         $sv = SettingValues::make_request($this->u_chair, $sx);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
+    }
+
+    static function add_questions_for_response(Conf $conf) {
+        $sv = SettingValues::make_request($conf->root_user(), [
+            "has_rf" => 1,
+            "rf/1/name" => "Questions for authors’ response",
+            "rf/1/description" => "Specific questions that could affect your accept/reject decision. Remember that the authors have limited space and must respond to all reviewers.",
+            "rf/1/visibility" => "au",
+            "rf/1/order" => 5,
+            "rf/1/id" => "t04"
+        ]);
+        xassert($sv->execute());
     }
 
     function test_body() {
@@ -734,15 +746,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         xassert_eqq($rrow18d2->fidval("t01"), $gettysburg);
 
         // offline review parsing for UTF-8 review questions
-        $sv = SettingValues::make_request($user_chair, [
-            "has_rf" => 1,
-            "rf/1/name" => "Questions for authors’ response",
-            "rf/1/description" => "Specific questions that could affect your accept/reject decision. Remember that the authors have limited space and must respond to all reviewers.",
-            "rf/1/visibility" => "au",
-            "rf/1/order" => 5,
-            "rf/1/id" => "t04"
-        ]);
-        xassert($sv->execute());
+        self::add_questions_for_response($this->conf);
 
         $review18A = file_get_contents(SiteLoader::find("test/review18A.txt"));
         $tf = (new ReviewValues($conf))->set_text($review18A, "review18A.txt");
@@ -1134,7 +1138,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
             "rf/1/id" => "s01", "rf/1/values_text" => "E. Reject\nD. Weak reject\nC. Weak accept\nB. Accept\nA. Strong accept\n"
         ]);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
 
         xassert_search($this->u_chair, "ovemer:E", "17 20");
         xassert_search($this->u_chair, "ovemer:D", "17 18 19");
@@ -1185,7 +1189,7 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
             "rf/1/id" => "s01", "rf/1/values_text" => "1. Reject\n2. Weak reject\n3. Weak accept\n4. Accept\n5. Strong accept\n"
         ]);
         xassert($sv->execute());
-        xassert_eqq($sv->changed_keys(), ["review_form"]);
+        xassert_eqq($sv->saved_keys(), ["review_form"]);
     }
 
     function test_new_external_reviewer() {
@@ -1779,22 +1783,25 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
         xassert_eqq($r16f->reviewSubmitted, null);
     }
 
-    function test_requested_reviewer_placeholder() {
-        if (!($cdb = $this->conf->contactdb())) {
-            return;
-        }
-
+    function test_set_allow_review_requests() {
         $this->conf->save_refresh_setting("extrev_chairreq", 2);
         $this->conf->save_refresh_setting("pcrev_editdelegate", 2);
         Contact::update_rights();
         MailChecker::clear();
+    }
+
+    #[RequireCdb(true)]
+    function test_requested_reviewer_placeholder() {
+        if (!($cdb = $this->conf->contactdb())) {
+            return;
+        }
 
         $u_ext2p = $this->conf->user_by_email("external2p@_.com");
         xassert(!$u_ext2p);
 
         $uc_ext2p = $this->conf->cdb_user_by_email("external2p@_.com");
         xassert(!$uc_ext2p);
-        $result = Dbl::qe($cdb, "insert into ContactInfo set firstName='Thorsten', lastName='Gorsten', email='external2p@_.com', affiliation='Brandeis University', collaborators='German Strawberries', password='', cflags=2, disabled=2");
+        $result = Dbl::qe($cdb, "insert into ContactInfo set firstName='Thorsten', lastName='Gorsten', email='external2p@_.com', affiliation='Brandeis University', collaborators='German Strawberries', password='', cflags=2");
         assert(!Dbl::is_error($result));
         Dbl::free($result);
 
@@ -1810,6 +1817,83 @@ But, in a larger sense, we can not dedicate -- we can not consecrate -- we can n
 
         $u_ext2p = $this->conf->checked_user_by_email("external2p@_.com");
         xassert(!$u_ext2p->is_placeholder());
+    }
+
+    function test_request_reviewer_primary() {
+        $this->conf->qe("delete from ContactPrimary where contactId in (select contactId from ContactInfo where email like 'mobert%')");
+        $this->conf->qe("delete from ContactInfo where email like 'mobert%'");
+
+        $result = $this->conf->qe("insert into ContactInfo (firstName, lastName, email, affiliation, collaborators, password, cflags) values
+            ('Robert', 'Mobert', 'mobert1@_.com', 'Brandeis', 'German Strawberries', '', 0),
+            ('Robert', 'Mobert', 'mobert2@_.com', 'Brandeis', 'German Strawberries', '', 0),
+            ('Robert', 'Mobert', 'mobert1p@_.com', 'Brandeis', 'German Strawberries', '', 0)");
+        xassert(!Dbl::is_error($result));
+        $mobert1 = $this->conf->fresh_user_by_email("mobert1@_.com");
+        $mobert2 = $this->conf->fresh_user_by_email("mobert2@_.com");
+        $mobert1p = $this->conf->fresh_user_by_email("mobert1p@_.com");
+        (new ContactPrimary)->link($mobert1, $mobert1p);
+        (new ContactPrimary)->link($mobert2, $mobert1p);
+
+        MailChecker::clear();
+        $xqreq = new Qrequest("POST", ["email" => "mobert1@_.com", "name" => "Bobby Bobert", "affiliation" => "Brandeis"]);
+        $paper17 = $this->conf->checked_paper_by_id(17);
+        $result = RequestReview_API::requestreview($this->u_lixia, $xqreq, $paper17);
+        xassert($result instanceof JsonResult);
+        xassert($result->content["ok"]);
+        MailChecker::check_db("t_paperstatus-primary-request-01");
+
+        $assignset = new AssignmentSet($this->u_chair);
+        $assignset->parse("paper,action,user\n18,external,mobert2@_.com");
+        $ok = $assignset->execute();
+        xassert($ok);
+        MailChecker::check0(); // XXXXXX
+
+        $p18 = $this->conf->checked_paper_by_id(18);
+        xassert(!$p18->review_by_user($mobert2));
+        xassert(!!$p18->review_by_user($mobert1p));
+    }
+
+    #[RequireCdb(true)]
+    function test_cdb_request_reviewer_primary() {
+        if (!($cdb = $this->conf->contactdb())) {
+            return;
+        }
+
+        Dbl::qe($cdb, "delete from ContactPrimary where contactId in (select contactDbId from ContactInfo where email like 'bobert%')");
+        Dbl::qe($cdb, "delete from ContactInfo where email like 'bobert%'");
+        $this->conf->qe("delete from ContactPrimary where contactId in (select contactId from ContactInfo where email like 'bobert%')");
+        $this->conf->qe("delete from ContactInfo where email like 'bobert%'");
+
+        $result = Dbl::qe($cdb, "insert into ContactInfo (firstName, lastName, email, affiliation, collaborators, password, cflags) values
+            ('Robert', 'Bobert', 'bobert1@_.com', 'Brandeis', 'German Strawberries', '', 0),
+            ('Robert', 'Bobert', 'bobert2@_.com', 'Brandeis', 'German Strawberries', '', 0),
+            ('Robert', 'Bobert', 'bobert1p@_.com', 'Brandeis', 'German Strawberries', '', 0)");
+        xassert(!Dbl::is_error($result));
+        $bobert1 = $this->conf->fresh_cdb_user_by_email("bobert1@_.com");
+        $bobert2 = $this->conf->fresh_cdb_user_by_email("bobert2@_.com");
+        $bobert1p = $this->conf->fresh_cdb_user_by_email("bobert1p@_.com");
+        (new ContactPrimary)->link($bobert1, $bobert1p);
+        (new ContactPrimary)->link($bobert2, $bobert1p);
+
+        MailChecker::clear();
+        $xqreq = new Qrequest("POST", ["email" => "bobert1@_.com", "name" => "Bobby Bobert", "affiliation" => "Brandeis"]);
+        $paper17 = $this->conf->checked_paper_by_id(17);
+        $result = RequestReview_API::requestreview($this->u_lixia, $xqreq, $paper17);
+        xassert($result instanceof JsonResult);
+        xassert($result->content["ok"]);
+        MailChecker::check_db("t_paperstatus-cdb-primary-request-01");
+
+        $assignset = new AssignmentSet($this->u_chair);
+        $assignset->parse("paper,action,user\n18,external,bobert2@_.com");
+        $ok = $assignset->execute();
+        xassert($ok);
+        MailChecker::check0(); // XXXXXX
+
+        $lbobert2 = $this->conf->user_by_email("bobert2@_.com");
+        $lbobert1p = $this->conf->checked_user_by_email("bobert1p@_.com");
+        $p18 = $this->conf->checked_paper_by_id(18);
+        xassert(!$lbobert2 || !$p18->review_by_user($lbobert2));
+        xassert(!!$p18->review_by_user($lbobert1p));
     }
 
     function test_invariants_last() {

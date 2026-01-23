@@ -3,18 +3,26 @@
 // Copyright (c) 2008-2024 Eddie Kohler; see LICENSE.
 
 class SpecValidator_API {
-    const F_REQUIRED = 1;
-    const F_BODY = 2;
-    const F_FILE = 4;
-    const F_SUFFIX = 8;
-    const F_PRESENT = 16;
-    const F_DEPRECATED = 32;
+    const F_REQUIRED = 0x01;
+    const F_POST = 0x02;
+    const F_QUERY = 0x04;
+    const F_BODY = 0x08;
+    const F_FILE = 0x10;
+    const F_SUFFIX = 0x20;
+    const F_PRESENT = 0x40;
+    const F_DEPRECATED = 0x80;
+    const FM_QUERYPOST = 0x06;
+    const FM_LOCATION = 0x1C;
 
     static function request($uf, Qrequest $qreq) {
-        if ($qreq->is_post() && !($uf->post ?? false)) {
+        $post = $qreq->is_post();
+        if ($post && !($uf->post ?? false)) {
             self::error($qreq, "POST request handled by get handler");
         }
 
+        if (!isset($uf->parameters)) {
+            return;
+        }
         $parameters = $uf->parameters ?? [];
         if (is_string($parameters)) {
             $parameters = explode(" ", trim($parameters));
@@ -22,46 +30,61 @@ class SpecValidator_API {
         $known = [];
         $has_suffix = false;
         foreach ($parameters as $p) {
-            $t = self::F_REQUIRED;
+            $f = self::F_REQUIRED;
             for ($i = 0; $i !== strlen($p); ++$i) {
                 if ($p[$i] === "?") {
-                    $t &= ~self::F_REQUIRED;
+                    $f &= ~self::F_REQUIRED;
+                } else if ($p[$i] === "!") {
+                    $f |= self::F_REQUIRED;
+                } else if ($p[$i] === "+") {
+                    $f |= self::F_POST;
                 } else if ($p[$i] === "=") {
-                    $t |= self::F_BODY;
+                    $f |= self::F_BODY;
                 } else if ($p[$i] === "@") {
-                    $t |= self::F_FILE;
+                    $f |= self::F_FILE;
+                } else if ($p[$i] === "<") {
+                    $f |= self::F_DEPRECATED;
                 } else if ($p[$i] === ":") {
-                    $t |= self::F_SUFFIX;
+                    $f |= self::F_SUFFIX;
                     $has_suffix = true;
                 } else if ($p[$i] === "*") {
-                    $t &= ~self::F_REQUIRED;
+                    $f &= ~self::F_REQUIRED;
+                    if (($f & self::FM_LOCATION) === 0) {
+                        $f |= self::FM_LOCATION;
+                    }
                     break;
                 } else {
                     break;
                 }
             }
+            if (($f & self::FM_LOCATION) === 0) {
+                $f |= self::F_QUERY;
+            }
+            if (!$post && ($f & self::FM_QUERYPOST) !== self::F_QUERY) {
+                continue;
+            }
             $n = substr($p, $i);
-            $known[$n] = $t;
+            $known[$n] = $f;
         }
 
         $param = [];
         foreach (array_keys($_GET) as $n) {
             if (($t = self::lookup_type($n, $known, $has_suffix)) === null) {
-                if (!in_array($n, ["post", "base", "fn", "forceShow", "cap", "actas", "smsg", "_"])
+                if (!in_array($n, ["post", "base", "fn", "forceShow", "cap", "actas", "smsg", "_"], true)
                     && ($n !== "p" || !($uf->paper ?? false))
                     && ($n !== "redirect" || !($uf->redirect ?? false))) {
                     self::error($qreq, "query param `{$n}` unknown");
                 }
-            } else if (($t & self::F_BODY) !== 0) {
+            } else if (($t & self::F_QUERY) === 0) {
                 self::error($qreq, "query param `{$n}` should be in body");
             }
         }
         foreach (array_keys($_POST) as $n) {
             if (($t = self::lookup_type($n, $known, $has_suffix)) === null) {
-                self::error($qreq, "post param `{$n}` unknown");
+                self::error($qreq, "body param `{$n}` unknown");
             } else if (!isset($_GET[$n])
                        && ($t & self::F_BODY) === 0) {
-                self::error($qreq, "post param `{$n}` should be in query");
+                self::error($qreq, "body param `{$n}` should be in query");
             }
         }
         foreach (array_keys($_FILES) as $n) {
@@ -79,44 +102,51 @@ class SpecValidator_API {
     }
 
     static function response($uf, Qrequest $qreq, $jr) {
-        $response = $uf->response ?? [];
+        $post = $qreq->is_post();
+        if (!($jr instanceof JsonResult)
+            || !isset($uf->response)) {
+            return;
+        }
+        $response = $uf->response;
         if (is_string($response)) {
             $response = explode(" ", trim($response));
         }
-        if ($response === ["*"] || !($jr instanceof JsonResult)) {
+        if ($response === ["*"]) {
             return;
         }
-        $response_deprecated = $uf->response_deprecated ?? [];
-        if (is_string($response_deprecated)) {
-            $response_deprecated = explode(" ", trim($response_deprecated));
-        }
         $nmandatory = count($response);
-        if (!empty($response_deprecated)) {
-            array_push($response, ...$response_deprecated);
-        }
         $known = [];
         $has_suffix = false;
         foreach ($response as $ri => $p) {
-            $t = $ri < $nmandatory ? self::F_REQUIRED : self::F_DEPRECATED;
+            $f = self::F_REQUIRED;
             for ($i = 0; $i !== strlen($p); ++$i) {
                 if ($p[$i] === "?") {
-                    $t &= ~self::F_REQUIRED;
+                    $f &= ~self::F_REQUIRED;
+                } else if ($p[$i] === "!") {
+                    $f |= self::F_REQUIRED;
+                } else if ($p[$i] === "<") {
+                    $f |= self::F_DEPRECATED;
                 } else if ($p[$i] === ":") {
-                    $t |= self::F_SUFFIX;
+                    $f |= self::F_SUFFIX;
                     $has_suffix = true;
                 } else if ($p[$i] === "*") {
-                    $t &= ~self::F_REQUIRED;
+                    $f &= ~self::F_REQUIRED;
                     break;
+                } else if ($p[$i] === "+") {
+                    $f |= self::F_POST;
                 } else {
                     break;
                 }
             }
+            if (!$post && ($f & self::F_POST) !== 0) {
+                continue;
+            }
             $n = substr($p, $i);
-            $known[$n] = $t;
+            $known[$n] = $f;
         }
         foreach (array_keys($jr->content) as $n) {
             if (($t = self::lookup_type($n, $known, $has_suffix)) === null) {
-                if (!in_array($n, ["ok", "message_list"])) {
+                if (!in_array($n, ["ok", "message_list"], true)) {
                     self::error($qreq, "response component `{$n}` unknown");
                 }
             }
@@ -166,10 +196,9 @@ class SpecValidator_API {
         if (($t & self::F_FILE) !== 0) {
             return "file param";
         } else if (($t & self::F_BODY) !== 0) {
-            return "post param";
-        } else {
-            return "query param";
+            return "body param";
         }
+        return "query param";
     }
 
     static function error(Qrequest $qreq, $error) {

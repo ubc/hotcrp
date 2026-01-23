@@ -6,9 +6,9 @@ class Assign_ListAction extends ListAction {
     function allow(Contact $user, Qrequest $qreq) {
         return $user->privChair && $qreq->page() !== "reviewprefs";
     }
-    static function render(PaperList $pl, Qrequest $qreq) {
-        return [
-            Ht::select("assignfn", [
+    static function render(PaperList $pl, Qrequest $qreq, $plft) {
+        $plft->tab_attr["class"] = "has-fold foldc ui-fold js-assign-list-action";
+        return Ht::select("assignfn", [
                     "auto" => "Automatic assignments",
                     "zzz1" => null,
                     "conflict" => "Conflict",
@@ -24,14 +24,15 @@ class Assign_ListAction extends ListAction {
                 ], $qreq->assignfn, ["class" => "want-focus js-submit-action-info-assign"])
             . '<span class="fx"> &nbsp;<span class="js-assign-for">for</span> &nbsp;'
             . Ht::select("markpc", [], 0, ["data-pcselector-selected" => $qreq->markpc])
-            . "</span>" . $pl->action_submit("assign"),
-            ["linelink-class" => "has-fold foldc ui-fold js-assign-list-action"]
-        ];
+            . "</span>" . $pl->action_submit("assign");
     }
     function run(Contact $user, Qrequest $qreq, SearchSelection $ssel) {
         $mt = $qreq->assignfn;
         if ($mt === "auto") {
-            $t = in_array($qreq->t, ["accepted", "s"]) ? $qreq->t : "all";
+            $t = $qreq->t;
+            if ($t !== "s" && $t !== "accepted") {
+                $t = "all";
+            }
             $q = join("+", $ssel->selection());
             $user->conf->redirect_hoturl("autoassign", "q={$q}&t={$t}&pap={$q}");
         }
@@ -51,7 +52,7 @@ class Assign_ListAction extends ListAction {
 
         if (!in_array($mt, ["lead", "shepherd", "conflict", "clearconflict",
                             "optionalreview", "pcreview" /* backward compat */,
-                            "secondaryreview", "primaryreview", "clearreview"])) {
+                            "secondaryreview", "primaryreview", "clearreview"], true)) {
             return JsonResult::make_parameter_error("assignfn", "<0>Unknown assignment type");
         }
 
@@ -63,7 +64,8 @@ class Assign_ListAction extends ListAction {
         $assignset->set_override_conflicts(true);
         $assignset->enable_papers($ssel->selection());
         $assignset->parse($text);
-        $assignset->execute(true);
+        $assignset->execute();
+        $assignset->feedback_msg(AssignmentSet::FEEDBACK_ASSIGN);
         return null;
     }
 }

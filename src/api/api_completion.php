@@ -1,6 +1,6 @@
 <?php
 // api_completion.php -- HotCRP completion API calls
-// Copyright (c) 2008-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2008-2024 Eddie Kohler; see LICENSE.
 
 class Completion_API {
     /** @param list &$comp
@@ -56,7 +56,7 @@ class Completion_API {
         if ($user->is_manager()) {
             array_push($comp, "has:proposal");
         }
-        foreach ($conf->response_rounds() as $rrd) {
+        foreach ($conf->response_round_list() as $rrd) {
             if (!in_array("has:response", $comp, true)) {
                 $comp[] = "has:response";
             }
@@ -66,7 +66,7 @@ class Completion_API {
             }
         }
         if ($user->can_view_some_draft_response()) {
-            foreach ($conf->response_rounds() as $rrd) {
+            foreach ($conf->response_round_list() as $rrd) {
                 if (!in_array("has:draftresponse", $comp, true)) {
                     $comp[] = "has:draftresponse";
                 }
@@ -84,6 +84,85 @@ class Completion_API {
         }
     }
 
+    /** @param XtParams $xtp
+     * @param string $name
+     * @param object|list<object> $list
+     * @param int $venue
+     * @return ?object */
+    static function resolve_published($xtp, $name, $list, $venue) {
+        if (str_starts_with($name, "?")
+            || str_starts_with($name, "__")) {
+            return null;
+        }
+        $j = is_object($list) ? $list : $xtp->search_list($list);
+        if (!$j
+            || ($j->deprecated ?? false)
+            || !Conf::xt_enabled($j)) {
+            return null;
+        }
+        $published = $j->published ?? null;
+        if ($published === null && ($j->alias ?? false)) {
+            $published = "none";
+        }
+        if ($published === "none"
+            || ($venue === FieldRender::CFSUGGEST
+                && ($published === false || $published === "api"))) {
+            return null;
+        }
+        return $j;
+    }
+
+    static function paper_column_examples(Contact $user, $venue) {
+        $conf = $user->conf;
+        $exs = [];
+        $xtp = (new XtParams($conf, $user))->set_warn_deprecated(false);
+        $pl = new PaperList("empty", new PaperSearch($user, ""));
+
+        foreach ($conf->paper_column_map() as $name => $list) {
+            if (!($j = self::resolve_published($xtp, $name, $list, $venue))) {
+                continue;
+            }
+            $c = PaperColumn::make($conf, $j);
+            if (!$c || !$c->prepare($pl, $venue)) {
+                continue;
+            }
+            $exs[] = $ex = new SearchExample($name);
+            if (isset($j->description)) {
+                $ex->set_description($j->description);
+            } else if (isset($c->title)) {
+                $ex->set_description("<0>" . $c->title);
+            }
+            $vos = $c->view_option_schema();
+            if (!empty($vos)) {
+                $ex->add_arg(new FmtArg("view_options", $vos));
+            }
+        }
+
+        foreach ($conf->paper_column_factories() as $fcj) {
+            if (!$xtp->allowed($fcj)
+                || !Conf::xt_enabled($fcj)) {
+                continue;
+            }
+            $fn = $fcj->example_function ?? $fcj->completion_function ?? null;
+            if (!$fn) {
+                continue;
+            }
+            Conf::xt_resolve_require($fcj);
+            foreach (call_user_func($fn, $user, $fcj, $venue) as $x) {
+                if (is_string($x)) {
+                    $x = new SearchExample($x);
+                }
+                $exs[] = $x;
+            }
+        }
+
+        usort($exs, function ($a, $b) {
+            return strcasecmp($a->text(), $b->text());
+        });
+
+        return $exs;
+    }
+
     /** @return list<string> */
     static function search_completions(Contact $user, $category = "") {
         $conf = $user->conf;
@@ -91,16 +170,20 @@ class Completion_API {
         $old_overrides = $user->add_overrides(Contact::OVERRIDE_CONFLICT);
 
         // paper fields
-        foreach ($conf->options()->form_fields() as $opt) {
-            if ($user->can_view_some_option($opt)
-                && $opt->search_keyword() !== false) {
-                foreach ($opt->search_examples($user, SearchExample::COMPLETION) as $sex) {
-                    $comp[] = $sex->q;
+        if (!$category || $category === "sf") {
+            foreach ($conf->options()->form_fields() as $opt) {
+                if ($user->can_view_some_option($opt)
+                    && $opt->search_keyword() !== false) {
+                    foreach ($opt->search_examples($user, FieldRender::CFSUGGEST) as $sex) {
+                        $comp[] = $sex->text();
+                    }
                 }
             }
         }
 
-        self::has_search_completion($user, $comp);
+        if (!$category || $category === "has") {
+            self::has_search_completion($user, $comp);
+        }
 
         if (!$category || $category === "ss") {
             foreach ($user->viewable_named_searches(false) as $sj) {
@@ -156,39 +239,22 @@ class Completion_API {
             }
         }
 
-        if (!$category || $category === "show" || $category === "hide") {
-            $cats = [];
-            $pl = new PaperList("empty", new PaperSearch($user, ""));
-            foreach ($conf->paper_column_map() as $cname => $cjj) {
-                if (!($cjj[0]->deprecated ?? false)
-                    && ($cj = $conf->basic_paper_column($cname, $user))
-                    && isset($cj->completion)
-                    && $cj->completion
-                    && !str_starts_with($cj->name, "?")
-                    && ($c = PaperColumn::make($conf, $cj))
-                    && ($cat = $c->completion_name())
-                    && $c->prepare($pl, PaperColumn::PREP_CHECK)) {
-                    $cats[$cat] = true;
+        $cat_show = !$category || $category === "show";
+        $cat_hide = !$category || $category === "hide";
+        if ($cat_show || $cat_hide) {
+            foreach (self::paper_column_examples($user, FieldRender::CFSUGGEST) as $ex) {
+                if ($cat_show) {
+                    $comp[] = "show:{$ex->text()}";
+                }
+                if ($cat_hide) {
+                    $comp[] = "hide:{$ex->text()}";
                 }
             }
-            $xtp = new XtParams($conf, $user);
-            foreach ($conf->paper_column_factories() as $fxj) {
-                if ($xtp->allowed($fxj)
-                    && Conf::xt_enabled($fxj)
-                    && isset($fxj->completion_function)) {
-                    Conf::xt_resolve_require($fxj);
-                    foreach (call_user_func($fxj->completion_function, $user, $fxj) as $c) {
-                        $cats[$c] = true;
-                    }
-                }
+            if ($cat_show) {
+                $comp[] = "show:facets";
+                $comp[] = "show:statistics";
+                $comp[] = "show:rownumbers";
             }
-            foreach (array_keys($cats) as $cat) {
-                $comp[] = "show:{$cat}";
-                $comp[] = "hide:{$cat}";
-            }
-            $comp[] = "show:facets";
-            $comp[] = "show:statistics";
-            $comp[] = "show:rownumbers";
         }
 
         $user->set_overrides($old_overrides);
@@ -197,7 +263,37 @@ class Completion_API {
 
     /** @param Qrequest $qreq */
     static function searchcompletion_api(Contact $user, $qreq) {
-        return ["ok" => true, "searchcompletion" => self::search_completions($user, "")];
+        return [
+            "ok" => true,
+            "searchcompletion" => self::search_completions($user, $qreq->category ?? "")
+        ];
+    }
+
+    /** @param Qrequest $qreq */
+    static function displayfields_api(Contact $user, $qreq) {
+        $pcx = self::paper_column_examples($user, FieldRender::CFLIST);
+        $fs = [];
+        foreach ($pcx as $ex) {
+            $fs[] = $f = (object) ["name" => $ex->text()];
+            if (($t = $ex->description()) !== "") {
+                $f->description = $t;
+            }
+            if (($fa = Fmt::find_arg($ex->args(), "view_options"))) {
+                $vox = [];
+                foreach ($fa->value as $vo) {
+                    if (($vot = ViewOptionType::make($vo))
+                        && !isset($vot->alias))
+                        $vox[] = $vot->unparse_export();
+                }
+                if (!empty($vox)) {
+                    $f->parameters = $vox;
+                }
+            }
+        }
+        return [
+            "ok" => true,
+            "fields" => $fs
+        ];
     }
 
     const MENTION_PARSE = 0;
@@ -207,107 +303,17 @@ class Completion_API {
      * @param ?PaperInfo $prow
      * @param int $cvis
      * @param 0|1 $reason
-     * @return list<list<Contact|Author>> */
+     * @return list<list<Contact|Author>>
+     * @deprecated */
     static function mention_lists($user, $prow, $cvis, $reason) {
-        $alist = $rlist = $pclist = [];
-        $is_author = $prow && $prow->has_author($user);
-        $saw_shepherd = false;
-
-        if ($prow
-            && $user->can_view_authors($prow)
-            && $cvis >= CommentInfo::CTVIS_AUTHOR) {
-            foreach ($prow->contact_list() as $au) {
-                if ($au->contactId !== $user->contactId)
-                    $alist[] = $au;
-            }
-        }
-
-        if ($prow && $user->can_view_review_assignment($prow, null)) {
-            $prow->ensure_reviewer_names();
-            $xview = $user->conf->time_some_external_reviewer_view_comment();
-            foreach ($prow->reviews_as_display() as $rrow) {
-                if (($rrow->reviewType < REVIEW_PC && !$xview)
-                    || $rrow->contactId === $user->contactId) {
-                    continue;
-                }
-                $viewid = $user->can_view_review_identity($prow, $rrow);
-                if ($rrow->reviewOrdinal
-                    && $user->can_view_review($prow, $rrow)) {
-                    $au = new Author;
-                    $au->lastName = "Reviewer " . unparse_latin_ordinal($rrow->reviewOrdinal);
-                    $au->contactId = $rrow->contactId;
-                    $au->status = $viewid ? Author::STATUS_REVIEWER : Author::STATUS_ANONYMOUS_REVIEWER;
-                    $rlist[] = $au;
-                }
-                if ($viewid
-                    && ($cvis >= CommentInfo::CTVIS_REVIEWER || $rrow->reviewType >= REVIEW_PC)
-                    && !$rrow->reviewer()->is_dormant()) {
-                    $rlist[] = $rrow->reviewer();
-                    $saw_shepherd = $saw_shepherd || $rrow->contactId === $prow->shepherdContactId;
-                }
-            }
-            // XXX todo: list previous commentees in privileged position?
-            // XXX todo: list lead?
-        }
-
-        if ($prow
-            && $prow->shepherdContactId > 0
-            && $prow->shepherdContactId !== $user->contactId) {
-            $viewid = $user->can_view_shepherd($prow);
-            $au = new Author;
-            $au->lastName = "Shepherd";
-            $au->contactId = $prow->shepherdContactId;
-            $au->status = $viewid ? Author::STATUS_REVIEWER : Author::STATUS_ANONYMOUS_REVIEWER;
-            $rlist[] = $au;
-            if ($viewid
-                && !$saw_shepherd
-                && ($shepherd = $user->conf->user_by_id($prow->shepherdContactId, USER_SLICE))
-                && !$shepherd->is_dormant()) {
-                $rlist[] = $shepherd;
-            }
-        }
-
-        if (!$is_author && $user->can_view_pc()) {
-            if (!$prow
-                || $reason === self::MENTION_PARSE
-                || !$user->conf->check_track_view_sensitivity()) {
-                $pclist = $user->conf->enabled_pc_members();
-            } else {
-                foreach ($user->conf->pc_members() as $p) {
-                    if (!$p->is_dormant()
-                        && $p->can_pc_view_paper_track($prow))
-                        $pclist[] = $p;
-                }
-            }
-        }
-
-        return [$alist, $rlist, $pclist];
+        $mlister = new MentionLister($user, $prow, $cvis, $reason);
+        return $mlister->list_values();
     }
 
     /** @param Qrequest $qreq
-     * @param ?PaperInfo $prow */
+     * @param ?PaperInfo $prow
+     * @deprecated */
     static function mentioncompletion_api(Contact $user, $qreq, $prow) {
-        $comp = [];
-        $mlists = self::mention_lists($user, $prow, CommentInfo::CTVIS_AUTHOR, self::MENTION_COMPLETION);
-        $aunames = [];
-        foreach ($mlists as $i => $mlist) {
-            $skey = $i === 2 ? "sm1" : "s";
-            foreach ($mlist as $au) {
-                $n = Text::name($au->firstName, $au->lastName, $au->email, NAME_P);
-                $x = [$skey => $n];
-                if ($i === 0) {
-                    $x["au"] = true;
-                    if (in_array($n, $aunames)) { // duplicate contact names are common
-                        continue;
-                    }
-                    $aunames[] = $n;
-                }
-                if ($i < 2) {
-                    $x["pri"] = 1;
-                }
-                $comp[] = $x;
-            }
-        }
-        return ["ok" => true, "mentioncompletion" => array_values($comp)];
+        return MentionLister::mentioncompletion_api($user, $qreq, $prow);
     }
 }

@@ -1,15 +1,31 @@
 <?php
 // confinvariants.php -- HotCRP invariant checker
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+
+#[Attribute]
+class ConfInvariantLevel {
+    /** @var int */
+    public $level;
+    /** @param int $level */
+    function __construct($level) {
+        $this->level = $level;
+    }
+}
 
 class ConfInvariants {
     /** @var Conf */
     public $conf;
+    /** @var int */
+    public $level = 0;
+    /** @var int */
+    public $limit = 1;
+    /** @var bool */
+    public $color = false;
     /** @var array<string,true> */
     public $problems = [];
     /** @var string */
     public $prefix;
-    /** @var ?list<string> */
+    /** @var ?list<string|int|float> */
     private $irow;
     /** @var ?list<string> */
     private $msgbuf;
@@ -17,6 +33,27 @@ class ConfInvariants {
     function __construct(Conf $conf, $prefix = "") {
         $this->conf = $conf;
         $this->prefix = $prefix;
+    }
+
+    /** @param int $level
+     * @return $this */
+    function set_level($level) {
+        $this->level = $level;
+        return $this;
+    }
+
+    /** @param int $limit
+     * @return $this */
+    function set_limit($limit) {
+        $this->limit = $limit;
+        return $this;
+    }
+
+    /** @param bool $color
+     * @return $this */
+    function set_color($color) {
+        $this->color = $color;
+        return $this;
     }
 
     function buffer_messages() {
@@ -27,7 +64,7 @@ class ConfInvariants {
     function take_buffered_messages() {
         assert($this->msgbuf !== null);
         $m = $this->msgbuf;
-        $this->msgbuf = null;
+        $this->msgbuf = [];
         return join("", $m);
     }
 
@@ -40,10 +77,9 @@ class ConfInvariants {
             $this->irow = $result->fetch_row();
             $result->close();
             return $this->irow !== null;
-        } else {
-            $this->irow = null;
-            return null;
         }
+        $this->irow = null;
+        return null;
     }
 
     /** @param string $abbrev
@@ -62,6 +98,14 @@ class ConfInvariants {
         } else if ($text === null) {
             $text = $abbrev;
         }
+        $check = "";
+        foreach (debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS) as $trace) {
+            if (($trace["class"] ?? null) === "ConfInvariants"
+                && str_starts_with($trace["function"], "check_")
+                && $trace["function"] !== "check_all") {
+                $check = substr($trace["function"], 6) . ".";
+            }
+        }
         $vs = [];
         foreach ($this->irow ?? [] as $t) {
             $t = $t ?? "<null>";
@@ -73,7 +117,10 @@ class ConfInvariants {
             }
             $vs[] = $t;
         }
-        $msg = "{$this->prefix}{$this->conf->dbname} invariant violation: "
+        $msg = $this->prefix
+            . ($this->color ? "\x1b[1m" : "")
+            . "{$this->conf->dbname} violation"
+            . ($this->color ? "\x1b[m [{$check}\x1b[91;1m{$abbrev}\x1b[m]: " : " [{$abbrev}]: ")
             . $this->conf->_($text, ...$vs);
         if ($this->msgbuf !== null) {
             $this->msgbuf[] = $msg . "\n";
@@ -85,6 +132,15 @@ class ConfInvariants {
     /** @return bool */
     function ok() {
         return empty($this->problems);
+    }
+
+    /** @return bool */
+    function has_problem($p) {
+        return isset($this->problems[$p]);
+    }
+
+    function resolve_problem($p) {
+        unset($this->problems[$p]);
     }
 
     /** @return $this */
@@ -198,6 +254,27 @@ class ConfInvariants {
         return $this;
     }
 
+    /** @param 1|3 $rtype
+     * @return string */
+    static function reviewNeedsSubmit_query($rtype) {
+        if ($rtype === REVIEW_SECONDARY) {
+            return "select r.paperId, r.reviewId, r.contactId, r.reviewNeedsSubmit
+                from PaperReview r
+                left join (select paperId, requestedBy, count(reviewId) ct, count(reviewSubmitted) cs
+                       from PaperReview
+                       where reviewType>0 and reviewType<" . REVIEW_SECONDARY . "
+                       group by paperId, requestedBy) q
+                    on (q.paperId=r.paperId and q.requestedBy=r.contactId)
+                where r.reviewType=" . REVIEW_SECONDARY . "
+                and reviewSubmitted is null
+                and if(coalesce(q.ct,0)=0,1,if(q.cs=0,-1,0))!=r.reviewNeedsSubmit";
+        }
+        return "select r.paperId, r.reviewId, r.contactId, r.reviewNeedsSubmit
+            from PaperReview r
+            where reviewType>0 and reviewType!=" . REVIEW_SECONDARY . "
+            and if(reviewSubmitted or (reviewType=" . REVIEW_EXTERNAL . " and timeApprovalRequested<0),0,1)!=r.reviewNeedsSubmit";
+    }
+
     /** @return $this */
     function check_reviews() {
         // reviewType is defined correctly
@@ -226,17 +303,16 @@ class ConfInvariants {
             }
         }
 
-        // reviewNeedsSubmit is defined correctly
-        $any = $this->invariantq("select r.paperId, r.reviewId from PaperReview r
-            left join (select paperId, requestedBy, count(reviewId) ct, count(reviewSubmitted) cs
-                       from PaperReview where reviewType>0 and reviewType<" . REVIEW_SECONDARY . "
-                       group by paperId, requestedBy) q
-                on (q.paperId=r.paperId and q.requestedBy=r.contactId)
-            where r.reviewType=" . REVIEW_SECONDARY . " and reviewSubmitted is null
-            and if(coalesce(q.ct,0)=0,1,if(q.cs=0,-1,0))!=r.reviewNeedsSubmit
-            limit 1");
+        // reviewNeedsSubmit is defined correctly for secondary
+        $any = $this->invariantq(self::reviewNeedsSubmit_query(REVIEW_SECONDARY) . " limit 1");
         if ($any) {
-            $this->invariant_error("reviewNeedsSubmit", "bad reviewNeedsSubmit for review #{0}/{1}");
+            $this->invariant_error("reviewNeedsSubmit", "bad reviewNeedsSubmit {3} for secondary review #{0}/{1}");
+        }
+
+        // reviewNeedsSubmit is defined correctly for others
+        $any = $this->invariantq(self::reviewNeedsSubmit_query(REVIEW_EXTERNAL) . " limit 1");
+        if ($any) {
+            $this->invariant_error("reviewNeedsSubmit", "bad reviewNeedsSubmit {3} for non-secondary review #{0}/{1}");
         }
 
         // submitted and ordinaled reviews are displayed
@@ -260,7 +336,7 @@ class ConfInvariants {
     /** @return $this */
     function check_comments() {
         // comments are nonempty
-        $any = $this->invariantq("select paperId, commentId from PaperComment where comment is null and commentOverflow is null and not exists (select * from DocumentLink where paperId=PaperComment.paperId and linkId=PaperComment.commentId and linkType>=" . DocumentInfo::LINKTYPE_COMMENT_BEGIN . " and linkType<" . DocumentInfo::LINKTYPE_COMMENT_END . ") limit 1");
+        $any = $this->invariantq("select paperId, commentId from PaperComment where comment is null and commentOverflow is null and not exists (select * from DocumentLink where paperId=PaperComment.paperId and linkId=PaperComment.commentId and linkType=" . DTYPE_COMMENT . ") limit 1");
         if ($any) {
             $this->invariant_error("empty comment #{0}/{1}");
         }
@@ -319,7 +395,7 @@ class ConfInvariants {
         foreach ($rowset as $row) {
             for ($chi = $srch->paper_group_index($row->paperId) ?? 0; $chi < $nch; ++$chi) {
                 $ch = $checkers[$chi];
-                if ($ch->reported) {
+                if ($this->limit > 0 && $ch->reports >= $this->limit) {
                     continue;
                 }
                 $v0 = $row->tag_value($ch->tag);
@@ -332,13 +408,14 @@ class ConfInvariants {
                 } else {
                     $this->invariant_error("autosearch", "automatic tag #{$ch->tag} has bad value " . json_encode($v0) . " (expected " . json_encode($v1) . ") on #{$row->paperId}");
                 }
-                $ch->reported = true;
+                ++$ch->reports;
             }
         }
 
         $vcheckers = $qs = [];
         foreach ($checkers as $ch) {
-            if (!$ch->reported && $ch->value_formula) {
+            if ($ch->value_formula
+                && ($this->limit <= 0 || $ch->reports < $this->limit)) {
                 $vcheckers[] = $ch;
                 $qs[] = "#{$ch->tag}";
             }
@@ -354,8 +431,13 @@ class ConfInvariants {
                 $ch = $vcheckers[$chi];
                 $v0 = $row->tag_value($ch->tag);
                 $v1 = $v0 !== null ? $ch->expected_value($row) : null;
-                if ($v0 !== $v1) {
-                    $this->invariant_error("autosearch", "automatic tag #{$ch->tag} has bad value " . json_encode($v0) . " (expected " . json_encode($v1) . ") on #{$row->paperId}");
+                if ($v0 === $v1) {
+                    ++$chi;
+                    continue;
+                }
+                $this->invariant_error("autosearch", "automatic tag #{$ch->tag} has bad value " . json_encode($v0) . " (expected " . json_encode($v1) . ") on #{$row->paperId}");
+                ++$ch->reports;
+                if ($this->limit > 0 && $ch->reports >= $this->limit) {
                     array_splice($vcheckers, $chi, 1);
                 } else {
                     ++$chi;
@@ -364,6 +446,11 @@ class ConfInvariants {
         }
 
         return $this;
+    }
+
+    /** @return $this */
+    function alias_autosearch() {
+        return $this->check_automatic_tags();
     }
 
     /** @return $this */
@@ -397,34 +484,87 @@ class ConfInvariants {
         return $this;
     }
 
-    /** @return $this */
-    function check_users() {
-        // load paper authors
+    static private function prilemail_map(Conf $conf) {
+        $lemails = [];
+        $primap = [];
+        $result = $conf->qe("select contactId, primaryContactId, email from ContactInfo where primaryContactId>0 or (cflags&" . Contact::CF_PRIMARY . ")!=0");
+        while (($row = $result->fetch_row())) {
+            $cid = (int) $row[0];
+            $pcid = (int) $row[1];
+            $lemail = strtolower($row[2]);
+            if ($pcid > 0) {
+                $primap[$lemail] = $pcid;
+            } else {
+                $lemails[$cid] = $lemail;
+            }
+        }
+        $result->close();
+
+        foreach ($primap as $lemail => &$pcid) {
+            $pcid = $lemails[$pcid] ?? null;
+        }
+        return $primap;
+    }
+
+    /** @return array<string,list<int>> */
+    static function author_lcemail_map(Conf $conf, $primap = null) {
+        $primap = $primap ?? self::prilemail_map($conf);
         $authors = [];
-        $result = $this->conf->qe("select paperId, authorInformation from Paper");
+        $result = $conf->qe("select paperId, authorInformation from Paper");
         while (($row = $result->fetch_row())) {
             $pid = intval($row[0]);
             foreach (explode("\n", $row[1]) as $auline) {
-                if ($auline !== "") {
-                    $au = Author::make_tabbed($auline);
-                    if ($au->email !== "" && validate_email($au->email)) {
-                        $authors[strtolower($au->email)][] = $pid;
-                    }
+                if ($auline === "") {
+                    continue;
+                }
+                $au = Author::make_tabbed($auline);
+                if (!validate_email($au->email)) {
+                    continue;
+                }
+                $lemail = strtolower($au->email);
+                $authors[$lemail][] = $pid;
+                if (($pri = $primap[$lemail] ?? null) !== null) {
+                    $authors[$pri][] = $pid;
                 }
             }
         }
         Dbl::free($result);
+        return $authors;
+    }
+
+    /** @return $this */
+    function check_users() {
+        // load primary contact links
+        $primap = [];
+        $isprimary = [];
+        $result = $this->conf->qe("select contactId, primaryContactId from ContactPrimary");
+        while (($cp = $result->fetch_object())) {
+            $cp->contactId = intval($cp->contactId);
+            $cp->primaryContactId = intval($cp->primaryContactId);
+            if ($cp->contactId <= 0 || $cp->primaryContactId <= 0) {
+                $this->invariant_error("contactprimary_id", "ContactPrimary {$cp->contactId}->{$cp->primaryContactId} has nonpositive ID");
+                continue;
+            }
+            if (isset($primap[$cp->primaryContactId])) {
+                $this->invariant_error("contactprimary_conflict", "primary user {$cp->primaryContactId} is also secondary");
+            } else if (isset($isprimary[$cp->contactId])) {
+                $this->invariant_error("contactprimary_conflict", "secondary user {$cp->contactId} is also primary");
+            }
+            $primap[$cp->contactId] = $cp;
+            $isprimary[$cp->primaryContactId][] = $cp;
+        }
+        Dbl::free($result);
+        $secondarylist = array_keys($primap);
 
         // load users
-        $primary = [];
+        $priemap = [];
+        $lemails = [];
         $result = $this->conf->qe("select " . $this->conf->user_query_fields() . ", unaccentedName from ContactInfo");
         while (($u = $result->fetch_object())) {
             $u->contactId = intval($u->contactId);
             $u->primaryContactId = intval($u->primaryContactId);
             $u->roles = intval($u->roles);
-            $u->disabled = intval($u->disabled);
             $u->cflags = intval($u->cflags);
-            unset($authors[strtolower($u->email)]);
 
             // anonymous users are disabled
             if (str_starts_with($u->email, "anonymous")
@@ -452,24 +592,21 @@ class ConfInvariants {
                 $this->invariant_error("user_whitespace", "user {$u->email}/{$u->contactId} has invalid whitespace");
             }
 
-            // roles have only expected bits
-            if (($u->roles & ~Contact::ROLE_DBMASK) !== 0) {
-                $this->invariant_error("user_roles", "user {$u->email} has funky roles {$u->roles}");
+            // expected neanonascii
+            $nonascii = is_usascii($u->firstName . $u->lastName . $u->affiliation)
+                ? 0 : Contact::CF_NEANONASCII;
+            if (($u->cflags & Contact::CF_NEANONASCII) !== $nonascii) {
+                $this->invariant_error("user_nonascii", sprintf("user {$u->email}/{$u->contactId} has incorrect nonascii cflag %x", $u->cflags & Contact::CF_NEANONASCII));
             }
 
-            // disabled has only expected bits
-            if (($u->disabled & Contact::CFM_DISABLEMENT & ~Contact::CFM_DB) !== 0) {
-                $this->invariant_error("user_disabled", sprintf("user {$u->email}/{$u->contactId} bad disabled %x", $u->disabled));
+            // roles have only expected bits
+            if (($u->roles & ~Contact::ROLE_DBMASK) !== 0) {
+                $this->invariant_error("roles", "user {$u->email} has funky roles {$u->roles}");
             }
 
             // cflags has only expected bits
             if (($u->cflags & ~Contact::CFM_DB) !== 0) {
                 $this->invariant_error("user_cflags", sprintf("user {$u->email}/{$u->contactId} bad cflags %x", $u->cflags));
-            }
-
-            // cflags reflects disabled
-            if ($u->disabled !== ($u->cflags & Contact::CFM_DISABLEMENT)) {
-                $this->invariant_error("user_cflags_disabled", sprintf("user {$u->email}/{$u->contactId} disabled %x unreflected in cflags %x", $u->disabled, $u->cflags));
             }
 
             // contactTags is a valid tag string
@@ -479,36 +616,81 @@ class ConfInvariants {
                 $this->invariant_error("user_tag_strings", "bad user tags ‘{$u->contactTags}’ for {$u->email}/{$u->contactId}");
             }
 
-            // primary contactIds are not negative
-            if ($u->primaryContactId < 0) {
-                $this->invariant_error("primary_user_negative", "primary user ID for {$u->email} is negative");
-            } else if ($u->primaryContactId !== 0) {
-                $primary[$u->contactId] = $u->primaryContactId;
+            // cflags CF_PRIMARY means not secondary
+            $uprimary = ($u->cflags & Contact::CF_PRIMARY) !== 0;
+            if ($uprimary && $u->primaryContactId !== 0) {
+                $this->invariant_error("user_cflags_primary", "user {$u->email}/{$u->contactId} bad primary cflags");
+            }
+
+            // cflags reflects ContactPrimary
+            if (!$uprimary && isset($isprimary[$u->contactId])) {
+                $this->invariant_error("user_cflags_primary", "user {$u->email}/{$u->contactId} not marked primary, has secondary");
+            }
+
+            // primaryContactId reflects ContactPrimary
+            $cp = $primap[$u->contactId] ?? null;
+            $cp_primary = $cp ? $cp->primaryContactId : 0;
+            if ($u->primaryContactId !== $cp_primary) {
+                $this->invariant_error("contactprimary_user", "user {$u->email}/{$u->contactId} primary disagreement (user {$u->primaryContactId}, ContactPrimary {$cp_primary})");
+            }
+            unset($isprimary[$u->contactId], $primap[$u->contactId]);
+
+            // remember emails of secondary
+            if ($u->primaryContactId !== 0 || $uprimary) {
+                $lemail = strtolower($u->email);
+                if ($u->primaryContactId !== 0) {
+                    $priemap[$lemail] = $u->primaryContactId;
+                } else {
+                    $lemails[$u->contactId] = $lemail;
+                }
             }
         }
         Dbl::free($result);
 
-        // primary contactIds can be resolved in at most 2 rounds
-        $tprimary = $primary;
-        for ($i = 0; $i !== 2 && !empty($tprimary); ++$i) {
-            $nprimary = [];
-            foreach ($tprimary as $uid => $puid) {
-                if (isset($primary[$puid])) {
-                    $nprimary[$uid] = $primary[$puid];
-                }
+        // no remaining ContactPrimary elements
+        if (!empty($primap) || !empty($isprimary)) {
+            $badcp = null;
+            foreach ($primap as $cp) {
+                $badcp = $cp;
+                break;
             }
-            $tprimary = $nprimary;
-        }
-        if (!empty($tprimary)) {
-            $baduid = (array_keys($tprimary))[0];
-            $this->invariant_error("primary_resolvable", "primary user ID for #{$baduid} cannot be quickly resolved");
+            foreach ($isprimary as $cpl) {
+                $badcp = $cpl[0];
+                break;
+            }
+            $this->invariant_error("contactprimary_surplus", "surplus ContactPrimary {$badcp->contactId}->{$badcp->primaryContactId}");
         }
 
-        // authors are all accounted for
-        if (false) { // XXX currently violated by email changes
-            foreach ($authors as $lemail => $pids) {
-                $this->invariant_error("author_contacts", "author {$lemail} of #{$pids[0]} lacking from database");
+        // load paper authors
+        foreach ($priemap as $seclemail => &$pcid) {
+            $pcid = $lemails[$pcid] ?? null;
+        }
+        unset($pcid);
+        $authors = self::author_lcemail_map($this->conf, $priemap);
+
+        // load PaperConflict entries
+        $result = $this->conf->qe("select email, group_concat(paperId) from ContactInfo join PaperConflict using (contactId) where (conflictType&" . CONFLICT_AUTHOR . ")!=0 group by ContactInfo.contactId");
+        while (($row = $result->fetch_row())) {
+            $lemail = strtolower($row[0]);
+            $cpids = explode(",", $row[1]);
+            $ppids = $authors[$lemail] ?? [];
+            unset($authors[$lemail]);
+            $d1 = array_diff($cpids, $ppids);
+            if (empty($d1) && count($cpids) === count($ppids)) {
+                continue;
             }
+            foreach ($d1 as $p) {
+                $this->invariant_error("author_conflicts", "author {$lemail} of #{$p} not stored in paper metadata");
+            }
+            foreach (array_diff($ppids, $cpids) as $p) {
+                $this->invariant_error("author_conflicts", "author {$lemail} of #{$p} not stored in PaperConflict");
+            }
+        }
+        $result->close();
+
+        // authors are all accounted for
+        foreach ($authors as $lemail => $pids) {
+            $this->invariant_error("author_conflicts", "author {$lemail} of #{$pids[0]} lacking from database");
         }
 
         return $this;
@@ -516,22 +698,27 @@ class ConfInvariants {
 
     /** @return $this */
     function check_document_inactive() {
-        $result = $this->conf->ql("select paperStorageId, finalPaperStorageId from Paper");
-        $pids = [];
-        while ($result && ($row = $result->fetch_row())) {
-            if ($row[0] > 1) {
-                $pids[] = (int) $row[0];
-            }
-            if ($row[1] > 1) {
-                $pids[] = (int) $row[1];
-            }
-        }
-        Dbl::free($result);
-        sort($pids);
-        $any = $this->invariantq("select s.paperId, s.paperStorageId from PaperStorage s where s.paperStorageId?a and s.inactive limit 1", $pids);
-        if ($any) {
-            $this->invariant_error("inactive", "paper {0} document {1} is inappropriately inactive");
-        }
+        $tntable = "DocActivity_" . base48_encode(random_bytes(4));
+        $this->conf->ql("create temporary table ?s (
+    pid int NOT NULL,
+    did int NOT NULL,
+    dt int NOT NULL,
+    inactive tinyint NOT NULL,
+    want_inactive tinyint NOT NULL,
+    PRIMARY KEY (`pid`,`did`)
+) as select paperId pid, paperStorageId did, documentType dt, inactive, 1 want_inactive
+    from PaperStorage where paperStorageId>1",
+                        $tntable);
+
+        $this->conf->ql("insert into ?s (pid,did,dt,inactive,want_inactive)
+    select paperId, paperStorageId, 0, -1, 0 from Paper where paperStorageId>1
+    on duplicate key update want_inactive=0",
+                        $tntable);
+
+        $this->conf->ql("insert into ?s (pid,did,dt,inactive,want_inactive)
+    select paperId, finalPaperStorageId, -1, -1, 0 from Paper where finalPaperStorageId>1
+    on duplicate key update want_inactive=0",
+                        $tntable);
 
         $oids = $nonempty_oids = [];
         foreach ($this->conf->options()->universal() as $o) {
@@ -542,29 +729,34 @@ class ConfInvariants {
             }
         }
 
-        if (!empty($oids)) {
-            $any = $this->invariantq("select o.paperId, o.optionId, s.paperStorageId from PaperOption o join PaperStorage s on (s.paperStorageId=o.value and s.inactive and s.paperStorageId>1) where o.optionId?a limit 1", $oids);
-            if ($any) {
-                $this->invariant_error("inactive", "paper {0} option {1} document {2} is inappropriately inactive");
-            }
+        $this->conf->ql("insert into ?s (pid,did,dt,inactive,want_inactive)
+    select paperId, value, optionId, -1, 0 from PaperOption
+    where optionId?a and (value>1 or optionId?a)
+    on duplicate key update want_inactive=0",
+                        $tntable, $oids, $nonempty_oids);
 
-            $any = $this->invariantq("select o.paperId, o.optionId, s.paperStorageId, s.paperId from PaperOption o join PaperStorage s on (s.paperStorageId=o.value and s.paperStorageId>1 and s.paperId!=o.paperId) where o.optionId?a limit 1", $oids);
-            if ($any) {
-                $this->invariant_error("paper {0} option {1} document {2} belongs to different paper {3}");
+        $this->conf->ql("insert into ?s (pid,did,dt,inactive,want_inactive)
+    select paperId, documentId, linkType, -1, 0 from DocumentLink
+    on duplicate key update want_inactive=0",
+                        $tntable);
+
+        $result = $this->conf->ql("select pid, did, dt, inactive from ?s where inactive<0 or inactive!=want_inactive", $tntable);
+        $bits = 0;
+        while (($this->irow = $result->fetch_row())) {
+            if ($this->irow[1] <= 1) {
+                $this->invariant_error("empty_document", "paper {0} option {2} links to empty document");
+            } else if ($this->irow[3] < 0) {
+                $this->invariant_error("nonexistent_document", "paper {0} option {2} document {1} does not exist");
+            } else if ($this->irow[3] > 0) {
+                $this->invariant_error("inactive", "paper {0} option {2} document {1} is inappropriately inactive");
+            } else {
+                $this->invariant_error("noninactive", "paper {0} option {2} document {1} should be inactive");
             }
         }
+        $result->close();
+        $this->irow = null;
 
-        if (!empty($nonempty_oids)) {
-            $any = $this->invariantq("select o.paperId, o.optionId from PaperOption o where o.optionId?a and o.value<=1 limit 1", $nonempty_oids);
-            if ($any) {
-                $this->invariant_error("paper {0} option {1} links to empty document");
-            }
-        }
-
-        $any = $this->invariantq("select l.paperId, l.linkId, s.paperStorageId from DocumentLink l join PaperStorage s on (l.documentId=s.paperStorageId and s.inactive) limit 1");
-        if ($any) {
-            $this->invariant_error("inactive", "paper {0} link {1} document {2} is inappropriately inactive");
-        }
+        $this->conf->ql("drop temporary table ?s", $tntable);
 
         return $this;
     }
@@ -581,6 +773,65 @@ class ConfInvariants {
             $this->invariant_error("cdb_confid", "Conf::cdb_confid is -1");
         }
         return $this;
+    }
+
+    /** @return \Generator<ConfInvariant_CdbRole> */
+    static function generate_cdb_roles(Conf $conf) {
+        $result = $conf->qe("select u.contactId, email, cflags, roles, cf.ct, r.rt, cdbRoles
+            from ContactInfo u
+            left join (select contactId, max(conflictType) ct from PaperConflict group by contactId) cf using (contactId)
+            left join (select contactId, max(reviewType) rt from PaperReview group by contactId) r using (contactId)");
+        $disnonpc = $conf->disable_non_pc();
+        while (($row = $result->fetch_row())) {
+            $cflags = (int) $row[2];
+            $roles = (int) $row[3]
+                | ((int) $row[4] >= CONFLICT_AUTHOR ? Contact::ROLE_AUTHOR : 0)
+                | ((int) $row[5] > 0 ? Contact::ROLE_REVIEWER : 0);
+            if (($cflags & Contact::CFM_DISABLEMENT & ~Contact::CF_PLACEHOLDER) !== 0
+                || !Contact::cdb_allows_email($row[1])
+                || ($disnonpc && ($roles & Contact::ROLE_PCLIKE) === 0)) {
+                $roles = 0;
+            }
+            yield new ConfInvariant_CdbRole((int) $row[0], $row[1], (int) $row[6], $roles);
+        }
+        $result->close();
+    }
+
+    /** @return $this */
+    #[ConfInvariantLevel(1)]
+    function check_cdb_roles() {
+        $cdb = Conf::main_contactdb();
+        if (!$cdb || $this->level < 1 || ($confid = $this->conf->cdb_confid()) <= 0) {
+            return $this;
+        }
+
+        $result = Dbl::qe($cdb, "select email, roles from ContactInfo join Roles using (contactDbId) where confid=?", $confid);
+        $cdbr = [];
+        while (($row = $result->fetch_row())) {
+            $cdbr[strtolower($row[0])] = (int) $row[1];
+        }
+        $result->close();
+
+        foreach (self::generate_cdb_roles($this->conf) as $err) {
+            if ($err->cdbRoles !== $err->computed_roles) {
+                $this->irow = [$err->email, $err->computed_roles, $err->cdbRoles];
+                $this->invariant_error("cdbRoles", "user {0} has cdbRoles 0x{2:x}, expected 0x{1:x}");
+            }
+            $lemail = strtolower($err->email);
+            $cdb_cdbr = $cdbr[$lemail] ?? null;
+            if ($cdb_cdbr !== null) {
+                unset($cdbr[$lemail]);
+            }
+            if (($cdb_cdbr ?? 0) !== $err->computed_roles) {
+                $this->irow = [$err->email, $err->computed_roles, $cdb_cdbr];
+                $this->invariant_error("cdbRoles", "user {0} has contactdb roles {2:jx}, expected {1:jx}");
+            }
+        }
+
+        foreach ($cdbr as $lemail => $roles) {
+            $this->irow = [$lemail, null, $roles];
+            $this->invariant_error("cdbRoles", "user {0} has contactdb roles {2:jx}, expected {1:jx}");
+        }
     }
 
     /** @return $this */
@@ -630,10 +881,10 @@ class ConfInvariant_AutomaticTagChecker {
     public $term;
     /** @var ?float */
     public $value_constant;
-    /** @var ?callable(PaperInfo,?int,Contact):mixed */
+    /** @var ?Formula */
     public $value_formula;
-    /** @var bool */
-    public $reported = false;
+    /** @var int */
+    public $reports = 0;
 
     function __construct(TagInfo $dt) {
         $this->tag = $dt->tag;
@@ -647,9 +898,10 @@ class ConfInvariant_AutomaticTagChecker {
             $this->value_constant = 0.0;
             $vsfx = "#0";
         } else {
-            $f = new Formula($ftext);
-            if ($f->check($this->user)) {
-                $this->value_formula = $f->compile_function();
+            $f = Formula::make($this->user, $ftext);
+            if ($f->ok()) {
+                $this->value_formula = $f;
+                $f->prepare();
             }
             $vsfx = "";
         }
@@ -661,15 +913,32 @@ class ConfInvariant_AutomaticTagChecker {
         if (!$this->term->test($row, null)) {
             return null;
         } else if ($this->value_formula) {
-            $v = call_user_func($this->value_formula, $row, null, $this->user);
+            $v = $this->value_formula->eval($row, null);
             if (is_bool($v)) {
                 $v = $v ? 0.0 : null;
             } else if (is_int($v)) {
                 $v = (float) $v;
             }
             return $v;
-        } else {
-            return $this->value_constant;
         }
+        return $this->value_constant;
+    }
+}
+
+class ConfInvariant_CdbRole {
+    /** @var int */
+    public $contactId;
+    /** @var string */
+    public $email;
+    /** @var int */
+    public $cdbRoles;
+    /** @var int */
+    public $computed_roles;
+
+    function __construct($cid, $email, $cdbRoles, $computed_roles) {
+        $this->contactId = $cid;
+        $this->email = $email;
+        $this->cdbRoles = $cdbRoles;
+        $this->computed_roles = $computed_roles;
     }
 }

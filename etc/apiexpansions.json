@@ -1,23 +1,55 @@
 [
   {
-    "name": "paper", "get": true, "merge": true,
+    "name": "paper", "get": true, "post": true, "delete": true, "merge": true,
     "tags": ["Submissions"], "order": 0
   },
   {
-    "name": "paper", "post": true, "merge": true,
-    "tags": ["Submissions"], "order": 0
+    "name": "papers", "get": true, "post": true, "merge": true,
+    "tags": ["Submissions"], "order": 1
+  },
+  {
+    "name": "share", "get": true, "post": true, "delete": true, "merge": true,
+    "tags": ["Submissions"], "order": 2
+  },
+  {
+    "name": "document", "get": true, "merge": true,
+    "tags": ["Documents"], "order": 0
+  },
+  {
+    "name": "documenthistory", "get": true, "merge": true,
+    "tags": ["Documents"], "order": 1
   },
   {
     "name": "formatcheck", "get": true, "merge": true,
-    "tags": ["Documents"]
+    "tags": ["Documents"], "order": 2
+  },
+  {
+    "name": "archivelisting", "get": true, "merge": true,
+    "tags": ["Documents"], "order": 3
   },
   {
     "name": "upload", "post": true, "merge": true,
-    "tags": ["Documents"]
+    "tags": ["Documents"], "order": 4
   },
   {
     "name": "assign", "post": true, "merge": true,
-    "tags": ["Submission administration"]
+    "tags": ["Assignments"]
+  },
+  {
+    "name": "assigners", "get": true, "merge": true,
+    "tags": ["Assignments"]
+  },
+  {
+    "name": "assigntags", "post": true, "merge": true,
+    "tags": ["Tags"]
+  },
+  {
+    "name": "autoassign", "post": true, "merge": true,
+    "tags": ["Assignments"]
+  },
+  {
+    "name": "autoassigners", "get": true, "merge": true,
+    "tags": ["Assignments"]
   },
   {
     "name": "decision", "get": true, "merge": true,
@@ -61,11 +93,19 @@
   },
   {
     "name": "fieldhtml", "get": true, "merge": true,
-    "tags": ["Search"], "order": 1
+    "tags": ["Search"], "order": false
   },
   {
     "name": "fieldtext", "get": true, "merge": true,
-    "tags": ["Search"]
+    "tags": ["Search"], "order": false
+  },
+  {
+    "name": "searchactions", "get": true, "merge": true,
+    "tags": ["Search"], "order": 1
+  },
+  {
+    "name": "searchaction", "get": true, "post": true, "merge": true,
+    "tags": ["Search"], "order": 2
   },
   {
     "name": "graphdata", "get": true, "merge": true,
@@ -81,6 +121,10 @@
   },
   {
     "name": "searchcompletion", "get": true, "merge": true,
+    "tags": ["Search"]
+  },
+  {
+    "name": "displayfields", "get": true, "merge": true,
     "tags": ["Search"]
   },
   {
@@ -166,26 +210,12 @@
   {
     "name": "comment", "get": true, "merge": true,
     "tags": ["Comments"], "order": 0,
-    "parameter_info": {"content": {"type": "boolean", "description": "False omits comment content from response"}},
-    "response_info": {"comment": {"$ref": "#/components/schemas/comment"},
-      "comments": {"type": "list", "items": {"$ref": "#/components/schemas/comment"}}}
+    "response_info": {"comment": "comment", "comments": "[comment]"}
   },
   {
     "name": "comment", "post": true, "merge": true,
     "tags": ["Comments"], "order": 0,
-    "parameter_info": {"override": {"type": "boolean"},
-      "delete": {"type": "boolean"},
-      "text": {"type": "string"},
-      "tags": {"type": "string"},
-      "topic": {"$ref": "#/components/schemas/comment_topic"},
-      "visibility": {"$ref": "#/components/schemas/comment_visibility"},
-      "response": {"type": "string"},
-      "ready": {"type": "boolean"},
-      "draft": {"type": "boolean"},
-      "blind": {"type": "boolean"},
-      "by_author": {"type": "boolean"},
-      "review_token": {"type": "string"}},
-    "response_info": {"comment": {"$ref": "#/components/schemas/comment"}}
+    "response_info": {"comment": "comment"}
   },
   {
     "name": "mentioncompletion", "get": true, "merge": true,
@@ -261,7 +291,7 @@
   },
   {
     "name": "job", "get": true, "merge": true,
-    "tags": ["Session"]
+    "tags": ["Task management"]
   },
   {
     "name": "jserror", "post": true, "merge": true,
@@ -281,6 +311,18 @@
   },
   {
     "name": "whoami", "get": true, "merge": true,
+    "tags": ["Profile"]
+  },
+  {
+    "name": "reauth", "post": true, "merge": true,
+    "tags": ["Session"]
+  },
+  {
+    "name": "stashmessages", "post": true, "merge": true,
+    "tags": ["Session"]
+  },
+  {
+    "name": "cspreport", "post": true, "merge": true,
     "tags": ["Session"]
   }
 ]

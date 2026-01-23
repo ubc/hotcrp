@@ -1,6 +1,6 @@
 <?php
 // settings/s_tags.php -- HotCRP settings > tags page
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Tags_SettingParser extends SettingParser {
     /** @var SettingValues */
@@ -26,9 +26,8 @@ class Tags_SettingParser extends SettingParser {
             return TagInfo::TF_ALLOTMENT;
         } else if ($si->name === "tag_rank") {
             return TagInfo::TF_RANK;
-        } else {
-            return 0;
         }
+        return 0;
     }
 
     /** @return list<TagInfo> */
@@ -43,7 +42,7 @@ class Tags_SettingParser extends SettingParser {
     }
 
     function set_oldv(Si $si, SettingValues $sv) {
-        if (in_array($si->name, ["tag_hidden", "tag_readonly", "tag_sitewide", "tag_vote_approval"])) {
+        if (in_array($si->name, ["tag_hidden", "tag_readonly", "tag_sitewide", "tag_vote_approval"], true)) {
             $sv->set_oldv($si->name, self::render_tags(self::sorted_settings_for($sv->conf->tags(), $si)));
         } else if ($si->name === "tag_vote_allotment") {
             $x = [];
@@ -136,18 +135,21 @@ class Tags_SettingParser extends SettingParser {
                 $sv->request_write_lock("PaperTag");
                 $sv->request_store_value($si);
             }
-        } else if ($si->name === "tag_rank") {
+            return true;
+        }
+        if ($si->name === "tag_rank") {
             if (strpos($v, " ") === false) {
                 $sv->save("tag_rank", $v);
             } else if ($v !== null) {
                 $sv->error_at("tag_rank", "<0>Multiple ranking tags are not supported");
             }
-        } else if (self::si_flag($si) !== 0) {
-            $sv->save($si, $v);
-        } else {
-            return false;
+            return true;
         }
-        return true;
+        if (self::si_flag($si) !== 0) {
+            $sv->save($si, $v);
+            return true;
+        }
+        return false;
     }
 
     function store_value(Si $si, SettingValues $sv) {

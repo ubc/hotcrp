@@ -44,6 +44,8 @@ class Mailer {
     protected $preparation;
     /** @var int */
     protected $context = 0;
+    /** @var string */
+    protected $field;
     /** @var ?string */
     protected $line_prefix;
 
@@ -53,6 +55,8 @@ class Mailer {
     protected $_errors_reported = [];
     /** @var ?MessageSet */
     private $_ms;
+    /** @var bool */
+    private $_was_urlparam;
 
     /** @param ?Contact $recipient
      * @param array{width?:int,censor?:0|1|2,reason?:string,change?:string,adminupdate?:bool,notes?:string,capability_token?:string,sensitive?:bool} $settings */
@@ -91,13 +95,6 @@ class Mailer {
             $r->email = $contact->preferredEmail;
         }
 
-        // maybe infer username
-        if ($r->firstName === ""
-            && $r->lastName === ""
-            && $r->email !== "") {
-            $this->infer_user_name($r, $contact);
-        }
-
         $flags = $this->context === self::CONTEXT_EMAIL ? NAME_MAILQUOTE : 0;
         if ($r->email !== "") {
             $email = $r->email;
@@ -107,7 +104,7 @@ class Mailer {
         }
 
         if ($out === "EMAIL") {
-            return $flags & NAME_B ? "<$email>" : $email;
+            return $flags & NAME_B ? "<{$email}>" : $email;
         } else if ($out === "CONTACT") {
             return Text::name($r->firstName, $r->lastName, $email, $flags | NAME_E);
         } else if ($out === "NAME") {
@@ -119,14 +116,8 @@ class Mailer {
             return Text::name($r->firstName, "", "", $flags);
         } else if ($out === "LAST") {
             return Text::name("", $r->lastName, "", $flags);
-        } else {
-            return "";
         }
-    }
-
-    /** @param Author $r
-     * @param Contact|Author $contact */
-    function infer_user_name($r, $contact) {
+        return "";
     }
 
 
@@ -138,18 +129,16 @@ class Mailer {
         $yes = $this->expandvar($args, true);
         if ($yes && !$isbool) {
             return $this->expandvar($args, false);
-        } else {
-            return $yes;
         }
+        return $yes;
     }
 
-    static function kw_urlenc($args, $isbool, $m) {
-        $hasinner = $m->expandvar($args, true);
+    function kw_urlenc($args, $isbool) {
+        $hasinner = $this->expandvar($args, true);
         if ($hasinner && !$isbool) {
-            return urlencode($m->expandvar($args, false));
-        } else {
-            return $hasinner;
+            return urlencode($this->expandvar($args, false));
         }
+        return $hasinner;
     }
 
     function kw_confnames($args, $isbool, $uf) {
@@ -157,9 +146,8 @@ class Mailer {
             return $this->conf->full_name();
         } else if ($uf->name == "CONFSHORTNAME") {
             return $this->conf->short_name;
-        } else {
-            return $this->conf->long_name;
         }
+        return $this->conf->long_name;
     }
 
     function kw_siteuser($args, $isbool, $uf) {
@@ -173,26 +161,25 @@ class Mailer {
     static function kw_url($args, $isbool, $m) {
         if (!$args) {
             return $m->conf->opt("paperSite");
-        } else {
-            $a = preg_split('/\s*,\s*/', $args);
-            foreach ($a as &$t) {
-                $t = $m->expand($t, "urlpart");
-                $t = preg_replace('/\&(?=\&|\z)/', "", $t);
-            }
-            if (!isset($a[1])) {
-                $a[1] = "";
-            }
-            for ($i = 2; isset($a[$i]); ++$i) {
-                if ($a[$i] !== "") {
-                    if ($a[1] !== "") {
-                        $a[1] .= "&" . $a[$i];
-                    } else {
-                        $a[1] = $a[$i];
-                    }
+        }
+        $a = preg_split('/\s*,\s*/', $args);
+        foreach ($a as &$t) {
+            $t = $m->expand($t, "urlpart");
+            $t = preg_replace('/\&(?=\&|\z)/', "", $t);
+        }
+        if (!isset($a[1])) {
+            $a[1] = "";
+        }
+        for ($i = 2; isset($a[$i]); ++$i) {
+            if ($a[$i] !== "") {
+                if ($a[1] !== "") {
+                    $a[1] .= "&" . $a[$i];
+                } else {
+                    $a[1] = $a[$i];
                 }
             }
-            return $m->conf->hoturl_raw($a[0], $a[1], Conf::HOTURL_ABSOLUTE | Conf::HOTURL_NO_DEFAULTS);
         }
+        return $m->conf->hoturl_raw($a[0], $a[1], Conf::HOTURL_ABSOLUTE | Conf::HOTURL_NO_DEFAULTS);
     }
 
     static function kw_php($args, $isbool, $m) {
@@ -210,9 +197,8 @@ class Mailer {
     static function kw_adminupdate($args, $isbool, $m) {
         if ($m->adminupdate) {
             return "An administrator performed this update. ";
-        } else {
-            return $m->recipient ? "" : null;
         }
+        return $m->recipient ? "" : null;
     }
 
     static function kw_notes($args, $isbool, $m, $uf) {
@@ -225,9 +211,8 @@ class Mailer {
         }
         if ($value !== null || $m->recipient) {
             return (string) $value;
-        } else {
-            return null;
         }
+        return null;
     }
 
     static function kw_recipient($args, $isbool, $m, $uf) {
@@ -237,11 +222,11 @@ class Mailer {
         return $m->expand_user($m->recipient, $uf->userx);
     }
 
-    static function kw_capability($args, $isbool, $m, $uf) {
-        if ($m->capability_token) {
-            $m->sensitive = true;
+    function kw_capability($args, $isbool) {
+        if ($this->capability_token) {
+            $this->sensitive = true;
         }
-        return $isbool || $m->capability_token ? $m->capability_token : "";
+        return $isbool || $this->capability_token ? $this->capability_token : "";
     }
 
     function kw_login($args, $isbool, $uf) {
@@ -257,9 +242,8 @@ class Mailer {
             return $this->conf->opt("paperSite") . "/signin/" . ($loginparts ? "?{$loginparts}" : "");
         } else if ($uf->name === "LOGINURLPARTS") {
             return $loginparts;
-        } else {
-            return false;
         }
+        return false;
     }
 
     function kw_needpassword($args, $isbool, $uf) {
@@ -267,9 +251,8 @@ class Mailer {
             return false;
         } else if ($this->recipient) {
             return $this->recipient->password_unset();
-        } else {
-            return null;
         }
+        return null;
     }
 
     function kw_passwordlink($args, $isbool, $uf) {
@@ -286,7 +269,7 @@ class Mailer {
             } else {
                 $capinfo->set_user($this->recipient)->set_token_pattern("hcpw0[20]");
             }
-            $capinfo->set_expires_after(259200)->insert();
+            $capinfo->set_expires_in(259200)->insert();
             assert($capinfo->stored());
             $this->preparation->reset_capability = $capinfo->salt;
         }
@@ -308,7 +291,6 @@ class Mailer {
 
         $mks = $this->conf->mail_keywords($name);
         foreach ($mks as $uf) {
-            $uf->input_string = $what;
             $ok = $this->recipient || (isset($uf->global) && $uf->global);
 
             $xchecks = $uf->expand_if ?? [];
@@ -333,19 +315,21 @@ class Mailer {
             }
 
             if ($x !== null) {
+                if ($uf->urlparam ?? false) {
+                    $this->_was_urlparam = true;
+                }
                 return $isbool ? $x : (string) $x;
             }
         }
 
         if ($isbool) {
             return $mks ? null : false;
-        } else {
-            if (!isset($this->_unexpanded[$what])) {
-                $this->_unexpanded[$what] = true;
-                $this->unexpanded_warning_at($what);
-            }
-            return null;
         }
+        if (!isset($this->_unexpanded[$what])) {
+            $this->_unexpanded[$what] = true;
+            $this->unexpanded_warning($what);
+        }
+        return null;
     }
 
 
@@ -356,30 +340,26 @@ class Mailer {
     static function _check_conditional_at($s, $p, $len) {
         $br = $s[$p] === "{";
         $p += $br ? 2 : 1;
-        if (!preg_match('/\G(IF|ELIF|ELSE?IF|ELSE|ENDIF)/', $s, $m, 0, $p)) {
+        if (!preg_match('/\G(?:IF|ELIF|ELSE?IF|ELSE|ENDIF)/', $s, $m, 0, $p)) {
             return null;
         }
-        $xp = $p + strlen($m[1]);
+        $xp = $p + strlen($m[0]);
         if ($xp === $len) {
             return null;
         }
         if ($s[$xp] === "(") {
-            $yp = SearchParser::span_balanced_parens($s, $xp + 1) + 1;
+            $yp = SearchParser::span_balanced_parens($s, $xp + 1, "", true) + 1;
             if ($yp >= $len || $s[$yp - 1] !== ")") {
                 return null;
             }
         } else {
             $yp = $xp;
         }
-        if (($xp === $yp) !== ($m[1] === "ELSE" || $m[1] === "ENDIF")) {
+        if (($xp === $yp) !== ($m[0] === "ELSE" || $m[0] === "ENDIF")
+            || ($br ? $yp + 1 === $len || $s[$yp] !== "}" || $s[$yp + 1] !== "}" : $s[$yp] !== "%")) {
             return null;
         }
-        if (($br ? $yp + 1 !== $len && $s[$yp] === "}" && $s[$yp + 1] === "}" : $s[$yp] === "%")
-            && ($xp === $yp) === ($m[1] === "ELSE" || $m[1] === "ENDIF")) {
-            return [$m[1], substr($s, $xp, $yp - $xp), $yp + ($br ? 2 : 1)];
-        } else {
-            return null;
-        }
+        return [$m[0], substr($s, $xp, $yp - $xp), $yp + ($br ? 2 : 1)];
     }
 
     /** @param string $ch
@@ -393,6 +373,7 @@ class Mailer {
      * @return string */
     private function _expand_conditionals($s) {
         $p = 0;
+        $ptp = $brp = -1;
         $ip = 0;
         $len = strlen($s);
         // stack elements: [$rs, $state]
@@ -400,21 +381,29 @@ class Mailer {
         $state = 4;
         $ifstack = [];
 
-        // state bits: 1 - have included definite; 2 - have included unexpanded; 4 - including now
-        // 0: after {{IF(false)}}
-        // 1: after {{IF(true)}}...{{ELSE}}
-        // 2: after {{IF(???)}}...{{ELSEIF(false)}}
-        // 3: after {{IF(???)}}...{{ELSEIF(true)}}...{{ELSE}}
-        // 4: initial state
-        // 5: after {{IF(true)}} or {{IF(false)}}...{{ELSE}}
-        // 6: after {{IF(???)}}
-        // 7: after {{IF(???)}}...{{ELSEIF(true)}}
+        // state bits:
+        //    1: have included definite
+        //    2: have included unexpanded
+        //    4: including now
+        // state examples:
+        //    0: after {{IF(false)}}
+        //    1: after {{IF(true)}}...{{ELSE}}
+        //    2: after {{IF(???)}}...{{ELSEIF(false)}}
+        //    3: after {{IF(???)}}...{{ELSEIF(true)}}...{{ELSE}}
+        //    4: initial state
+        //    5: after {{IF(true)}} or {{IF(false)}}...{{ELSE}}
+        //    6: after {{IF(???)}}
+        //    7: after {{IF(???)}}...{{ELSEIF(true)}}
 
         while (true) {
             // find next conditional indication
-            $ptp = strpos($s, "%", $p);
-            $brp = strpos($s, "{{", $p);
-            $np = min($ptp !== false ? $ptp : $len, $brp !== false ? $brp : $len);
+            if ($ptp < $p) {
+                $ptp = strlpos($s, "%", $p);
+            }
+            if ($brp < $p) {
+                $brp = strlpos($s, "{{", $p);
+            }
+            $np = min($ptp, $brp);
             if ($np !== $len) {
                 $x = self::_check_conditional_at($s, $np, $len);
                 if ($x === null
@@ -503,7 +492,7 @@ class Mailer {
         }
 
         if (!empty($ifstack)) {
-            $this->warning_at(null, "<0>Incomplete {{IF}}");
+            $this->warning("<0>Incomplete {{IF}}");
         }
 
         while (!empty($ifstack)) {
@@ -526,28 +515,147 @@ class Mailer {
         return $rs;
     }
 
-    /** @param string $line
-     * @return string */
-    private function _lineexpand($line, $indent) {
-        $text = "";
-        $pos = 0;
-        while (preg_match('/\G(.*?)(%(#?[-a-zA-Z0-9!@_:.\/]+(?:|\([^\)]*\)))%)/s', $line, $m, 0, $pos)) {
-            $text .= $m[1];
-            // Don't expand keywords that look like they are coming from URLs
-            if (strlen($m[3]) >= 2
-                && ctype_xdigit(substr($m[3], 0, 2))
-                && strlen($line) >= $pos + strlen($m[0]) + 2
-                && ctype_xdigit(substr($line, $pos + strlen($m[0]), 2))
-                && preg_match('/\/\/\S+\z/', $text)) {
-                $s = null;
-            } else {
-                $s = $this->expandvar($m[3], false);
-            }
-            $text .= $s ?? $m[2];
-            $pos += strlen($m[0]);
+    /** @param string $s
+     * @param int $p
+     * @param int $len
+     * @param string $out
+     * @param int $op
+     * @return ?array{string,int} */
+    private function _check_keyword_at($s, $p, $len, $out, $op) {
+        if ($p >= $len) {
+            return null;
         }
-        $text .= substr($line, $pos);
-        return prefix_word_wrap($this->line_prefix ?? "", $text, $indent,
+        $br = $s[$p] === "{";
+        $p += $br ? 2 : 1;
+        if (!preg_match('/\G\#?[-a-zA-Z0-9!@_:.\/]++/', $s, $m, 0, $p)) {
+            return null;
+        }
+        $xp = $p + strlen($m[0]);
+        if ($xp === $len) {
+            return null;
+        }
+        if ($s[$xp] === "(") {
+            $yp = SearchParser::span_balanced_parens($s, $xp + 1, "", true) + 1;
+            if ($yp >= $len || $s[$yp - 1] !== ")") {
+                return null;
+            }
+        } else {
+            $yp = $xp;
+        }
+        if ($br ? $yp + 1 === $len || $s[$yp] !== "}" || $s[$yp + 1] !== "}" : $s[$yp] !== "%") {
+            return null;
+        }
+        // do not expand things that look like URL escapes
+        if (!$br
+            && strlen($m[0]) >= 2
+            && ctype_xdigit(substr($m[0], 0, 2))
+            && $len >= $yp + 3
+            && ctype_xdigit(substr($s, $yp + 1, 2))
+            && preg_match('/\/\/\S+\z/', $out . substr($s, $op, $p - $op))) {
+            return null;
+        }
+        return [substr($s, $p, $yp - $p), $yp + ($br ? 2 : 1)];
+    }
+
+    /** @param string $text
+     * @param list<string> $lines
+     * @param int $lineidx
+     * @return int */
+    static private function _merge_blank_lines($text, $lines, $lineidx) {
+        $textpos = strlen($text) - 2;
+        $nlines = count($lines);
+        while ($textpos >= 0
+               && $text[$textpos] === "\n"
+               && $lineidx + 1 !== $nlines
+               && ctype_space($lines[$lineidx + 1])) {
+            ++$lineidx;
+            --$textpos;
+        }
+        return $lineidx;
+    }
+
+    /** @param string $line
+     * @param int $indent
+     * @param int $ptp
+     * @param int $brp
+     * @return string */
+    private function _lineexpand($line, $indent, $ptp, $brp) {
+        $out = "";
+        $p = $op = 0;
+        $len = strlen($line);
+        $urlpos = [];
+        while ($p < $len) {
+            // find keyword position
+            if ($ptp < $p) {
+                $ptp = strlpos($line, "%", $p);
+            }
+            if ($brp < $p) {
+                $brp = strlpos($line, "{{", $p);
+            }
+            $p = min($ptp, $brp);
+            if ($p === $len) {
+                break;
+            }
+
+            // check for keyword
+            $chk = $this->_check_keyword_at($line, $p, $len, $out, $op);
+            if (!$chk) {
+                ++$p;
+                continue;
+            }
+
+            // expand keyword
+            $this->_was_urlparam = false;
+            $expansion = $this->expandvar($chk[0], false);
+            if ($expansion === null) {
+                $p = $chk[1];
+                continue;
+            }
+            $out .= substr($line, $op, $p - $op);
+
+            // remember position of empty urlparam for cleanup later
+            if ($this->_was_urlparam
+                && $expansion === ""
+                && ($out === "" || str_ends_with($out, "?") || str_ends_with($out, "&"))) {
+                $urlpos[] = strlen($out);
+            }
+
+            $p = $chk[1];
+            if ($expansion !== "") {
+                $out .= $expansion;
+            } else if ($p === $len) {
+                $out = rtrim($out);
+            } else {
+                $outpos = strlen($out) - 1;
+                while ($outpos >= 0
+                       && ctype_space($out[$outpos])
+                       && $p !== $len
+                       && ctype_space($line[$p])) {
+                    --$outpos;
+                    ++$p;
+               }
+            }
+            $op = $p;
+        }
+        $out .= substr($line, $op);
+
+        // clean up empty urlparams
+        for ($i = count($urlpos); $i > 0; --$i) {
+            $p = $ep = $urlpos[$i - 1];
+            while ($ep < strlen($out) && $out[$ep] === "&") {
+                ++$ep;
+            }
+            if ($ep === strlen($out) || ctype_space($out[$ep])) {
+                while ($p > 0 && ($out[$p - 1] === "?" || $out[$p - 1] === "&")) {
+                    --$p;
+                }
+            }
+            if ($p !== $ep) {
+                $out = substr($out, 0, $p) . substr($out, $ep);
+            }
+        }
+
+        return prefix_word_wrap($this->line_prefix ?? "", $out, $indent,
                                 $this->width, $this->flowed);
     }
 
@@ -564,60 +672,101 @@ class Mailer {
         $old_context = $this->context;
         $old_width = $this->width;
         $old_line_prefix = $this->line_prefix;
-        if (isset(self::$email_fields[$field])) {
+        $old_field = $this->field;
+        if ($field == "" || $field === "body") {
+            $this->context = self::CONTEXT_BODY;
+        } else if (isset(self::$email_fields[$field])) {
             $this->context = self::CONTEXT_EMAIL;
             $this->width = 10000000;
-        } else if ($field !== "body" && $field != "") {
+        } else {
             $this->context = self::CONTEXT_HEADER;
             $this->width = 10000000;
-        } else {
-            $this->context = self::CONTEXT_BODY;
         }
+        $this->field = $field;
 
         // expand out conditionals first to avoid confusion with wordwrapping
         $text = $this->_expand_conditionals(cleannl($text));
 
-        // separate text into lines
-        $lines = explode("\n", $text);
-        if (!empty($lines) && $lines[count($lines) - 1] === "") {
-            array_pop($lines);
-        }
-
+        // proceed line by line
+        preg_match_all('/[^\r\n]*+(?:\r\n?|\n|\z)/', $text, $m);
+        $lines = $m[0];
+        array_pop($lines); // always have an extra line at the end
+        $nlines = count($lines);
         $text = "";
-        for ($i = 0; $i < count($lines); ++$i) {
+        for ($i = 0; $i !== $nlines; ++$i) {
             $line = rtrim($lines[$i]);
-            if ($line == "") {
+            $len = strlen($line);
+
+            // empty line
+            if ($len === 0) {
                 $text .= "\n";
-            } else if (preg_match('/\A%((?:REVIEWS|COMMENTS)(?:|\(.*\)))%\z/s', $line, $m)) {
-                if (($m = $this->expandvar($m[1], false)) != "") {
-                    $text .= $m . "\n";
-                }
-            } else if (strpos($line, "%") === false) {
+                continue;
+            }
+
+            // no expansions
+            $brp = strlpos($line, "{{");
+            $ptp = strlpos($line, "%");
+            $np = min($brp, $ptp);
+            if ($np === $len) {
                 $text .= prefix_word_wrap("", $line, 0, $this->width, $this->flowed);
-            } else {
-                if (($line[0] === " " || $line[0] === "\t" || $line[0] === "*")
-                    && preg_match('/\A([ *\t]*)%(\w+(?:|\([^\)]*\)))%(: .*)\z/s', $line, $m)
-                    && $this->expandvar($m[2], true)) {
-                    $line = $m[1] . $this->expandvar($m[2], false) . $m[3];
-                }
-                if (($line[0] === " " || $line[0] === "\t" || $line[0] === "*")
-                    && preg_match('/\A([ \t]*\*[ \t]+|[ \t]*.*?: (?=%))(.*?: |)(%(\w+(?:|\([^\)]*\)))%)\s*\z/s', $line, $m)
-                    && ($tl = tab_width($m[1], true)) <= 20) {
-                    $this->line_prefix = $m[1] . $m[2];
-                    if (str_starts_with($m[4] ?? "", "OPT(")) {
-                        if (($yes = $this->expandvar($m[4], true))) {
-                            $text .= prefix_word_wrap($this->line_prefix, $this->expandvar($m[4], false), $tl, $this->width, $this->flowed);
-                        } else if ($yes === null) {
-                            $text .= $line . "\n";
-                        }
+                continue;
+            }
+
+            // full-line expansion
+            if ($np === 0) {
+                $chk = $this->_check_keyword_at($line, $np, $len, $line, 0);
+                if ($chk !== null
+                    && $chk[1] === $len
+                    && ($r = $this->expandvar($chk[0], false)) !== null) {
+                    if ($r !== "") {
+                        $text .= $r . "\n";
                     } else {
-                        $text .= $this->_lineexpand($m[3], $tl);
+                        $i = self::_merge_blank_lines($text, $lines, $i);
                     }
                     continue;
                 }
-                $this->line_prefix = "";
-                $text .= $this->_lineexpand($line, 0);
             }
+
+            // starting with an indented or bulleted expansion
+            if ($line[0] === " " || $line[0] === "\t" || $line[0] === "*") {
+                // handle cases like `* {{EXPAND}}: ...`
+                $chk = $this->_check_keyword_at($line, $np, $len, $line, 0);
+                if ($chk !== null
+                    && $chk[1] + 2 <= $len
+                    && $line[$chk[1]] === ":"
+                    && $line[$chk[1] + 1] === " "
+                    && preg_match('/\A[ \t*]*+\z/', substr($line, 0, $np), $m)) {
+                    $line = $m[0] . $this->expandvar($chk[0], false) . substr($line, $chk[1]);
+                    $brp = strlpos($line, "{{");
+                    $ptp = strlpos($line, "%");
+                    $np = min($brp, $ptp);
+                    $len = strlen($line);
+                    $chk = $this->_check_keyword_at($line, $np, $len, $line, 0);
+                }
+                // handle cases like `* Header: {{EXPAND}}\z`
+                if ($chk !== null
+                    && $chk[1] === $len
+                    && preg_match('/\A([ \t]*+(?:\*[ \t]++|[^*:][^:]*+: \z))(?:[^:]++: |)\z/', substr($line, 0, $np), $m)
+                    && ($tl = tab_width($m[1], true)) <= 20) {
+                    $this->line_prefix = $m[0];
+                    if (str_starts_with($chk[0], "OPT(")) {
+                        if (($yes = $this->expandvar($chk[0], true))) {
+                            $text .= prefix_word_wrap($this->line_prefix, $this->expandvar($chk[0], false), $tl, $this->width, $this->flowed);
+                        } else if ($yes === null) {
+                            $text .= $line . "\n";
+                        } else {
+                            $i = self::_merge_blank_lines($text, $lines, $i);
+                        }
+                    } else {
+                        $text .= $this->_lineexpand(substr($line, $np), $tl, -1, -1);
+                    }
+                    continue;
+                }
+            }
+
+            // normal line
+            $this->line_prefix = "";
+            $text .= $this->_lineexpand($line, 0, $ptp, $brp);
         }
 
         // lose newlines on header expansion
@@ -628,6 +777,7 @@ class Mailer {
         $this->context = $old_context;
         $this->width = $old_width;
         $this->line_prefix = $old_line_prefix;
+        $this->field = $old_field;
         return $text;
     }
 
@@ -635,9 +785,10 @@ class Mailer {
      * @return array<string,string> */
     function expand_all($x) {
         $r = [];
-        foreach ((array) $x as $k => $t) {
-            if (in_array($k, self::$template_fields))
-                $r[$k] = $this->expand($t, $k);
+        $x = (array) $x;
+        foreach (self::$template_fields as $k) {
+            if (isset($x[$k]))
+                $r[$k] = $this->expand($x[$k], $k);
         }
         return $r;
     }
@@ -694,7 +845,7 @@ class Mailer {
         // parse headers
         $fromHeader = $this->conf->opt("emailFromHeader");
         if ($fromHeader === null) {
-            $fromHeader = $mimetext->encode_email_header("From: ", $this->conf->opt("emailFrom"));
+            $fromHeader = $mimetext->encode_email_header("From", $this->conf->opt("emailFrom"));
             $this->conf->set_opt("emailFromHeader", $fromHeader);
         }
         $prep->headers = [];
@@ -704,18 +855,18 @@ class Mailer {
         $prep->headers["subject"] = $subject . $this->eol;
         $prep->headers["to"] = "";
         foreach (self::$email_fields as $lcfield => $field) {
-            if (($text = $mail[$lcfield] ?? "") !== "" && $text !== "<none>") {
-                if (($hdr = $mimetext->encode_email_header($field . ": ", $text))) {
-                    $prep->headers[$lcfield] = $hdr . $this->eol;
-                } else {
-                    $mimetext->mi->field = $lcfield;
-                    $mimetext->mi->landmark = "{$field} field";
-                    $prep->append_item($mimetext->mi);
-                    $logmsg = "{$lcfield}: {$text}";
-                    if (!in_array($logmsg, $this->_errors_reported)) {
-                        error_log("mailer error on {$logmsg}");
-                        $this->_errors_reported[] = $logmsg;
-                    }
+            if (($text = $mail[$lcfield] ?? "") === "" || $text === "<none>") {
+                continue;
+            }
+            if (($hdr = $mimetext->encode_email_header($field, $text))) {
+                $prep->headers[$lcfield] = $hdr . $this->eol;
+            } else {
+                $mimetext->mi->field = $lcfield;
+                $prep->append_item($mimetext->mi);
+                $logmsg = "{$lcfield}: {$text}";
+                if (!in_array($logmsg, $this->_errors_reported, true)) {
+                    error_log("mailer error on {$logmsg}");
+                    $this->_errors_reported[] = $logmsg;
                 }
             }
         }
@@ -760,31 +911,46 @@ class Mailer {
         return $this->_ms ? $this->_ms->message_list() : [];
     }
 
+    /** @param MessageItem $mi
+     * @return MessageItem */
+    static function decorated_message($mi) {
+        if ($mi->field && ($f = self::$email_fields[$mi->field] ?? null)) {
+            return $mi->with_landmark($f);
+        }
+        return $mi;
+    }
+
+    /** @return \Generator<MessageItem> */
+    function decorated_message_list() {
+        foreach ($this->message_list() as $mi) {
+            yield self::decorated_message($mi);
+        }
+    }
+
     /** @return string */
     function full_feedback_text() {
         return $this->_ms ? $this->_ms->full_feedback_text() : "";
     }
 
-    /** @param ?string $field
-     * @param string $message
+    /** @param string $message
      * @return MessageItem */
-    function warning_at($field, $message) {
-        $this->_ms = $this->_ms ?? (new MessageSet)->set_ignore_duplicates(true)->set_want_ftext(true, 5);
-        return $this->_ms->warning_at($field, $message);
+    function warning($message) {
+        $this->_ms = $this->_ms ?? (new MessageSet)->set_ignore_duplicates(true);
+        return $this->_ms->warning_at($this->field, $message);
     }
 
     /** @param string $ref */
-    final function unexpanded_warning_at($ref) {
-        if (preg_match('/\A%(\w+)/', $ref, $m)) {
+    final function unexpanded_warning($ref) {
+        if (preg_match('/\A(?:%|\{\{)(\w+)/', $ref, $m)) {
             $kw = $m[1];
             $xref = $ref;
         } else {
             $kw = $ref;
-            $xref = "%{$kw}%";
+            $xref = $kw;
         }
         $text = $this->handle_unexpanded_keyword($kw, $xref);
         if ($text !== "") {
-            $this->warning_at($xref, $text);
+            $this->warning($text);
         }
     }
 
@@ -794,11 +960,11 @@ class Mailer {
     function handle_unexpanded_keyword($kw, $xref) {
         if (preg_match('/\A(?:RESET|)PASSWORDLINK/', $kw)) {
             if ($this->conf->login_type()) {
-                return "<0>This site does not use password links";
+                return "<0>‘{$xref}’ ignored, this site does not use password links";
             } else if ($this->censor === self::CENSOR_ALL) {
-                return "<0>Password links cannot appear in mails with Cc or Bcc";
+                return "<0>‘{$xref}’ ignored, password links cannot appear in mails with Cc or Bcc";
             }
         }
-        return "<0>Keyword not found";
+        return "<0>‘{$xref}’ keyword not found";
     }
 }

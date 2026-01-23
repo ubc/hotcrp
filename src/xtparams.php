@@ -1,18 +1,22 @@
 <?php
 // xtparams.php -- HotCRP class for expanding extensions
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class XtParams {
-    /** @var Conf */
+    /** @var Conf
+     * @readonly */
     public $conf;
-    /** @var ?Contact */
+    /** @var ?Contact
+     * @readonly */
     public $user;
     /** @var bool */
-    public $alias = true;
+    private $follow_alias = true;
+    /** @var bool */
+    private $warn_deprecated = true;
     /** @var string */
-    public $reflags = "";
+    private $reflags = "";
     /** @var ?string */
-    public $require_key;
+    private $require_key;
     /** @var ?list<callable(string,object,XtParams):(?bool)> */
     public $primitive_checkers;
     /** @var ?object */
@@ -31,6 +35,27 @@ class XtParams {
         $this->user = $user;
     }
 
+    /** @param bool $match_ignores_case
+     * @return $this */
+    function set_match_ignores_case($match_ignores_case) {
+        $this->reflags = $match_ignores_case ? "i" : "";
+        return $this;
+    }
+
+    /** @param bool $follow_alias
+     * @return $this */
+    function set_follow_alias($follow_alias) {
+        $this->follow_alias = $follow_alias;
+        return $this;
+    }
+
+    /** @param bool $warn_deprecated
+     * @return $this */
+    function set_warn_deprecated($warn_deprecated) {
+        $this->warn_deprecated = $warn_deprecated;
+        return $this;
+    }
+
     /** @param ?string $method
      * @return $this */
     function set_require_key_for_method($method) {
@@ -42,6 +67,11 @@ class XtParams {
             $this->require_key = strtolower($method);
         }
         return $this;
+    }
+
+    /** @return bool */
+    function match_ignores_case() {
+        return $this->reflags === "i";
     }
 
     /** @param object $xt
@@ -107,16 +137,15 @@ class XtParams {
         } else if (str_starts_with($s, "user.")) {
             $f = substr($s, 5);
             return !$user || $user->$f();
-        } else {
-            if (isset($this->primitive_checkers)) {
-                foreach ($this->primitive_checkers as $checker) {
-                    if (($x = $checker($s, $xt, $this)) !== null)
-                        return $x;
-                }
-            }
-            error_log("unknown xt_check {$s}");
-            return false;
         }
+        if (isset($this->primitive_checkers)) {
+            foreach ($this->primitive_checkers as $checker) {
+                if (($x = $checker($s, $xt, $this)) !== null)
+                    return $x;
+            }
+        }
+        error_log("unknown xt_check {$s}");
+        return false;
     }
 
     /** @param string $s
@@ -149,9 +178,8 @@ class XtParams {
             return $v !== $compval;
         } else if ($compar === "=" || $compar === "==") {
             return $v === $compval;
-        } else {
-            return false;
         }
+        return false;
     }
 
     /** @param string $s
@@ -248,13 +276,12 @@ class XtParams {
             return $expr;
         } else if (is_string($expr)) {
             return $this->check_string($expr, $xt);
-        } else {
-            foreach ($expr as $e) {
-                if (!(is_bool($e) ? $e : $this->check_string($e, $xt)))
-                    return false;
-            }
-            return true;
         }
+        foreach ($expr as $e) {
+            if (!(is_bool($e) ? $e : $this->check_string($e, $xt)))
+                return false;
+        }
+        return true;
     }
 
     /** @param ?object $xt
@@ -274,9 +301,8 @@ class XtParams {
             return true;
         } else if (is_bool($xt->allow_if)) {
             return $xt->allow_if;
-        } else {
-            return (new XtParams($conf, $user))->check($xt->allow_if, $xt);
         }
+        return (new XtParams($conf, $user))->check($xt->allow_if, $xt);
     }
 
     /** @param ?object $xt
@@ -284,9 +310,8 @@ class XtParams {
     static function allow_list($xt) {
         if ($xt && isset($xt->allow_if)) {
             return is_array($xt->allow_if) ? $xt->allow_if : [$xt->allow_if];
-        } else {
-            return [];
         }
+        return [];
     }
 
     /** @param array<string,list<object>> $map
@@ -297,7 +322,7 @@ class XtParams {
              $aliases < 5 && $name !== null && isset($map[$name]);
              ++$aliases) {
             $xt = $this->search_list($map[$name]);
-            if ($xt && isset($xt->alias) && is_string($xt->alias) && $this->alias) {
+            if ($xt && isset($xt->alias) && is_string($xt->alias) && $this->follow_alias) {
                 $name = $xt->alias;
             } else {
                 return $xt;
@@ -307,25 +332,25 @@ class XtParams {
     }
 
     /** @param list<object> $list
+     * @param int $first
+     * @param int $last
      * @return ?object */
-    function search_list($list) {
-        $nlist = count($list);
-        if ($nlist > 1) {
-            usort($list, "Conf::xt_priority_compare");
-        }
+    function search_slice($list, $first, $last) {
         $reqkey = $this->require_key;
-        for ($i = 0; $i < $nlist; ++$i) {
-            $xt = $list[$i];
+        while ($first < $last) {
+            $xt = $list[$first];
+            ++$first;
             if ($reqkey !== null && !($xt->{$reqkey} ?? null)) {
                 continue;
             }
-            while ($i + 1 < $nlist && ($xt->merge ?? false)) {
-                ++$i;
-                if ($reqkey !== null && !($list[$i]->{$reqkey} ?? null)) {
+            while ($first < $last && ($xt->merge ?? false)) {
+                $nxt = $list[$first];
+                ++$first;
+                if ($reqkey !== null && !($nxt->{$reqkey} ?? null)) {
                     continue;
                 }
                 // apply overlay ($xt) to new base ($nxt)
-                $nxt = clone $list[$i];
+                $nxt = clone $nxt;
                 foreach (get_object_vars($xt) as $k => $v) {
                     if ($k === "merge" || $k === "__source_order") {
                         // skip
@@ -340,7 +365,7 @@ class XtParams {
                 // replace base
                 $xt = $nxt;
             }
-            if (isset($xt->deprecated) && $xt->deprecated) {
+            if (isset($xt->deprecated) && $xt->deprecated && $this->warn_deprecated) {
                 $name = $xt->name ?? "<unknown>";
                 error_log("{$this->conf->dbname}: deprecated use of `{$name}`\n" . debug_string_backtrace());
             }
@@ -350,6 +375,16 @@ class XtParams {
             }
         }
         return null;
+    }
+
+    /** @param list<object> $list
+     * @return ?object */
+    function search_list($list) {
+        $n = count($list);
+        if ($n > 1) {
+            usort($list, "Conf::xt_priority_compare");
+        }
+        return $this->search_slice($list, 0, $n);
     }
 
     /** @param list<object> $factories
@@ -373,6 +408,7 @@ class XtParams {
                 continue;
             }
             Conf::xt_resolve_require($fxt);
+            /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
             $this->user = $this->user ?? $this->conf->root_user();
             if (isset($fxt->expand_function)) {
                 $r = call_user_func($fxt->expand_function, $name, $this, $fxt, $m);

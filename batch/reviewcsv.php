@@ -74,7 +74,7 @@ class ReviewCSV_Batch {
             }
         }
         $this->t = $arg["t"] ?? "s";
-        if (!in_array($this->t, PaperSearch::viewable_limits($this->user, $this->t))) {
+        if (!in_array($this->t, PaperSearch::viewable_limits($this->user, $this->t), true)) {
             throw new CommandLineException("No search collection ‘{$this->t}’");
         }
         if (isset($arg["before"])) {
@@ -158,7 +158,7 @@ class ReviewCSV_Batch {
             if (($o->type === "title"
                  || $o->type === "abstract"
                  || $o->type === "text")
-                && $o->on_render_context($this->fr->context)
+                && $o->published($this->fr->context)
                 && ($v = $prow->option($o))) {
                 $o->render($this->fr, $v);
                 $x["field"] = $o->title();

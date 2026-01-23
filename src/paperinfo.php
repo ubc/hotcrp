@@ -1,8 +1,8 @@
 <?php
 // paperinfo.php -- HotCRP paper objects
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
-class PaperReviewPreference {
+final class PaperReviewPreference {
     /** @var int
      * @readonly */
     public $preference;
@@ -44,9 +44,8 @@ class PaperReviewPreference {
                 return $anull ? 1 : -1;
             }
             return $a->expertise <=> $b->expertise;
-        } else {
-            return 0;
         }
+        return 0;
     }
 
     /** @param ?int $tv
@@ -385,7 +384,7 @@ final class PaperContactInfo {
     }
 }
 
-class PaperConflictInfo {
+final class PaperConflictInfo {
     /** @var int
      * @readonly */
     public $contactId;
@@ -399,7 +398,7 @@ class PaperConflictInfo {
      * @readonly */
     public $author_index;
 
-    const UNINITIALIZED_INDEX = -400; // see also Author
+    const UNINITIALIZED_INDEX = -3000000; // see also Author
 
     /** @param int $uid
      * @param int $ctype */
@@ -410,7 +409,36 @@ class PaperConflictInfo {
     }
 }
 
+final class PaperDocumentLink {
+    /** @var int
+     * @readonly */
+    public $linkId;
+    /** @var int
+     * @readonly */
+    public $linkType;
+    /** @var int
+     * @readonly */
+    public $linkIndex;
+    /** @var int
+     * @readonly */
+    public $documentId;
+
+    /** @param int $linkId
+     * @param int $linkType
+     * @param int $linkIndex
+     * @param int $documentId */
+    function __construct($linkId, $linkType, $linkIndex, $documentId) {
+        $this->linkId = $linkId;
+        $this->linkType = $linkType;
+        $this->linkIndex = $linkIndex;
+        $this->documentId = $documentId;
+    }
+}
+
 class PaperInfoSet implements IteratorAggregate, Countable {
+    /** @var Conf
+     * @readonly */
+    public $conf;
     /** @var list<PaperInfo> */
     private $prows = [];
     /** @var array<int,PaperInfo> */
@@ -420,10 +448,14 @@ class PaperInfoSet implements IteratorAggregate, Countable {
     /** @var bool */
     public $prefetched_conflict_users = false;
 
+    /** @param Conf $conf */
+    function __construct($conf) {
+        $this->conf = $conf;
+    }
     /** @param PaperInfo $row
      * @return PaperInfoSet */
     static function make_singleton($row) {
-        $set = new PaperInfoSet;
+        $set = new PaperInfoSet($row->conf);
         $set->add_paper($row);
         return $set;
     }
@@ -432,18 +464,17 @@ class PaperInfoSet implements IteratorAggregate, Countable {
      * @param ?Conf $conf
      * @return PaperInfoSet */
     static function make_result($result, $user, $conf = null) {
-        $set = new PaperInfoSet;
-        $set->add_result($result, $user, $conf);
+        $set = new PaperInfoSet($conf);
+        $set->add_result($result, $user);
         return $set;
     }
     function add_paper(PaperInfo $prow) {
         $this->prows[] = $this->by_pid[$prow->paperId] = $prow;
     }
     /** @param Dbl_Result $result
-     * @param ?Contact $user
-     * @param ?Conf $conf */
-    function add_result($result, $user, $conf = null) {
-        while (PaperInfo::fetch($result, $user, $conf, $this)) {
+     * @param ?Contact $user */
+    function add_result($result, $user) {
+        while (PaperInfo::fetch($result, $user, $this->conf, $this)) {
         }
         Dbl::free($result);
     }
@@ -476,6 +507,16 @@ class PaperInfoSet implements IteratorAggregate, Countable {
             $this->by_pid[$prow->paperId] = $prow;
         }
     }
+    function sort_by_search(PaperSearch $srch) {
+        if ($srch->nontrivial_sort()) {
+            $pidmap = array_flip($srch->sorted_paper_ids());
+            $this->sort_by(function ($a, $b) use ($pidmap) {
+                $ai = $pidmap[$a->paperId] ?? PHP_INT_MAX;
+                $bi = $pidmap[$b->paperId] ?? PHP_INT_MAX;
+                return $ai <=> $bi;
+            });
+        }
+    }
     /** @return list<int> */
     function paper_ids() {
         return array_keys($this->by_pid);
@@ -500,6 +541,11 @@ class PaperInfoSet implements IteratorAggregate, Countable {
         return $this->by_pid[$pid] ?? null;
     }
     /** @param int $pid
+     * @return PaperInfo */
+    function cget($pid) {
+        return $this->checked_paper_by_id($pid);
+    }
+    /** @param int $pid
      * @return bool */
     function contains($pid) {
         return isset($this->by_pid[$pid]);
@@ -507,7 +553,7 @@ class PaperInfoSet implements IteratorAggregate, Countable {
     /** @param callable(PaperInfo):bool $func
      * @return PaperInfoSet|Iterable<PaperInfo> */
     function filter($func) {
-        $next_set = new PaperInfoSet;
+        $next_set = new PaperInfoSet($this->conf);
         foreach ($this->prows as $prow) {
             if (call_user_func($func, $prow))
                 $next_set->add_paper($prow);
@@ -701,14 +747,14 @@ class PaperInfo {
     private $_flags = 0;
     /** @var ?SubmissionRound */
     private $_submission_round;
-    /** @var ?array<string,string> */
-    private $_deaccents;
     /** @var ?list<Author> */
     private $_author_array;
     /** @var ?list<PaperConflictInfo> */
     private $_ctype_list;
     /** @var ?list<AuthorMatcher> */
     private $_collaborator_array;
+    /** @var ?PaperInfoPotentialConflictList */
+    private $_potconf;
     /** @var ?array<int,PaperReviewPreference> */
     private $_prefs_array;
     /** @var ?int */
@@ -719,7 +765,7 @@ class PaperInfo {
     private $_desirability;
     /** @var ?list<int> */
     private $_topic_array;
-    /** @var ?array<int,float> */
+    /** @var ?array<int,int> */
     private $_topic_interest_score_array;
     /** @var ?array<int,list<int>> */
     private $_option_values;
@@ -733,8 +779,8 @@ class PaperInfo {
     private $_primary_document;
     /** @var array<int,DocumentInfo> */
     private $_document_array;
-    /** @var ?array<int,array<int,int>> */
-    private $_doclink_array;
+    /** @var ?list<PaperDocumentLink> */
+    private $_doclinks;
     /** @var ?DecisionInfo */
     private $_decision;
     /** @var ?array<int,ReviewInfo> */
@@ -751,20 +797,20 @@ class PaperInfo {
     private $_comment_array;
     /** @var ?list<CommentInfo> */
     private $_comment_skeleton_array;
-    /** @var ?list<array{int,string,int,string}> */
-    private $_potential_conflicts;
     /** @var ?list<ReviewRequestInfo> */
     private $_request_array;
     /** @var ?list<ReviewRefusalInfo> */
     private $_refusal_array;
     /** @var ?array<int,int> */
     private $_watch_array;
-    /** @var ?TokenInfo */
+    /** @var null|false|TokenInfo */
     public $_author_view_token;
     /** @var ?int */
     public $_search_group;
     /** @var ?array<string,mixed> */
     public $_old_prop;
+
+    const PID_MAX = 2000000000;
 
     const REVIEW_HAS_FULL = 0x01;
     const REVIEW_HAS_NAMES = 0x02;
@@ -793,7 +839,7 @@ class PaperInfo {
     private function __construct(Conf $conf, $paperset = null) {
         $this->conf = $conf;
         $this->paperXid = ++self::$next_uid;
-        $this->_row_set = $paperset ?? new PaperInfoSet;
+        $this->_row_set = $paperset ?? new PaperInfoSet($conf);
     }
 
     /** @suppress PhanAccessReadOnlyProperty */
@@ -890,8 +936,14 @@ class PaperInfo {
             $prow->topicIds = "";
         $prow->leadContactId = $prow->shepherdContactId = 0;
         $prow->blind = true;
-        $prow->allConflictType = "";
-        $prow->_author_user = $user;
+        if ($user->contactId > 0) {
+            $prow->allConflictType = $user->contactId . " " . CONFLICT_CONTACTAUTHOR;
+        } else {
+            $prow->allConflictType = "";
+        }
+        if ($user->has_email()) {
+            $prow->_author_user = $user;
+        }
         $prow->_review_array = [];
         $prow->_comment_skeleton_array = $prow->_comment_array = [];
         $prow->_row_set->add_paper($prow);
@@ -978,6 +1030,7 @@ class PaperInfo {
             $this->_contact_info = [];
             $this->reviewSignatures = $this->_review_array = $this->_reviews_have = null;
             $this->allConflictType = $this->_ctype_list = null;
+            $this->_potconf = null;
             $this->myContactXid = null;
             ++$this->_review_array_version;
         }
@@ -996,8 +1049,9 @@ class PaperInfo {
     /** @param int $cid
      * @return PaperContactInfo */
     function _get_contact_info($cid) {
-        if (($ci = $this->_contact_info[$cid]) === null) {
-            $ci = $this->_contact_info[$cid] = new PaperContactInfo($this->paperId, $cid);
+        $ci =& $this->_contact_info[$cid];
+        if ($ci === null) {
+            $ci = new PaperContactInfo($this->paperId, $cid);
         }
         return $ci;
     }
@@ -1055,7 +1109,7 @@ class PaperInfo {
     /** @return Contact */
     function author_user() {
         // Return a fake user that looks like a contact for this paper, but
-        // has no special privileges
+        // has no other privileges
         if (!$this->_author_user) {
             $this->_author_user = Contact::make($this->conf);
             $this->contact_info($this->_author_user); // contact_info must exist
@@ -1117,9 +1171,8 @@ class PaperInfo {
     function want_submitted() {
         if (($this->_flags & self::IS_UPDATING) !== 0) {
             return ($this->_flags & self::UPDATING_WANT_SUBMITTED) !== 0;
-        } else {
-            return $this->timeSubmitted > 0;
         }
+        return $this->timeSubmitted > 0;
     }
 
     /** @return 0|1 */
@@ -1160,29 +1213,48 @@ class PaperInfo {
     }
 
     /** @param string $prop
+     * @return mixed */
+    function prop_with_overflow($prop) {
+        return $this->_dataOverflow[$prop] ?? $this->$prop;
+    }
+
+    /** @param string $prop
      * @param mixed $v */
     function set_prop($prop, $v) {
         $this->_old_prop = $this->_old_prop ?? [];
-        if (!array_key_exists($prop, $this->_old_prop)) {
+        if (!array_key_exists($prop, $this->_old_prop)
+            && $this->$prop !== $v) {
             $this->_old_prop[$prop] = $this->$prop;
         }
         $this->$prop = $v;
         // clear caches, sometimes conservatively
-        $this->_deaccents = null;
         if ($prop === "authorInformation") {
-            $this->_author_array = $this->_ctype_list = null;
+            $this->_author_array = $this->_ctype_list = $this->_potconf = null;
         } else if ($prop === "collaborators") {
-            $this->_collaborator_array = null;
+            $this->_collaborator_array = $this->_potconf = null;
         } else if ($prop === "topicIds") {
             $this->_topic_array = $this->_topic_interest_score_array = null;
         } else if ($prop === "allConflictType") {
-            $this->_ctype_list = null;
+            $this->_ctype_list = $this->_potconf = null;
         }
     }
 
     /** @param string $prop
      * @param mixed $v */
+    function set_prop_force($prop, $v) {
+        $this->_old_prop = $this->_old_prop ?? [];
+        if (!array_key_exists($prop, $this->_old_prop)) {
+            $this->_old_prop[$prop] = $this->$prop;
+        }
+        $this->set_prop($prop, $v);
+    }
+
+    /** @param string $prop
+     * @param mixed $v */
     function set_overflow_prop($prop, $v) {
+        if ($v === null && $this->dataOverflow === null) {
+            return;
+        }
         $this->_old_prop = $this->_old_prop ?? [];
         if (!array_key_exists("dataOverflow", $this->_old_prop)) {
             $this->_old_prop["dataOverflow"] = $this->dataOverflow;
@@ -1209,11 +1281,36 @@ class PaperInfo {
         return $this->$prop;
     }
 
+    /** @param string $prop
+     * @return mixed */
+    function base_prop_with_overflow($prop) {
+        if ($this->_old_prop !== null
+            && array_key_exists("dataOverflow", $this->_old_prop)) {
+            $old_dataOverflow = json_decode($this->_old_prop["dataOverflow"] ?? "null", true);
+            if (isset($old_dataOverflow[$prop])) {
+                return $old_dataOverflow[$prop];
+            }
+        } else if (isset($this->_dataOverflow[$prop])) {
+            return $this->_dataOverflow[$prop];
+        }
+        return $this->base_prop($prop);
+    }
+
     /** @param ?string $prop
      * @return bool */
     function prop_changed($prop = null) {
         return !empty($this->_old_prop)
             && (!$prop || array_key_exists($prop, $this->_old_prop));
+    }
+
+    /** @return bool */
+    function user_prop_changed() {
+        foreach ($this->_old_prop ?? [] as $prop => $x) {
+            if (!in_array($prop, ["outcome", "leadContactId", "shepherdContactId", "managerContactId", "pdfFormatStatus"])) {
+                return true;
+            }
+        }
+        return false;
     }
 
     function commit_prop() {
@@ -1297,17 +1394,6 @@ class PaperInfo {
         return $au;
     }
 
-    /** @param list<Author> $aulist
-     * @param string $email
-     * @return ?Author */
-    static function search_author_list_by_email($aulist, $email) {
-        foreach ($aulist as $au) {
-            if ($au->email !== "" && strcasecmp($au->email, $email) === 0)
-                return $au;
-        }
-        return null;
-    }
-
     /** @return list<Author> */
     function author_list() {
         if (!isset($this->_author_array)) {
@@ -1319,7 +1405,7 @@ class PaperInfo {
     /** @param string $email
      * @return ?Author */
     function author_by_email($email) {
-        return self::search_author_list_by_email($this->author_list(), $email);
+        return Author::find_by_email($email, $this->author_list());
     }
 
     /** @param int $index
@@ -1341,9 +1427,8 @@ class PaperInfo {
                    && !$this->conf->setting("seedec_hideau")
                    && $this->can_author_view_decision()) {
             return 0;  /* not blind to reviewers who can see decision */
-        } else {
-            return 1;  /* blind to any reviewer */
         }
+        return 1;      /* blind to any reviewer */
     }
 
 
@@ -1498,9 +1583,7 @@ class PaperInfo {
     function collaborator_list() {
         if ($this->_collaborator_array === null) {
             $this->_collaborator_array = [];
-            foreach (AuthorMatcher::make_collaborator_generator($this->collaborators()) as $m) {
-                $m->contactId = 0;
-                $m->author_index = Author::COLLABORATORS_INDEX;
+            foreach (AuthorMatcher::make_collaborator_generator($this->collaborators(), Author::PAPER_COLLABORATOR_INDEX) as $m) {
                 $this->_collaborator_array[] = $m;
             }
         }
@@ -1521,148 +1604,25 @@ class PaperInfo {
         }
     }
 
-    /** @param ?callable(Contact,AuthorMatcher,Author,string) $callback
-     * @return bool */
-    function potential_conflict_callback(Contact $user, $callback) {
-        $nproblems = $auproblems = 0;
-        if ($this->field_match_pregexes($user->aucollab_general_pregexes(), "authorInformation")) {
-            foreach ($this->author_list() as $au) {
-                foreach ($user->aucollab_matchers() as $userm) {
-                    if (($why = $userm->test($au, $userm->is_nonauthor()))) {
-                        if (!$callback) {
-                            return true;
-                        }
-                        $auproblems |= $why;
-                        ++$nproblems;
-                        call_user_func($callback, $user, $userm, $au, $why);
-                    }
-                }
-            }
+    /** @return PaperInfoPotentialConflictList */
+    private function _potential_conflict(Contact $user) {
+        $this->check_rights_version();
+        if (!$this->_potconf || $this->_potconf->user() !== $user) {
+            $this->_potconf = new PaperInfoPotentialConflictList($this, $this->_potconf);
+            $this->_potconf->reset($user);
         }
-        $userm = $user->full_matcher();
-        $collab = $this->full_collaborators();
-        if (Text::match_pregexes($userm->general_pregexes(), $collab, UnicodeHelper::deaccent($collab))) {
-            foreach ($this->collaborator_list() as $co) {
-                if (($co->lastName !== ""
-                     || ($auproblems & AuthorMatcher::MATCH_AFFILIATION) === 0)
-                    && ($why = $userm->test($co, true))) {
-                    if (!$callback) {
-                        return true;
-                    }
-                    ++$nproblems;
-                    call_user_func($callback, $user, $userm, $co, $why);
-                }
-            }
-        }
-        return $nproblems > 0;
+        return $this->_potconf;
     }
 
     /** @return bool */
     function potential_conflict(Contact $user) {
-        return $this->potential_conflict_callback($user, null);
+        return !$this->_potential_conflict($user)->is_empty();
     }
 
-    /** @param Contact $user
-     * @param AuthorMatcher $userm
-     * @param Author $cflt
-     * @param string $why */
-    function _potential_conflict_html_callback($user, $userm, $cflt, $why) {
-        $cfltm = AuthorMatcher::make($cflt);
-        if ($userm->is_nonauthor()) {
-            $userdesc = "<em>collaborator</em> " . $cfltm->highlight($userm);
-            $order0 = 4;
-        } else if ($cflt->is_nonauthor()) {
-            $userdesc = $cfltm->highlight($userm);
-            $order0 = 2;
-        } else if ($why === AuthorMatcher::MATCH_AFFILIATION) {
-            $userdesc = "<em>affiliation</em> " . $cfltm->highlight($userm->affiliation);
-            $order0 = 3;
-        } else {
-            $userdesc = $cfltm->highlight($userm->name());
-            $order0 = 1;
-        }
-        if ($cflt->author_index === Author::COLLABORATORS_INDEX) {
-            $order = PHP_INT_MAX;
-            $cfltdesc = "<em>submission collaborator</em> " . $userm->highlight($cflt);
-        } else if (($cflt->author_index ?? 0) <= 0) {
-            $order = PHP_INT_MAX - 1;
-            $cfltdesc = "<em>contact"
-                . ($cflt->email ? " " . htmlspecialchars($cflt->email) : "")
-                . ($cflt->is_nonauthor() ? " collaborator" : "")
-                . "</em> " . $userm->highlight($cflt);
-        } else if ($cflt->is_nonauthor()) {
-            $order = $cflt->author_index | (2 << 24);
-            if (($aucflt = $this->author_by_index($cflt->author_index))) {
-                $cfltdesc = "<em>author " . $aucflt->name_h() . "’s collaborator</em> " . $userm->highlight($cflt);
-            } else {
-                error_log("#{$this->paperId}: cannot find {$cflt->author_index} " . json_encode($cflt->unparse_debug_json()) . " " . json_encode(array_map(function ($a) { return $a->unparse_debug_json(); }, $this->author_list())));
-                error_log(debug_string_backtrace());
-                $cfltdesc = "<em>author #{$cflt->author_index}’s collaborator</em> " . $userm->highlight($cflt);
-            }
-        } else if ($why === AuthorMatcher::MATCH_AFFILIATION) {
-            $order = $cflt->author_index | (1 << 24);
-            if (($aucflt = $this->author_by_index($cflt->author_index))) {
-                $cfltdesc = "<em>author</em> " . $aucflt->name_h() . " (" . $userm->highlight($cflt->affiliation) . ")";
-            } else {
-                error_log("#{$this->paperId}: cannot find {$cflt->author_index}");
-                error_log(debug_string_backtrace());
-                $cfltdesc = "<em>author #{$cflt->author_index}’s affiliation</em> " . $userm->highlight($cflt->affiliation);
-            }
-        } else {
-            $order = $cflt->author_index;
-            $cfltdesc = "<em>author</em> " . $userm->highlight($cflt);
-        }
-        $this->_potential_conflicts[] = [$order0, $userdesc, $order, $cfltdesc];
-    }
-
-    /** @return ?PaperInfoPotentialConflictHTML */
-    function potential_conflict_html(Contact $user, $highlight = false) {
-        if (!$this->potential_conflict_callback($user, [$this, "_potential_conflict_html_callback"])) {
-            return null;
-        }
-        usort($this->_potential_conflicts, function ($a, $b) {
-            return $a[0] <=> $b[0] ? :
-                ($a[2] <=> $b[2] ? : strnatcasecmp($a[3], $b[3]));
-        });
-        $authors = [];
-        foreach ($this->_potential_conflicts as $x) {
-            if ($x[2] < PHP_INT_MAX - 2) {
-                $au = $x[2] & 0xFFFFFF;
-                $authors[$au] = "#{$au}";
-            }
-        }
-        if (!empty($authors)) {
-            ksort($authors);
-            $announce = "Possible conflict with " . plural_word($authors, "author") . " " . numrangejoin(array_values($authors)) . "…";
-        } else {
-            $announce = "Possible conflict…";
-        }
-        $potconf = new PaperInfoPotentialConflictHTML;
-        $announcehighlight = $highlight ? " pcconfmatch-highlight" : "";
-        $potconf->announce = "<div class=\"pcconfmatch{$announcehighlight}\">{$announce}</div>";
-        $last = null;
-        foreach ($this->_potential_conflicts as $x) {
-            if ($last === $x[1]) {
-                $potconf->messages[count($potconf->messages) - 1][] = $x[3];
-            } else {
-                $potconf->messages[] = [$x[1], $x[3]];
-                $last = $x[1];
-            }
-        }
-        $this->_potential_conflicts = null;
-        return $potconf;
-    }
-
-    /** @param ?PaperInfoPotentialConflictHTML $potconf
-     * @return string */
-    static function potential_conflict_tooltip_html($potconf) {
-        if ($potconf && !empty($potconf->messages)) {
-            return '<ul class="x"><li>'
-                . join('</li><li>', $potconf->render_ul_list())
-                . '</li></ul>';
-        } else {
-            return "";
-        }
+    /** @return ?PaperInfoPotentialConflictList */
+    function potential_conflict_list(Contact $user) {
+        $pcl = $this->_potential_conflict($user);
+        return $pcl->is_empty() ? null : $pcl;
     }
 
 
@@ -1733,32 +1693,17 @@ class PaperInfo {
             return "Administrator";
         } else if ($rrow) {
             return "Reviewer";
-        } else {
-            return null;
         }
+        return null;
     }
 
-
-    /** @param 'title'|'abstract'|'authorInformation'|'collaborators' $field
-     * @return ?string */
-    private function deaccented_field($field) {
-        $this->_deaccents = $this->_deaccents ?? [];
-        if (!array_key_exists($field, $this->_deaccents)) {
-            $str = $this->{$field}();
-            if ($str !== "" && !is_usascii($str)) {
-                $this->_deaccents[$field] = UnicodeHelper::deaccent($str);
-            } else {
-                $this->_deaccents[$field] = null;
-            }
-        }
-        return $this->_deaccents[$field];
-    }
 
     /** @param TextPregexes $reg
      * @param 'title'|'abstract'|'authorInformation'|'collaborators' $field
-     * @return bool */
+     * @return bool
+     * @deprecated */
     function field_match_pregexes($reg, $field) {
-        return Text::match_pregexes($reg, $this->{$field}(), $this->deaccented_field($field));
+        return $reg->match($this->{$field}());
     }
 
 
@@ -1774,7 +1719,7 @@ class PaperInfo {
         if ($this->conf->any_response_open === 2) {
             return true;
         } else if ($this->conf->any_response_open) {
-            foreach ($this->conf->response_rounds() as $rrd) {
+            foreach ($this->conf->response_round_list() as $rrd) {
                 if ($rrd->can_author_respond($this, true))
                     return true;
             }
@@ -1801,12 +1746,12 @@ class PaperInfo {
             return 2;
         }
         $sr = $this->submission_round();
-        if (($this->timeSubmitted <= 0 || !$sr->freeze)
-            && $sr->time_update(true)) {
-            return 1;
-        } else {
+        if (($this->is_new()
+             && !$sr->time_register(true))
+            || !$sr->time_edit($this->timeSubmitted > 0, true)) {
             return 0;
         }
+        return 1;
     }
 
 
@@ -1890,9 +1835,8 @@ class PaperInfo {
         if ($this->paperTags !== ""
             && ($pos = stripos($this->paperTags, " {$tag}#")) !== false) {
             return (float) substr($this->paperTags, $pos + strlen($tag) + 2);
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @return string */
@@ -2113,13 +2057,10 @@ class PaperInfo {
                 }
             }
         }
-        if ($score) {
-            // * Strong interest in the paper's single topic gets
-            //   score 10.
-            $score = (int) ($score / sqrt(count($topics)) * 10 + 0.5);
-        }
-        $this->_topic_interest_score_array[$contact->contactId] = $score;
-        return $score;
+        // Scale so strong interest in the paper's single topic gets score 10
+        $iscore = $score ? (int) ($score / sqrt(count($topics)) * 10 + 0.5) : 0;
+        $this->_topic_interest_score_array[$contact->contactId] = $iscore;
+        return $iscore;
     }
 
     function invalidate_topics() {
@@ -2214,9 +2155,8 @@ class PaperInfo {
     function viewable_decision(Contact $user) {
         if ($this->outcome === 0 || !$user->can_view_decision($this)) {
             return $this->conf->unspecified_decision;
-        } else {
-            return $this->decision();
         }
+        return $this->decision();
     }
 
     /** @return array{string,string} */
@@ -2229,12 +2169,14 @@ class PaperInfo {
             return [$dec->status_class(), $dec->name];
         } else if ($this->timeSubmitted > 0) {
             return ["ps-submitted", "Submitted"];
-        } else if ($this->paperStorageId <= 1
-                   && (int) $this->conf->opt("noPapers") !== 1) {
-            return ["ps-draft", "No submission"];
-        } else {
-            return ["ps-draft", "Draft"];
         }
+        if ($this->paperStorageId <= 1) {
+            $subopt = $this->conf->option_by_id(DTYPE_SUBMISSION);
+            if ($subopt->test_exists($this) && $subopt->test_required($this)) {
+                return ["ps-draft", "No submission"];
+            }
+        }
+        return ["ps-draft", "Draft"];
     }
 
 
@@ -2352,7 +2294,7 @@ class PaperInfo {
                    && $this->optionIds !== null
                    && !$need_data) {
             $this->_option_values = [];
-            preg_match_all('/(\d+)#(-?\d+)/', $this->optionIds, $m);
+            preg_match_all('/(\d+)\#(-?\d+)/', $this->optionIds, $m);
             for ($i = 0; $i < count($m[1]); ++$i) {
                 $this->_option_values[(int) $m[1][$i]][] = (int) $m[2][$i];
             }
@@ -2422,9 +2364,8 @@ class PaperInfo {
             return $ov;
         } else if (($opt = is_int($o) ? $this->conf->option_by_id($o) : $o)) {
             return PaperValue::make_force($this, $opt);
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @param int|PaperOption $o
@@ -2440,6 +2381,11 @@ class PaperInfo {
             $this->_base_option_array[$id] = $this->force_option($ov->option);
         }
         $this->_option_array[$id] = $ov;
+    }
+
+    /** @return list<int> */
+    function overridden_option_ids() {
+        return array_keys($this->_base_option_array ?? []);
     }
 
     function remove_option_overrides() {
@@ -2522,20 +2468,21 @@ class PaperInfo {
     }
 
     function ensure_primary_documents() {
-        if (!$this->_primary_document && count($this->_row_set) > 1) {
-            $psids = [];
-            foreach ($this->_row_set as $prow) {
-                $psids[] = $prow->finalPaperStorageId <= 0 ? $prow->paperStorageId : $prow->finalPaperStorageId;
-            }
-            $result = $this->conf->qe("select " . $this->conf->document_query_fields() . " from PaperStorage where paperStorageId?a", $psids);
-            while (($di = DocumentInfo::fetch($result, $this->conf))) {
-                if (($prow = $this->_row_set->get($di->paperId))) {
-                    $di->prow = $prow;
-                    $prow->_primary_document = $di;
-                }
-            }
-            Dbl::free($result);
+        if ($this->_primary_document || count($this->_row_set) <= 1) {
+            return;
         }
+        $psids = [];
+        foreach ($this->_row_set as $prow) {
+            $psids[] = $prow->finalPaperStorageId <= 0 ? $prow->paperStorageId : $prow->finalPaperStorageId;
+        }
+        $result = $this->conf->qe("select " . $this->conf->document_query_fields() . " from PaperStorage where paperStorageId?a", $psids);
+        while (($di = DocumentInfo::fetch($result, $this->conf))) {
+            if (($prow = $this->_row_set->get($di->paperId))) {
+                $di->prow = $prow;
+                $prow->_primary_document = $di;
+            }
+        }
+        Dbl::free($result);
     }
 
     /** @return ?DocumentInfo */
@@ -2575,9 +2522,8 @@ class PaperInfo {
         } else if (($ov = $this->option($dtype))
                    && $ov->option->has_document()) {
             return $ov->documents();
-        } else {
-            return [];
         }
+        return [];
     }
 
     /** @param int $dtype
@@ -2634,68 +2580,82 @@ class PaperInfo {
     }
 
 
-    /** @return array<int,array<int,int>> */
-    private function doclink_array() {
-        if ($this->_doclink_array === null) {
+    /** @return list<PaperDocumentLink> */
+    private function doclinks() {
+        if ($this->_doclinks === null) {
             foreach ($this->_row_set as $prow) {
-                $prow->_doclink_array = [];
+                $prow->_doclinks = [];
             }
-            $result = $this->conf->qe("select paperId, linkId, linkType, documentId from DocumentLink where paperId?a order by paperId, linkId, linkType", $this->_row_set->paper_ids());
+            $result = $this->conf->qe("select paperId, linkId, linkType, linkIndex, documentId from DocumentLink where paperId?a order by paperId, linkId, linkType, linkIndex", $this->_row_set->paper_ids());
             while ($result && ($row = $result->fetch_row())) {
                 $prow = $this->_row_set->get((int) $row[0]);
-                $linkid = (int) $row[1];
-                if (!isset($prow->_doclink_array[$linkid])) {
-                    $prow->_doclink_array[$linkid] = [];
-                }
-                $prow->_doclink_array[$linkid][(int) $row[2]] = (int) $row[3];
+                $prow->_doclinks[] = new PaperDocumentLink(
+                    (int) $row[1], (int) $row[2], (int) $row[3], (int) $row[4]
+                );
             }
             Dbl::free($result);
         }
-        return $this->_doclink_array;
+        return $this->_doclinks;
     }
 
-    /** @param int $linkid
-     * @param int $min
-     * @param int $max
+    /** @param int $linkId
+     * @param int $linkType
      * @param ?CommentInfo $owner
-     * @return DocumentInfoSet */
-    function linked_documents($linkid, $min, $max, $owner = null) {
-        $docs = new DocumentInfoSet;
-        foreach (($this->doclink_array())[$linkid] ?? [] as $lt => $docid) {
-            if ($lt >= $min
-                && $lt < $max
-                && ($d = $this->document(-2, $docid))) {
-                $docs->add($owner ? $d->with_owner($owner) : $d);
+     * @return DocumentInfoSet
+     * @suppress PhanTypeArraySuspiciousNullable */
+    function linked_documents($linkId, $linkType, $owner = null) {
+        if ($this->_doclinks === null) {
+            $this->doclinks();
+        }
+        $l = 0;
+        $n = $r = count($this->_doclinks);
+        if ($n > 20) {
+            while ($r > $l) {
+                $m = $l + (($r - $l) >> 1);
+                $dl = $this->_doclinks[$m];
+                if ($dl->linkId < $linkId) {
+                    $l = $m + 1;
+                } else {
+                    $r = $m;
+                }
             }
+        }
+        $docs = new DocumentInfoSet;
+        while ($l < $n) {
+            $dl = $this->_doclinks[$l];
+            if ($dl->linkId === $linkId
+                && $dl->linkType === $linkType
+                && ($d = $this->document($linkType, $dl->documentId))) {
+                $docs->add($owner ? $d->with_owner($owner) : $d);
+            } else if ($dl->linkId > $linkId) {
+                break;
+            }
+            ++$l;
         }
         return $docs;
     }
 
     /** @param int $docid
-     * @param int $min
-     * @param int $max
+     * @param int $linkType
      * @return ?int */
-    function link_id_by_document_id($docid, $min, $max) {
-        foreach ($this->doclink_array() as $linkid => $links) {
-            foreach ($links as $lt => $did) {
-                if ($lt >= $min
-                    && $lt < $max
-                    && $did === $docid) {
-                    return $linkid;
-                }
+    function link_id_by_document_id($docid, $linkType) {
+        foreach ($this->doclinks() as $dl) {
+            if ($dl->linkType === $linkType
+                && $dl->documentId === $docid) {
+                return $dl->linkId;
             }
         }
         return null;
     }
 
     function invalidate_linked_documents() {
-        $this->_doclink_array = null;
+        $this->_doclinks = null;
     }
 
     function mark_inactive_linked_documents() {
         // see also DocumentInfo::active_document_map
         $this->conf->qe("update PaperStorage ps
-            left join DocumentLink dl on (dl.paperId=? and dl.documentId=ps.paperStorageId)
+            left join DocumentLink dl on (dl.paperId=? and dl.linkType=ps.documentType and dl.documentId=ps.paperStorageId)
             set inactive=(dl.documentId is null)
             where ps.paperId=? and ps.documentType<=?",
             $this->paperId, $this->paperId, DTYPE_COMMENT);
@@ -2758,12 +2718,16 @@ class PaperInfo {
 
     /** @return int|false */
     function parse_ordinal_id($oid) {
-        if ($oid === "") {
+        if (is_int($oid)) {
+            return $oid;
+        } else if ($oid === "") {
             return 0;
         } else if (ctype_digit($oid)) {
             return intval($oid);
-        } else if (str_starts_with($oid, (string) $this->paperId)) {
-            $oid = (string) substr($oid, strlen((string) $this->paperId));
+        }
+        $pidstr = (string) $this->paperId;
+        if (str_starts_with($oid, $pidstr)) {
+            $oid = (string) substr($oid, strlen($pidstr));
             if (strlen($oid) > 1 && $oid[0] === "r" && ctype_digit(substr($oid, 1))) {
                 return intval(substr($oid, 1));
             }
@@ -2772,9 +2736,8 @@ class PaperInfo {
             return -$n;
         } else if ($oid === "rnew" || $oid === "new") {
             return 0;
-        } else {
-            return false;
         }
+        return false;
     }
 
     /** @return array<int,ReviewInfo> */
@@ -2860,9 +2823,8 @@ class PaperInfo {
             return null;
         } else if ($n < 0) {
             return $this->review_by_ordinal(-$n);
-        } else {
-            return $this->review_by_id($n);
         }
+        return $this->review_by_id($n);
     }
 
     /** @param int|Contact $u
@@ -2882,9 +2844,8 @@ class PaperInfo {
     function checked_review_by_user($u) {
         if (($rrow = $this->review_by_user($u))) {
             return $rrow;
-        } else {
-            throw new Exception("PaperInfo::checked_review_by_user failure");
         }
+        throw new Exception("PaperInfo::checked_review_by_user failure");
     }
 
     /** @param int|Contact $contact
@@ -2896,7 +2857,7 @@ class PaperInfo {
             if ($rrow->contactId == $cid
                 || ($rev_tokens
                     && $rrow->reviewToken
-                    && in_array($rrow->reviewToken, $rev_tokens))) {
+                    && in_array($rrow->reviewToken, $rev_tokens, true))) {
                 $rrows[] = $rrow;
             }
         }
@@ -3002,9 +2963,8 @@ class PaperInfo {
             return null;
         } else if ($n < 0) {
             return $this->full_review_by_ordinal(-$n);
-        } else {
-            return $this->full_review_by_id($n);
         }
+        return $this->full_review_by_id($n);
     }
 
     /** @return ?ReviewInfo */
@@ -3424,7 +3384,7 @@ class PaperInfo {
                 return $this->all_comments();
             }
             $this->_comment_skeleton_array = [];
-            preg_match_all('/(\d+);(\d+);(\d+);(\d+);([^|]*)/',
+            preg_match_all('/(\d+);(\d+);(\d+);(\d+);(\d+);([^|]*)/',
                            $this->commentSkeletonInfo, $ms, PREG_SET_ORDER);
             foreach ($ms as $m) {
                 $c = new CommentInfo($this);
@@ -3432,7 +3392,8 @@ class PaperInfo {
                 $c->contactId = (int) $m[2];
                 $c->commentType = (int) $m[3];
                 $c->commentRound = (int) $m[4];
-                $c->commentTags = $m[5];
+                $c->timeModified = (int) $m[5];
+                $c->commentTags = $m[6];
                 $this->_comment_skeleton_array[] = $c;
             }
         }
@@ -3471,15 +3432,12 @@ class PaperInfo {
         }
 
         usort($crows, function ($a, $b) {
-            if ($a->timeDisplayed != $b->timeDisplayed) {
-                if ($a->timeDisplayed == 0 || $b->timeDisplayed == 0) {
-                    return $a->timeDisplayed == 0 ? 1 : -1;
-                } else {
-                    return $a->timeDisplayed < $b->timeDisplayed ? -1 : 1;
-                }
-            } else {
+            if ($a->timeDisplayed == $b->timeDisplayed) {
                 return $a->commentId < $b->commentId ? -1 : 1;
+            } else if ($a->timeDisplayed == 0 || $b->timeDisplayed == 0) {
+                return $a->timeDisplayed == 0 ? 1 : -1;
             }
+            return $a->timeDisplayed < $b->timeDisplayed ? -1 : 1;
         });
 
         $xrows = [];
@@ -3537,9 +3495,8 @@ class PaperInfo {
                    || isset($b->reviewId)
                    || (($a->commentType | $b->commentType) & CommentInfo::CT_RESPONSE)) {
             return "\n\n\n";
-        } else {
-            return "\n\n";
         }
+        return "\n\n";
     }
 
 
@@ -3607,13 +3564,25 @@ class PaperInfo {
      * @param string $clause
      * @return list<Contact> */
     function generic_followers($cids, $clause) {
-        $result = $this->conf->qe("select " . $this->conf->user_query_fields(Contact::SLICE_MINIMAL - Contact::SLICEBIT_PASSWORD) . ", preferredEmail, defaultWatch from ContactInfo where (contactId?a or ({$clause})) and not disabled", $cids); // XXX ContactInfo.disabled
-        $us = [];
-        while (($minic = Contact::fetch($result, $this->conf))) {
-            if ($minic->can_view_paper($this))
-                $us[] = $minic;
+        // collect followers
+        $result = $this->conf->qe("select " . $this->conf->user_query_fields(Contact::SLICE_MINIMAL - Contact::SLICEBIT_PASSWORD - Contact::SLICEBIT_DEFAULTWATCH) . " from ContactInfo where (contactId?a or ({$clause})) and (cflags&?)=0",
+            $cids, Contact::CFM_DISABLEMENT);
+        $byuid = [];
+        while (($u = Contact::fetch($result, $this->conf))) {
+            if ($u->can_view_paper($this))
+                $byuid[$u->contactId] = $u;
         }
         Dbl::free($result);
+        // remove linked accounts with primaries in the list
+        $us = [];
+        foreach ($byuid as $u) {
+            if ($u->primaryContactId <= 0
+                || $u->primaryContactId === $u->contactId /* should not happen */
+                || !isset($byuid[$u->primaryContactId])) {
+                $us[] = $u;
+            }
+        }
+        // sort and return
         usort($us, [$this, "notify_user_compare"]);
         return $us;
     }
@@ -3629,32 +3598,10 @@ class PaperInfo {
     }
 
     /** @return list<Contact> */
-    function submission_followers() {
-        $fl = ($this->is_new() ? Contact::WATCH_PAPER_REGISTER_ALL : 0)
-            | ($this->timeSubmitted > 0 ? Contact::WATCH_PAPER_NEWSUBMIT_ALL : 0);
-        $us = [];
-        foreach ($this->generic_followers([], "(defaultWatch&{$fl})!=0 and roles!=0") as $u) {
-            if ($u->following_submission($this))
-                $us[] = $u;
-        }
-        return $us;
-    }
-
-    /** @return list<Contact> */
     function late_withdrawal_followers() {
         $us = [];
         foreach ($this->generic_followers([], "(defaultWatch&" . Contact::WATCH_LATE_WITHDRAWAL_ALL . ")!=0 and roles!=0") as $u) {
             if ($u->following_late_withdrawal($this))
-                $us[] = $u;
-        }
-        return $us;
-    }
-
-    /** @return list<Contact> */
-    function final_update_followers() {
-        $us = [];
-        foreach ($this->generic_followers([], "(defaultWatch&" . Contact::WATCH_FINAL_UPDATE_ALL . ")!=0 and roles!=0") as $u) {
-            if ($u->following_final_update($this))
                 $us[] = $u;
         }
         return $us;
@@ -3693,35 +3640,56 @@ class PaperInfo {
         }
         $rrows = $this->all_reviews();
 
+        // deleting a paper can change author/reviewer state & thus cdbRoles
+        $uids = [];
+        foreach ($this->conflict_types() as $uid => $ctype) {
+            if ($ctype >= CONFLICT_AUTHOR)
+                $uids[] = $ctype;
+        }
+        foreach ($rrows as $rrow) {
+            if ($rrow->reviewType > 0)
+                $uids[] = $rrow->contactId;
+        }
+
         $qs = [];
-        foreach (["PaperWatch", "PaperReviewPreference", "PaperReviewRefused", "ReviewRequest", "PaperTag", "PaperComment", "PaperReview", "PaperTopic", "PaperOption", "PaperConflict", "Paper", "PaperStorage", "Capability"] as $table) {
+        foreach (["PaperWatch", "PaperReviewPreference", "PaperReviewRefused", "ReviewRequest", "PaperTag", "PaperComment", "PaperReview", "PaperTopic", "PaperOption", "PaperConflict", "Paper", "PaperStorage", "DocumentLink", "Capability"] as $table) {
             $qs[] = "delete from {$table} where paperId={$this->paperId}";
         }
         $mresult = Dbl::multi_qe($this->conf->dblink, join(";", $qs));
         $mresult->free_all();
 
-        if (!Dbl::$nerrors) {
-            $this->conf->update_papersub_setting(-1);
-            if ($this->outcome_sign > 0) {
-                $this->conf->update_paperacc_setting(-1);
-            }
-            if ($this->leadContactId > 0 || $this->shepherdContactId > 0) {
-                $this->conf->update_paperlead_setting(-1);
-            }
-            if ($this->managerContactId > 0) {
-                $this->conf->update_papermanager_setting(-1);
-            }
-            if ($rrows && array_filter($rrows, function ($rrow) { return $rrow->reviewToken > 0; })) {
-                $this->conf->update_rev_tokens_setting(-1);
-            }
-            if ($rrows && array_filter($rrows, function ($rrow) { return $rrow->reviewType == REVIEW_META; })) {
-                $this->conf->update_metareviews_setting(-1);
-            }
-            $this->conf->log_for($user, $user, "Paper deleted", $this->paperId);
-            return true;
-        } else {
+        if (Dbl::$nerrors) {
             return false;
         }
+
+        $this->conf->log_for($user, $user, "Paper deleted", $this->paperId);
+
+        // update settings
+        $this->conf->update_papersub_setting(-1);
+        if ($this->outcome_sign > 0) {
+            $this->conf->update_paperacc_setting(-1);
+        }
+        if ($this->leadContactId > 0 || $this->shepherdContactId > 0) {
+            $this->conf->update_paperlead_setting(-1);
+        }
+        if ($this->managerContactId > 0) {
+            $this->conf->update_papermanager_setting(-1);
+        }
+        if (array_filter($rrows, function ($rrow) { return $rrow->reviewToken > 0; })) {
+            $this->conf->update_rev_tokens_setting(-1);
+        }
+        if (array_filter($rrows, function ($rrow) { return $rrow->reviewType == REVIEW_META; })) {
+            $this->conf->update_metareviews_setting(-1);
+        }
+
+        // update cdbRoles
+        $this->conf->prefetch_users_by_id($uids);
+        foreach ($uids as $uid) {
+            if (($u = $this->conf->user_by_id($uid)))
+                $u->update_cdb_roles();
+        }
+
+        return true;
     }
 }
 
@@ -3753,30 +3721,314 @@ class PaperInfoLikelyContacts implements JsonSerializable {
     }
 }
 
-class PaperInfoPotentialConflictHTML {
-    /** @var string */
-    public $announce;
-    /** @var list<list<string>> */
-    public $messages;
+class PaperInfoPotentialConflict {
+    /** @var int */
+    public $order;
+    /** @var AuthorMatcher */
+    public $user;
+    /** @var Author */
+    public $cflt;
 
-    /** @param ?string $extraclass
-     * @param ?string $prefix
-     * @param list<string> $ml
-     * @return string */
-    static function render_ul_item($extraclass, $prefix, $ml) {
-        $class = Ht::add_tokens("potentialconflict", $extraclass);
-        return "<ul class=\"{$class}\"><li>" . ($prefix ?? "")
-            . join("</li><li>", $ml) . "</li></ul>";
+    const OA_NAME = 1 << 28;
+    const OA_AUCOLLABORATOR = 2 << 28;
+    const OA_AFFILIATION = 3 << 28;
+    const OA_COLLABORATOR = 4 << 28;
+    const OA_MASK = 7 << 28;
+
+    const OB_NAME = 0;
+    const OB_AFFILIATION = 1 << 24;
+    const OB_NONAUTHOR = 2 << 24;
+    const OB_COLLABORATOR = 15 << 24;
+    const OB_CONTACT = 14 << 24;
+    const OB_MASK = 15 << 24;
+
+    const AUIDX_MASK = 0xFFFFFF;
+
+    function __construct(AuthorMatcher $au, Author $cflt, $why) {
+        $this->user = $au;
+        $this->cflt = $cflt;
+        if ($au->is_nonauthor()) {
+            $this->order = self::OA_COLLABORATOR;
+        } else if ($cflt->is_nonauthor()) {
+            $this->order = self::OA_AUCOLLABORATOR;
+        } else if ($why === AuthorMatcher::MATCH_AFFILIATION) {
+            $this->order = self::OA_AFFILIATION;
+        } else {
+            $this->order = self::OA_NAME;
+        }
+        if ($cflt->author_index >= Author::PAPER_COLLABORATOR_INDEX
+            && $cflt->author_index <= Author::MAX_PAPER_COLLABORATOR_INDEX) {
+            $this->order |= self::OB_COLLABORATOR;
+        } else if (($cflt->author_index ?? 0) <= 0) {
+            $this->order |= self::OB_CONTACT;
+        } else if ($cflt->is_nonauthor()) {
+            $this->order |= self::OB_NONAUTHOR | $cflt->author_index;
+        } else if ($why === AuthorMatcher::MATCH_AFFILIATION) {
+            $this->order |= self::OB_AFFILIATION | $cflt->author_index;
+        } else {
+            $this->order |= self::OB_NAME | $cflt->author_index;
+        }
     }
 
-    /** @param ?string $extraclass
-     * @param ?string $prefix
-     * @return list<string> */
-    function render_ul_list($extraclass = null, $prefix = null) {
-        $t = [];
-        foreach ($this->messages as $ml) {
-            $t[] = self::render_ul_item($extraclass, $prefix, $ml);
+    /** @param PaperInfoPotentialConflict $a
+     * @param PaperInfoPotentialConflict $b
+     * @return int */
+    static function compare($a, $b) {
+        return ($a->order <=> $b->order)
+            ? : strnatcasecmp($a->cflt->name(), $b->cflt->name());
+    }
+
+    /** @return ?int */
+    function author_index() {
+        if (($this->order & self::OB_MASK) < self::OB_CONTACT) {
+            return $this->order & self::AUIDX_MASK;
         }
-        return $t;
+        return null;
+    }
+
+    /** @param Contact $user
+     * @param PaperInfo $prow
+     * @return array{string,string} */
+    function unparse_html($user, $prow) {
+        $cfltm = AuthorMatcher::make($this->cflt);
+
+        $oa = $this->order & self::OA_MASK;
+        if ($oa === self::OA_NAME) {
+            $userdesc = $cfltm->highlight($this->user->name());
+        } else if ($oa === self::OA_AUCOLLABORATOR) {
+            $userdesc = $cfltm->highlight($this->user);
+        } else if ($oa === self::OA_AFFILIATION) {
+            $userdesc = "<em>affiliation</em> " . $cfltm->highlight($this->user->affiliation);
+        } else {
+            $userdesc = "<em>collaborator</em> " . $cfltm->highlight($this->user);
+        }
+
+        $ob = $this->order & self::OB_MASK;
+        if ($ob === self::OB_NAME) {
+            $cfltdesc = "<em>author</em> " . $this->user->highlight($this->cflt);
+        } else if ($ob === self::OB_COLLABORATOR) {
+            $cfltdesc = "<em>submission-listed collaborator</em> " . $this->user->highlight($this->cflt);
+        } else if ($ob === self::OB_CONTACT) {
+            $cfltdesc = "<em>contact"
+                . ($this->cflt->email ? " " . htmlspecialchars($this->cflt->email) : "")
+                . ($this->cflt->is_nonauthor() ? " collaborator" : "")
+                . "</em> " . $this->user->highlight($this->cflt);
+        } else if ($ob === self::OB_AFFILIATION) {
+            $aucflt = $prow->author_by_index($this->order & self::AUIDX_MASK) ?? $this->cflt;
+            $cfltdesc = "<em>author</em> " . $aucflt->name_h() . " (" . $this->user->highlight($this->cflt->affiliation) . ")";
+        } else {
+            $aucflt = $prow->author_by_index($this->order & self::AUIDX_MASK) ?? $this->user;
+            $cfltdesc = "<em>author " . $aucflt->name_h() . "’s collaborator</em> " . $this->user->highlight($this->cflt);
+        }
+
+        return [$userdesc, $cfltdesc];
+    }
+
+    /** @param Contact $user
+     * @param PaperInfo $prow
+     * @return array{string,string} */
+    function unparse_text($user, $prow) {
+        $cfltm = AuthorMatcher::make($this->cflt);
+
+        $oa = $this->order & self::OA_MASK;
+        $userdesc = $user->name(NAME_EB | NAME_A);
+        if ($oa === self::OA_COLLABORATOR) {
+            $userdesc .= " collaborator " . $this->user->name(NAME_A);
+        }
+
+        $ob = $this->order & self::OB_MASK;
+        if ($ob === self::OB_NAME) {
+            $cfltdesc = "author " . $this->cflt->name(NAME_A);
+        } else if ($ob === self::OB_COLLABORATOR) {
+            $cfltdesc = "submission-listed collaborator " . $this->cflt->name(NAME_A);
+        } else if ($ob === self::OB_CONTACT) {
+            $cfltdesc = ($this->cflt->is_nonauthor() ? "contact collaborator " : "contact ")
+                . $this->cflt->name(NAME_EB | NAME_A);
+        } else if ($ob === self::OB_AFFILIATION) {
+            $aucflt = $prow->author_by_index($this->order & self::AUIDX_MASK) ?? $this->cflt;
+            $cfltdesc = "author " . $aucflt->name(NAME_A);
+        } else {
+            $aucflt = $prow->author_by_index($this->order & self::AUIDX_MASK) ?? $this->user;
+            $cfltdesc = "author " . $aucflt->name(NAME_A) . " collaborator " . $this->cflt->name(NAME_A);
+        }
+
+        return [$userdesc, $cfltdesc];
+    }
+}
+
+class PaperInfoPotentialConflictList {
+    /** @var PaperInfo
+     * @readonly */
+    private $_prow;
+    /** @var string
+     * @readonly */
+    private $_austr;
+    /** @var ?list<Author>
+     * @readonly */
+    private $_aucontacts;
+    /** @var Contact */
+    private $_user;
+    /** @var list<PaperInfoPotentialConflict> */
+    private $_pcs;
+    /** @var list<int> */
+    private $_auindexes;
+
+    /** @param PaperInfo $prow
+     * @param ?PaperInfoPotentialConflictList $prev */
+    function __construct($prow, $prev = null) {
+        $this->_prow = $prow;
+        if ($prev) {
+            assert($this->_prow === $prev->_prow);
+            $this->_austr = $prev->_austr;
+            $this->_aucontacts = $prev->_aucontacts;
+        } else {
+            $this->_austr = $prow->authorInformation;
+            $aulist = $prow->author_list();
+            foreach ($prow->conflict_list() as $cflt) {
+                if ($cflt->conflictType >= CONFLICT_AUTHOR
+                    && $cflt->author_index > 0
+                    && $cflt->user
+                    && ($au = $aulist[$cflt->author_index - 1])
+                    && ($au->firstName !== $cflt->user->firstName
+                        || $au->lastName !== $cflt->user->lastName
+                        || $au->affiliation !== $cflt->user->affiliation)) {
+                    $auc = Author::make_user($cflt->user);
+                    $auc->author_index = $cflt->author_index;
+                    $this->_austr .= "\n" . $auc->name(NAME_A);
+                    $this->_aucontacts[] = $auc;
+                }
+            }
+        }
+    }
+
+    /** @param Contact $user */
+    function reset($user) {
+        $prow = $this->_prow;
+        $this->_user = $user;
+        $this->_pcs = [];
+
+        $auproblems = 0;
+        if ($user->aucollab_general_pregexes()->match($this->_austr)) {
+            $auproblems = $this->_reset_authors();
+        }
+
+        $userm = $user->full_matcher();
+        $collab = $prow->full_collaborators();
+        if ($userm->general_pregexes()->match($collab)) {
+            foreach ($prow->collaborator_list() as $co) {
+                if (($co->lastName !== ""
+                     || ($auproblems & AuthorMatcher::MATCH_AFFILIATION) === 0)
+                    && ($why = $userm->test($co, true))) {
+                    $this->_pcs[] = new PaperInfoPotentialConflict($userm, $co, $why);
+                }
+            }
+        }
+
+        $this->_auindexes = [];
+        if (!empty($this->_pcs)) {
+            usort($this->_pcs, "PaperInfoPotentialConflict::compare");
+            $aus = [];
+            foreach ($this->_pcs as $pc) {
+                if (($i = $pc->author_index()) > 0)
+                    $aus[$i] = true;
+            }
+            ksort($aus);
+            $this->_auindexes = array_keys($aus);
+        }
+    }
+
+    /** @return int */
+    private function _reset_authors() {
+        $user = $this->_user;
+        $auproblems = 0;
+        foreach ($this->_prow->author_list() as $au) {
+            foreach ($user->aucollab_matchers() as $userm) {
+                if (($why = $userm->test($au, $userm->is_nonauthor()))) {
+                    $auproblems |= $why;
+                    $this->_pcs[] = new PaperInfoPotentialConflict($userm, $au, $why);
+                }
+            }
+        }
+        foreach ($this->_aucontacts ?? [] as $au) {
+            foreach ($user->aucollab_matchers() as $userm) {
+                if (($why = $userm->test($au, $userm->is_nonauthor()))) {
+                    $auproblems |= $why;
+                    $this->_pcs[] = new PaperInfoPotentialConflict($userm, $au, $why);
+                }
+            }
+        }
+        return $auproblems;
+    }
+
+    /** @return ?Contact */
+    function user() {
+        return $this->_user;
+    }
+
+    /** @return bool */
+    function is_empty() {
+        return empty($this->_pcs);
+    }
+
+    /** @return list<PaperInfoPotentialConflict> */
+    function list() {
+        return $this->_pcs;
+    }
+
+    /** @return string */
+    function description_text() {
+        if (empty($this->_pcs)) {
+            return "";
+        }
+        $x = "Possible conflict";
+        if (!empty($this->_auindexes)) {
+            $x .= " with " . plural_word($this->_auindexes, "author") . " "
+                . numrangejoin(array_map(function ($i) { return "#{$i}"; },
+                               $this->_auindexes));
+        }
+        return $x;
+    }
+
+    /** @return string */
+    function description_html() {
+        return htmlspecialchars($this->description_text());
+    }
+
+    /** @return list<non-empty-list<string>> */
+    function group_list_html(PaperInfo $prow) {
+        $last_ut = null;
+        $m = [];
+        foreach ($this->_pcs as $pc) {
+            list($ut, $ct) = $pc->unparse_html($this->_user, $prow);
+            if ($ut === $last_ut) {
+                $m[count($m) - 1][] = $ct;
+            } else {
+                $m[] = [$ut, $ct];
+                $last_ut = $ut;
+            }
+        }
+        return $m;
+    }
+
+    /** @param non-empty-list<string> $g
+     * @param ?string $prefix
+     * @param ?string $extraclass
+     * @return string */
+    static function group_html_ul($g, $prefix = null, $extraclass = null) {
+        $class = Ht::add_tokens("potentialconflict", $extraclass);
+        return "<ul class=\"{$class}\"><li>" . ($prefix ?? "")
+            . join("</li><li>", $g) . "</li></ul>";
+    }
+
+    /** @return string */
+    function tooltip_html(PaperInfo $prow) {
+        if (empty($this->_pcs)) {
+            return "";
+        }
+        $x = "<ul class=\"x\">";
+        foreach ($this->group_list_html($prow) as $g) {
+            $x .= "<li>" . self::group_html_ul($g) . "</li>";
+        }
+        return $x . "</ul>";
     }
 }

@@ -1,6 +1,6 @@
 <?php
 // saveusers.php -- HotCRP command-line user modification script
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 if (realpath($_SERVER["PHP_SELF"]) === __FILE__) {
     require_once(dirname(__DIR__) . "/src/init.php");
@@ -26,9 +26,13 @@ class SaveUsers_Batch {
     function __construct(Contact $user, $arg) {
         $this->conf = $user->conf;
         $this->ustatus = new UserStatus($user);
-        $this->ustatus->notify = isset($arg["notify"]) && !isset($arg["no-notify"]);
-        $this->ustatus->no_create = isset($arg["no-create"]);
-        $this->ustatus->no_modify = isset($arg["no-modify"]);
+        $this->ustatus->set_notify(isset($arg["notify"]) && !isset($arg["no-notify"]));
+        $this->ustatus->set_follow_primary(true);
+        if (isset($arg["only-create"])) {
+            $this->ustatus->set_save_mode(UserStatus::SAVE_NEW);
+        } else if (isset($arg["only-modify"])) {
+            $this->ustatus->set_save_mode(UserStatus::SAVE_EXISTING);
+        }
         $this->quiet = isset($arg["quiet"]);
 
         if (isset($arg["expression"])) {
@@ -80,7 +84,7 @@ class SaveUsers_Batch {
 
     function parse_csv($str) {
         $csv = new CsvParser(cleannl(convert_to_utf8($str)));
-        $csv->set_comment_start("###");
+        $csv->add_comment_prefix("###");
         $line = $csv->next_list();
         if ($line !== null && preg_grep('/\Aemail\z/i', $line)) {
             $csv->set_header($line);
@@ -93,24 +97,19 @@ class SaveUsers_Batch {
 
     private function parse_csvp(CsvParser $csv) {
         while (($line = $csv->next_row())) {
-            $this->ustatus->set_user(Contact::make($this->conf));
             $this->ustatus->clear_messages();
+            $this->ustatus->start_update();
             $this->ustatus->csvreq = $line;
-            $this->ustatus->jval = (object) ["id" => null];
             $this->ustatus->parse_csv_group("");
-            if (($acct = $this->ustatus->save_user($this->ustatus->jval))) {
+            if ($this->ustatus->execute_update()) {
                 if ($this->quiet) {
                     // print nothing
                 } else if (empty($this->ustatus->diffs)) {
-                    fwrite(STDOUT, "{$acct->email}: No changes\n");
+                    fwrite(STDOUT, "{$this->ustatus->user->email}: No changes\n");
                 } else {
-                    fwrite(STDOUT, "{$acct->email}: Changed " . join(", ", array_keys($this->ustatus->diffs)) . "\n");
+                    fwrite(STDOUT, "{$this->ustatus->user->email}: Changed " . join(", ", array_keys($this->ustatus->diffs)) . "\n");
                 }
             } else {
-                if ($this->ustatus->no_modify
-                    && $this->ustatus->has_error_at("email_inuse")) {
-                    $this->ustatus->msg_at("email_inuse", "Use `--modify` to modify existing users.", MessageSet::INFORM);
-                }
                 fwrite(STDERR, $this->ustatus->full_feedback_text());
                 $this->exit_status = 1;
             }
@@ -144,8 +143,8 @@ class SaveUsers_Batch {
             "expression[],expr[],e[] =JSON Create or modify users specified in JSON",
             "notify,N Send email notifications (off by default)",
             "no-notify,no-email !",
-            "no-modify,create-only Only create new users, do not modify existing",
-            "no-create,modify-only Only modify existing users, do not create new",
+            "only-create,create-only,no-modify Only create new users, do not modify existing",
+            "only-modify,modify-only,no-create Only modify existing users, do not create new",
             "quiet,q Do not print changes"
         )->helpopt("help")
          ->description("Save HotCRP users as specified in JSON or CSV.
@@ -162,8 +161,8 @@ Usage: php batch/saveusers.php [OPTION]... [JSONFILE | CSVFILE]
         } else if ((isset($arg["roles"]) || isset($arg["user-name"]) || isset($arg["disable"]) || isset($arg["enable"]))
                    && !isset($arg["user"])) {
             throw new CommandLineException("`-u` required for those options", $go);
-        } else if (isset($arg["no-modify"]) && isset($arg["no-create"])) {
-            throw new CommandLineException("`--no-modify --no-create` does nothing", $go);
+        } else if (isset($arg["only-modify"]) && isset($arg["only-create"])) {
+            throw new CommandLineException("`--only-create --only-modify` does nothing", $go);
         }
 
         $conf = initialize_conf($arg["config"] ?? null, $arg["name"] ?? null);

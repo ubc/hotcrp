@@ -70,10 +70,10 @@ class Settings_Page {
     function handle_update($qreq) {
         if ($this->sv->execute()) {
             $qreq->set_csession("settings_highlight", $this->sv->message_field_map());
-            if (!empty($this->sv->changed_keys())) {
+            if (!empty($this->sv->saved_keys())) {
                 $this->conf->success_msg("<0>Changes saved");
             } else if (!$this->sv->has_success()) {
-                $this->conf->feedback_msg(new MessageItem(null, "<0>No changes", MessageSet::WARNING_NOTE));
+                $this->conf->feedback_msg(MessageItem::warning_note("<0>No changes"));
             }
             $this->sv->report();
             $this->conf->redirect_self($qreq);
@@ -95,20 +95,26 @@ class Settings_Page {
         ]);
         Icons::stash_defs("movearrow0", "movearrow2", "trash");
         echo Ht::unstash(), // clear out other script references
-            $this->conf->make_script_file("scripts/settings.js"), "\n",
+            $this->conf->make_script_file("scripts/settings.js"), "\n";
 
-            Ht::form($this->conf->hoturl("=settings", "group={$group}"), [
+        $groupj = $this->sv->cs()->get($group);
+        $form_class = Ht::add_tokens("need-diff-check need-unload-protection",
+            $groupj->form_classes ?? "");
+
+        echo Ht::form($this->conf->hoturl("=settings", "group={$group}"), [
                 "id" => "f-settings",
                 "name" => base64_encode(random_bytes(8)), // prevent FF from autofilling on reload
-                "class" => "need-diff-check need-unload-protection"
+                "class" => $form_class
             ]),
-            '<div class="leftmenu-left"><nav class="leftmenu-menu">',
-            '<h1 class="leftmenu"><button type="button" class="q uic js-leftmenu">Settings</button></h1>',
-            '<ul class="leftmenu-list">';
+            '<div class="leftmenu-left">',
+            '<nav class="leftmenu-menu collapsed" aria-label="Setting groups">',
+            '<h1 class="leftmenu"><button type="button" class="q uic js-leftmenu">Settings',
+            '<span class="leftmenu-not-left">', aria_plus_expander("after"), '</span>',
+            '</button></h1><ul class="leftmenu-list">';
         foreach ($this->sv->group_members("") as $gj) {
             $title = $gj->short_title ?? $gj->title;
             if ($gj->name === $group) {
-                echo '<li class="leftmenu-item active">', $title ?? "(Unlisted)", '</li>';
+                echo '<li class="leftmenu-item active" aria-current="page">', $title ?? "(Unlisted)", '</li>';
             } else if ($title && !($gj->unlisted ?? false)) {
                 echo '<li class="leftmenu-item ui js-click-child"><a href="',
                     $this->conf->hoturl("settings", "group={$gj->name}"), '">', $title, '</a></li>';
@@ -117,25 +123,25 @@ class Settings_Page {
         echo '</ul><div class="leftmenu-if-left if-differs mt-5">',
             Ht::submit("update", "Save changes", ["class" => "btn-primary"]),
             "</div></nav></div>\n",
-            '<main class="leftmenu-content main-column">';
+            '<div class="leftmenu-content main-column">';
 
         if ($group !== "list") {
-            $this->print_extant_group($group, $qreq);
+            $this->print_extant_group($group, $groupj, $qreq);
         } else {
             $this->print_list();
         }
 
-        echo "</main></form>\n";
+        echo "</div></form>\n";
         Ht::stash_script('$("#f-settings").awaken()');
         $qreq->print_footer();
     }
 
     /** @param string $group
+     * @param ?object $gj
      * @param Qrequest $qreq */
-    private function print_extant_group($group, $qreq) {
+    private function print_extant_group($group, $gj, $qreq) {
         $sv = $this->sv;
         echo '<h2 class="leftmenu">', $sv->group_title($group);
-        $gj = $sv->cs()->get($group);
         if ($gj && isset($gj->title_help_group)) {
             echo " ", Ht::link(Icons::ui_solid_question(), $sv->conf->hoturl("help", "t={$gj->title_help_group}"), ["class" => "ml-1"]);
         }
@@ -162,7 +168,7 @@ class Settings_Page {
     private function print_list() {
         echo '<h2 class="leftmenu">Settings list</h2>';
         $this->conf->report_saved_messages();
-        echo "<dl>\n";
+        echo "<dl class=\"bsp\">\n";
         foreach ($this->sv->group_members("") as $gj) {
             if (isset($gj->title)) {
                 echo '<dt><strong><a href="', $this->conf->hoturl("settings", "group={$gj->name}"), '">',

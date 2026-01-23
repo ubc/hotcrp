@@ -1,6 +1,6 @@
 <?php
 // tagger.php -- HotCRP helper class for dealing with tags
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 // Note that tags MUST NOT contain HTML or URL special characters:
 // no "'&<>.  If you add PHP-protected characters, such as $, make sure you
@@ -86,7 +86,7 @@ class TagInfo {
             return $l2;
         }
         foreach ($l2 as $x) {
-            if (!in_array($x, $l1))
+            if (!in_array($x, $l1, true))
                 $l1[] = $x;
         }
         return $l1;
@@ -207,17 +207,24 @@ class TagInfo {
             return $this->autosearch;
         } else if (($this->flags & self::TFM_VOTES) !== 0) {
             return "#*~" . $this->tag;
-        } else {
-            return null;
         }
+        return null;
     }
     /** @return ?SearchTerm */
     function automatic_search_term() {
         if ($this->_autosearch_term === null
             && ($q = $this->automatic_search()) !== null) {
-            $this->_autosearch_term = (new PaperSearch($this->conf->root_user(), ["q" => $q, "t" => "all"]))
-                ->set_expand_automatic(true)
-                ->main_term();
+            $ua = $this->conf->set_updating_automatic_tags(true);
+            $this->_autosearch_term = new False_SearchTerm;
+            $this->_autosearch_term->set_float("circular_reference", true);
+
+            $srch = new PaperSearch($this->conf->root_user(), ["q" => $q, "t" => "all"]);
+            $this->_autosearch_term = $srch->main_term();
+            if ($srch->has_problem_at("circular_reference")) {
+                $this->_autosearch_term = new False_SearchTerm;
+                $this->_autosearch_term->set_float("circular_reference", iterator_to_array($srch->message_list_at("circular_reference")));
+            }
+            $this->conf->set_updating_automatic_tags($ua);
         }
         return $this->_autosearch_term;
     }
@@ -229,9 +236,8 @@ class TagInfo {
             return "count.pc(#_~{$this->tag}) || null";
         } else if (($this->flags & self::TF_ALLOTMENT) !== 0) {
             return "sum.pc(#_~{$this->tag}) || null";
-        } else {
-            return null;
         }
+        return null;
     }
 }
 
@@ -288,7 +294,7 @@ class TagAnno implements JsonSerializable {
     static function make_tag_fencepost($tag) {
         $ta = new TagAnno;
         $ta->tag = $tag;
-        $ta->tagIndex = $ta->endTagIndex = (float) TAG_INDEXBOUND;
+        $ta->tagIndex = $ta->endTagIndex = TAG_INDEXBOUND;
         $ta->heading = "Untagged";
         return $ta;
     }
@@ -299,7 +305,7 @@ class TagAnno implements JsonSerializable {
     }
     /** @return bool */
     function is_fencepost() {
-        return $this->tagIndex >= (float) TAG_INDEXBOUND;
+        return $this->tagIndex >= TAG_INDEXBOUND;
     }
     private function decode_props() {
         $j = json_decode($this->infoJson ?? "{}");
@@ -353,7 +359,7 @@ class TagAnno implements JsonSerializable {
         }
         if ($this->_props !== null) {
             foreach ($this->_props as $k => $v) {
-                if (!in_array($k, ["pos", "annoid", "tag", "tagval", "blank", "legend", "format"]))
+                if (!in_array($k, ["pos", "annoid", "tag", "tagval", "blank", "legend", "format"], true))
                     $j[$k] = $v;
             }
         }
@@ -832,9 +838,8 @@ class TagMap {
     function is_chair($tag) {
         if ($tag[0] === "~") {
             return $tag[1] === "~";
-        } else {
-            return !!$this->find_having($tag, TagInfo::TF_CHAIR);
         }
+        return !!$this->find_having($tag, TagInfo::TF_CHAIR);
     }
     /** @param string $tag
      * @return bool */
@@ -1000,7 +1005,7 @@ class TagMap {
             }
             foreach ($t->styles as $ks) {
                 if (($ks->styleflags & $stylematch) !== 0
-                    && !in_array($ks, $kss))
+                    && !in_array($ks, $kss, true))
                     $kss[] = $ks;
             }
         }
@@ -1545,7 +1550,8 @@ class Tagger {
     /** @param string $tag
      * @return bool */
     static function basic_check($tag) {
-        return $tag !== "" && strlen($tag) <= TAG_MAXLEN
+        return $tag !== ""
+            && strlen($tag) <= TAG_MAXLEN
             && preg_match('{\A' . TAG_REGEX . '\z}', $tag);
     }
 
@@ -1630,12 +1636,11 @@ class Tagger {
             $flags |= self::NOCHAIR;
         }
         if (!preg_match('/\A(|~|~~|[1-9][0-9]*~)(' . TAG_REGEX_NOTWIDDLE . ')(|[#=](?:-?\d+(?:\.\d*)?|-?\.\d+|))\z/', $tag, $m)) {
-            if (preg_match('/\A([-a-zA-Z0-9!@*_:.\/#=]+)[\s,]+\S+/', $tag, $m)
+            if (preg_match('/\A([-a-zA-Z0-9!@*_:.\/\#=]+)[\s,]+\S+/', $tag, $m)
                 && $this->check($m[1], $flags)) {
                 return $this->set_error_code(self::EMULTIPLE, $tag);
-            } else {
-                return $this->set_error_code(self::EINVAL, $tag);
             }
+            return $this->set_error_code(self::EINVAL, $tag);
         }
         if (($flags & self::ALLOWSTAR) === 0
             && strpos($tag, "*") !== false) {
@@ -1873,10 +1878,9 @@ class Tagger {
         } else if (!$always) {
             return "";
         } else if ($base === $tv) {
-            $q = "#{$base}";
-        } else {
-            $q = "order:#{$base}";
+            return "#{$base}";
         }
+        return "order:#{$base}";
     }
 
     /** @param list<string>|string $viewable

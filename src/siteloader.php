@@ -1,6 +1,6 @@
 <?php
 // siteloader.php -- HotCRP autoloader
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class SiteLoader {
     static $map = [
@@ -18,19 +18,20 @@ class SiteLoader {
         "False_SearchTerm" => "src/searchterm.php",
         "Fexpr" => "src/formula.php",
         "FmtArg" => "lib/fmt.php",
-        "FormulaCall" => "src/formula.php",
         "FormatChecker" => "src/formatspec.php",
         "JsonSerializable" => "lib/json.php",
         "Limit_SearchTerm" => "src/searchterm.php",
         "LogEntryGenerator" => "src/logentry.php",
         "LoginHelper" => "lib/login.php",
         "MessageItem" => "lib/messageset.php",
+        "Numeric_ValueFormat" => "src/valueformat.php",
         "PaperInfoSet" => "src/paperinfo.php",
-        "PermissionProblem" => "src/failurereason.php", // XXX compat
+        "PaperReviewPreference" => "src/paperinfo.php",
         "Present_ReviewFieldSearch" => "src/reviewfieldsearch.php",
         "QrequestFile" => "lib/qrequest.php",
         "ReviewFieldInfo" => "src/reviewfield.php",
         "SearchSplitter" => "src/searchparser.php",
+        "SearchStringContext" => "src/papersearch.php",
         "StreamS3Result" => "lib/s3result.php",
         "TagAnno" => "lib/tagger.php",
         "TagInfo" => "lib/tagger.php",
@@ -38,6 +39,7 @@ class SiteLoader {
         "TextPregexes" => "lib/text.php",
         "Text_PaperOption" => "src/paperoption.php",
         "True_SearchTerm" => "src/searchterm.php",
+        "UConverter" => "lib/uconvertershim.php",
         "XlsxGenerator" => "lib/xlsx.php",
         "dmp\\diff_match_patch" => "lib/diff_match_patch.php"
     ];
@@ -50,6 +52,7 @@ class SiteLoader {
         "_autoassigner.php" => ["aa_", "src/autoassigners"],
         "_batch.php" => ["", "batch"],
         "_capability.php" => ["cap_", "src/capabilities"],
+        "_clibatch.php" => ["cli_", "batch/cli"],
         "_fexpr.php" =>  ["f_", "src/formulas"],
         "_helptopic.php" => ["h_", "src/help"],
         "_listaction.php" => ["la_", "src/listactions"],
@@ -66,7 +69,8 @@ class SiteLoader {
         "_settingparser.php" => ["s_", "src/settings"],
         "_sitype.php" => ["si_", "src/settings"],
         "_tester.php" => ["t_", "test"],
-        "_userinfo.php" => ["u_", "src/userinfo"]
+        "_userinfo.php" => ["u_", "src/userinfo"],
+        "_valueformat.php" => ["vf_", "src/valueformats"]
     ];
 
     /** @var string */
@@ -88,9 +92,8 @@ class SiteLoader {
     static function find($suffix) {
         if ($suffix[0] === "/") {
             return self::$root . $suffix;
-        } else {
-            return self::$root . "/" . $suffix;
         }
+        return self::$root . "/" . $suffix;
     }
 
     // Set up conference options
@@ -161,7 +164,7 @@ class SiteLoader {
         global $Opt;
 
         $root = $root ?? self::$root;
-        $autoload = $expansions["autoload"] ?? 0;
+        $autoload = $expansions["autoload"] ?? false;
         $includepath = null;
 
         $results = [];
@@ -268,16 +271,17 @@ class SiteLoader {
         $root = $root ?? self::$root;
         for ($i = 0; $i !== count($Opt["include"]); ++$i) {
             foreach (self::expand_includes($root, $Opt["include"][$i]) as $f) {
-                if (!in_array($f, $Opt["loaded"])) {
+                if (!in_array($f, $Opt["loaded"], true)) {
                     self::read_options_file($f);
                 }
             }
         }
     }
 
-    /** @param string $class_name */
-    static function autoload($class_name) {
-        $f = self::$map[$class_name] ?? strtolower($class_name) . ".php";
+    /** @param string $class */
+    static function autoload($class) {
+        $x = str_starts_with($class, "HotCRP\\") ? substr($class, 7) : $class;
+        $f = self::$map[$x] ?? strtolower($x) . ".php";
         foreach (self::expand_includes(self::$root, $f, ["autoload" => true]) as $fx) {
             require_once($fx);
         }

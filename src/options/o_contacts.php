@@ -1,6 +1,6 @@
 <?php
 // o_contacts.php -- HotCRP helper class for contacts intrinsic
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class Contacts_PaperOption extends PaperOption {
     function __construct(Conf $conf, $args) {
@@ -25,7 +25,7 @@ class Contacts_PaperOption extends PaperOption {
     function value_force(PaperValue $ov) {
         // $ov->value_list: contact IDs
         // $ov->data_list: emails
-        // $ov->anno("users"): list<Contact>
+        // $ov->anno("users"): list<Author>
         // NB fake papers start out with this user as contact
         // NB only non-placeholder users
         $ca = $va = [];
@@ -60,87 +60,65 @@ class Contacts_PaperOption extends PaperOption {
         return $j;
     }
     function value_check(PaperValue $ov, Contact $user) {
-        if ($ov->anno("modified") && !$user->allow_administer($ov->prow)) {
-            if ($ov->prow->conflict_type($user) >= CONFLICT_CONTACTAUTHOR
-                && self::ca_index(self::users_anno($ov), $user->email) === false) {
-                $ov->error($this->conf->_("<0>You can’t remove yourself from the submission’s contacts"));
-                $ov->msg("<0>(Ask another contact to remove you.)", MessageSet::INFORM);
-            } else if (empty($ov->value_list())
-                       && $ov->prow->paperId > 0
-                       && !empty($ov->prow->contact_list())) {
-                $ov->error($this->conf->_("<0>Each submission must have at least one contact"));
-            }
+        if (!$ov->anno("modified") || $user->allow_administer($ov->prow)) {
+            return;
+        }
+        if ($ov->prow->conflict_type($user) >= CONFLICT_CONTACTAUTHOR
+            && self::ca_index(self::users_anno($ov), $user->email) === false) {
+            $ov->error($this->conf->_("<0>You can’t remove yourself from the submission’s contacts"));
+            $ov->inform("<0>(Ask another contact to remove you.)");
+        } else if (empty($ov->value_list())
+                   && $ov->prow->paperId > 0
+                   && !empty($ov->prow->contact_list())) {
+            $ov->error($this->conf->_("<0>Each submission must have at least one contact"));
         }
     }
     function value_save(PaperValue $ov, PaperStatus $ps) {
         // do not mark diff (will be marked later)
         $ps->clear_conflict_values(CONFLICT_CONTACTAUTHOR);
         foreach (self::users_anno($ov) as $u) {
-            $ps->update_conflict_value($u, CONFLICT_CONTACTAUTHOR, CONFLICT_CONTACTAUTHOR);
+            if (($u->conflictType & CONFLICT_CONTACTAUTHOR) !== 0) {
+                $ps->update_conflict_value($u, CONFLICT_CONTACTAUTHOR, CONFLICT_CONTACTAUTHOR);
+            }
         }
         $ps->checkpoint_conflict_values();
-        return true;
     }
     /** @param list<Author> $specau */
     private function apply_parsed_users(PaperValue $ov, $specau) {
-        // look up primary emails
-        $emails = [];
-        foreach ($specau as $au) {
-            $emails[] = $au->email;
-        }
-        $pemails = $this->conf->resolve_primary_emails($emails);
-        // apply changes
         $curau = self::users_anno($ov);
         $modified = false;
-        for ($i = 0; $i !== count($specau); ++$i) {
-            $j = self::ca_index($curau, $pemails[$i]);
-            if ($j !== false) {
-                if ($specau[$i]->conflictType !== 0) {
-                    $curau[$j]->author_index = $specau[$i]->author_index;
-                    $modified = $modified || $curau[$j]->is_placeholder();
-                } else {
-                    // only remove contacts on exact email match
-                    // (removing by a non-primary email has no effect)
-                    if ((($curau[$j]->conflictType ?? 0) & CONFLICT_AUTHOR) === 0
-                        && strcasecmp($specau[$i]->email, $pemails[$i]) === 0) {
-                        array_splice($curau, $j, 1);
-                        $modified = true;
-                    }
-                }
-            } else {
-                if ($specau[$i]->conflictType !== 0) {
-                    $specau[$i]->email = $pemails[$i];
-                    $curau[] = $specau[$i];
+        foreach ($specau as $sau) {
+            $j = self::ca_index($curau, $sau->email);
+            $cau = $j !== false ? $curau[$j] : null;
+            if (!$cau) {
+                // add new contact
+                if ($sau->conflictType !== 0) {
+                    $curau[] = $sau;
                     $modified = true;
                 }
+            } else if ($sau->conflictType !== 0) {
+                // requested contact: copy author index, activate placeholder
+                $cau->author_index = $sau->author_index;
+                $modified = $modified || $curau[$j]->is_placeholder();
+            } else {
+                array_splice($curau, $j, 1);
+                $modified = true;
             }
+        }
+        if (!$modified) {
+            return;
         }
         // mark changes on value
-        if ($modified) {
-            $emails = $cids = [];
-            foreach ($curau as $au) {
-                $cids[] = $au->contactId;
-                $emails[] = $au->email;
-            }
-            $ov->set_value_data($cids, $emails);
-            $ov->set_anno("users", $curau);
-            $ov->set_anno("modified", true);
+        $emails = $cids = [];
+        foreach ($curau as $au) {
+            $cids[] = $au->contactId;
+            $emails[] = $au->email;
         }
-    }
-    static private function translate_qreq(Qrequest $qreq) {
-        $n = 1;
-        while (isset($qreq["contacts:email_{$n}"])) {
-            $qreq["contacts:{$n}:email"] = $qreq["contacts:email_{$n}"];
-            $qreq["contacts:{$n}:name"] = $qreq["contacts:name_{$n}"];
-            $qreq["contacts:{$n}:affiliation"] = $qreq["contacts:affiliation_{$n}"];
-            $qreq["contacts:{$n}:active"] = $qreq["contacts:active_{$n}"];
-            ++$n;
-        }
+        $ov->set_value_data($cids, $emails);
+        $ov->set_anno("users", $curau);
+        $ov->set_anno("modified", true);
     }
     function parse_qreq(PaperInfo $prow, Qrequest $qreq) {
-        if (!isset($qreq["contacts:1:email"])) {
-            self::translate_qreq($qreq);
-        }
         $ov = PaperValue::make_force($prow, $this);
         // collect values
         $specau = $reqau = [];
@@ -149,16 +127,17 @@ class Contacts_PaperOption extends PaperOption {
             $name = simplify_whitespace((string) $qreq["contacts:{$n}:name"]);
             $affiliation = simplify_whitespace((string) $qreq["contacts:{$n}:affiliation"]);
             $au = Author::make_keyed(["email" => $email, "name" => $name, "affiliation" => $affiliation]);
-            // XXX has_contacts:{$n}:active
-            $au->conflictType = $qreq["contacts:{$n}:active"] ? CONFLICT_CONTACTAUTHOR : 0;
+            $active = friendly_boolean($qreq["contacts:{$n}:active"])
+                ?? !isset($qreq["has_contacts:{$n}:active"]);
+            $au->conflictType = $active ? CONFLICT_CONTACTAUTHOR : 0;
             $au->author_index = $n;
             $reqau[] = $au;
             if (validate_email($email)) {
                 $specau[] = $au;
             } else if ($email !== "") {
-                $ov->msg_at("contacts:{$n}", "<0>Invalid email address ‘{$email}’", MessageSet::ERROR);
+                $ov->append_item(MessageItem::error_at("contacts:{$n}", "<0>Invalid email address ‘{$email}’"));
             } else if ($name !== "") {
-                $ov->msg_at("contacts:{$n}", "<0>Email address required", MessageSet::ERROR);
+                $ov->append_item(MessageItem::error_at("contacts:{$n}", "<0>Email address required"));
             }
         }
         // apply specified values
@@ -166,11 +145,11 @@ class Contacts_PaperOption extends PaperOption {
         $ov->set_anno("req_users", $reqau);
         return $ov;
     }
-    function parse_json(PaperInfo $prow, $j) {
+    function parse_json_user(PaperInfo $prow, $j, Contact $user) {
         $ov = PaperValue::make_force($prow, $this);
         // collect values
         $reqau = [];
-        if (is_object($j) || is_associative_array($j)) {
+        if (is_object($j) || (is_array($j) && !array_is_list($j))) {
             foreach ((array) $j as $k => $v) {
                 if (is_bool($v)) {
                     $reqau[] = $au = Author::make_email($k);
@@ -256,7 +235,9 @@ class Contacts_PaperOption extends PaperOption {
         }
         usort($curau, $this->conf->user_comparator());
 
-        $pt->print_editable_option_papt($this, null, ["id" => "contacts", "for" => false]);
+        $pt->print_editable_option_papt($this, null, [
+            "id" => "contacts", "for" => false, "fieldset" => true
+        ]);
         echo '<div class="papev"><div id="contacts:container">';
 
         $reqau = $reqov->anno("req_users") ?? [];
@@ -283,7 +264,7 @@ class Contacts_PaperOption extends PaperOption {
                 || ($au->contactId === $pt->user->contactId
                     && $ov->prow->paperId <= 0)) {
                 echo Ht::hidden("contacts:{$cidx}:active", 1),
-                    Ht::checkbox(null, 1, true, ["disabled" => true, "id" => "contacts:{$cidx}:placeholder"]);
+                    Ht::checkbox("", "", true, ["disabled" => true, "id" => "contacts:{$cidx}:placeholder"]);
             } else {
                 $dchecked = $au->contactId > 0 && $au->conflictType >= CONFLICT_AUTHOR;
                 echo Ht::hidden("has_contacts:{$cidx}:active", 1),
@@ -311,7 +292,7 @@ class Contacts_PaperOption extends PaperOption {
         self::echo_editable_newcontact_row($pt, '$', null, null);
         echo '</template><div class="ug">',
             Ht::button("Add contact", ["class" => "ui row-order-append", "data-rowset" => "contacts:container", "data-row-template" => "contacts:row-template"]),
-            "</div></div></div>\n\n";
+            "</div></div></fieldset>\n\n";
     }
     // XXX no render because paper strip
 }

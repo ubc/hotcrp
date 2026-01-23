@@ -1,27 +1,32 @@
 <?php
 // settings/s_reviewform.php -- HotCRP review form definition page
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class ReviewForm_SettingParser extends SettingParser {
+    /** @var FieldConversions_Setting */
+    private $_fcvts;
     /** @var ReviewForm */
     private $_new_form;
     /** @var bool */
     private $_values_error_printed = false;
-    /** @var array<string,array<int,int>> */
-    private $_score_renumberings = [];
+    /** @var array<string,array<int,?int>> */
+    private $_fvmaps = [];
+
+    function __construct(SettingValues $sv) {
+        $this->_fcvts = new FieldConversions_Setting($sv->conf->review_field_type_map(), $sv->conf);
+    }
 
     function values(Si $si, SettingValues $sv) {
-        if ($si->name_matches("rf/", "*", "/type")) {
-            $xtp = new XtParams($sv->conf, $sv->user);
-            $ot = [];
-            foreach ($sv->conf->review_field_type_map() as $uf) {
-                if ($xtp->check($uf->display_if ?? null, $uf))
-                    $ot[] = $uf->name;
-            }
-            return $ot;
-        } else {
+        if (!$si->name_matches("rf/", "*", "/type")) {
             return null;
         }
+        $xtp = new XtParams($sv->conf, $sv->user);
+        $ot = [];
+        foreach ($sv->conf->review_field_type_map() as $uf) {
+            if ($xtp->check($uf->display_if ?? null, $uf))
+                $ot[] = $uf->name;
+        }
+        return $ot;
     }
 
     /** @param string $type
@@ -86,7 +91,12 @@ class ReviewForm_SettingParser extends SettingParser {
     }
 
 
-    /** @return true */
+    /** @param string $fid
+     * @param array<int,?int> $fvmap */
+    function set_field_value_map($fid, $fvmap) {
+        $this->_fvmaps[$fid] = $fvmap;
+    }
+
     private function _apply_req_name(Si $si, SettingValues $sv) {
         if (($name = $sv->base_parse_req($si)) !== null) {
             if (ReviewField::clean_name($name) !== $name
@@ -99,68 +109,78 @@ class ReviewForm_SettingParser extends SettingParser {
             $sv->save($si, $name);
         }
         $sv->error_if_duplicate_member($si->name0, $si->name1, $si->name2, "Field name");
-        return true;
     }
 
-    /** @return true */
-    private function _apply_req_type(Si $si, Rf_Setting $rfs, SettingValues $sv) {
+    private function _apply_req_type(Si $si, Rf_Setting $fs, SettingValues $sv) {
         assert($sv->has_req($si->name));
         $v = $sv->base_parse_req($si);
-        $rft = $sv->conf->review_field_type($v);
-        if (!$rft) {
+        $ft = $sv->conf->review_field_type($v);
+        if (!$ft) {
             $sv->error_at($si, "<0>Unknown field type");
-        } else if ($rfs->existed
-                   && !str_starts_with($rfs->id, $rft->id_prefix)) {
-            $sv->error_at($si, "<0>Type doesn’t match with ID");
-        } else if ($rfs->existed
-                   && $rfs->type !== $v
-                   && !($rft->convert_from_functions->{$rfs->type} ?? null)) {
-            $sv->error_at($si, "<0>Cannot convert review field to this type");
-        } else {
-            $sv->save($si, $v);
+            return;
         }
-        return true;
+        $cvt = null;
+        if ($fs->existed && $fs->type !== $ft->name) {
+            $cvt = $this->_fcvts->find($fs->type, $ft->name);
+            if (!str_starts_with($fs->id, $ft->id_prefix)
+                || !$cvt
+                || !$this->_fcvts->allow($cvt, $fs, $sv, $si)) {
+                if (!$sv->has_error_at($si->name)) {
+                    $sv->error_at($si, "<0>Cannot convert review field to this type");
+                }
+                return;
+            }
+        }
+        $sv->save($si, $ft->name);
+        if ($cvt && isset($cvt->setting_function)) {
+            call_user_func($cvt->setting_function, $si, $fs, $sv);
+        }
     }
 
     /** @return bool */
-    private function _apply_req_values_text(Si $si, SettingValues $sv) {
+    private function _allow_req_values(Rf_Setting $fs) {
+        return !self::type_is_text($fs->type)
+            && !isset($this->_fvmaps[$fs->id]);
+    }
+
+    private function _apply_req_values_text(Si $si, Rf_Setting $rfs, SettingValues $sv) {
         $cleanreq = cleannl($sv->reqstr($si->name));
         $i = 1;
         $fpfx = "rf/{$si->name1}";
         $vpfx = "rf/{$si->name1}/values";
         foreach (explode("\n", $cleanreq) as $t) {
-            if ($t !== "" && ($t = simplify_whitespace($t)) !== "") {
-                if (($period = strpos($t, ".")) === false) {
-                    $symbol = $t;
-                    $name = "";
-                } else {
-                    $symbol = substr($t, 0, $period);
-                    $name = ltrim(substr($t, $period + 1));
-                }
-                if (($symbol === "0" && strcasecmp($name, "No entry") === 0)
-                    || (strcasecmp($symbol, "No entry") === 0 && $name === "")) {
-                    if (!$sv->has_req("{$fpfx}/required")) {
-                        $sv->save("{$fpfx}/required", "0");
-                    }
-                } else if ($symbol !== "" && ctype_alnum($symbol)) {
-                    $sv->set_req("{$vpfx}/{$i}/name", $name);
-                    $sv->set_req("{$vpfx}/{$i}/symbol", $symbol);
-                    if (ctype_digit($symbol)) {
-                        $sv->set_req("{$vpfx}/{$i}/order", (string) (1000 + intval($symbol)));
-                    } else if (ctype_upper($symbol) && strlen($symbol) === 1) {
-                        $sv->set_req("{$vpfx}/{$i}/order", (string) ord($symbol));
-                    }
-                } else {
-                    return false;
-                }
-                ++$i;
+            if ($t === "" || ($t = simplify_whitespace($t)) === "") {
+                continue;
             }
+            if (($period = strpos($t, ".")) === false) {
+                $symbol = $t;
+                $name = "";
+            } else {
+                $symbol = substr($t, 0, $period);
+                $name = ltrim(substr($t, $period + 1));
+            }
+            if (($symbol === "0" && strcasecmp($name, "No entry") === 0)
+                || (strcasecmp($symbol, "No entry") === 0 && $name === "")) {
+                if (!$sv->has_req("{$fpfx}/required")) {
+                    $sv->save("{$fpfx}/required", "0");
+                }
+            } else if ($symbol !== "" && ctype_alnum($symbol)) {
+                $sv->set_req("{$vpfx}/{$i}/name", $name);
+                $sv->set_req("{$vpfx}/{$i}/symbol", $symbol);
+                if (ctype_digit($symbol)) {
+                    $sv->set_req("{$vpfx}/{$i}/order", (string) (1000 + intval($symbol)));
+                } else if (ctype_upper($symbol) && strlen($symbol) === 1) {
+                    $sv->set_req("{$vpfx}/{$i}/order", (string) ord($symbol));
+                }
+            } else {
+                return;
+            }
+            ++$i;
         }
         if (!$sv->has_req($vpfx)) {
             $sv->set_req("{$fpfx}/values_reset", "1");
-            $this->_apply_req_values($sv->si($vpfx), $sv);
+            $this->_apply_req_values($sv->si($vpfx), $rfs, $sv);
         }
-        return true;
     }
 
     /** @param string $vpfx
@@ -195,7 +215,7 @@ class ReviewForm_SettingParser extends SettingParser {
         return true;
     }
 
-    private function _apply_req_values(Si $si, SettingValues $sv) {
+    private function _apply_req_values(Si $si, Rf_Setting $rfs, SettingValues $sv) {
         $fpfx = "rf/{$si->name1}";
         $vpfx = "rf/{$si->name1}/values";
 
@@ -238,13 +258,13 @@ class ReviewForm_SettingParser extends SettingParser {
         }
 
         // mark deleted values, account for known ids
-        $renumberings = $known_ids = [];
+        $fvmap = $known_ids = [];
         foreach ($sv->oblist_keys($vpfx) as $ctr) {
             if (($rfv = $sv->oldv("{$vpfx}/{$ctr}"))
                 && $rfv->old_value !== null) {
                 $known_ids[] = $rfv->id;
                 if ($sv->reqstr("{$vpfx}/{$ctr}/delete")) {
-                    $renumberings[$rfv->old_value] = 0;
+                    $fvmap[$rfv->old_value] = null;
                 }
             }
         }
@@ -257,21 +277,21 @@ class ReviewForm_SettingParser extends SettingParser {
             if ($rfv->old_value !== null) {
                 $id = $rfv->id;
                 if ($rfv->old_value !== $want_value) {
-                    $renumberings[$rfv->old_value] = $want_value;
+                    $fvmap[$rfv->old_value] = $want_value;
                 }
-            } else if (!in_array($want_value, $known_ids)) {
+            } else if (!in_array($want_value, $known_ids, true)) {
                 $id = $want_value;
                 $known_ids[] = $id;
             } else {
-                for ($id = 1; in_array($id, $known_ids); ++$id) {
+                for ($id = 1; in_array($id, $known_ids, true); ++$id) {
                 }
                 $known_ids[] = $id;
             }
             $ids[] = $id;
         }
 
-        // record renumberings
-        $this->_score_renumberings[$sv->vstr("{$fpfx}/id")] = $renumberings;
+        // record value map
+        $this->set_field_value_map($sv->vstr("{$fpfx}/id"), $fvmap);
 
         // save values
         $sv->save("{$fpfx}/values_storage", $flip ? array_reverse($values) : $values);
@@ -302,7 +322,7 @@ class ReviewForm_SettingParser extends SettingParser {
             if (!$rfj->existed) {
                 $pattern = self::type_is_text($rfj->type) ? "t%02d" : "s%02d";
                 $i = 0;
-                while (in_array($rfj->id, $known_ids)) {
+                while (in_array($rfj->id, $known_ids, true)) {
                     $rfj->id = sprintf($pattern, ++$i);
                 }
                 $known_ids[] = $rfj->id;
@@ -328,36 +348,33 @@ class ReviewForm_SettingParser extends SettingParser {
                 $sv->mark_no_diff("review_form");
             }
         }
-        return true;
     }
 
     function apply_req(Si $si, SettingValues $sv) {
         if ($si->name === "rf") {
-            return $this->_apply_req_review_form($si, $sv);
-        } else {
-            assert($si->name0 === "rf/");
-            $rfs = $sv->oldv($si->name0 . $si->name1);
-            if ($si->name2 === "/values") {
-                if (!self::type_is_text($rfs->type)) {
-                    $this->_apply_req_values($si, $sv);
-                }
-                return true;
-            } else if ($si->name2 === "/values_text") {
-                if (!self::type_is_text($rfs->type)) {
-                    $this->_apply_req_values_text($si, $sv);
-                }
-                return true;
-            } else if ($si->name2 === "/name") {
-                return $this->_apply_req_name($si, $sv);
-            } else if ($si->name2 === "/type") {
-                return $this->_apply_req_type($si, $rfs, $sv);
-            }
+            $this->_apply_req_review_form($si, $sv);
             return true;
         }
+        assert($si->name0 === "rf/");
+        $fs = $sv->oldv($si->name0 . $si->name1);
+        if ($si->name2 === "/values") {
+            if ($this->_allow_req_values($fs)) {
+                $this->_apply_req_values($si, $fs, $sv);
+            }
+        } else if ($si->name2 === "/values_text") {
+            if ($this->_allow_req_values($fs)) {
+                $this->_apply_req_values_text($si, $fs, $sv);
+            }
+        } else if ($si->name2 === "/name") {
+            $this->_apply_req_name($si, $sv);
+        } else if ($si->name2 === "/type") {
+            $this->_apply_req_type($si, $fs, $sv);
+        }
+        return true;
     }
 
 
-    /** @param list<array{ReviewField,?array<int,int>}> $changes */
+    /** @param list<array{ReviewField,?array<int,?int>}> $changes */
     private function _change_existing_fields($changes, Conf $conf) {
         // find affected reviews
         $interests = [];
@@ -376,18 +393,20 @@ class ReviewForm_SettingParser extends SettingParser {
         $result = $conf->qe("select * from PaperReview where " . join(" or ", $interests));
         while (($rrow = ReviewInfo::fetch($result, null, $conf))) {
             foreach ($changes as $ch) {
-                list($f, $valmap) = $ch;
+                list($f, $fvmap) = $ch;
                 // must use `finfoval` because removed fields are not exposed
-                if (($fval = $rrow->finfoval($f)) !== null) {
-                    if ($valmap !== null) {
-                        '@phan-var-force Discrete_ReviewField $f';
-                        $nfval = $f->renumber_value($valmap, $fval);
-                    } else {
-                        $nfval = null;
-                    }
-                    if ($nfval !== $fval) {
-                        $rrow->set_fval_prop($f, $nfval, true);
-                    }
+                if (($fval = $rrow->finfoval($f)) === null) {
+                    continue;
+                }
+                if ($fvmap !== null) {
+                    '@phan-var-force Discrete_ReviewField $f';
+                    $nfval = $f->map_value($fval, $fvmap);
+                } else {
+                    $nfval = null;
+                }
+                //error_log("{$rrow->paperId}#{$rrow->reviewId}: {$f->short_id}[" . json_encode($fval) . "→" . json_encode($nfval) . "]");
+                if ($nfval !== $fval) {
+                    $rrow->set_fval_prop($f, $nfval, true);
                 }
             }
             if ($rrow->prop_changed()) {
@@ -435,8 +454,8 @@ class ReviewForm_SettingParser extends SettingParser {
                 $changes[] = [$nf, null];
             } else if ($nf instanceof Discrete_ReviewField) {
                 assert($of instanceof Discrete_ReviewField);
-                if (!empty($this->_score_renumberings[$nf->short_id])) {
-                    $changes[] = [$nf, $this->_score_renumberings[$nf->short_id]];
+                if (!empty($this->_fvmaps[$nf->short_id])) {
+                    $changes[] = [$nf, $this->_fvmaps[$nf->short_id]];
                 }
             }
             if ($of && $of->include_word_count() !== $nf->include_word_count()) {
@@ -529,7 +548,7 @@ Note that complex HTML will not appear on offline review forms.</p></div>', 'set
             join("", MessageSet::feedback_html_items([
                 MessageItem::marked_note("Reviewers will be required to check this field to complete their reviews.")
             ])), '</li></ul>';
-        $sv->print_close_control_group(["horizontal" => true]);
+        $sv->print_group_close(["horizontal" => true]);
     }
 
     static function print_display(SettingValues $sv) {
@@ -557,7 +576,7 @@ Note that complex HTML will not appear on offline review forms.</p></div>', 'set
 
     static function print_presence(SettingValues $sv) {
         Ht::stash_html('<div id="settings-rf-caption-condition" class="hidden">'
-            . '<p>The field will be present only on reviews that match this search. Not all searches are supported. Examples:</p><dl><dt>round:R1 OR round:R2</dt><dd>present on reviews in round R1 or R2</dd><dt>re:ext</dt><dd>present on external reviews</dd></dl>'
+            . '<p>The field will be present only on reviews that match this search. Not all searches are supported. Examples:</p><dl class="bsp"><dt>round:R1 OR round:R2</dt><dd>present on reviews in round R1 or R2</dd><dt>re:ext</dt><dd>present on external reviews</dd></dl>'
             . '</div>', "settings-rf-caption-condition");
         $sv->print_select_group("rf/\$/presence", "Present on",
             ReviewFieldCondition_SettingParser::presence_options($sv->conf), [
@@ -567,8 +586,9 @@ Note that complex HTML will not appear on offline review forms.</p></div>', 'set
             ]);
         echo ' &nbsp;';
         $sv->print_entry("rf/\$/condition", [
-            "class" => "papersearch fx need-tooltip", "spellcheck" => false,
-            "data-tooltip-info" => "settings-rf", "data-tooltip-type" => "focus"
+            "class" => "papersearch fx need-tooltip need-suggest",
+            "data-tooltip-info" => "settings-rf", "data-tooltip-type" => "focus",
+            "spellcheck" => false, "autocomplete" => "off"
         ]);
         echo "</div></div>\n";
     }
@@ -584,40 +604,14 @@ Note that complex HTML will not appear on offline review forms.</p></div>', 'set
             "</div></div>";
     }
 
-    /** @param array<mixed,object> $tmap
-     * @return array<string,list<string>> */
-    static function make_convertible_to_map($tmap) {
-        $cvts = [];
-        foreach ($tmap as $xf) {
-            $cvts[$xf->name] = [$xf->name];
-        }
-        foreach ($tmap as $xf) {
-            foreach ((array) ($xf->convert_from_functions ?? []) as $k => $v) {
-                if ($v && isset($cvts[$k])) {
-                    $a = &$cvts[$k];
-                    $i = 0;
-                    while ($i !== count($a)
-                           && ($tmap[$a[$i]]->order ?? INF) < ($xf->order ?? INF)) {
-                        ++$i;
-                    }
-                    array_splice($a, $i, 0, [$xf->name]);
-                    unset($a);
-                }
-            }
-        }
-        return $cvts;
-    }
-
     /** @return list<array> */
     static function make_types_json($tmap) {
-        $cvts = self::make_convertible_to_map($tmap);
         $typelist = [];
         foreach ($tmap as $rf) {
             $j = ["name" => $rf->name, "title" => $rf->title];
             foreach ($rf->properties ?? (object) [] as $k => $v) {
                 $j["properties"][$k] = !!$v;
             }
-            $j["convertible_to"] = $cvts[$rf->name];
             if (!empty($rf->placeholders)) {
                 $j["placeholders"] = $rf->placeholders;
             }
@@ -626,7 +620,7 @@ Note that complex HTML will not appear on offline review forms.</p></div>', 'set
         return $typelist;
     }
 
-    static function print(SettingValues $sv) {
+    function print(SettingValues $sv) {
         echo Ht::hidden("has_rf", 1);
         $rfedit = $sv->editable("rf");
 
@@ -666,6 +660,13 @@ Note that complex HTML will not appear on offline review forms.</p></div>', 'set
         foreach ($sv->conf->review_form()->all_fields() as $f) {
             $rfj[] = $fj = $f->export_json(ReviewField::UJ_TEMPLATE);
             $fj->configurable = $rfedit;
+            $fs = null;
+            foreach ($this->_fcvts->find_from($f->type) as $cvt) {
+                $fs = $fs ?? $f->export_setting();
+                if ($this->_fcvts->allow($cvt, $fs, $sv, null)) {
+                    $fj->convertible_to[] = $cvt->to;
+                }
+            }
         }
         $sj["fields"] = $rfj;
 

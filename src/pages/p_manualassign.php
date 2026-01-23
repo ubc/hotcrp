@@ -47,7 +47,7 @@ class ManualAssign_Page {
             }
 
             if ($assrev < 0) {
-                $newct = Conflict::is_conflicted($ct) ? $ct : Conflict::set_pinned(Conflict::GENERAL, true);
+                $newct = Conflict::is_conflicted($ct) ? $ct : Conflict::set_pinned(Conflict::CT_DEFAULT, true);
             } else {
                 $newct = Conflict::is_conflicted($ct) ? 0 : $ct;
             }
@@ -79,7 +79,8 @@ class ManualAssign_Page {
             }
             $aset = new AssignmentSet($this->viewer);
             $aset->parse($text);
-            $aset->execute(true);
+            $aset->execute();
+            $aset->feedback_msg(AssignmentSet::FEEDBACK_ASSIGN);
             if ($aset->has_error()) {
                 error_log($aset->full_feedback_text());
             }
@@ -235,12 +236,12 @@ class ManualAssign_Page {
 </ul>
 <hr>
 <p>Types of PC review:</p>
-<dl><dt>', review_type_icon(REVIEW_PRIMARY), ' Primary</dt><dd>Mandatory review</dd>
+<dl class="bsp"><dt>', review_type_icon(REVIEW_PRIMARY), ' Primary</dt><dd>Mandatory review</dd>
   <dt>', review_type_icon(REVIEW_SECONDARY), ' Secondary</dt><dd>May be delegated to external reviewers</dd>
   <dt>', review_type_icon(REVIEW_PC), ' Optional</dt><dd>May be declined</dd>
   <dt>', review_type_icon(REVIEW_META), ' Metareview</dt><dd>Can view all other reviews before completing their own</dd></dl>
 <hr>
-<dl><dt>Potential conflicts</dt><dd>Matches between PC member collaborators and application authors, or between PC member and application authors or collaborators</dd>
+<dl class="bsp"><dt>Potential conflicts</dt><dd>Matches between PC member collaborators and application authors, or between PC member and application authors or collaborators</dd>
   <dt>Preference</dt><dd><a href="', $this->conf->hoturl("reviewprefs"), '">Review preference</a></dd>
   <dt>Topic score</dt><dd>High value means PC member has interest in many application topics</dd>
   <dt>Desirability</dt><dd>High values mean many PC members want to review the application</dd></dl>
@@ -305,7 +306,7 @@ class ManualAssign_Page {
         $overrides = $this->viewer->add_overrides(Contact::OVERRIDE_CONFLICT);
 
         $this->limits = PaperSearch::viewable_manager_limits($this->viewer);
-        if (!$this->qreq->t || !in_array($this->qreq->t, $this->limits)) {
+        if (!$this->qreq->t || !in_array($this->qreq->t, $this->limits, true)) {
             $this->qreq->t = $this->limits[0];
         }
         if (!$this->qreq->q || trim($this->qreq->q) == "(All)") {
