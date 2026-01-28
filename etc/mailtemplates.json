@@ -292,7 +292,7 @@
 		"subject": "[{{CONFSHORTNAME}}] Withdrawn submission #{{PID}} {{TITLEHINT}}",
 		"body": [
 			"Greetings,\n\n",
-			"{{CONFSHORTNAME}} submission #{{PID}}, which you reviewed or were assigned to review, has been withdrawn from consideration for the conference.\n\n",
+			"{{CONFSHORTNAME}} submission #{{PID}}, which you reviewed or were assigned to review, has been withdrawn from consideration for the program.\n\n",
 			"{{IF(ADMINUPDATE)}}\n",
 			"An administrator withdrew the submission. {{IF(REASON)}}They provided this reason: {{REASON}}{{ENDIF}}\n",
 			"{{ELSE}}\n",
@@ -614,7 +614,7 @@
 		"default_recipients": "pc",
 		"subject": "[{{CONFSHORTNAME}}] Message",
 		"body": [
-			"Dear program committee,\n\n",
+			"Dear adjudication committee,\n\n",
 			"Your message here.\n\n",
 			"{{SIGNATURE}}\n{{LINK}}\n"
 		]
@@ -700,7 +700,7 @@
 		"subject": "[{{CONFSHORTNAME}}] Accepted submission #{{PID}} {{TITLEHINT}}",
 		"body": [
 			"Dear author(s),\n\n",
-			"The {{CONFNAME}} program committee is delighted to inform you that your submission #{{PID}} has been accepted to appear in the program.\n\n",
+			"The {{CONFNAME}} adjudication committee is delighted to inform you that your submission #{{PID}} has been accepted to appear in the program.\n\n",
 			"* Title: {{TITLE}}\n",
 			"* Author(s): {{OPT(AUTHORS)}}\n",
 			"* Site: {{LINK(paper, p={{PID}}, {{AUTHORVIEWCAPABILITY}})}}\n\n",
@@ -721,7 +721,7 @@
 		"subject": "[{{CONFSHORTNAME}}] Rejected submission #{{PID}} {{TITLEHINT}}",
 		"body": [
 			"Dear author(s),\n\n",
-			"The {{CONFNAME}} program committee is sorry to inform you that your submission #{{PID}} was rejected, and will not appear in the program.\n\n",
+			"The {{CONFNAME}} adjudication committee is sorry to inform you that your submission #{{PID}} was rejected, and will not appear in the program.\n\n",
 			"* Title: {{TITLE}}\n",
 			"* Author(s): {{OPT(AUTHORS)}}\n",
 			"* Site: {{LINK(paper, p={{PID}}, {{AUTHORVIEWCAPABILITY}})}}\n\n",

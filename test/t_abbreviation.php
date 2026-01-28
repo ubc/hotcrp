@@ -294,10 +294,10 @@ class Abbreviation_Tester {
                   "Slides",
                   "Proposal Type",
                   "Proposal Length",
-                  "Long Description for Program Committee",
+                  "Long Description for Adjudication Committee",
                   "Session Outline",
                   "Audience Take-Aways",
-                  "Other notes for the program committee",
+                  "Other notes for the adjudication committee",
                   "Agenda Items Complete?",
                   "Paper preparation"];
         foreach ($names as $i => $k) {

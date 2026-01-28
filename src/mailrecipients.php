@@ -236,7 +236,7 @@ class MailRecipients extends MessageSet {
             $this->defsel("pc_group", "Program committee", self::F_GROUP);
             $this->defsel("pc", "Program committee", self::F_ANYPC | self::F_NOPAPERS);
             foreach ($tags as $t) {
-                $this->defsel("pc:{$t}", "#{$t} program committee", self::F_ANYPC | self::F_NOPAPERS);
+                $this->defsel("pc:{$t}", "#{$t} adjudication committee", self::F_ANYPC | self::F_NOPAPERS);
             }
             $this->defsel("pc_group_end", null, self::F_GROUP);
         }

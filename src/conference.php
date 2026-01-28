@@ -2568,7 +2568,7 @@ class Conf {
     }
 
 
-    // program committee
+    // adjudication committee
 
     /** @return ContactSet */
     function pc_set() {

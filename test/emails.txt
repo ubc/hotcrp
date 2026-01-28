@@ -1138,7 +1138,6 @@ On behalf of the Test Conference I (Testconf I) adjudication committee,
 Lixia Zhang <lixia@cs.ucla.edu> has asked you to review Testconf I
 submission #17.
 
-
 * Title: Network Text Editor (NTE): A Scalable Shared Text Editor for
   the MBone
 * Site: http://hotcrp.lcdf.org/test/review/17?cap={{}}
@@ -1363,9 +1362,9 @@ X-Landmark: test/t_paperstatus.php:1114
 
 Dear authors,
 
-The Test Conference I (Testconf I) program committee is sorry to inform
-you that your submission #14 was rejected, and will not appear in the
-program.
+The Test Conference I (Testconf I) adjudication committee is sorry to
+inform you that your submission #14 was rejected, and will not appear in
+the program.
 
 * Title: Network Performance Effects of HTTP/1.1, CSS1, and PNG
 * Authors: Henrik Frystyk Nielsen (World Wide Web Consortium);
@@ -1415,9 +1414,9 @@ X-Landmark: test/t_paperstatus.php:821
 
 Dear authors,
 
-The Test Conference I (Testconf I) program committee is sorry to inform
-you that your submission #14 was rejected, and will not appear in the
-program.
+The Test Conference I (Testconf I) adjudication committee is sorry to
+inform you that your submission #14 was rejected, and will not appear in
+the program.
 
 * Title: Network Performance Effects of HTTP/1.1, CSS1, and PNG
 * Authors: Henrik Frystyk Nielsen (World Wide Web Consortium);
@@ -1850,9 +1849,9 @@ Subject: [Testconf I] Review request for submission #17
 
 Dear Robert Mobert,
 
-On behalf of the Test Conference I (Testconf I) program committee, Lixia
-Zhang <lixia@cs.ucla.edu> has asked you to review Testconf I submission
-#17.
+On behalf of the Test Conference I (Testconf I) adjudication committee,
+Lixia Zhang <lixia@cs.ucla.edu> has asked you to review Testconf I
+submission #17.
 
 * Title: Network Text Editor (NTE): A Scalable Shared Text Editor for
   the MBone
@@ -1885,9 +1884,9 @@ Subject: [Testconf I] Review request for submission #17
 
 Dear Robert Bobert,
 
-On behalf of the Test Conference I (Testconf I) program committee, Lixia
-Zhang <lixia@cs.ucla.edu> has asked you to review Testconf I submission
-#17.
+On behalf of the Test Conference I (Testconf I) adjudication committee,
+Lixia Zhang <lixia@cs.ucla.edu> has asked you to review Testconf I
+submission #17.
 
 * Title: Network Text Editor (NTE): A Scalable Shared Text Editor for
   the MBone

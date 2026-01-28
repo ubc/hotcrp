@@ -29,7 +29,7 @@ class Users_Page {
         }
         foreach ($this->conf->viewable_user_tags($viewer) as $t) {
             if ($t !== "pc")
-                $this->limits["#{$t}"] = ["optgroup" => "PC tags", "label" => "#{$t} program committee"];
+                $this->limits["#{$t}"] = ["optgroup" => "PC tags", "label" => "#{$t} adjudication committee"];
         }
         if ($viewer->isPC
             && $viewer->can_view_pc()) {
@@ -496,7 +496,7 @@ class Users_Page {
         if ($this->qreq->t === "pc") {
             $title = "Program committee";
         } else if (str_starts_with($this->qreq->t, "#")) {
-            $title = "#" . substr($this->qreq->t, 1) . " program committee";
+            $title = "#" . substr($this->qreq->t, 1) . " adjudication committee";
         } else {
             $title = "Users";
         }

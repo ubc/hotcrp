@@ -14370,7 +14370,7 @@ function handle_list_submit_bulkwarn(table, chkval, bgform, evt) {
             .append_actions($e("button", {type: "button", name: "bsubmit", class: "btn-primary"}, "Download"), "Cancel");
     let m = table.getAttribute("data-bulkwarn-ftext");
     if (m === null || m === "") {
-        m = "<5><p>Some program committees discourage reviewers from downloading " + siteinfo.snouns[1] + " in bulk. Are you sure you want to continue?</p>";
+        m = "<5><p>Some adjudication committees discourage reviewers from downloading " + siteinfo.snouns[1] + " in bulk. Are you sure you want to continue?</p>";
     }
     render_text.onto(ctr, "f", m);
     $pu.on("closedialog", function () {
