@@ -2,7 +2,6 @@
 // test/options.php -- HotCRP conference options for test databases
 
 global $Opt;
-$Opt["dbHost"] = getenv("MYSQL_HOST") ?? 'localhost';
 $Opt["dbName"] = "hotcrp_testdb";
 $Opt["dbPassword"] = "m5LuaN23j26g";
 $Opt["shortName"] = "Testconf I";
@@ -17,7 +16,7 @@ $Opt["emailFrom"] = "you@example.com";
 $Opt["smartScoreCompare"] = true;
 $Opt["timezone"] = "America/New_York";
 $Opt["postfixEOL"] = "\n";
-$Opt["contactdbDsn"] = "mysql://hotcrp_testdb:m5LuaN23j26g@" . $Opt["dbHost"] . "/hotcrp_testdb_cdb";
+$Opt["contactdbDsn"] = "mysql://hotcrp_testdb:m5LuaN23j26g@localhost/hotcrp_testdb_cdb";
 $Opt["obsoletePasswordInterval"] = 1;
 $Opt["include"][] = "?test/localoptions.php";
 $Opt["hooks"]["send_mail"] = "MailChecker::send_hook";
