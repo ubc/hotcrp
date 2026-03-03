@@ -1,6 +1,6 @@
 <?php
 // helpers.php -- HotCRP non-class helper functions
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 // string helpers
 
@@ -86,6 +86,8 @@ class JsonResult implements JsonSerializable, ArrayAccess {
     public $pretty_print;
     /** @var bool */
     public $minimal = false;
+    /** @var ?HeaderSet */
+    private $_headers;
 
     /** @param int|array<string,mixed>|\stdClass|\JsonSerializable $a1
      * @param ?array<string,mixed> $a2 */
@@ -189,8 +191,16 @@ class JsonResult implements JsonSerializable, ArrayAccess {
     }
 
 
-    /** @param int $status
+    /** @param int $code
      * @return $this */
+    function set_response_code($code) {
+        $this->status = $code;
+        return $this;
+    }
+
+    /** @param int $status
+     * @return $this
+     * @deprecated */
     function set_status($status) {
         $this->status = $status;
         return $this;
@@ -200,6 +210,15 @@ class JsonResult implements JsonSerializable, ArrayAccess {
      * @return $this */
     function set_pretty_print($pp) {
         $this->pretty_print = $pp;
+        return $this;
+    }
+
+    /** @param string $header
+     * @param bool $replace
+     * @return $this */
+    function set_header($header, $replace = true) {
+        $this->_headers = $this->_headers ?? new HeaderSet;
+        $this->_headers->set($header, $replace);
         return $this;
     }
 
@@ -215,6 +234,23 @@ class JsonResult implements JsonSerializable, ArrayAccess {
     /** @return bool */
     function ok() {
         return $this->content["ok"];
+    }
+
+    /** @return int */
+    function response_code() {
+        return $this->status ?? 200;
+    }
+
+    /** @param string $key
+     * @return ?string */
+    function header($key) {
+        return $this->_headers ? $this->_headers->get($key) : null;
+    }
+
+    /** @param string $key
+     * @return bool */
+    function has($key) {
+        return array_key_exists($key, $this->content);
     }
 
     /** @param string $key
@@ -264,7 +300,9 @@ class JsonResult implements JsonSerializable, ArrayAccess {
 
     /** @param ?Qrequest $qreq */
     function emit($qreq = null) {
-        if ($this->status && !$this->minimal && !isset($this->content["ok"])) {
+        if (!$this->minimal
+            && $this->status
+            && !isset($this->content["ok"])) {
             $this->content["ok"] = $this->status <= 299;
         }
         if ($qreq && $qreq->valid_token()) {
@@ -276,10 +314,15 @@ class JsonResult implements JsonSerializable, ArrayAccess {
             if (($origin = $qreq->header("Origin"))) {
                 header("Access-Control-Allow-Origin: {$origin}");
             }
-        } else if ($this->status > 299 && !isset($this->content["status_code"])) {
+        } else if (!$this->minimal
+                   && $this->status > 299
+                   && !isset($this->content["status_code"])) {
             $this->content["status_code"] = $this->status;
         }
         header("Content-Type: application/json; charset=utf-8");
+        foreach ($this->_headers ?? [] as $h) {
+            header($h);
+        }
         if ($qreq && isset($qreq->pretty)) {
             $pprint = friendly_boolean($qreq->pretty);
         } else {
@@ -315,8 +358,17 @@ class Redirection extends Exception {
 }
 
 class PageCompletion extends Exception {
-    function __construct() {
+    /** @var ?int */
+    public $status;
+    function __construct($status = null) {
         parent::__construct("Page complete");
+        $this->status = $status;
+    }
+    /** @param ?Qrequest $qreq */
+    function emit($qreq = null) {
+        if ($this->status !== null) {
+            http_response_code($this->status);
+        }
     }
 }
 
@@ -328,6 +380,10 @@ class JsonCompletion extends Exception {
     /** @param JsonResult $j */
     function __construct($j) {
         $this->result = $j;
+    }
+    /** @param ?Qrequest $qreq */
+    function emit($qreq = null) {
+        $this->result->emit($qreq);
     }
 }
 
@@ -557,9 +613,8 @@ function unparse_byte_size($n) {
         return round($n / 1000) . "kB";
     } else if ($n > 0) {
         return (max(round($n / 100), 1) / 10) . "kB";
-    } else {
-        return "0B";
     }
+    return "0B";
 }
 
 /** @param int|float $n
@@ -573,9 +628,8 @@ function unparse_byte_size_binary($n) {
         return round($n / 1024) . "KiB";
     } else if ($n > 0) {
         return (max(round($n / 102.4), 1) / 10) . "KiB";
-    } else {
-        return "0B";
     }
+    return "0B";
 }
 
 /** @param int|float $n
@@ -589,9 +643,8 @@ function unparse_byte_size_binary_f($n) {
         return sprintf("%.0fKiB", $n / 1024);
     } else if ($n > 0) {
         return sprintf("%.1fKiB", max(round($n / 102.4), 1) / 10);
-    } else {
-        return "0B";
     }
+    return "0B";
 }
 
 /** @param string $t

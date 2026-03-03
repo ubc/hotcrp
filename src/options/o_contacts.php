@@ -1,6 +1,6 @@
 <?php
 // o_contacts.php -- HotCRP helper class for contacts intrinsic
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Contacts_PaperOption extends PaperOption {
     function __construct(Conf $conf, $args) {
@@ -42,7 +42,7 @@ class Contacts_PaperOption extends PaperOption {
         $ov->set_value_data(array_keys($va), array_values($va));
         $ov->set_anno("users", $ca);
     }
-    function value_unparse_json(PaperValue $ov, PaperStatus $ps) {
+    function value_export_json(PaperValue $ov, PaperExport $pex) {
         $ca = [];
         foreach (self::users_anno($ov) as $u) {
             if ($u->contactId >= 0)
@@ -50,17 +50,17 @@ class Contacts_PaperOption extends PaperOption {
         }
         foreach ($ov->value_list() as $uid) {
             if (!isset($ca[$uid]))
-                $ps->conf->prefetch_user_by_id($uid);
+                $this->conf->prefetch_user_by_id($uid);
         }
         $j = [];
         foreach ($ov->value_list() as $uid) {
-            if (($u = $ca[$uid] ?? $ps->conf->user_by_id($uid, USER_SLICE)))
+            if (($u = $ca[$uid] ?? $this->conf->user_by_id($uid, USER_SLICE)))
                 $j[] = Author::unparse_nea_json_for($u);
         }
         return $j;
     }
     function value_check(PaperValue $ov, Contact $user) {
-        if (!$ov->anno("modified") || $user->allow_administer($ov->prow)) {
+        if (!$ov->anno("modified") || $user->allow_admin($ov->prow)) {
             return;
         }
         if ($ov->prow->conflict_type($user) >= CONFLICT_CONTACTAUTHOR
@@ -180,7 +180,7 @@ class Contacts_PaperOption extends PaperOption {
         // check emails
         $specau = [];
         foreach ($reqau as $au) {
-            if (validate_email($au->email)) {
+            if (Contact::is_plausible_or_example_email($au->email)) {
                 $specau[] = $au;
             } else if ($au->email !== "") {
                 $ov->error("<0>Invalid email address ‘{$au->email}’");

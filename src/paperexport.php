@@ -1,6 +1,6 @@
 <?php
 // paperexport.php -- HotCRP helper for reading/storing papers as JSON
-// Copyright (c) 2008-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2008-2026 Eddie Kohler; see LICENSE.
 
 class PaperExport {
     /** @var Conf
@@ -9,9 +9,6 @@ class PaperExport {
     /** @var Contact
      * @readonly */
     public $viewer;
-    /** @var bool
-     * @readonly */
-    public $use_ids = false;
     /** @var bool
      * @readonly */
     public $include_docids = false;
@@ -38,15 +35,6 @@ class PaperExport {
     function __construct(Contact $viewer) {
         $this->conf = $viewer->conf;
         $this->viewer = $viewer;
-
-    }
-
-    /** @param bool $x
-     * @return $this
-     * @suppress PhanAccessReadOnlyProperty */
-    function set_use_ids($x) {
-        $this->use_ids = $x;
-        return $this;
     }
 
     /** @param bool $x
@@ -137,7 +125,7 @@ class PaperExport {
     }
 
     /** @param object $d */
-    private function decorate_pdf_document_json($d, DocumentInfo $doc) {
+    function decorate_pdf_document_json($d, DocumentInfo $doc) {
         if (($spec = $this->conf->format_spec($doc->documentType))
             && !$spec->is_empty()) {
             $this->_cf = $this->_cf ?? new CheckFormat($this->conf, CheckFormat::RUN_NEVER);
@@ -147,12 +135,14 @@ class PaperExport {
                 }
                 if ($this->_cf->has_problem()) {
                     $d->format_status = $this->_cf->has_error() ? "error" : "warning";
-                    $d->format = join(" ", $this->_cf->problem_fields());
+                    $d->format_problem_fields = $this->_cf->problem_fields();
                 } else {
                     $d->format_status = "ok";
                 }
+                return;
             }
-        } else if (($np = $doc->npages()) !== null) {
+        }
+        if (($np = $doc->npages()) !== null) {
             $d->pages = $np;
         }
     }
@@ -184,22 +174,25 @@ class PaperExport {
             if ($oj === null) {
                 continue;
             }
-            if ($this->use_ids) {
-                $pj->{$opt->field_key()} = $oj;
-            } else {
-                $pj->{$opt->json_key()} = $oj;
-            }
+            $pj->{$opt->json_key()} = $oj;
         }
 
+        $this->apply_paper_status($prow, $pj);
+        $this->apply_paper_tags($prow, $pj);
+        return $pj;
+    }
+
+    /** @param object $pj */
+    function apply_paper_status(PaperInfo $prow, $pj) {
         $submitted_status = "submitted";
         $dec = $prow->viewable_decision($this->viewer);
         if ($dec->id !== 0) {
             $pj->decision = $dec->name;
-            if (($dec->catbits & DecisionInfo::CAT_YES) !== 0) {
+            if ($dec->category === DecisionInfo::CAT_YES) {
                 $submitted_status = "accept";
-            } else if ($dec->catbits === DecisionInfo::CB_DESKREJECT) {
+            } else if ($dec->category === DecisionInfo::CAT_DESKREJECT) {
                 $submitted_status = "desk_reject";
-            } else if (($dec->catbits & DecisionInfo::CAT_NO) !== 0) {
+            } else if ($dec->category === DecisionInfo::CAT_STDREJECT) {
                 $submitted_status = "reject";
             }
         }
@@ -230,12 +223,13 @@ class PaperExport {
         if ($prow->timeModified > 0) {
             $pj->modified_at = $prow->timeModified;
         }
+    }
 
+    /** @param object $pj */
+    function apply_paper_tags(PaperInfo $prow, $pj) {
         if (($tlist = $prow->sorted_viewable_tags($this->viewer))) {
             $pj->tags = Tagger::split($tlist);
         }
-
-        return $pj;
     }
 
     /** @return ?object */
@@ -333,7 +327,7 @@ class PaperExport {
                 $rj[$f->uid()] = $f->unparse_json($fval);
             } else if ($fval !== null
                        && $this->include_permissions
-                       && ($my_review || $this->viewer->can_administer($prow))) {
+                       && ($my_review || $this->viewer->is_admin($prow))) {
                 $hidden[] = $f->uid();
             }
         }

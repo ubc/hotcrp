@@ -178,7 +178,10 @@ class DocumentInfo implements JsonSerializable {
 
         $doc = new DocumentInfo($conf);
         $doc->timestamp = Conf::$now;
-        $doc->mimetype = $upload->type;
+        $doc->mimetype = Mimetype::sanitize($upload->type);
+        if ($upload->type && !$doc->mimetype) {
+            $doc->message_set()->warning_at(null, "<0>Invalid MIME type");
+        }
         $doc->filename = self::sanitize_filename($upload->name);
 
         $upload_error = "";
@@ -851,13 +854,20 @@ class DocumentInfo implements JsonSerializable {
             && @filesize($dspath) === @filesize($this->content_file);
     }
 
-    /** @param string $text_hash
+    /** @param string|HashAnalysis $text_hash
      * @param string|Mimetype $mimetype
      * @return non-empty-string */
     static function s3_key_for($text_hash, $mimetype) {
         // Format: `doc/%[2/3]H/%h%x`. Why not algorithm in subdirectory?
         // Because S3 works better if keys are partitionable.
-        if (strlen($text_hash) === 40) {
+        if (!is_string($text_hash)) {
+            $dlen = $text_hash->prefix() === "" ? 2 : 3;
+            $x = substr($text_hash->partial_text_data(), 0, $dlen);
+            if (!$text_hash->complete()) {
+                $mimetype = "";
+            }
+            $text_hash = $text_hash->partial_text();
+        } else if (strlen($text_hash) === 40) {
             $x = substr($text_hash, 0, 2);
         } else {
             $x = substr($text_hash, strpos($text_hash, "-") + 1, 3);
@@ -1429,7 +1439,7 @@ class DocumentInfo implements JsonSerializable {
         } else if (($path = $this->available_content_file())) {
             $ha->set_hash_file($path);
         }
-        return $ha->ok() ? $ha->binary() : false;
+        return $ha->complete() ? $ha->binary() : false;
     }
 
     /** @param string $file
@@ -1438,7 +1448,7 @@ class DocumentInfo implements JsonSerializable {
     function file_binary_hash($file, $like_hash = null) {
         $ha = HashAnalysis::make_algorithm($this->conf, $like_hash);
         $ha->set_hash_file($file);
-        return $ha->ok() ? $ha->binary() : false;
+        return $ha->complete() ? $ha->binary() : false;
     }
 
 

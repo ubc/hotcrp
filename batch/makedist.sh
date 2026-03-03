@@ -1,4 +1,4 @@
-export VERSION=3.1
+export VERSION=3.2.1
 
 # check that schema.sql and updateschema.php agree on schema version
 updatenum=`grep 'settings.*allowPaperOption.*=\|update_schema_version' src/updateschema.php | tail -n 1 | sed 's/.*= *//;s/.*[(] *//;s/[;)].*//'`
@@ -89,6 +89,7 @@ batch/backupdb.php
 batch/checkinvariants.php
 batch/cli/cli_assign.php
 batch/cli/cli_autoassign.php
+batch/cli/cli_document.php
 batch/cli/cli_job.php
 batch/cli/cli_paper.php
 batch/cli/cli_parameterhelp.php
@@ -96,12 +97,14 @@ batch/cli/cli_search.php
 batch/cli/cli_settings.php
 batch/cli/cli_test.php
 batch/cli/cli_upload.php
+batch/collaboratordiff.php
 batch/createdb.php
 batch/deletepapers.php
 batch/fixdelegation.php
 batch/hotcrapi.php
 batch/killinactivedoc.php
 batch/paperjson.php
+batch/pcemails.php
 batch/reviewcsv.php
 batch/s3test.php
 batch/s3transfer.php
@@ -110,6 +113,7 @@ batch/savepapers.php
 batch/saveusers.php
 batch/search.php
 batch/settings.php
+batch/sparsifypref.php
 batch/updatecontactdb.php
 
 conf/.htaccess
@@ -180,6 +184,7 @@ lib/getopt.php
 lib/gmpshim.php
 lib/hashanalysis.php
 lib/hclcolor.php
+lib/headerset.php
 lib/ht.php
 lib/icons.php
 lib/isovideomimetype.php
@@ -223,6 +228,7 @@ src/.htaccess
 src/api/api_alerts.php
 src/api/api_alltags.php
 src/api/api_assign.php
+src/api/api_autoassign.php
 src/api/api_comment.php
 src/api/api_completion.php
 src/api/api_decision.php
@@ -237,6 +243,7 @@ src/api/api_mail.php
 src/api/api_manageemail.php
 src/api/api_paper.php
 src/api/api_paperpc.php
+src/api/api_potentialconflicts.php
 src/api/api_preference.php
 src/api/api_requestreview.php
 src/api/api_review.php
@@ -280,6 +287,7 @@ src/autoassigners/aa_prefconflict.php
 src/autoassigners/aa_review.php
 src/backuppattern.php
 src/banal
+src/capabilities/cap_authorization.php
 src/capabilities/cap_authorview.php
 src/capabilities/cap_job.php
 src/capabilities/cap_manageemail.php
@@ -434,6 +442,7 @@ src/pages/p_search.php
 src/pages/p_settings.php
 src/pages/p_signin.php
 src/pages/p_users.php
+src/pages/p_wellknown.php
 src/papercolumn.php
 src/papercolumns/pc_administrator.php
 src/papercolumns/pc_assignreview.php
@@ -578,6 +587,7 @@ src/tagrankparser.php
 src/tagsearchmatcher.php
 src/textformat.php
 src/tokeninfo.php
+src/tokenscope.php
 src/topicset.php
 src/track.php
 src/updateschema.php

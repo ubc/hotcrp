@@ -1,6 +1,6 @@
 <?php
 // multiconference.php -- HotCRP multiconference installations
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Multiconference {
     /** @var array<string,?Conf> */
@@ -45,10 +45,10 @@ class Multiconference {
     static private function test_multiconference_analyzer($ma, $nav) {
         $sp = strpos($ma, " ");
         $p = 0;
-        if ($sp === 1) {
+        if ($sp === 1 && $ma[0] !== "/") {
             $t = $ma[0];
             $p = 2;
-            $sp = strpos($ma, " ", 2);
+            $sp = strpos($ma, " ", $p);
         } else {
             $t = "b";
         }
@@ -61,6 +61,8 @@ class Multiconference {
             $subject = strtolower($nav->host);
         } else if ($t === "p") {
             $subject = $nav->base_path;
+        } else if ($t === "a") {
+            $subject = $nav->site_absolute(true) . $nav->raw_page . $nav->path;
         } else {
             return null;
         }
@@ -112,7 +114,7 @@ class Multiconference {
         return $newconf;
     }
 
-    /** @param 403|404|array{title?:string,link?:bool,action_bar?:string}|Qrequest|MessageItem|FailureReason|string|null ...$arg
+    /** @param 401|403|404|array{title?:string,link?:bool,action_bar?:string}|Qrequest|MessageItem|FailureReason|string|null ...$arg
      * @return never */
     static function fail(...$arg) {
         global $Opt;

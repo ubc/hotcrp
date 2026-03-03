@@ -1,6 +1,6 @@
 <?php
 // contactalerts.php -- HotCRP helper class for user messages
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class ContactAlerts {
     /** @var Conf
@@ -121,14 +121,15 @@ class ContactAlerts {
         if ($iscdb || strlen(json_encode($alert)) > 100) {
             $tok = new TokenInfo($this->conf, TokenInfo::ALERT);
             if ($iscdb && ($cdbu = $this->user->cdb_user())) {
-                $tok->set_cdb_user($cdbu)->set_token_pattern("hca{$cdbu->contactId}g_[20]");
+                $tok->set_user_from($cdbu, true);
             } else {
-                $tok->set_user($this->user)->set_token_pattern("hca{$this->user->contactId}_[20]");
+                $tok->set_user_from($this->user, false);
             }
             if (is_int($alert->expires_at ?? null)) {
                 $tok->set_expires_at($alert->expires_at);
             }
             $tok->assign_data($alert);
+            $tok->set_token_pattern("hci{$tok->contactId}_[20]");
             $tok->insert();
             assert($tok->stored());
             $alert = clone $alert;
@@ -186,7 +187,8 @@ class ContactAlerts {
         return $as;
     }
 
-    function report_qreq(Qrequest $qreq) {
+    /** @return list<array{string,int}> */
+    function qreq_msg_content_list(Qrequest $qreq) {
         $scopes = [];
         if ($qreq->page() === "index") {
             $scopes[] = "home";
@@ -200,10 +202,11 @@ class ContactAlerts {
                 $scopes[] = "paper-" . $prow->paperId;
             }
         }
-        $this->report_scopes(...$scopes);
+        return $this->scoped_msg_content_list(...$scopes);
     }
 
-    function report_scopes(...$scopes) {
+    /** @return list<array{string,int}> */
+    function scoped_msg_content_list(...$scopes) {
         $as = $salts = [];
         foreach ($this->filter_scopes(...$scopes) as $a) {
             if ((($a->sensitive ?? true)
@@ -220,20 +223,25 @@ class ContactAlerts {
         if (!empty($salts)) {
             $this->load_tokens($salts);
         }
+        $mxs = [];
         foreach ($as as $a) {
-            $ms = Ht::fmt_feedback_msg_content($this->conf, $this->message_list($a));
-            if ($ms[0] === "") {
+            $ml = $this->message_list($a);
+            $mx = Ht::fmt_feedback_msg_content($this->conf, $this->message_list($a));
+            if (!$mx) {
                 continue;
             }
-            echo '<div class="', Ht::msg_class($ms[1]), $this->conf->mx_auto() ? " mx-auto" : "", '">';
             if (($a->dismissable ?? null) !== false) {
-                echo Ht::button("", ["class" => "btn-x btn-sm float-right ui js-dismiss-alert", "aria-label" => "Delete this alert", "data-alertid" => $a->token ?? $a->alertid]);
+                $mx[0] = '<div class="d-flex">'
+                    . preg_replace('/\A<ul class="feedback-list">/', '<ul class="feedback-list mb-0 flex-grow-1">', $mx[0])
+                    . Ht::button("", ["class" => "btn-x btn-sm ui js-dismiss-alert need-tooltip ml-3 flex-grow-0", "aria-label" => "Delete this alert", "data-alertid" => $a->token ?? $a->alertid])
+                    . '</div>';
             }
-            echo $ms[0], '</div>';
+            $mxs[] = $mx;
         }
         if (!empty($this->changes)) {
             $this->apply_changes();
         }
+        return $mxs;
     }
 
     /** @param string $salt

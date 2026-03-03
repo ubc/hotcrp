@@ -1,6 +1,6 @@
 <?php
 // qrequest.php -- HotCRP helper class for request objects (no warnings)
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSerializable {
     /** @var ?Conf */
@@ -13,6 +13,10 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     private $_page;
     /** @var ?string */
     private $_path;
+    /** @var int */
+    private $_path_component_index = 0;
+    /** @var ?int */
+    private $_path_component_count;
     /** @var string */
     private $_method;
     /** @var ?array<string,string> */
@@ -59,13 +63,19 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
         $this->_qsession = new Qsession;
     }
 
+    /** @param string $method
+     * @param array<string,string> $data
+     * @return Qrequest */
+    static function make($method, $data = []) {
+        return new Qrequest($method, $data);
+    }
+
     /** @param NavigationState $nav
      * @return $this */
     function set_navigation($nav) {
         $this->_navigation = $nav;
         $this->_page = $nav->page;
-        $this->_path = $nav->path;
-        return $this;
+        return $this->set_path($nav->path);
     }
 
     /** @param string $page
@@ -79,6 +89,15 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
      * @return $this */
     function set_path($path) {
         $this->_path = $path;
+        $this->_path_component_index = 0;
+        $this->_path_component_count = null;
+        return $this;
+    }
+
+    /** @param int $n
+     * @return $this */
+    function set_path_component_index($n) {
+        $this->_path_component_index = $n;
         return $this;
     }
 
@@ -114,11 +133,9 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
         return $this;
     }
 
-    /** @return $this
-     * @suppress PhanDeprecatedProperty */
+    /** @return $this */
     function set_paper(?PaperInfo $prow) {
         $this->_requested_paper = $prow;
-        $this->_conf->paper = $prow;
         return $this;
     }
 
@@ -167,14 +184,17 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     /** @param int $n
      * @return ?string */
     function path_component($n, $decoded = false) {
-        if ((string) $this->_path !== "") {
-            $p = explode("/", substr($this->_path, 1));
-            if ($n + 1 < count($p)
-                || ($n + 1 === count($p) && $p[$n] !== "")) {
-                return $decoded ? urldecode($p[$n]) : $p[$n];
-            }
+        if ($this->_path_component_count === null) {
+            $p = $this->_path ?? "";
+            $this->_path_component_count = substr_count($p, "/")
+                + (str_ends_with($p, "/") ? 0 : 1);
         }
-        return null;
+        $n += $this->_path_component_index + 1;
+        if ($n <= 0 || $n >= $this->_path_component_count) {
+            return null;
+        }
+        $pc = explode("/", $this->_path);
+        return $decoded ? urldecode($pc[$n]) : $pc[$n];
     }
     /** @return ?PaperInfo */
     function paper() {
@@ -188,6 +208,12 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     /** @return ?string */
     function user_agent() {
         return $this->_headers["HTTP_USER_AGENT"] ?? null;
+    }
+
+    /** @param string $k
+     * @return ?string */
+    function raw_header($k) {
+        return $this->_headers[$k] ?? null;
     }
 
     /** @param string $k
@@ -578,16 +604,16 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
         }
         if (empty($_POST)) {
             $qreq->set_post_empty();
+            $qreq->_body_type = self::BODY_FILE;
         }
         $qreq->_headers = $_SERVER;
         if (isset($_SERVER["HTTP_REFERER"])) {
             $qreq->set_referrer($_SERVER["HTTP_REFERER"]);
         }
-        $qreq->_body_type = empty($_POST) ? self::BODY_FILE : self::BODY_NONE;
 
         // Work around GET URL length limitations with `:method:` parameter.
         // A POST request can set `:method:` to GET for GET semantics.
-        if (($v = $qreq->_v[":method:"] ?? null) === "GET"
+        if (($_GET[":method:"] ?? null) === "GET"
             && $qreq->method() === "POST") {
             $qreq->_method = "GET";
         }

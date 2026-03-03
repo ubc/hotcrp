@@ -330,7 +330,7 @@ class Users_Page {
 
         // that’s it
         Conf::$no_invalidate_caches = false;
-        $this->conf->invalidate_caches(["pc" => true]);
+        $this->conf->invalidate_caches("pc");
 
         // report
         if ($us->has_error()) {
@@ -584,7 +584,7 @@ class Users_Page {
         }
 
         // update from contactdb
-        (new CdbUserUpdate($viewer->conf))->check();
+        (new CdbUserUpdate($viewer->conf))->import_empty_props();
 
         // handle request
         if (isset($qreq["default"]) && $qreq->defaultfn) {

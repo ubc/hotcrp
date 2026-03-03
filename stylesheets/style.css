@@ -1,6 +1,6 @@
 /* -*- mode: css; indent-tabs-mode: t; css-indent-offset: 8 -*- */
 /* style.css -- HotCRP CSS styles */
-/* Copyright (c) 2006-2025 Eddie Kohler; see LICENSE. */
+/* Copyright (c) 2006-2026 Eddie Kohler; see LICENSE. */
 
 @layer theme;
 
@@ -153,11 +153,17 @@ input, textarea, .textarea, select, button, .btn {
 dl {
 	margin: 0 0 1em;
 }
+dd {
+	margin-left: 1.5em;
+}
 dl.bsp > dt {
 	font-weight: bolder;
 }
-dl.bsp > dd {
+dl.bsp > dd, dl.sp > dd {
 	margin-bottom: 0.5em;
+}
+dl.sb > dt {
+	font-weight: 500;
 }
 dl.swoosh > dd {
 	margin-left: 1.5em;
@@ -253,18 +259,24 @@ code, kbd, pre, samp, .text-monospace {
 body {
 	margin: 0;
 	position: relative;
-	min-height: 100vh;
 }
-body.paper {
+
+#p-page {
+	position: relative;
+	z-index: 0;
+	min-height: 100vh;
+	min-height: 100dvh;
+}
+#p-page.paper {
 	background: linear-gradient(to right, var(--submission-bg), var(--submission-bg) 15.5rem, var(--paper) 15.5rem, var(--paper));
 }
-body.body-signin {
+#p-page.body-signin {
 	background: #e0d9da;
 }
-body.body-error, body.paper-error {
+#p-page.body-error {
 	background: #dfd0d3;
 }
-body.leftmenu {
+#p-page.leftmenu {
 	background: linear-gradient(to right, #ecf2f4, #ecf2f4 164px, var(--paper) 164px, var(--paper));
 }
 #m-buzzer {
@@ -273,10 +285,6 @@ body.leftmenu {
 
 
 /* header */
-#p-page {
-	position: relative;
-	z-index: 0;
-}
 #p-header {
 	position: relative;
 	padding-bottom: 24px;
@@ -604,8 +612,11 @@ input.wide {
 .font-weight-bold {
 	font-weight: bold !important;
 }
-.font-weight-semibold, .sb {
+.font-weight-semibold {
 	font-weight: 500 !important;
+}
+strong.sb {
+	font-weight: 500;
 }
 .font-italic {
 	font-style: italic;
@@ -922,23 +933,23 @@ td.g {
 	padding-bottom: 48px;
 	position: relative;
 }
-#m-home #p-body {
+#p-body.body-home {
 	margin-top: 1rem;
 	margin-left: 3%;
 	margin-right: 4%;
 }
-body.paper #p-body {
+#p-body.paper {
 	margin-left: 0;
 	margin-right: 0;
 }
 @media screen and (min-width: 900px) {
-.body-text #p-body {
+#p-body.body-text {
 	margin-left: 10%;
 	margin-right: 10%;
 }
 }
 
-#h-messages {
+header > #h-messages {
 	margin-left: 24px;
 	margin-right: 24px;
 }
@@ -976,9 +987,7 @@ body.body-error #h-messages {
 	border-radius: 4px;
 	padding: 0.5rem 0.85rem;
 }
-.msgs-wide > .msg,
-.msg.mx-auto,
-body.paper-error .msg {
+.msg.mx-auto {
 	margin-left: auto;
 	margin-right: auto;
 	max-width: 80%;
@@ -1160,17 +1169,17 @@ label.hashtarget, .label.hashtarget, .field-title.hashtarget {
 	flex-wrap: wrap;
 	justify-content: flex-end;
 }
+.form-basic-search .papersearch {
+	min-width: 20rem;
+}
 .form-basic-search-in {
 	white-space: nowrap;
 	margin-left: 0.5rem;
 }
-.form-basic-search .papersearch {
-	min-width: 20rem;
-}
-.form-basic-search-in > .select {
+.form-basic-search-in > .select, .form-basic-search-type > .select {
 	margin-left: 0.25rem;
 }
-.form-basic-search-in > button {
+button.basic-search {
 	margin-left: 1rem;
 }
 
@@ -1493,6 +1502,9 @@ select, button, .btn, button.btn-t:hover {
 	background: white;
 	background-image: linear-gradient(#fcfcfc, #f0f0f0);
 	white-space: nowrap;
+}
+.btn {
+	text-align: center;
 }
 button.btn-t {
 	border-color: rgba(181, 181, 181, 0);
@@ -2028,18 +2040,17 @@ td.padls, th.padls, div.padls {
 	margin-top: 2.25rem;
 	margin-bottom: 0;
 }
-.form-sep-2 {
-	margin-top: 0.5rem;
-	margin-bottom: 0;
-}
 .form-sep.nearby {
 	margin-top: 1.25rem;
 }
-hr.form-sep, hr.form-sep-2 {
+.form-sep.minimal {
+	margin-top: 0.5rem;
+}
+hr.form-sep {
 	border: 0 none;
 	height: 0;
 }
-.form-h + .form-sep, .form-h + .form-sep-2 {
+.form-h + .form-sep {
 	margin-top: 0;
 }
 .form-g, .form-g-5 {
@@ -2436,8 +2447,13 @@ label.f-c, .f-i > label, .f-i > .label {
 	margin-top: 0.25rem;
 	margin-bottom: 0;
 }
-.msg .feedback-list {
+.msg > .feedback-list {
 	max-width: initial;
+}
+.msg.mx-auto > .feedback-list:first-child:last-child {
+	width: fit-content;
+	margin-left: auto;
+	margin-right: auto;
 }
 .feedback-list + input.has-error,
 .feedback-list + input.has-warning {
@@ -4048,10 +4064,19 @@ a.badge-white:hover {
 	overflow-wrap: anywhere;
 	font-weight: 500;
 	min-width: 8rem;
+	position: relative;
 }
 .suggestion.s9y {
 	background-color: #6088d0;
 	color: white;
+}
+.s9pri1::before, .s9pri2::before {
+	content: "·";
+	opacity: 0.5;
+	display: inline-block;
+	position: relative;
+	left: 0.6em;
+	width: 0;
 }
 .s9d {
 	padding-left: 0.5em;
@@ -4165,8 +4190,8 @@ a.badge-white:hover {
 	width: 0;
 	height: 0;
 }
-.bubcontent > p {
-	max-width: 280px;
+.bubcontent > p, .bubcontent > blockquote, .bubcontent > dl {
+	max-width: 320px;
 }
 .bubcontent > :last-child {
 	margin-bottom: 0;

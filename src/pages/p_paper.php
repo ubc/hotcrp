@@ -1,6 +1,6 @@
 <?php
 // pages/p_paper.php -- HotCRP paper view and edit page
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Paper_Page {
     /** @var Conf */
@@ -40,6 +40,8 @@ class Paper_Page {
 
     /** @param ?FailureReason $perm */
     function error_exit($perm = null) {
+        http_response_code($this->user->is_signed_in() ? 403 : 401);
+        // 401 spec requires WWW-Authenticate, but many sites omit it
         if ($perm && (!$perm->secondary || $this->conf->saved_messages_status() < 2)) {
             $perm->set("expand", true);
             $perm->set("listViewable", $this->user->is_author() || $this->user->is_reviewer());
@@ -79,7 +81,7 @@ class Paper_Page {
 
         $reason = (string) $this->qreq->reason;
         if ($reason === ""
-            && $this->user->can_administer($this->prow)
+            && $this->user->can_manage($this->prow)
             && $this->qreq["status:notify"] > 0) {
             $reason = (string) $this->qreq["status:notify_reason"];
         }
@@ -113,7 +115,7 @@ class Paper_Page {
     function handle_delete() {
         if ($this->prow->paperId <= 0) {
             $this->conf->success_msg("<0>{$this->conf->snouns[2]} deleted");
-        } else if (!$this->user->can_administer($this->prow)) {
+        } else if (!$this->user->can_manage($this->prow)) {
             $this->conf->feedback_msg(
                 MessageItem::error("<0>Only program chairs can permanently delete a {$this->conf->snouns[0]}"),
                 MessageItem::inform("<0>Authors can withdraw {$this->conf->snouns[1]}.")
@@ -240,7 +242,7 @@ class Paper_Page {
 
         // mail notification
         if ($this->ps->has_change()) {
-            if ($this->user->can_administer($new_prow)) {
+            if ($this->user->can_manage($new_prow)) {
                 if (friendly_boolean($this->qreq["status:notify"])) {
                     $this->ps->set_notify_reason($this->qreq["status:notify_reason"] ?? "");
                 } else {
@@ -261,7 +263,7 @@ class Paper_Page {
         $conf = $this->conf;
         $this->useRequest = true;
 
-        if (!$this->user->can_administer($this->prow)
+        if (!$this->user->can_manage($this->prow)
             && !$this->prow->has_author($this->user)) {
             $conf->feedback_msg($this->prow->failure_reason(["permission" => "contact:edit", "expand" => true])->message_list());
             return;

@@ -94,7 +94,7 @@ class SearchQueryInfo {
 
     function __construct(PaperSearch $srch) {
         $this->srch = $srch;
-        if (!$srch->user->allow_administer_all()) {
+        if (!$srch->user->allow_admin_all()) {
             $this->add_reviewer_columns();
         }
         $this->tables["Paper"] = [];
@@ -247,8 +247,8 @@ class PaperSearch extends MessageSet {
     /** @var Limit_SearchTerm
      * @readonly */
     private $_limit_qe;
-    /** @var bool */
-    private $_limit_explicit = false;
+    /** @var int */
+    private $_limit_override;
     /** @var bool */
     private $_has_qe = false;
 
@@ -355,39 +355,25 @@ class PaperSearch extends MessageSet {
         }
 
         // paper selection
-        if (isset($options["t"]) && $options["t"] !== "") {
+        $toverride = friendly_boolean($options["toverride"] ?? null);
+        if (isset($options["t"])
+            && $options["t"] !== ""
+            && $options["t"] !== "default") {
             $lnames = Limit_SearchTerm::canonical_names($this->conf, $options["t"]);
             $limit = $lnames[0] ?? "none";
+            $toverride = $toverride ?? true;
         } else {
-            // Empty limit should be the plausible limit for a default search,
-            // as in entering text into a quicksearch box.
-            if ($user->privChair
-                && ($user->is_root_user()
-                    || $this->conf->unnamed_submission_round()->time_update(true))) {
-                $limit = "all";
-            } else if ($user->isPC) {
-                if ($user->can_view_some_incomplete()
-                    && $user->conf->can_pc_view_some_incomplete()) {
-                    $limit = "active";
-                } else {
-                    $limit = "s";
-                }
-            } else if (!$user->is_reviewer()) {
-                $limit = "a";
-            } else if (!$user->is_author()) {
-                $limit = "r";
-            } else {
-                $limit = "ar";
-            }
+            $limit = "default";
         }
         $lword = SearchWord::make_simple($limit);
         $this->_limit_qe = Limit_SearchTerm::parse($limit, $lword, $this);
+        $this->_limit_override = $toverride ? 0 : -1;
     }
 
     private function clear_compilation() {
         $this->clear_messages();
         $this->_qe = null;
-        // XXX does not reset _limit_explicit, that should be ok
+        // XXX does not reset _limit_override, that should be ok
         $this->_then_term = null;
         $this->_contact_searches = null;
         $this->_matches = null;
@@ -443,16 +429,23 @@ class PaperSearch extends MessageSet {
     /** @return bool */
     function show_submitted_status() {
         return in_array($this->limit(), ["a", "active", "all"], true)
-            && $this->q !== "re:me";
+            && !$this->query_is_re_me();
     }
     /** @return bool */
     function limit_explicit() {
-        return $this->_limit_explicit;
+        if ($this->_limit_override === 0 && !$this->_has_qe) {
+            $this->main_term();
+        }
+        return $this->_limit_override > 0;
     }
 
     /** @return Contact */
     function reviewer_user() {
         return $this->_reviewer_user ?? $this->user;
+    }
+    /** @return bool */
+    function query_is_re_me() {
+        return $this->q === "re:me" && $this->user === $this->reviewer_user();
     }
 
 
@@ -518,18 +511,34 @@ class PaperSearch extends MessageSet {
         return $cs;
     }
     /** @return ContactSearch */
-    private function _contact_search($type, $word, $quoted, $pc_only) {
+    private function _contact_search($type, $word, $quoted) {
         $xword = $word;
         if ($quoted === null) {
             $word = SearchWord::unquote($word);
             $quoted = strlen($word) !== strlen($xword);
         }
-        $type |= ($pc_only ? ContactSearch::F_PC : 0)
-            | ($quoted ? ContactSearch::F_QUOTED : 0)
+        $type |= ($quoted ? ContactSearch::F_QUOTED : 0)
             | (!$quoted && $this->user->isPC ? ContactSearch::F_TAG : 0);
         $cs = $this->_find_contact_search($type, $word);
         if ($cs->warn_html) {
             $this->warning("<5>{$cs->warn_html}");
+        }
+        return $cs;
+    }
+    /** @param int $type
+     * @param SearchWord $sword
+     * @return ContactSearch */
+    function user_search($type, $sword) {
+        if ($sword->quoted) {
+            $type |= ContactSearch::F_QUOTED;
+        } else if ($this->user->isPC) {
+            $type |= ContactSearch::F_TAG;
+        }
+        $cs = $this->_find_contact_search($type, $sword->word);
+        if ($cs->warn_html) {
+            $this->lwarning($sword, "<5>{$cs->warn_html}");
+        } else if ($cs->is_empty() && ($type & ContactSearch::F_USER) !== 0) {
+            $this->lwarning($sword, $type & ContactSearch::F_PC ? "<0>PC member not found" : "<0>User not found");
         }
         return $cs;
     }
@@ -538,7 +547,8 @@ class PaperSearch extends MessageSet {
      * @param bool $pc_only
      * @return list<int> */
     function matching_uids($word, $quoted, $pc_only) {
-        $scm = $this->_contact_search(ContactSearch::F_USER, $word, $quoted, $pc_only);
+        $pc_type = $pc_only ? ContactSearch::F_PC : 0;
+        $scm = $this->_contact_search(ContactSearch::F_USER | $pc_type, $word, $quoted);
         return $scm->user_ids();
     }
     /** @param string $word
@@ -546,7 +556,8 @@ class PaperSearch extends MessageSet {
      * @param bool $pc_only
      * @return list<Contact> */
     function matching_contacts($word, $quoted, $pc_only) {
-        $scm = $this->_contact_search(ContactSearch::F_USER, $word, $quoted, $pc_only);
+        $pc_type = $pc_only ? ContactSearch::F_PC : 0;
+        $scm = $this->_contact_search(ContactSearch::F_USER | $pc_type, $word, $quoted);
         return $scm->users();
     }
     /** @param string $word
@@ -554,7 +565,8 @@ class PaperSearch extends MessageSet {
      * @param bool $pc_only
      * @return ?list<int> */
     function matching_special_uids($word, $quoted, $pc_only) {
-        $scm = $this->_contact_search(0, $word, $quoted, $pc_only);
+        $pc_type = $pc_only ? ContactSearch::F_PC : 0;
+        $scm = $this->_contact_search($pc_type, $word, $quoted);
         return $scm->has_error() ? null : $scm->user_ids();
     }
 
@@ -1036,8 +1048,8 @@ class PaperSearch extends MessageSet {
     function main_term() {
         if ($this->_qe === null) {
             $this->_has_qe = true;
-            if ($this->q === "re:me") {
-                $this->_qe = new Limit_SearchTerm($this->user, $this->user, "r", true);
+            if ($this->query_is_re_me()) {
+                $this->_qe = new Limit_SearchTerm($this, "r", true);
             } else if (($qe = $this->_search_expression($this->q))) {
                 $this->_qe = $qe;
             } else {
@@ -1045,8 +1057,10 @@ class PaperSearch extends MessageSet {
             }
 
             // check for limit
-            if (($xlimit = $this->_qe->get_float("xlimit"))) {
-                $this->_limit_explicit = true;
+            if ($this->_limit_override === 0
+                && ($xlimit = $this->_qe->get_float("xlimit"))
+                && $xlimit->prefer_to($this->_limit_qe)) {
+                $this->_limit_override = 1;
                 $this->_limit_qe->set_limit($xlimit->named_limit);
             }
 
@@ -1298,9 +1312,8 @@ class PaperSearch extends MessageSet {
             return $gs;
         } else if (($h = $this->_qe->get_float("legend"))) {
             return [TagAnno::make_legend($h)];
-        } else {
-            return [];
         }
+        return [];
     }
 
     /** @param int $pid
@@ -1335,9 +1348,8 @@ class PaperSearch extends MessageSet {
     function group_slice_term($group) {
         if ($group === null) {
             return $this->main_term();
-        } else {
-            return ($this->group_slice_terms())[$group] ?? $this->_qe;
         }
+        return ($this->group_slice_terms())[$group] ?? $this->_qe;
     }
 
     /** @return array<int,int> */
@@ -1401,14 +1413,14 @@ class PaperSearch extends MessageSet {
 
     /** @return array<string,mixed>|false */
     function simple_search_options() {
+        // must request main_term first because that might reset _limit_qe
         $queryOptions = [];
         if ($this->_matches === null
-            && $this->_limit_qe->simple_search($queryOptions)
-            && $this->main_term()->simple_search($queryOptions)) {
+            && $this->main_term()->simple_search($queryOptions)
+            && $this->_limit_qe->simple_search($queryOptions)) {
             return $queryOptions;
-        } else {
-            return false;
         }
+        return false;
     }
 
     /** @return string|false */
@@ -1429,7 +1441,7 @@ class PaperSearch extends MessageSet {
     /** @return string */
     function default_limited_query() {
         if ($this->user->isPC
-            && !$this->_limit_explicit
+            && $this->_limit_override <= 0
             && $this->limit() !== ($this->user->can_view_some_incomplete() ? "active" : "s")) {
             return self::canonical_query($this->q, "", "", $this->_qt, $this->conf, $this->limit());
         }
@@ -1472,18 +1484,19 @@ class PaperSearch extends MessageSet {
 
     /** @return string */
     function description($listname) {
+        $is_re_me = $this->query_is_re_me();
         if ($listname) {
             $lx = $this->conf->_($listname);
         } else {
             $limit = $this->limit();
-            if ($this->q === "re:me" && in_array($limit, ["r", "s", "active"], true)) {
+            if ($is_re_me && in_array($limit, ["r", "s", "active"], true)) {
                 $limit = "r";
             }
             $lx = self::limit_description($this->conf, $limit);
         }
         if ($this->q === ""
-            || ($this->q === "re:me" && $this->limit() === "s")
-            || ($this->q === "re:me" && $this->limit() === "active")) {
+            || ($is_re_me && $this->limit() === "s")
+            || ($is_re_me && $this->limit() === "active")) {
             return $lx;
         } else if (str_starts_with($this->q, "au:")
                    && strlen($this->q) <= 36
@@ -1500,26 +1513,25 @@ class PaperSearch extends MessageSet {
     /** @param string $listid
      * @return ?array<string,string> */
     static function unparse_listid($listid) {
-        if (preg_match('/\Ap\/([^\/]+)\/([^\/]*)(?:|\/([^\/]*))\z/', $listid, $m)) {
-            $args = ["q" => urldecode($m[2]), "t" => $m[1]];
-            if (isset($m[3]) && $m[3] !== "") {
-                foreach (explode("&", $m[3]) as $arg) {
-                    if (str_starts_with($arg, "sort=")) {
-                        $args["sort"] = urldecode(substr($arg, 5));
-                    } else if (str_starts_with($arg, "qt=")) {
-                        $args["qt"] = urldecode(substr($arg, 3));
-                    } else if (str_starts_with($arg, "forceShow=")) {
-                        $args["forceShow"] = urldecode(substr($arg, 10));
-                    } else {
-                        // XXX `reviewer`
-                        error_log(caller_landmark() . ": listid includes {$arg}");
-                    }
-                }
-            }
-            return $args;
-        } else {
+        if (!preg_match('/\Ap\/([^\/]+)\/([^\/]*)(?:|\/([^\/]*))\z/', $listid, $m)) {
             return null;
         }
+        $args = ["q" => urldecode($m[2]), "t" => $m[1]];
+        if (isset($m[3]) && $m[3] !== "") {
+            foreach (explode("&", $m[3]) as $arg) {
+                if (str_starts_with($arg, "sort=")) {
+                    $args["sort"] = urldecode(substr($arg, 5));
+                } else if (str_starts_with($arg, "qt=")) {
+                    $args["qt"] = urldecode(substr($arg, 3));
+                } else if (str_starts_with($arg, "forceShow=")) {
+                    $args["forceShow"] = urldecode(substr($arg, 10));
+                } else {
+                    // XXX `reviewer`
+                    error_log(caller_landmark() . ": listid includes {$arg}");
+                }
+            }
+        }
+        return $args;
     }
 
     /** @param list<int> $ids

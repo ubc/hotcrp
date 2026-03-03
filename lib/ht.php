@@ -1,6 +1,6 @@
 <?php
 // ht.php -- HotCRP HTML helper functions
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Ht {
     /** @var string */
@@ -531,9 +531,8 @@ class Ht {
     static function link($html, $href, $js = null) {
         if ($js === null && is_array($href)) {
             return self::make_link($html, null, $href);
-        } else {
-            return self::make_link($html, $href, $js);
         }
+        return self::make_link($html, $href, $js);
     }
 
     /** @param string $html
@@ -707,21 +706,26 @@ class Ht {
     }
 
     /** @param int $status
+     * @param string $extra_class
      * @return string */
-    static function msg_class($status) {
+    static function msg_class($status, $extra_class = "") {
         if ($status >= 2 || $status === -1 /* MessageSet::URGENT_NOTE */) {
-            return "msg msg-error";
+            $s = "msg msg-error";
         } else if ($status > 0 || $status === -2 /* MessageSet::WARNING_NOTE */) {
-            return "msg msg-warning";
+            $s = "msg msg-warning";
         } else if ($status === -3 /* MessageSet::SUCCESS */) {
-            return "msg msg-confirm";
+            $s = "msg msg-confirm";
+        } else {
+            $s = "msg msg-info";
         }
-        return "msg msg-info";
+        return $extra_class === "" ? $s : "{$s} {$extra_class}";
     }
 
     /** @param string $msg
-     * @param int $status */
-    static function msg($msg, $status) {
+     * @param int $status
+     * @param string $extra_class
+     * @return string */
+    static function msg($msg, $status, $extra_class = "") {
         assert(is_int($status));
         $mx = "";
         foreach (is_array($msg) ? $msg : [$msg] as $x) {
@@ -736,42 +740,43 @@ class Ht {
         if ($mx === "") {
             return "";
         }
-        return "<div class=\"" . self::msg_class($status) . "\">{$mx}</div>";
+        $mc = self::msg_class($status, $extra_class);
+        return "<div class=\"{$mc}\">{$mx}</div>";
     }
 
     /** @param MessageItem|iterable<MessageItem>|MessageSet ...$mls
      * @return array{string,int} */
     static function feedback_msg_content(...$mls) {
         $mlx = MessageSet::make_list(...$mls);
-        if (($h = MessageSet::feedback_html($mlx)) !== "") {
-            return [$h, MessageSet::list_status($mlx)];
+        if (($h = MessageSet::feedback_html($mlx)) === "") {
+            return null;
         }
-        return ["", 0];
+        return [$h, MessageSet::list_status($mlx)];
     }
 
     /** @param Fmt|Conf $fmt
      * @param MessageItem|iterable<MessageItem>|MessageSet ...$mls
-     * @return array{string,int} */
+     * @return ?array{string,int} */
     static function fmt_feedback_msg_content($fmt, ...$mls) {
         $mlx = MessageSet::make_fmt_list($fmt, ...$mls);
-        if (($h = MessageSet::feedback_html($mlx)) !== "") {
-            return [$h, MessageSet::list_status($mlx)];
+        if (($h = MessageSet::feedback_html($mlx)) === "") {
+            return null;
         }
-        return ["", 0];
+        return [$h, MessageSet::list_status($mlx)];
     }
 
     /** @param MessageItem|iterable<MessageItem>|MessageSet ...$mls
      * @return string */
     static function feedback_msg(...$mls) {
-        $ms = self::feedback_msg_content(...$mls);
-        return $ms[0] === "" ? "" : self::msg($ms[0], $ms[1]);
+        $mx = self::feedback_msg_content(...$mls);
+        return $mx ? self::msg($mx[0], $mx[1]) : "";
     }
 
     /** @param Fmt|Conf $fmt
      * @param MessageItem|iterable<MessageItem>|MessageSet ...$mls
      * @return string */
     static function fmt_feedback_msg($fmt, ...$mls) {
-        $ms = self::fmt_feedback_msg_content($fmt, ...$mls);
-        return $ms[0] === "" ? "" : self::msg($ms[0], $ms[1]);
+        $mx = self::fmt_feedback_msg_content($fmt, ...$mls);
+        return $mx ? self::msg($mx[0], $mx[1]) : "";
     }
 }

@@ -2,6 +2,7 @@
 // t_mimetype.php -- HotCRP tests
 // Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
 
+#[RequireDb(false)]
 class Mimetype_Tester {
     function test_mimetype() {
         xassert_eqq(Mimetype::content_type("%PDF-3.0\nwhatever\n"), Mimetype::PDF_TYPE);
@@ -52,6 +53,25 @@ class Mimetype_Tester {
                 xassert_eqq($mt->mimetype, $tname);
             }
         }
+    }
+
+    function test_sanitize() {
+        xassert_eqq(Mimetype::sanitize("application/octet-stream"), "application/octet-stream");
+        xassert_eqq(Mimetype::sanitize(null), null);
+        xassert_eqq(Mimetype::sanitize(""), null);
+        xassert_eqq(Mimetype::sanitize("fart"), null);
+        xassert_eqq(Mimetype::sanitize("application/fdsnakjfdsnakfndskjafnkjdsnfdkjsanfkjdsnafkjdsnfkjanfkjdnsakjfndskjanfdjksanfkjdsna"), null);
+        xassert_eqq(Mimetype::sanitize("text/plain; charset=utf-8"), "text/plain");
+        xassert_eqq(Mimetype::sanitize("text/plain; charset=utf-8"), "text/plain");
+        xassert_eqq(Mimetype::sanitize("application/vnd.openxmlformats-officedocument.presentationml.presentation"), "application/vnd.openxmlformats-officedocument.presentationml.presentation");
+        xassert_eqq(Mimetype::sanitize("text/x-c++"), "text/x-c++");
+        xassert_eqq(Mimetype::sanitize("APPLICATION/OCTET-stream"), "application/octet-stream");
+        xassert_eqq(Mimetype::type("APPLICATION/OCTET-stream-FOO; crap=barf"), "application/octet-stream-foo");
+    }
+
+    function test_textual() {
+        xassert_eqq(Mimetype::textual("Text/Fart-Stream"), true);
+        xassert_eqq(Mimetype::textual("application/json"), true);
     }
 
     function xxx_test_mp4() {

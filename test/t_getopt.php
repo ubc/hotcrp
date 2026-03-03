@@ -2,6 +2,7 @@
 // t_getopt.php -- HotCRP tests
 // Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
+#[RequireDb(false)]
 class Getopt_Tester {
     static function getopt_parse($getopt, $argv) {
         assert($argv[0] === "fart");
@@ -68,6 +69,10 @@ class Getopt_Tester {
         $arg = self::getopt_parse((new Getopt)->long("a: =FOO"),
             ["fart", "-a10", "c"]);
         xassert_eqq(json_encode($arg), '{"a":"10","_":["c"]}');
+
+        $arg = self::getopt_parse((new Getopt)->long("a:: =FOO", "b:: =BAR"),
+            ["fart", "-a", "-bc"]);
+        xassert_eqq(json_encode($arg), '{"a":false,"b":"c","_":[]}');
     }
 
     function test_getopt_count() {

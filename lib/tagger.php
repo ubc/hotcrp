@@ -1,6 +1,6 @@
 <?php
 // tagger.php -- HotCRP helper class for dealing with tags
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 // Note that tags MUST NOT contain HTML or URL special characters:
 // no "'&<>.  If you add PHP-protected characters, such as $, make sure you
@@ -681,7 +681,8 @@ class TagMap {
         $ti = $this->storage[$ltag] ?? null;
         if (!$ti
             && $ltag !== ""
-            && (($ltag[0] === ":" && $this->check_emoji_code($ltag))
+            && ($ltag[0] === "~"
+                || ($ltag[0] === ":" && $this->check_emoji_code($ltag))
                 || isset($this->style_lmap[$ltag])
                 || TagStyle::dynamic_style($ltag, $this))) {
             $ti = $this->ensure($tag);
@@ -1130,7 +1131,7 @@ class TagMap {
      * @return bool */
     static function is_tag_string($s, $strict = false) {
         return (string) $s === ""
-            || preg_match($strict ? '/\A(?: [^#\s]+#-?[\d.]+)+\z/' : '/\A(?: \S+)+\z/', $s);
+            || preg_match($strict ? '/\A(?: [^\#\s]+\#-?[\d.]+)+\z/' : '/\A(?: \S+)+\z/', $s);
     }
 
     static function assert_tag_string($tags, $strict = false) {
@@ -1152,7 +1153,7 @@ class TagMap {
 
         // preserve all tags/show no tags optimization
         $view_most = $user->can_view_most_tags($prow);
-        $allow_admin = $user->allow_administer($prow);
+        $allow_admin = $prow ? $user->allow_admin($prow) : $user->privChair;
         $conflict_free = TagInfo::TF_CONFLICT_FREE | ($user->privChair ? TagInfo::TF_SITEWIDE : 0);
         if ($view_most) {
             if (($ctype === self::CENSOR_SEARCH && $allow_admin)
@@ -1743,9 +1744,8 @@ class Tagger {
     function expand($tag) {
         if (strlen($tag) > 2 && $tag[0] === "~" && $tag[1] !== "~" && $this->_contactId) {
             return $this->_contactId . $tag;
-        } else {
-            return $tag;
         }
+        return $tag;
     }
 
 

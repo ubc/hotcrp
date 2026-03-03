@@ -904,6 +904,19 @@ class Unit_Tester {
         xassert_eqq(UnicodeHelper::utf8_word_prefix("\xCC\x90_ \xCC\x8E", 1), "\xCC\x90_");
     }
 
+    function test_utf8_char_abbreviate() {
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("acaca", 5), "acaca");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("acacaa", 5), "ac...");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("açacaa", 5), "aç...");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("açacaa", 7, 3), "açacaa");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("aça123caa", 7, 3), "a...caa");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("aça123caa", 6, 3), "...caa");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("aça123caa", 5, 3), "...aa");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("aça123caa", 4, 3), "...a");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("aça123caa", 3, 3), "...");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("aça123caa", 2, 3), "..");
+    }
+
     function test_utf8_line_break() {
         xassert_eqq(UnicodeHelper::utf8_line_break_parts("a aaaaaaabbb", 7), ["a", "aaaaaaabbb"]);
         xassert_eqq(UnicodeHelper::utf8_line_break_parts("aaaaaaaa bbb", 7), ["aaaaaaaa", "bbb"]);
@@ -1073,6 +1086,23 @@ class Unit_Tester {
         xassert_eqq(count($q), 3);
         xassert_eqq(json_encode($q), "{\"a\":1,\"b\":2,\"c\":\"s\"}");
         xassert_eqq(Json::encode($q), "{\"a\":1,\"b\":2,\"c\":\"s\"}");
+
+        $q->set_path("");
+        xassert_eqq($q->path_component(0), null);
+        xassert_eqq($q->path_component(1), null);
+        $q->set_path("/");
+        xassert_eqq($q->path_component(0), null);
+        xassert_eqq($q->path_component(1), null);
+        $q->set_path("/a");
+        xassert_eqq($q->path_component(0), "a");
+        xassert_eqq($q->path_component(1), null);
+        $q->set_path("/a/");
+        xassert_eqq($q->path_component(0), "a");
+        xassert_eqq($q->path_component(1), null);
+        $q->set_path("/a/b");
+        xassert_eqq($q->path_component(0), "a");
+        xassert_eqq($q->path_component(1), "b");
+        xassert_eqq($q->path_component(2), null);
     }
 
     function test_is_anonymous_email() {
@@ -1084,19 +1114,48 @@ class Unit_Tester {
         xassert(!Contact::is_anonymous_email("example@anonymous"));
     }
 
-    function test_is_real_email() {
-        xassert(!Contact::is_real_email("anonymous"));
-        xassert(!Contact::is_real_email("anonymous1"));
-        xassert(!Contact::is_real_email("anonymous10"));
-        xassert(!Contact::is_real_email("anonymous9"));
-        xassert(!Contact::is_real_email("anonymous@example.com"));
-        xassert(!Contact::is_real_email("example@anonymous")); // not enough dots
-        xassert(Contact::is_real_email("example@anonymous.com"));
-        xassert(Contact::is_real_email("ass@butt.com"));
-        xassert(Contact::is_real_email("ass@fxample.edu"));
-        xassert(!Contact::is_real_email("ass@_.com"));
-        xassert(!Contact::is_real_email("ass@_.co.uk"));
-        xassert(Contact::is_real_email("ass@underscore.com"));
+    function test_is_plausible_email() {
+        xassert(!Contact::is_plausible_email("anonymous"));
+        xassert(!Contact::is_plausible_email("anonymous1"));
+        xassert(!Contact::is_plausible_email("anonymous10"));
+        xassert(!Contact::is_plausible_email("anonymous9"));
+        xassert(!Contact::is_plausible_email("anonymous@example.com"));
+        xassert(!Contact::is_plausible_email("example@anonymous")); // not enough dots
+        xassert(Contact::is_plausible_email("example@anonymous.com"));
+        xassert(Contact::is_plausible_email("ass@butt.com"));
+        xassert(Contact::is_plausible_email("ass@fxample.edu"));
+        xassert(!Contact::is_plausible_email("ass@_.com"));
+        xassert(!Contact::is_plausible_email("ass@_.co.uk"));
+        xassert(Contact::is_plausible_email("ass@underscore.com"));
+        xassert(!Contact::is_plausible_email("ass@foo.example"));
+        xassert(!Contact::is_plausible_email("ass@foo.f"));
+        xassert(!Contact::is_plausible_email("ass@foo.tld"));
+        xassert(!Contact::is_plausible_email("ass@foo.invalid"));
+        xassert(Contact::is_plausible_email("ass@invalid.foo"));
+        xassert(!Contact::is_plausible_email("ass@invalid.test"));
+        xassert(Contact::is_plausible_email("ass@invalid.test.tst"));
+    }
+
+    function test_is_example_email() {
+        xassert(!Contact::is_example_email("anonymous"));
+        xassert(!Contact::is_example_email("anonymous1"));
+        xassert(!Contact::is_example_email("anonymous10"));
+        xassert(!Contact::is_example_email("anonymous9"));
+        xassert(Contact::is_example_email("anonymous@example.com"));
+        xassert(!Contact::is_example_email("example@anonymous")); // not enough dots
+        xassert(!Contact::is_example_email("example@anonymous.com"));
+        xassert(!Contact::is_example_email("ass@butt.com"));
+        xassert(!Contact::is_example_email("ass@fxample.edu"));
+        xassert(Contact::is_example_email("ass@_.com"));
+        xassert(!Contact::is_example_email("ass@_.co.uk"));
+        xassert(!Contact::is_example_email("ass@underscore.com"));
+        xassert(Contact::is_example_email("ass@foo.example"));
+        xassert(!Contact::is_example_email("ass@foo.f"));
+        xassert(!Contact::is_example_email("ass@foo.tld"));
+        xassert(!Contact::is_example_email("ass@foo.invalid"));
+        xassert(!Contact::is_example_email("ass@invalid.foo"));
+        xassert(Contact::is_example_email("ass@invalid.test"));
+        xassert(!Contact::is_example_email("ass@invalid.test.tst"));
     }
 
     function test_valid_email() {
@@ -1379,6 +1438,11 @@ class Unit_Tester {
         xassert_eqq(Ftext::concat("<0><hello>", "?"), "<0><hello>?");
     }
 
+    function test_ftext_html() {
+        xassert_eqq(Ftext::convert_to(0, 5, "<dl><dt>a</dt><dt>b</dt><dd>c</dd></dl>"),
+                    "a\nb\n-> c\n");
+    }
+
     function test_str_list_lower_bound() {
         xassert_eqq(str_list_lower_bound("a", ["0", "ab", "ac", "ad"]), 1);
         xassert_eqq(str_list_lower_bound("aa", ["0", "ab", "ac", "ad"]), 1);
@@ -1556,5 +1620,58 @@ class Unit_Tester {
             ["\xFE\xFF", $spread_le, "H", "\x00e", "\x00l", "\x00l\x00o", "\x00"],
             $spread_half . "Hello"
         );
+    }
+
+    function test_hash_analysis() {
+        $ha = HashAnalysis::make_partial("abcdef");
+        xassert(!$ha->partial());
+        $ha = HashAnalysis::make_partial("sha2-01ABCDEF");
+        xassert($ha->partial());
+        xassert(!$ha->complete());
+        xassert_eqq($ha->algorithm(), "sha256");
+        $ha = HashAnalysis::make_partial("sha2-01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF01ABCDEF");
+        xassert($ha->partial());
+        xassert($ha->complete());
+        xassert_eqq($ha->algorithm(), "sha256");
+    }
+
+    function test_header_set() {
+        $hs = new HeaderSet;
+        xassert_eqq(count($hs), 0);
+        xassert(!$hs->has("Content-Length"));
+
+        $hs->set("Content-Length: 100");
+        xassert($hs->has("content-Length"));
+        xassert_eqq($hs->get("content-length"), "100");
+        xassert_eqq($hs->get_all("content-length"), ["100"]);
+        xassert_eqq($hs->get("x-content-length"), null);
+        xassert_eqq($hs->get_all("x-content-length"), []);
+        $l1 = iterator_to_array($hs);
+        xassert_eqq($l1, ["Content-Length: 100"]);
+        $l2 = iterator_to_array($hs->by_name());
+        xassert_eqq($l2, ["Content-Length" => "100"]);
+        xassert_eqq($hs->count(), 1);
+
+        $hs->set("content-length: 1000", false);
+        xassert_eqq($hs->get("content-length"), "100");
+        xassert_eqq($hs->get_all("content-length"), ["100", "1000"]);
+        $l1 = iterator_to_array($hs);
+        xassert_eqq($l1, ["Content-Length: 100", "content-length: 1000"]);
+        $l = [];
+        foreach ($hs->by_name() as $n => $v) {
+            $l[] = "{$n}/{$v}";
+        }
+        xassert_eqq($l, ["Content-Length/100", "content-length/1000"]);
+        xassert_eqq(count($hs), 2);
+
+        $hs->set("content-length: 10");
+        xassert_eqq($hs->get("content-length"), "10");
+        xassert_eqq($hs->get_all("content-length"), ["10"]);
+        xassert_eqq(count($hs), 1);
+    }
+
+    function finalize() {
+        $this->conf->set_opt("timezone", "America/New_York");
+        date_default_timezone_set("America/New_York");
     }
 }

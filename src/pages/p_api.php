@@ -1,15 +1,14 @@
 <?php
 // pages/p_api.php -- HotCRP JSON API access page
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class API_Page {
-    /** @return JsonResult */
-    static function go(Contact $user, Qrequest $qreq) {
+    /** @param string $fn
+     * @return JsonResult */
+    static function go(Contact $user, Qrequest $qreq, $fn) {
         // initialize user, paper request
         $conf = $user->conf;
-        if ($qreq->base !== null) {
-            $conf->set_site_path_relative($qreq->navigation(), $qreq->base);
-        }
+        $conf->set_site_path_relative($qreq->navigation(), $qreq->base ?? null);
         if (!$user->has_account_here()
             && ($key = $user->capability("@kiosk"))) {
             $kiosks = $conf->setting_json("__tracker_kiosk") ? : (object) [];
@@ -26,7 +25,6 @@ class API_Page {
         }
 
         // handle requests
-        $fn = $qreq->fn;
         $jr = null;
         if ($fn !== "status") {
             if ($fn !== "track" || $user->is_disabled()) {
@@ -46,17 +44,27 @@ class API_Page {
         JsonCompletion::$allow_short_circuit = true;
         $conf = $user->conf;
         $uf = $conf->api($fn, $user, $qreq->method());
-        if (($validate = $uf && $conf->opt("validateApiSpec"))) {
-            SpecValidator_API::request($uf, $qreq);
+        // CORS: Allow if user provides CSRF token or auth is explicitly false.
+        if ((($uf && ($uf->auth ?? null) === false) || $qreq->valid_token())
+            && ($origin = $qreq->raw_header("HTTP_ORIGIN")) !== null) {
+            header("Access-Control-Allow-Origin: {$origin}");
+            header("Access-Control-Allow-Credentials: true");
+        }
+        $validator = null;
+        if ($uf && $conf->opt("validateApiSpec")) {
+            $validator = new SpecValidator_API($fn, $uf, $qreq);
+            $validator->request();
         }
         $jr = $conf->call_api_on($uf, $fn, $user, $qreq);
-        if ($validate) {
-            SpecValidator_API::response($uf, $qreq, $jr);
+        if ($validator) {
+            $validator->response($jr);
         }
         if ($jr instanceof Downloader) {
+            $conf->emit_browser_security_headers($qreq);
             $jr->emit();
             exit(0);
         } else if ($jr instanceof PageCompletion) {
+            $jr->emit($qreq);
             exit(0);
         }
         if ($uf
@@ -78,7 +86,8 @@ class API_Page {
         $jr = (new JsonResult($user->status_json($prow ? [$prow] : [])))
             ->set_pretty_print(false);
         $jr["ok"] = true;
-        if ($fn === "track" && ($new_trackerid = $qreq->annex("new_trackerid"))) {
+        if ($fn === "track"
+            && ($new_trackerid = $qreq->annex("new_trackerid"))) {
             $jr["new_trackerid"] = $new_trackerid;
         }
         if ($prow
@@ -117,76 +126,76 @@ class API_Page {
             && ctype_digit($unum)) {
             $nav->shift_path_components(2);
         }
-        $ok = true;
-        if (($m = $_SERVER["HTTP_ACCESS_CONTROL_REQUEST_METHOD"] ?? null)) {
-            if ($nav->page === "api") {
-                $origin = $_SERVER["HTTP_ORIGIN"] ?? "*";
-                header("Access-Control-Allow-Origin: {$origin}");
-                if (($hdrs = $_SERVER["HTTP_ACCESS_CONTROL_REQUEST_HEADERS"] ?? null)) {
-                    header("Access-Control-Allow-Headers: {$hdrs}");
-                }
-                header("Access-Control-Allow-Credentials: true");
-                header("Access-Control-Allow-Methods: OPTIONS, GET, HEAD, POST, DELETE");
-                header("Access-Control-Max-Age: 86400");
-            } else if (in_array($nav->page, ["cacheable", "scorechart", "images", "scripts", "stylesheets"], true)) {
-                header("Access-Control-Allow-Origin: *");
-                header("Access-Control-Allow-Methods: OPTIONS, GET, HEAD");
-                header("Access-Control-Max-Age: 86400");
-            } else {
-                $ok = false;
-            }
+        if ($nav->page === "api") {
+            $cors_type = "api";
+            $allow = "OPTIONS, GET, HEAD, POST, DELETE";
+        } else if (in_array($nav->page, ["cacheable", "scorechart", "images", "scripts", "stylesheets", ".well-known"], true)) {
+            $cors_type = "static";
+            $allow = "OPTIONS, GET, HEAD";
         } else {
-            header("Allow: OPTIONS, GET, HEAD, POST, DELETE"); // XXX other methods?
+            $cors_type = null;
+            $allow = "OPTIONS, GET, HEAD, POST";
         }
-        http_response_code($ok ? 200 : 403);
+        if ($cors_type !== null) {
+            header("Access-Control-Allow-Origin: " . ($_SERVER["HTTP_ORIGIN"] ?? "*"));
+        }
+        if ($cors_type === "api") {
+            header("Access-Control-Allow-Credentials: true");
+        }
+        $ok = true;
+        if ($_SERVER["HTTP_ACCESS_CONTROL_REQUEST_METHOD"] ?? null) {
+            if ($cors_type === null) {
+                http_response_code(403);
+                exit(0);
+            }
+            header("Access-Control-Allow-Headers: *");
+            header("Access-Control-Allow-Methods: {$allow}");
+            header("Access-Control-Max-Age: 86400");
+        }
+        header("Allow: {$allow}");
+        http_response_code(204);
+        exit(0);
+    }
+
+    static function parameter_error_exit($param, $message) {
+        http_response_code(400);
+        header("Content-Type: application/json; charset=utf-8");
+        echo "{\"ok\": false, \"message_list\": [{\"field\": \"{$param}\", \"message\": \"{$message}\", \"status\": 2}]}\n";
         exit(0);
     }
 
     /** @param NavigationState $nav
      * @param Conf $conf */
     static function go_nav($nav, $conf) {
-        // argument cleaning
-        if (!isset($_GET["fn"])) {
-            $fn = $nav->path_component(0, true);
-            if ($fn && (ctype_digit($fn) || $fn === "new")) {
-                if (!isset($_GET["p"])) {
-                    $_GET["p"] = $fn;
-                }
-                $fn = $nav->path_component(1, true);
+        // extract function from path
+        $pcindex = 0;
+        $fn = $nav->path_component(0, true);
+        if ($fn && (ctype_digit($fn) || $fn === "new")) {
+            if (isset($_GET["p"]) && $_GET["p"] !== $fn) {
+                self::parameter_error_exit("p", "<0>Parameter conflict");
             }
-            if ($fn) {
-                $_GET["fn"] = $fn;
-            } else if (isset($_GET["track"])) {
-                $_GET["fn"] = "track";
-            } else {
-                http_response_code(400);
-                header("Content-Type: application/json; charset=utf-8");
-                echo '{"ok": false, "message_list": [{"field": "fn", "message": "<0>Parameter missing", "status": 2}]}', "\n";
-                exit(0);
-            }
+            $_GET["p"] = $fn;
+            ++$pcindex;
+            $fn = $nav->path_component($pcindex, true);
         }
-        if ($_GET["fn"] === "deadlines") {
-            $_GET["fn"] = "status";
-        }
-        if (!isset($_GET["p"])
-            && ($p = $nav->path_component(1, true))
-            && (ctype_digit($p) || $p === "new")) {
-            $_GET["p"] = $p;
+        if (!$fn) {
+            self::parameter_error_exit("fn", "<0>Parameter missing");
         }
 
-        // trackerstatus is a special case: prevent session creation
-        if ($_GET["fn"] === "trackerstatus") {
-            initialize_request($conf, $nav);
-            MeetingTracker::trackerstatus_api(Contact::make($conf));
-        } else {
-            $qreq = initialize_request($conf, $nav);
-            try {
+        // process request
+        $qreq = initialize_request($conf, $nav);
+        $qreq->set_path_component_index($pcindex + 1);
+        try {
+            if ($fn === "trackerstatus") {
+                // special case: prevent session creation
+                $jr = MeetingTracker::trackerstatus_api(Contact::make($conf));
+            } else {
                 $user = initialize_user($qreq, ["bearer" => true]);
-                $jr = self::go($user, $qreq);
-            } catch (JsonCompletion $jc) {
-                $jr = $jc->result;
+                $jr = self::go($user, $qreq, $fn);
             }
-            $jr->emit($qreq);
+        } catch (JsonCompletion $jc) {
+            $jr = $jc->result;
         }
+        $jr->emit($qreq);
     }
 }

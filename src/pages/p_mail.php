@@ -1,6 +1,6 @@
 <?php
 // pages/p_mail.php -- HotCRP mail tool
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Mail_Page {
     /** @var Conf */
@@ -50,7 +50,7 @@ class Mail_Page {
         if (isset($qreq->recipients) && !isset($qreq->to)) {
             $qreq->to = $qreq->recipients;
         }
-        if (!isset($qreq->t) || !isset($this->search_topt[$qreq->t])) {
+        if (!isset($qreq->t)) {
             $qreq->t = (array_keys($this->search_topt))[0];
         }
         if (isset($qreq->monreq)) {
@@ -118,11 +118,12 @@ class Mail_Page {
                 && $qreq->has_a("p")
                 && $qreq->get_a("p") !== $papersel) {
                 $papersel = $qreq->get_a("p");
-                $qreq->q = PaperSearch::encode_id_search($papersel);
+            } else {
+                unset($qreq["p"]);
             }
         } else {
             $qreq->q = "";
-            $papersel = null;
+            $search = $papersel = null;
         }
 
         // template
@@ -137,6 +138,7 @@ class Mail_Page {
         // set MailRecipients properties
         $this->recip->set_newrev_since($this->qreq->newrev_since);
         $this->recip->set_recipients($this->qreq->to);
+        $this->recip->set_search($search);
         $this->recip->set_paper_ids($papersel);
     }
 
@@ -291,7 +293,7 @@ class Mail_Page {
                 Ht::hidden("has_plimit", 1),
                 Ht::checkbox("plimit", 1, !!$this->qreq->plimit, ["id" => "plimit", "class" => "uich js-mail-recipients"]),
                 '</span>',
-                '<label for="plimit">Choose papers<span class="fx8">:</span></label>';
+                '<label for="plimit">Search</span><span class="fx8">:</span></label>';
         } else {
             echo '<div class="fx9">',
                 Ht::hidden("has_plimit", 1),
@@ -301,29 +303,33 @@ class Mail_Page {
         if ($this->qreq->recheck && $this->qreq->plimit) {
             $plist = new PaperList($this->qreq->t === "req" ? "reqrevs" : "reviewers",
                 new PaperSearch($this->viewer, ["t" => $this->qreq->t, "q" => $this->qreq->q]));
-            foreach ($plist->search->message_list() as $mi) {
+            foreach ($plist->message_list() as $mi) {
                 $this->recip->append_item_at("q", $mi);
             }
             if ($plist->is_empty()) {
-                $this->recip->warning_at("q", "<0>No papers match that search");
+                $this->recip->warning_at("q", "<0>No {$this->conf->snouns[1]} match that search");
             }
         }
         echo '<div class="', $this->recip->control_class("q", "fx8 mt-1"), '"><div class="d-flex">';
         if (!$this->viewer->privChair) {
-            echo '<label for="q" class="mr-2">Papers:</label>';
+            echo '<label for="q" class="mr-2">', $this->conf->snouns[3], ':</label>';
         }
         echo Ht::entry("q", (string) $this->qreq->q, [
                 "placeholder" => "(All)", "spellcheck" => false,
                 "class" => "papersearch need-suggest js-autosubmit",
                 "size" => $this->viewer->privChair ? 36 : 32,
                 "data-submit-fn" => "psearch"
-            ]), '<div class="form-basic-search-in"> in ';
-        if (count($this->search_topt) === 1) {
-            echo htmlspecialchars($this->search_topt[$this->qreq->t]);
-        } else {
-            echo Ht::select("t", $this->search_topt, $this->qreq->t, ["id" => "t"]);
+            ]), '<div class="form-basic-search-in"><span class="form-basic-search-type"';
+        if (count($this->search_topt) === 1 || !isset($this->search_topt[$this->qreq->t])) {
+            echo ' hidden';
         }
-        echo Ht::submit("psearch", "Search"), '</div></div></div>',
+        echo '> in ';
+        $topt = $this->search_topt;
+        if (!isset($topt[$this->qreq->t])) {
+            $topt[$this->qreq->t] = ["data-special-limit" => true];
+        }
+        echo Ht::select("t", $topt, $this->qreq->t, ["id" => "t"]),
+            '</span>', Ht::submit("psearch", "Search", ["class" => "basic-search"]), '</div></div></div>',
             $this->recip->feedback_html_at("q");
         if ($plist && !$plist->is_empty()) {
             echo '<div class="fx8 mt-2">';

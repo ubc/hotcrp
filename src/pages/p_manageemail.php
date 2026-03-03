@@ -256,7 +256,7 @@ class ManageEmail_Page {
         if ($this->token && $this->token->input("t") === $this->type) {
             return $this->token;
         }
-        $this->token = ManageEmail_Capability::prepare($this->viewer)
+        $this->token = ManageEmail_Token::prepare($this->viewer)
             ->set_input("t", $this->type)
             ->insert();
         if (!$this->token->stored()) {
@@ -502,7 +502,8 @@ class ManageEmail_Page {
             throw new Redirection($this->conf->hoturl("signin", ["redirect" => $redirect]));
         }
         if (($user = $this->parse_user($key, $email))) {
-            $this->create_token()->change_data($key, $user->email)
+            $this->create_token()
+                ->change_data($key, $user->email)
                 ->change_data("step", $this->delta_step(1)->name);
             $this->redirect_token();
         }

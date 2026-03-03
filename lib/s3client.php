@@ -500,7 +500,7 @@ class S3Client {
         list($url, $hdr) = $this->signed_headers($skey, "GET", []);
         $dl->set_content_redirect($accel . $url);
         foreach ($hdr as $h) {
-            $dl->header($h);
+            $dl->set_header($h);
         }
     }
 
@@ -602,6 +602,7 @@ class S3Client {
                 && (!isset($xml->KeyCount) || (string) $xml->KeyCount !== "0")) {
                 throw new Exception("Bad response from S3 List Objects");
             }
+            unset($args["start-after"]);
             if (isset($xml->IsTruncated) && (string) $xml->IsTruncated === "true") {
                 $args["continuation-token"] = (string) $xml->NextContinuationToken;
             } else {

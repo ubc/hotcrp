@@ -1,6 +1,6 @@
 <?php
 // o_authors.php -- HotCRP helper class for authors intrinsic
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Authors_PaperOption extends PaperOption {
     /** @var int */
@@ -17,18 +17,9 @@ class Authors_PaperOption extends PaperOption {
         $ov->set_value_data([1], [$ov->prow->authorInformation]);
     }
     function value_export_json(PaperValue $ov, PaperExport $pex) {
-        $contacts_ov = $ov->prow->option(PaperOption::CONTACTSID);
-        $lemails = [];
-        foreach ($contacts_ov->data_list() as $email) {
-            $lemails[] = strtolower($email);
-        }
         $au = [];
         foreach (self::author_list($ov) as $auth) {
-            $au[] = $j = (object) $auth->unparse_nea_json();
-            if (validate_email($auth->email)
-                && in_array(strtolower($auth->email), $lemails, true)) {
-                $j->contact = true;
-            }
+            $au[] = $auth->unparse_nea_json();
         }
         return $au;
     }
@@ -86,10 +77,11 @@ class Authors_PaperOption extends PaperOption {
                 $ov->append_item(MessageItem::warning_at("authors:{$n}"));
             }
             if ($auth->email !== ""
-                && !validate_email($auth->email)
+                && !Contact::is_plausible_or_example_email($auth->email)
                 && !$ov->prow->author_by_email($auth->email)) {
-                $ov->estop(null);
-                $ov->append_item(MessageItem::estop_at("authors:{$n}", "<0>Invalid email address ‘{$auth->email}’"));
+                $status = validate_email($auth->email) ? MessageSet::ERROR : MessageSet::ESTOP;
+                $ov->append_item(new MessageItem($status, "authors"));
+                $ov->append_item(new MessageItem($status, "authors:{$n}", "<0>Invalid email address ‘{$auth->email}’"));
                 continue;
             }
             if ($req_orcid > 0) {
@@ -167,7 +159,7 @@ class Authors_PaperOption extends PaperOption {
     function value_save_conflict_values(PaperValue $ov, PaperStatus $ps) {
         $ps->clear_conflict_values(CONFLICT_AUTHOR);
         foreach (self::author_list($ov) as $i => $auth) {
-            if (validate_email($auth->email)) {
+            if (Contact::is_plausible_or_example_email($auth->email)) {
                 $cflags = CONFLICT_AUTHOR
                     | ($ov->anno("contact:{$auth->email}") ? CONFLICT_CONTACTAUTHOR : 0);
                 $ps->update_conflict_value($auth, $cflags, $cflags);
@@ -289,7 +281,7 @@ class Authors_PaperOption extends PaperOption {
         $ignore_diff = false;
         if ($n === 1
             && !$au
-            && !$pt->user->can_administer($pt->prow)
+            && !$pt->user->is_admin($pt->prow)
             && (!$reqau || $reqau->nea_equals($pt->user->populated_user()))) {
             $reqau = Author::make_user($pt->user->populated_user());
             $ignore_diff = true;

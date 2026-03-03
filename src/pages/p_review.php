@@ -1,6 +1,6 @@
 <?php
 // pages/p_review.php -- HotCRP paper review display/edit page
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Review_Page {
     /** @var Conf */
@@ -39,7 +39,14 @@ class Review_Page {
         PaperTable::print_header($this->pt, $this->qreq, $is_error);
     }
 
-    function error_exit() {
+    /** @param ?FailureReason $perm */
+    function error_exit($perm = null) {
+        http_response_code($this->user->is_signed_in() ? 403 : 401);
+        if ($perm && (!$perm->secondary || $this->conf->saved_messages_status() < 2)) {
+            $perm->set("expand", true);
+            $perm->set("listViewable", $this->user->is_author() || $this->user->is_reviewer());
+            $this->conf->feedback_msg($perm->message_list());
+        }
         $this->print_header(true);
         Ht::stash_script("hotcrp.shortcut().add()");
         $this->qreq->print_footer();
@@ -62,19 +69,14 @@ class Review_Page {
         } catch (Redirection $redir) {
             throw $redir;
         } catch (FailureReason $perm) {
-            $perm->set("expand", true);
-            $perm->set("listViewable", $this->user->is_author() || $this->user->is_reviewer());
-            if (!$perm->secondary || $this->conf->saved_messages_status() < 2) {
-                $this->conf->feedback_msg($perm->message_list());
-            }
-            $this->error_exit();
+            $this->error_exit($perm);
         }
     }
 
     /** @return ?ReviewInfo */
     function my_rrow($prefer_approvable) {
         $myrrow = $apprrow1 = $apprrow2 = null;
-        $admin = $this->user->can_administer($this->prow);
+        $admin = $this->user->can_manage_reviews($this->prow);
         foreach ($this->prow->reviews_as_display() as $rrow) {
             if ($this->user->can_view_review($this->prow, $rrow)) {
                 if ($rrow->contactId === $this->user->contactId
@@ -94,9 +96,8 @@ class Review_Page {
         if (($apprrow1 || $apprrow2)
             && ($prefer_approvable || !$myrrow)) {
             return $apprrow1 ?? $apprrow2;
-        } else {
-            return $myrrow;
         }
+        return $myrrow;
     }
 
     function reload_prow() {
@@ -238,7 +239,7 @@ class Review_Page {
         if (!$this->rrow || !$this->rrow_explicit) {
             $this->conf->error_msg("<0>Review not found");
             return;
-        } else if (!$this->user->can_administer($this->prow)) {
+        } else if (!$this->user->can_manage_reviews($this->prow)) {
             return;
         }
         if ($this->rrow->delete($this->user)) {
@@ -250,7 +251,7 @@ class Review_Page {
     function handle_unsubmit() {
         if (!$this->rrow
             || $this->rrow->reviewStatus < ReviewInfo::RS_DELIVERED
-            || !$this->user->can_administer($this->prow)) {
+            || !$this->user->can_manage_reviews($this->prow)) {
             return;
         }
         $rv = new ReviewValues($this->conf);

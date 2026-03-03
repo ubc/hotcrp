@@ -1,6 +1,6 @@
 <?php
 // pc_conflict.php -- HotCRP conflict list column
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Conflict_PaperColumn extends PaperColumn {
     /** @var ?Contact */
@@ -108,7 +108,7 @@ class Conflict_PaperColumn extends PaperColumn {
         return $this->cset->unparse_html(min($ct, CONFLICT_AUTHOR));
     }
     private function edit_content(PaperList $pl, PaperInfo $row) {
-        if (!$pl->user->allow_administer($row)) {
+        if (!$pl->user->allow_admin($row)) {
             return "";
         }
         $ct = $row->conflict_type($this->user);
@@ -190,7 +190,7 @@ class Conflict_PaperColumn extends PaperColumn {
             }
         }
         if (empty($rs)) {
-            PaperColumn::column_error($xtp, "<0>PC member ‘{$m[2]}’ not found");
+            PaperColumn::column_error_at($xtp, $name, "<0>PC member ‘{$m[2]}’ not found");
         }
         return $rs;
     }

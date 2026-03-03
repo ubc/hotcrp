@@ -1266,6 +1266,32 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
         return $this->conf->ql_ok("update ContactInfo set cflags=cflags|0x100 where contactId?a", $uids);
     }
 
+    private function v321_sanitize_mimetype($mimetype) {
+        if (preg_match('/\A([a-z]++\/[a-z0-9][-a-zA-Z0-9_.+]*+)(?:\s*+;\s*+[^\s=]++=\S+)*\z/i', $mimetype, $m)
+            && strlen($m[1]) <= 80) {
+            return strtolower($m[1]);
+        }
+        return "application/octet-stream";
+    }
+
+    private function v321_correct_mimetypes($table) {
+        $result = $this->conf->ql("select distinct mimetype from {$table}");
+        $qv = $cases = [];
+        while (($row = $result->fetch_row())) {
+            $mt = $row[0];
+            if (($mt2 = $this->v321_sanitize_mimetype($mt)) !== $mt) {
+                $qv[] = $mt;
+                $qv[] = $mt2;
+                $cases[] = "when ? then ?";
+            }
+        }
+        $result->close();
+        if (!empty($qv)) {
+            $this->conf->ql("update {$table} set mimetype=case mimetype " . join(" ", $cases) . " else mimetype end", ...$qv);
+        }
+        return true;
+    }
+
     /** @return bool */
     function run() {
         $conf = $this->conf;
@@ -3230,6 +3256,20 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
         if ($conf->sversion === 318
             && $this->v319_set_cf_neaascii()) {
             $conf->update_schema_version(319);
+        }
+        if ($conf->sversion === 319
+            && $conf->ql_ok("alter table Capability add `outputTimestamp` bigint")
+            && $conf->ql_ok("alter table Capability add `outputMimetype` varbinary(80)")) {
+            $conf->update_schema_version(320);
+        }
+        if ($conf->sversion === 320
+            && $this->v321_correct_mimetypes("PaperStorage")
+            && $this->v321_correct_mimetypes("Paper")) {
+            $conf->update_schema_version(321);
+        }
+        if ($conf->sversion === 321
+            && $conf->ql_ok("delete from DeletedContactInfo where (select email from ContactInfo where contactId=DeletedContactInfo.contactId and (cflags&8)!=0)=DeletedContactInfo.email")) {
+            $conf->update_schema_version(322);
         }
 
         $conf->ql_ok("delete from Settings where name='__schema_lock'");

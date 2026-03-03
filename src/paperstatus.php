@@ -1,6 +1,6 @@
 <?php
 // paperstatus.php -- HotCRP helper for reading/storing papers as JSON
-// Copyright (c) 2008-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2008-2026 Eddie Kohler; see LICENSE.
 
 final class PaperStatus extends MessageSet {
     /** @var Conf
@@ -387,7 +387,7 @@ final class PaperStatus extends MessageSet {
             $ha = new HashAnalysis($docj->sha1);
             $want_algorithm = "sha1";
         }
-        if ($ha && (!$ha->ok() || ($want_algorithm && $ha->algorithm() !== $want_algorithm))) {
+        if ($ha && (!$ha->complete() || ($want_algorithm && $ha->algorithm() !== $want_algorithm))) {
             $this->warning_at_option($o, "<0>Invalid `hash` ignored");
             $ha = null;
         }
@@ -404,7 +404,7 @@ final class PaperStatus extends MessageSet {
 
         // compare content hash with user-provided hash; error if different
         if ($ha
-            && $content_ha->ok()
+            && $content_ha->complete()
             && $ha->binary() !== $content_ha->binary()) {
             $this->error_at_option($o, "<0>Document corrupt (its content did not match the provided hash)");
             return null;
@@ -440,7 +440,7 @@ final class PaperStatus extends MessageSet {
         // choose a hash
         if ($ha) {
             $hash = $ha->binary();
-        } else if ($content_ha->ok()) {
+        } else if ($content_ha->complete()) {
             $hash = $content_ha->binary();
         } else {
             $hash = null;
@@ -981,8 +981,8 @@ final class PaperStatus extends MessageSet {
             || $this->prow->outcome <= 0
             || !$this->user->can_view_decision($this->prow)
             || /* XXX not exactly the same check as override_deadlines */
-               (!$this->conf->time_edit_final_paper()
-                && !$this->user->allow_administer($this->prow))) {
+               (!$this->prow->submission_round()->time_edit_final(true)
+                && !$this->user->allow_manage($this->prow))) {
             return;
         }
 
@@ -1025,22 +1025,30 @@ final class PaperStatus extends MessageSet {
     }
 
     /** @param Author|Contact $au
+     * @return ?Contact */
+    private function _make_user_author($au) {
+        if (strcasecmp($au->email, $this->user->email) === 0) {
+            $this->user->ensure_account_here();
+            if ($this->user->contactId > 0) {
+                return $this->user;
+            }
+        }
+        if (!$this->conf->external_login()
+            && !Contact::is_plausible_or_example_email($au->email)) {
+            return null;
+        }
+        $j = $au->unparse_nea_json();
+        $j["disablement"] = Contact::CF_PLACEHOLDER;
+        return Contact::make_keyed($this->conf, $j)->store(0, $this->user);
+    }
+
+    /** @param Author|Contact $au
      * @param int $ctype
      * @return ?Contact */
     private function _make_user($au, $ctype) {
         $uu = $this->conf->user_by_email($au->email, USER_SLICE);
-        if (!$uu
-            && $ctype >= CONFLICT_AUTHOR
-            && strcasecmp($au->email, $this->user->email) === 0) {
-            $this->user->ensure_account_here();
-            if ($this->user->contactId > 0) {
-                $uu = $this->user;
-            }
-        }
         if (!$uu && $ctype >= CONFLICT_AUTHOR) {
-            $j = $au->unparse_nea_json();
-            $j["disablement"] = Contact::CF_PLACEHOLDER;
-            $uu = Contact::make_keyed($this->conf, $j)->store(0, $this->user);
+            $uu = $this->_make_user_author($au);
         }
         if (!$uu) {
             return null;
@@ -1213,7 +1221,7 @@ final class PaperStatus extends MessageSet {
         // if creating a paper, user becomes contact;
         // if user removes self from author list, user becomes contact
         if ($this->user->contactId > 0
-            && !$this->user->allow_administer($this->prow)) {
+            && !$this->user->allow_manage($this->prow)) {
             $cv = $this->_conflict_values[$this->user->contactId] ?? null;
             $ncv = self::new_conflict_value($cv);
             if (($ncv & CONFLICT_CONTACTAUTHOR) === 0
@@ -1270,7 +1278,7 @@ final class PaperStatus extends MessageSet {
         $this->_docs = $this->_tags_changed = [];
         $this->doc_savef |= DocumentInfo::SAVEF_DELAY_PROP;
         $this->_save_status = 0;
-        if ($this->user->can_administer($this->prow)) {
+        if ($this->user->can_manage($this->prow)) {
             $this->_save_status |= self::SSF_ADMIN_UPDATE;
         }
         if (!$prow->is_new()) {
@@ -1867,7 +1875,7 @@ final class PaperStatus extends MessageSet {
         // correct ADMIN_UPDATE for new papers: if administrator created the
         // paper and is not an author or contact, it's an admin update
         if (($this->_save_status & (self::SSF_NEW | self::SSF_ADMIN_UPDATE)) === self::SSF_NEW
-            && $this->user->allow_administer($this->prow)) {
+            && $this->user->allow_manage($this->prow)) {
             $cv = $this->_conflict_values[$this->user->contactId] ?? null;
             if ((self::new_conflict_value($cv) & (CONFLICT_AUTHOR | CONFLICT_CONTACTAUTHOR)) === 0) {
                 $this->_save_status |= self::SSF_ADMIN_UPDATE;

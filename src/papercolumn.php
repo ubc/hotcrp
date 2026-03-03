@@ -1,6 +1,6 @@
 <?php
 // papercolumn.php -- HotCRP helper classes for paper list content
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class PaperColumn extends Column {
     const OVERRIDE_NONE = 0;
@@ -35,12 +35,21 @@ class PaperColumn extends Column {
         return call_user_func($cj->function, $conf, $cj);
     }
 
-    /** @param Contact|XtParams $ctx
+    /** @param XtParams $ctx
+     * @param string $name
      * @param string|MessageItem|list<MessageItem> $message */
-    static function column_error($ctx, $message) {
+    static function column_error_at($ctx, $name, $message) {
         if ($ctx instanceof XtParams && $ctx->paper_list) {
-            $ctx->paper_list->column_error($message);
+            $ml = is_string($message) ? MessageItem::warning($message) : $message;
+            $ctx->paper_list->column_error_at($name, $ml);
         }
+    }
+
+    /** @param Contact|XtParams $ctx
+     * @param string|MessageItem|list<MessageItem> $message
+     * @deprecated */
+    static function column_error($ctx, $message) {
+        error_log(debug_string_backtrace());
     }
 
 
@@ -370,7 +379,7 @@ class ReviewStatus_PaperColumn extends PaperColumn {
         }
     }
     private function data(PaperInfo $row, Contact $user) {
-        $want_assigned = !$row->has_conflict($user) || $user->can_administer($row);
+        $want_assigned = !$row->has_conflict($user) || $user->is_admin($row);
         $done = $started = 0;
         foreach ($row->all_reviews() as $rrow) {
             if ($user->can_view_review_assignment($row, $rrow)
@@ -561,6 +570,15 @@ class Authors_PaperColumn extends PaperColumn {
             }
             return join("; ", $out);
         }
+    }
+    function json(PaperList $pl, PaperInfo $row) {
+        $au = [];
+        if ($pl->user->can_view_authors($row) || $this->anon) {
+            foreach ($row->author_list() as $auth) {
+                $au[] = $auth->unparse_nea_json();
+            }
+        }
+        return $au;
     }
 }
 

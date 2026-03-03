@@ -1,6 +1,6 @@
 <?php
 // pages/p_log.php -- HotCRP action log page
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Log_Page {
     /** @var Conf */
@@ -123,7 +123,7 @@ class Log_Page {
         $this->exclude_pids = $this->viewer->hidden_papers ? : [];
         if ($this->viewer->privChair && $this->conf->has_any_manager()) {
             foreach ($this->viewer->paper_set(["myConflicts" => true]) as $prow) {
-                if (!$this->viewer->allow_administer($prow)) {
+                if (!$this->viewer->allow_admin($prow)) {
                     $this->exclude_pids[$prow->paperId] = true;
                 }
             }
@@ -132,7 +132,7 @@ class Log_Page {
         if (!$this->viewer->privChair) {
             $good_pids = [];
             foreach ($this->viewer->paper_set($this->conf->check_any_admin_tracks($this->viewer) ? [] : ["myManaged" => true]) as $prow) {
-                if ($this->viewer->allow_administer($prow)) {
+                if ($this->viewer->allow_admin($prow)) {
                     $good_pids[$prow->paperId] = true;
                 }
             }
@@ -395,6 +395,7 @@ class Log_Page {
 
         if (!$this->viewer->privChair || !empty($this->exclude_pids)) {
             echo '<div class="msgs-wide">';
+            $conf->set_mx_auto(true);
             if (!$this->viewer->privChair) {
                 $conf->feedback_msg(MessageItem::marked_note("<0>Only showing your actions, plus entries for applications you administer"));
             } else if (!empty($this->exclude_pids)
@@ -415,6 +416,7 @@ class Log_Page {
                     $conf->feedback_msg(MessageItem::marked_note("<5>Not showing entries for " . Ht::link("conflicted administered applications", $conf->hoturl("search", "q=" . join("+", array_keys($this->exclude_pids))))));
                 }
             }
+            $conf->set_mx_auto(false);
             echo '</div>';
         }
 

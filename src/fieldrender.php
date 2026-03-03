@@ -1,6 +1,6 @@
 <?php
 // fieldrender.php -- HotCRP helper class for rendering submission fields
-// Copyright (c) 2006-2023 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class FieldRender {
     /** @var ?Contact
@@ -24,9 +24,12 @@ class FieldRender {
     /** @var ?bool */
     public $value_long;
 
+    // output format: set exactly one
     const CFHTML = 0x1;
     const CFTEXT = 0x2;
+    const CFJSON = 0x4;
 
+    // output context: set at most one
     const CFPAGE = 0x10;
     const CFFORM = 0x20;
     const CFLIST = 0x40;
@@ -36,15 +39,24 @@ class FieldRender {
     const CFAPI = 0x400;
     const CFSORT = 0x800;
 
+    // modifiers
     const CFCSV = 0x1000;
     const CFROW = 0x2000;
     const CFCOLUMN = 0x4000;
     const CFVERBOSE = 0x8000;
 
+
+    /** @param int $context
+     * @return bool */
+    static function check_context($context) {
+        return ($context & 7) !== 0
+            && ($context & (($context & 7) - 1) & 7) === 0
+            && ($context & (($context & 0xFF0) - 1) & 0xFF0) === 0;
+    }
+
     /** @param int $context */
     function __construct($context, ?Contact $user = null) {
-        assert(($context & 3) !== 0 && ($context & 3) !== 3);
-        assert((($context & 0xFF0) & (($context & 0xFF0) - 1)) === 0);
+        assert(self::check_context($context));
         $this->context = $context;
         $this->user = $user;
     }
@@ -73,6 +85,7 @@ class FieldRender {
      * @return $this
      * @suppress PhanAccessReadOnlyProperty */
     function set_context($context) {
+        assert(self::check_context($context));
         $this->context = $context;
         return $this;
     }

@@ -1,5 +1,5 @@
 // script.js -- HotCRP JavaScript library
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 "use strict";
 var siteinfo, hotcrp;
@@ -8,6 +8,17 @@ hotcrp.text = {};
 
 function $$(id) {
     return document.getElementById(id);
+}
+
+function $$list(ids) {
+    const l = [];
+    if (ids) {
+        for (const id of ids.split(/\s+/)) {
+            const e = id === "" ? null : $$(id);
+            e && l.push(e);
+        }
+    }
+    return l;
 }
 
 if (!window.JSON || !window.JSON.parse) {
@@ -2307,19 +2318,24 @@ function focus_and_scroll_into_view(e, down) {
 }
 
 handle_ui.on("js-range-click", function (evt) {
-    var f = this.form,
+    let key = false;
+    if (evt.type === "keydown") {
+        if (event_key.modcode(evt)
+            || ((key = event_key(evt)) !== "ArrowDown" && key !== "ArrowUp")) {
+            return;
+        }
+    } else if (evt.type !== "updaterange" && evt.type !== "click") {
+        return;
+    }
+
+    const f = this.form,
         rangeclick_state = f.jsRangeClick || {},
         kind = this.getAttribute("data-range-type") || this.name;
-    f.jsRangeClick = rangeclick_state;
-
-    let key = false;
-    if (evt.type === "keydown" && !event_key.modcode(evt)) {
-        key = event_key(evt);
-    }
     if (rangeclick_state.__clicking__
-        || (evt.type === "keydown" && key !== "ArrowDown" && key !== "ArrowUp")
-        || (evt.type === "updaterange" && rangeclick_state["__update_" + kind] === evt.detail))
+        || (evt.type === "updaterange" && rangeclick_state["__update_" + kind] === evt.detail)) {
         return;
+    }
+    f.jsRangeClick = rangeclick_state;
 
     // find checkboxes and groups of this type
     const cbs = [], cbisg = [], cbgs = [];
@@ -2353,7 +2369,7 @@ handle_ui.on("js-range-click", function (evt) {
         return;
     }
 
-    var lastgidx = 0;
+    let lastgidx = 0;
     function range_group_match(e, g, gelt) {
         if (g === "auto") {
             if (cbs[lastgidx] !== gelt) {
@@ -2402,6 +2418,7 @@ handle_ui.on("js-range-click", function (evt) {
         for (; i <= j; ++i) {
             if (!cbisg[i]
                 && cbs[i].checked !== this.checked
+                && !cbs[i].disabled
                 && range_group_match(cbs[i], group, gelt))
                 $(cbs[i]).trigger("click");
         }
@@ -2421,9 +2438,9 @@ handle_ui.on("js-range-click", function (evt) {
         let state = null;
         for (i = 0; i !== cbs.length; ++i) {
             if (!cbisg[i] && range_group_match(cbs[i], group, cbgs[j])) {
-                if (state === null)
+                if (state === null) {
                     state = cbs[i].checked;
-                else if (state !== cbs[i].checked) {
+                } else if (state !== cbs[i].checked) {
                     state = 2;
                     break;
                 }
@@ -2445,7 +2462,6 @@ handle_ui.on("js-range-radio", function (evt) {
         kind = this.getAttribute("data-range-type") || this.name;
 
     // find checkboxes of this type
-    const cbs = [], cbisg = [], cbgs = [];
     for (const e of f.querySelectorAll("input.js-range-radio:checked")) {
         const tkind = e.getAttribute("data-range-type") || this.name;
         if (kind === tkind && e !== this) {
@@ -2964,7 +2980,7 @@ let global_tooltip = null;
 const tooltip_map = new WeakMap;
 
 function prepare_info(elt, info) {
-    var xinfo = elt.getAttribute("data-tooltip-info");
+    let xinfo = elt.getAttribute("data-tooltip-info");
     if (xinfo) {
         if (typeof xinfo === "string" && xinfo.charAt(0) === "{") {
             xinfo = JSON.parse(xinfo);
@@ -2985,15 +3001,15 @@ function prepare_info(elt, info) {
     if (info.className == null || elt.hasAttribute("data-tooltip-class")) {
         info.className = elt.getAttribute("data-tooltip-class") || "dark";
     }
+    let es;
     if (elt.hasAttribute("data-tooltip")) {
         info.content = elt.getAttribute("data-tooltip");
     } else if (info.content != null) {
         // leave alone
     } else if (elt.hasAttribute("aria-describedby")
-               && elt.ariaDescribedByElements
-               && elt.ariaDescribedByElements.length === 1
-               && hasClass(elt.ariaDescribedByElements[0], "bubble")) {
-        info.contentElement = elt.ariaDescribedByElements[0];
+               && (es = $$list(elt.getAttribute("aria-describedby"))).length === 1
+               && hasClass(es[0], "bubble")) {
+        info.contentElement = es[0];
     } else if (elt.hasAttribute("aria-label")) {
         info.content = elt.getAttribute("aria-label");
     } else if (elt.hasAttribute("title")) {
@@ -3465,7 +3481,8 @@ handle_ui.on("js-mark-submit", function () {
 // banner
 hotcrp.banner = (function () {
 function resize(b) {
-    const offs = document.querySelectorAll(".need-banner-offset");
+    const offs = document.querySelectorAll(".need-banner-offset"),
+        pbody = document.getElementById("p-page");
     if (b) {
         const h = b.offsetHeight;
         for (const e of offs) {
@@ -3489,13 +3506,13 @@ function resize(b) {
                 e.style.top = (h + parseFloat(bo)) + "px";
             }
         }
-        document.body.style.minHeight = "calc(100vh - " + h + "px)";
+        document.body.style.minHeight = pbody.style.minHeight = "calc(100dvh - " + h + "px)";
     } else {
         for (const e of offs) {
             const bo = e.getAttribute("data-banner-offset") || "";
             e.style[bo.startsWith("B") ? "bottom" : "top"] = null;
         }
-        document.body.style.minHeight = null;
+        document.body.style.minHeight = pbody.style.minHeight = null;
     }
 }
 return {
@@ -3654,9 +3671,8 @@ function tracker_find(trackerid) {
         return null;
     } else if (dl.tracker && dl.tracker.trackerid === trackerid) {
         return dl.tracker;
-    } else {
-        return null;
     }
+    return null;
 }
 
 function tracker_status() {
@@ -3671,10 +3687,10 @@ function tracker_status() {
     }
 }
 
-var tracker_map = [["is_manager", "is-manager", "Administrator"],
-                   ["is_lead", "is-lead", "Discussion lead"],
-                   ["is_reviewer", "is-reviewer", "Reviewer"],
-                   ["is_conflict", "is-conflict", "Conflict"]];
+const tracker_map = [["is_manager", "is-manager", "Administrator"],
+                     ["is_lead", "is-lead", "Discussion lead"],
+                     ["is_reviewer", "is-reviewer", "Reviewer"],
+                     ["is_conflict", "is-conflict", "Conflict"]];
 
 function tracker_show_elapsed() {
     if (tracker_timer) {
@@ -4564,11 +4580,13 @@ function foldup(evt, opts) {
     // determine targets
     // XXX only partial support for ARIA method
     let foldname, m;
-    if (acting.ariaControlsElements && acting.ariaControlsElements.length > 0) {
+    const controls = acting.getAttribute("aria-controls"),
+        controlsElements = $$list(controls);
+    if (controlsElements.length > 0) {
         if (!("open" in opts)) {
             opts.open = acting.ariaExpanded !== "true";
         }
-        for (const e of acting.ariaControlsElements) {
+        for (const e of controlsElements) {
             if (e.hidden !== !opts.open && !hasClass(e, "no-fold")) {
                 e.hidden = !opts.open;
                 e.dispatchEvent(new CustomEvent("foldtoggle", {bubbles: true, detail: opts}));
@@ -4576,7 +4594,6 @@ function foldup(evt, opts) {
         }
         const p = acting.closest(".expanded, .collapsed");
         if (p) {
-            const controls = acting.getAttribute("aria-controls");
             for (const e of p.querySelectorAll("button[aria-expanded]")) {
                 if (e.getAttribute("aria-controls") === controls) {
                     e.ariaExpanded = opts.open ? "true" : "false";
@@ -5629,7 +5646,8 @@ hotcrp.monitor_job = function (jobid, statuselt) {
     return new Promise(function (resolve, reject) {
         let tries = 0;
         function success(data) {
-            const dead = !data.ok || (data.update_at && data.update_at < now_sec() - 40);
+            const dead = !data.ok
+                || (data.update_at && data.update_at < now_sec() - 40);
             if (data.message_list) {
                 let ex = statuselt.firstElementChild;
                 while (ex && ex.nodeName === "H3") {
@@ -5709,6 +5727,26 @@ handle_ui.on("change.js-mail-recipients", function () {
     foldup.call(this, null, {open: !hasClass(recip, "mail-want-no-papers"), n: 9});
     foldup.call(this, null, {open: hasClass(recip, "mail-want-since"), n: 10});
 
+    if (recip.hasAttribute("data-default-limit")) {
+        const deflimit = recip.getAttribute("data-default-limit"),
+            telt = f.elements.t;
+        if (telt
+            && deflimit !== telt.value
+            && deflimit !== telt.getAttribute("data-default-limit")) {
+            if (telt.lastChild.hasAttribute("data-special-limit")) {
+                telt.lastChild.remove();
+            }
+            if (!telt.querySelector(`[value="${escape_html(deflimit)}"]`)) {
+                telt.appendChild($e("option", {"value": deflimit, "data-default-limit": 1}));
+                telt.closest(".form-basic-search-type").hidden = true;
+            } else {
+                telt.closest(".form-basic-search-type").hidden = false;
+            }
+            telt.value = deflimit;
+            telt.setAttribute("data-default-limit", deflimit);
+        }
+    }
+
     if (!recip.hasAttribute("data-default-message")
         || !subjelt
         || (subjelt.value.trim() !== "" && input_differs(subjelt))
@@ -5716,7 +5754,7 @@ handle_ui.on("change.js-mail-recipients", function () {
         || (bodyelt.value.trim() !== "" && input_differs(bodyelt))) {
         return;
     }
-    var dm = JSON.parse(f.getAttribute("data-default-messages")),
+    const dm = JSON.parse(f.getAttribute("data-default-messages")),
         dmt = recip.getAttribute("data-default-message");
     if (dm && dm[dmt] && dm[dmt].subject !== subjelt.value) {
         subjelt.value = subjelt.defaultValue = dm[dmt].subject;
@@ -7194,9 +7232,7 @@ const vismap = {
     emojiregex = /^(?:(?:\ud83c[\udde6-\uddff]\ud83c[\udde6-\uddff]|(?:(?:[\u231a\u231b\u23e9-\u23ec\u23f0\u23f3\u25fd\u25fe\u2614\u2615\u2648-\u2653\u267f\u2693\u26a1\u26aa\u26ab\u26bd\u26be\u26c4\u26c5\u26ce\u26d4\u26ea\u26f2\u26f3\u26f5\u26fa\u26fd\u2705\u270a\u270b\u2728\u274c\u274e\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55]|\ud83c[\udc04\udccf\udd8e\udd91-\udd9a\udde6-\uddff\ude01\ude1a\ude2f\ude32-\ude36\ude38-\ude3a\ude50\ude51\udf00-\udf20\udf2d-\udf35\udf37-\udf7c\udf7e-\udf93\udfa0-\udfca\udfcf-\udfd3\udfe0-\udff0\udff4\udff8-\udfff]|\ud83d[\udc00-\udc3e\udc40\udc42-\udcfc\udcff-\udd3d\udd4b-\udd4e\udd50-\udd67\udd7a\udd95\udd96\udda4\uddfb-\ude4f\ude80-\udec5\udecc\uded0-\uded2\uded5-\uded7\udedc-\udedf\udeeb\udeec\udef4-\udefc\udfe0-\udfeb\udff0]|\ud83e[\udd0c-\udd3a\udd3c-\udd45\udd47-\uddff\ude70-\ude7c\ude80-\ude89\ude8f-\udec6\udece-\udedc\udedf-\udee9\udef0-\udef8])\ufe0f?|(?:[\u0023\u002a\u0030-\u0039\u00a9\u00ae\u203c\u2049\u2122\u2139\u2194-\u2199\u21a9\u21aa\u2328\u23cf\u23ed-\u23ef\u23f1\u23f2\u23f8-\u23fa\u24c2\u25aa\u25ab\u25b6\u25c0\u25fb\u25fc\u2600-\u2604\u260e\u2611\u2618\u261d\u2620\u2622\u2623\u2626\u262a\u262e\u262f\u2638-\u263a\u2640\u2642\u265f\u2660\u2663\u2665\u2666\u2668\u267b\u267e\u2692\u2694-\u2697\u2699\u269b\u269c\u26a0\u26a7\u26b0\u26b1\u26c8\u26cf\u26d1\u26d3\u26e9\u26f0\u26f1\u26f4\u26f7-\u26f9\u2702\u2708\u2709\u270c\u270d\u270f\u2712\u2714\u2716\u271d\u2721\u2733\u2734\u2744\u2747\u2763\u2764\u27a1\u2934\u2935\u2b05-\u2b07\u3030\u303d\u3297\u3299]|\ud83c[\udd70\udd71\udd7e\udd7f\ude02\ude37\udf21\udf24-\udf2c\udf36\udf7d\udf96\udf97\udf99-\udf9b\udf9e\udf9f\udfcb-\udfce\udfd4-\udfdf\udff3\udff5\udff7]|\ud83d[\udc3f\udc41\udcfd\udd49\udd4a\udd6f\udd70\udd73-\udd79\udd87\udd8a-\udd8d\udd90\udda5\udda8\uddb1\uddb2\uddbc\uddc2-\uddc4\uddd1-\uddd3\udddc-\uddde\udde1\udde3\udde8\uddef\uddf3\uddfa\udecb\udecd-\udecf\udee0-\udee5\udee9\udef0\udef3])\ufe0f)\u20e3?(?:\ud83c[\udffb-\udfff]|(?:\udb40[\udc20-\udc7e])+\udb40\udc7f)?(?:\u200d(?:(?:[\u231a\u231b\u23e9-\u23ec\u23f0\u23f3\u25fd\u25fe\u2614\u2615\u2648-\u2653\u267f\u2693\u26a1\u26aa\u26ab\u26bd\u26be\u26c4\u26c5\u26ce\u26d4\u26ea\u26f2\u26f3\u26f5\u26fa\u26fd\u2705\u270a\u270b\u2728\u274c\u274e\u2753-\u2755\u2757\u2795-\u2797\u27b0\u27bf\u2b1b\u2b1c\u2b50\u2b55]|\ud83c[\udc04\udccf\udd8e\udd91-\udd9a\udde6-\uddff\ude01\ude1a\ude2f\ude32-\ude36\ude38-\ude3a\ude50\ude51\udf00-\udf20\udf2d-\udf35\udf37-\udf7c\udf7e-\udf93\udfa0-\udfca\udfcf-\udfd3\udfe0-\udff0\udff4\udff8-\udfff]|\ud83d[\udc00-\udc3e\udc40\udc42-\udcfc\udcff-\udd3d\udd4b-\udd4e\udd50-\udd67\udd7a\udd95\udd96\udda4\uddfb-\ude4f\ude80-\udec5\udecc\uded0-\uded2\uded5-\uded7\udedc-\udedf\udeeb\udeec\udef4-\udefc\udfe0-\udfeb\udff0]|\ud83e[\udd0c-\udd3a\udd3c-\udd45\udd47-\uddff\ude70-\ude7c\ude80-\ude89\ude8f-\udec6\udece-\udedc\udedf-\udee9\udef0-\udef8])\ufe0f?|(?:[\u0023\u002a\u0030-\u0039\u00a9\u00ae\u203c\u2049\u2122\u2139\u2194-\u2199\u21a9\u21aa\u2328\u23cf\u23ed-\u23ef\u23f1\u23f2\u23f8-\u23fa\u24c2\u25aa\u25ab\u25b6\u25c0\u25fb\u25fc\u2600-\u2604\u260e\u2611\u2618\u261d\u2620\u2622\u2623\u2626\u262a\u262e\u262f\u2638-\u263a\u2640\u2642\u265f\u2660\u2663\u2665\u2666\u2668\u267b\u267e\u2692\u2694-\u2697\u2699\u269b\u269c\u26a0\u26a7\u26b0\u26b1\u26c8\u26cf\u26d1\u26d3\u26e9\u26f0\u26f1\u26f4\u26f7-\u26f9\u2702\u2708\u2709\u270c\u270d\u270f\u2712\u2714\u2716\u271d\u2721\u2733\u2734\u2744\u2747\u2763\u2764\u27a1\u2934\u2935\u2b05-\u2b07\u3030\u303d\u3297\u3299]|\ud83c[\udd70\udd71\udd7e\udd7f\ude02\ude37\udf21\udf24-\udf2c\udf36\udf7d\udf96\udf97\udf99-\udf9b\udf9e\udf9f\udfcb-\udfce\udfd4-\udfdf\udff3\udff5\udff7]|\ud83d[\udc3f\udc41\udcfd\udd49\udd4a\udd6f\udd70\udd73-\udd79\udd87\udd8a-\udd8d\udd90\udda5\udda8\uddb1\uddb2\uddbc\uddc2-\uddc4\uddd1-\uddd3\udddc-\uddde\udde1\udde3\udde8\uddef\uddf3\uddfa\udecb\udecd-\udecf\udee0-\udee5\udee9\udef0\udef3])\ufe0f)\u20e3?(?:\ud83c[\udffb-\udfff]|(?:\udb40[\udc20-\udc7e])+\udb40\udc7f)?)*)*[ \t]*){1,3}$/,
     cmts = {}, resp_rounds = {},
     twiddle_start = siteinfo.user && siteinfo.user.uid ? siteinfo.user.uid + "~" : "###";
-let has_unload = false, last_visibility = null,
-    last_topic = null, last_topic_viewer = false, last_topic_viewer_time = now_sec() - 14 * 86400,
-    editor_observer, editing_list;
+let has_unload = false, editor_observer, editing_list;
 
 function unparse_tag(tag, strip_value) {
     let pos;
@@ -7216,25 +7252,21 @@ function cj_find(elt) {
 }
 
 function cj_cid(cj) {
-    if (cj.response)
+    if (cj.response) {
         return (cj.response == 1 ? "" : cj.response) + "response";
-    else if (cj.is_new)
-        return "cnew";
-    else
-        return "c" + (cj.ordinal || "x" + cj.cid);
+    }
+    return cj.is_new ? "cnew" : "c" + (cj.ordinal || "x" + cj.cid);
 }
 
 function cj_name(cj) {
-    if (cj.response) {
-        var draft = cj.draft ? "Draft " : "";
-        if (cj.response != "1") {
-            return draft.concat(cj.response, " Response");
-        } else {
-            return draft + "Response";
-        }
-    } else {
+    if (!cj.response) {
         return "Comment";
     }
+    const draft = cj.draft ? "Draft " : "";
+    if (cj.response != "1") {
+        return draft + cj.response + " Response";
+    }
+    return draft + "Response";
 }
 
 function cmt_header_dotsep(hdre) {
@@ -7590,8 +7622,38 @@ function cmt_edit_messages(cj, form) {
     }
 }
 
+function cmt_annotate_new(celt, cj) {
+    // Choose new comment’s topic and visibility.
+    // - Submission thread if there is no review.
+    if (!document.querySelector("article.revsubmitted")) {
+        cj.topic = "paper";
+    } else {
+        cj.topic = "rev";
+    }
+
+    // - Author-visible if previous comment is by an author and not a
+    //   response; or this comment is by author.
+    let prevcelt = celt.closest("article").previousElementSibling;
+    while (prevcelt && prevcelt.tagName !== "ARTICLE") {
+        prevcelt = prevcelt.previousElementSibling;
+    }
+    const prevcj = prevcelt && hasClass(prevcelt, "cmtcard") && cj_find(prevcelt);
+    if (cj.by_author
+        || (prevcj && prevcj.by_author && !prevcj.response)) {
+        cj.visibility = "au";
+    } else if (hotcrp.status.myperm.some_external_reviewer_can_view_comment === false) {
+        cj.visibility = "pc";
+    } else {
+        cj.visibility = "rev";
+    }
+}
+
 function cmt_start_edit(celt, cj) {
-    var i, elt, tags = [], form = celt.querySelector("form");
+    if (cj.is_new && !cj.visibility) {
+        cmt_annotate_new(celt, cj);
+    }
+    let i, elt;
+    const form = celt.querySelector("form");
     cmt_edit_messages(cj, form);
 
     $(form.elements.text).text(cj.text || "")
@@ -7599,29 +7661,22 @@ function cmt_start_edit(celt, cj) {
         .on("hotcrprenderpreview", cmt_render_preview)
         .autogrow();
 
-    const vis = cj.visibility
-        || last_visibility
-        || (cj.by_author && "au")
-        || (hotcrp.status.myperm.some_external_reviewer_can_view_comment === false && "pc")
-        || "rev";
-    $(form.elements.visibility).val(vis)
-        .attr("data-default-value", vis)
+    $(form.elements.visibility).val(cj.visibility || "rev")
+        .attr("data-default-value", cj.visibility || "rev")
         .on("change", cmt_visibility_change);
 
-    const any_rev = !!document.querySelector("article.revsubmitted"),
-        new_topic = any_rev ? last_topic || "rev" : "paper",
-        topic = cj.is_new ? new_topic : cj.topic || "rev";
-    if (topic !== "rev" || new_topic !== "rev") {
+    if (cj.topic !== "rev") {
         fold(celt.querySelector(".cmteditinfo"), false, 4);
     }
-    $(form.elements.topic).val(topic)
-        .attr("data-default-value", topic)
+    $(form.elements.topic).val(cj.topic || "rev")
+        .attr("data-default-value", cj.topic || "rev")
         .on("change", cmt_visibility_change);
 
     if ((elt = form.elements.visibility || form.elements.topic)) {
         cmt_visibility_change.call(elt);
     }
 
+    const tags = [];
     for (i in cj.tags || []) {
         tags.push(unparse_tag(cj.tags[i]));
     }
@@ -7812,8 +7867,6 @@ function cmt_save_callback(cj) {
             if (new_cid) {
                 celt.id = new_cid;
                 navsidebar.redisplay(celt);
-                last_visibility = data.comment.visibility;
-                last_topic = data.comment.topic || "rev";
             } else {
                 celt.removeAttribute("id");
                 celt.replaceChildren($e("div", "cmtmsg"));
@@ -8145,20 +8198,6 @@ function add_new_comment(cj, cid) {
     document.querySelector(".pcontainer").insertBefore($e("article", {
         id: cid, class: "pcard cmtcard cmtid comment view need-anchor-unfold has-fold ".concat(cj.collapsed ? "fold20c" : "fold20o", cj.editable ? " editable" : "")
     }), $$("k-comment-actions"));
-    if (!cj.is_new && !cj.response) {
-        if (cj.viewer_owned && cj.modified_at > last_topic_viewer_time) {
-            last_topic = cj.topic || "rev";
-            last_topic_viewer = true;
-            last_topic_viewer_time = cj.modified_at;
-        } else if (!last_topic_viewer) {
-            last_topic = cj.topic || "rev";
-        }
-        if (cj.viewer_owned) {
-            last_visibility = cj.visibility;
-        } else if (cj.visibility !== "au") {
-            last_visibility = cj.visibility === "admin" ? "rev" : cj.visibility;
-        }
-    }
 }
 
 function cmt_sidebar_content(item) {
@@ -8549,9 +8588,45 @@ demand_load.mail_templates = demand_load.make(function (resolve) {
 
 demand_load.mentions = demand_load.make(function (resolve) {
     $.get(hoturl("api/mentioncompletion", {p: siteinfo.paperid}), null, function (v) {
-        var tlist = ((v && v.mentioncompletion) || []).map(completion_item);
-        tlist.sort(function (a, b) { return strnatcasecmp(a.s, b.s); });
-        resolve(tlist);
+        // The `mentioncompletion` list may contain different priorities and
+        // duplicate names. First we look for duplicates
+        let tlist = ((v && v.mentioncompletion) || []).map(completion_item);
+        let need_filter = false, need_prisort = false;
+        tlist.sort(function (a, b) {
+            const apri = a.pri || 0, bpri = b.pri || 0;
+            if (apri !== bpri) {
+                need_prisort = true;
+            }
+            const scmp = strnatcasecmp(a.s, b.s);
+            if (scmp !== 0) {
+                return scmp;
+            }
+            need_filter = true;
+            return apri < bpri ? 1 : (apri > bpri ? -1 : 0);
+        });
+        if (!need_filter && !need_prisort) {
+            resolve(tlist);
+            return;
+        }
+        // Filter duplicates if necessary and sort by priority
+        let nlist;
+        if (need_filter) {
+            nlist = [];
+            let last = null;
+            for (const it of tlist) {
+                if (last && last.s === it.s) {
+                    continue;
+                }
+                nlist.push((last = it));
+            }
+        } else {
+            nlist = tlist;
+        }
+        nlist.sort(function (a, b) { // rely on stable sort
+            const apri = a.pri || 0, bpri = b.pri || 0;
+            return apri < bpri ? 1 : (apri > bpri ? -1 : 0);
+        });
+        resolve(nlist);
     });
 });
 
@@ -8617,7 +8692,7 @@ function select_from(sel, s, list) {
 }
 
 function complete_list(v, sel, options) {
-    let res = [], mod;
+    let res = [];
     for (const code of sel) {
         const scode = `:${code}:`;
         let compl = v.completion[code];
@@ -8814,6 +8889,7 @@ CompletionSpan.prototype.filter = function (tlist) {
     // * `item.r`: Replacement text (defaults to `item.s`).
     // * `item.ml`: Integer. Ignore this item if it doesn’t match
     //   the first `item.ml` characters of the match region.
+    // * `item.pri`: Integer priority; higher is more important.
     // Shorthand:
     // * A string `item` sets `item.s`.
     // * A two-element array `item` sets `item.s` and `item.d`, respectively.
@@ -8852,32 +8928,31 @@ CompletionSpan.prototype.filter = function (tlist) {
         const text = titem.s,
             ltext = caseSensitive ? text : text.toLowerCase(),
             rl = titem.ml || 0;
-
-        if ((filter === null || ltext.startsWith(filter))
-            && (rl <= rlbound
-                || (lregion.length >= rl
-                    && lregion.startsWith(ltext.substr(0, rl))))
-            && (last_text === null || last_text !== text)) {
-            if (can_highlight
-                && ltext.startsWith(lregion)
-                && (best === null
-                    || (titem.pri || 0) > (res[best].pri || 0)
-                    || ltext.length === lregion.length)) {
-                best = res.length;
-                if (titem.hl_length
-                    && lregion.length < titem.hl_length
-                    && titem.shorter_hl) {
-                    best = 0;
-                    while (best < res.length && res[best].s !== titem.shorter_hl) {
-                        ++best;
-                    }
+        if ((last_text !== null && last_text === text)
+            || (filter !== null && !ltext.startsWith(filter))
+            || (rl > rlbound && lregion.length < rl)
+            || (rl > rlbound && !lregion.startsWith(ltext.substr(0, rl)))) {
+            continue;
+        }
+        if (can_highlight
+            && ltext.startsWith(lregion)
+            && (best === null
+                || (titem.pri || 0) > (res[best].pri || 0)
+                || ltext.length === lregion.length)) {
+            best = res.length;
+            if (titem.hl_length
+                && lregion.length < titem.hl_length
+                && titem.shorter_hl) {
+                best = 0;
+                while (best < res.length && res[best].s !== titem.shorter_hl) {
+                    ++best;
                 }
             }
-            res.push(titem);
-            last_text = text;
-            if (res.length === this.maxItems) {
-                break;
-            }
+        }
+        res.push(titem);
+        last_text = text;
+        if (res.length === this.maxItems) {
+            break;
         }
     }
     if (res.length === 0) {
@@ -8945,6 +9020,13 @@ function suggest() {
     function render_item(titem, prepend) {
         const node = document.createElement("div");
         node.className = titem.no_space ? "suggestion s9nsp" : "suggestion";
+        if (titem.pri) {
+            if (titem.pri === 1) {
+                node.className += " s9pri1";
+            } else {
+                node.className += " s9pri" + (titem.pri < 0 ? "m1" : "2");
+            }
+        }
         if (titem.r) {
             node.setAttribute("data-replacement", titem.r);
         }
@@ -9936,24 +10018,6 @@ $(function () {
 });
 })($);
 
-function hotlist_search_params(x, ids) {
-    x = x instanceof HTMLElement ? Hotlist.at(x) : new Hotlist(x);
-    let m;
-    if (!x || !x.obj || !x.obj.ids
-        || !(m = x.obj.listid.match(/^p\/(.*?)\/(.*?)(?:$|\/)(.*)/))) {
-        return false;
-    }
-
-    const q = {q: ids ? x.id_search() : urldecode(m[2]), t: m[1] || "s"};
-    if (m[3]) {
-        for (const arg of m[3].split(/[&;]/)) {
-            const pos = arg.indexOf("=");
-            q[arg.substr(0, pos)] = urldecode(arg.substr(pos + 1));
-        }
-    }
-    return q;
-}
-
 handle_ui.on("click.js-sq", function () {
     removeClass(this, "js-sq");
     let q;
@@ -10398,7 +10462,7 @@ function tablelist_apply(tbl, data, searchp) {
 }
 
 function tablelist_load(tbl, k, v) {
-    let searchp = new URLSearchParams(tablelist_search(tbl));
+    const searchp = new URLSearchParams(tablelist_search(tbl));
     k && searchp.set(k, v != null ? v : "");
     function history_success(data) {
         const url = make_URL(window.location.href);
@@ -11075,7 +11139,7 @@ Assign_DraggableTable.prototype.commit = function () {
         doassignlist(as, this.assigninfo[newidx], srcra.id, "enter");
     }
     if (!as.empty) {
-        $.post(hoturl("=api/assign", {}),
+        $.post(hoturl("=api/assign", {format: "none"}),
             {assignments: JSON.stringify(as), search: tablelist_search(this.tablelist)},
             function (rv) {
                 if (rv.ok && rv.valid !== false) {
@@ -11291,11 +11355,11 @@ handle_ui.on("js-expand-archive", function (evt) {
         sp.className = "archiveexpansion fx";
         ar.appendChild(sp);
         const params = parse_docurl(ax.href);
-        params.set("consolidated", 1);
-        $.ajax(hoturl("api/archivelisting", params.toString()), {
+        params.set("summary", 1);
+        $.ajax(hoturl("api/archivecontents", params.toString()), {
             method: "GET", success: function (data) {
-                if (data.ok && data.consolidated_listing)
-                    sp.textContent = " (" + data.consolidated_listing + ")";
+                if (data.ok && data.archive_contents_summary)
+                    sp.textContent = " (" + data.archive_contents_summary + ")";
             }
         });
     }
@@ -11306,14 +11370,24 @@ handle_ui.on("js-expand-archive", function (evt) {
 function check_version(url, versionstr) {
     var x;
     function updateverifycb(json) {
-        var e;
-        if (json && json.messages && (e = $$("h-messages")))
-            e.innerHTML = json.messages + e.innerHTML;
+        let e;
+        if (!json
+            || !json.message_list
+            || json.message_list.length === 0
+            || !(e = $$("h-messages"))) {
+            return;
+        }
+        const a = feedback.render_alert(json.message_list);
+        if (hasClass(e, "want-mx-auto")) {
+            addClass(a, "mx-auto");
+        }
+        e.prepend(a);
     }
     function updatecb(json) {
         if (json && json.updates && window.JSON)
-            jQuery.get(siteinfo.site_relative + "checkupdates.php",
-                       {data: JSON.stringify(json)}, updateverifycb);
+            jQuery.post(siteinfo.site_relative + "checkupdates.php",
+                        {data: JSON.stringify(json), post: siteinfo.postvalue},
+                        updateverifycb);
         else if (json && json.status)
             hotcrp.wstorage.site(false, "hotcrp_version_check", {at: now_msec(), version: versionstr});
     }
@@ -11329,9 +11403,12 @@ function check_version(url, versionstr) {
         jsonp: false, global: false, success: updatecb
     });
     handle_ui.on("js-check-version-ignore", function () {
-        var id = $(this).data("versionId");
-        $.post(siteinfo.site_relative + "checkupdates.php", {ignore: id, post: siteinfo.postvalue});
-        $("#softwareupdate_" + id).hide();
+        $.post(siteinfo.site_relative + "checkupdates.php", {ignore: this.getAttribute("data-errid"), post: siteinfo.postvalue});
+        const fl = this.closest("ul");
+        this.closest("li").remove();
+        if (!fl.firstChild) {
+            fl.closest(".msg").remove();
+        }
     });
 }
 
@@ -12007,16 +12084,19 @@ function plinfo(plistui, type, hidden, form) {
         }
     }
 
-    const pctr = plistui.pltable;
-    let ses = pctr.getAttribute("data-fold-session-prefix");
+    const tbl = plistui.pltable;
+    let ses = tbl.getAttribute("data-fold-session-prefix");
     if (need_load) {
-        const loadargs = {f: load_type, format: "html"};
+        const searchp = new URLSearchParams(tablelist_search(tbl));
+        searchp.set("f", load_type);
+        searchp.set("format", "html");
+        searchp.set("q", Hotlist.at(tbl).id_search());
+        searchp.delete("sort");
         if (ses) {
-            loadargs.session = plinfo_session(ses, type, hidden, form);
+            searchp.set("session", plinfo_session(ses, type, hidden, form));
             ses = null;
         }
-        $.get(hoturl("=api/search", $.extend(loadargs, hotlist_search_params(pctr, true))),
-              make_callback(plistui, type));
+        $.get(hoturl("=api/search", searchp), make_callback(plistui, type));
     } else if (hidden !== (!f || f.missing || f.hidden)) {
         fold_field(plistui, f, hidden);
         check_statistics(plistui);
@@ -12155,16 +12235,20 @@ handle_ui.on("js-override-conflict", function () {
     $(pr, prb).find(".fx5").removeClass("fx5").addClass("fxx5");
 });
 
-handle_ui.on("js-plinfo", function (evt) {
-    if (this.type !== "checkbox" || !this.name.startsWith("show")) {
+handle_ui.on("change.js-plinfo", function (evt) {
+    if (this.type !== "checkbox") {
         throw new Error("bad plinfo");
     }
     const plistui = make_plist.call(mainlist()), hidden = !this.checked;
     let fname;
     if (this.name === "show" || this.name === "show[]") {
         fname = this.value;
-    } else {
+    } else if (this.name === "forceShow") {
+        fname = "force";
+    } else if (this.name.startsWith("show")) {
         fname = this.name.substring(4);
+    } else {
+        throw new Error("bad plinfo");
     }
     if (fname === "force") {
         fold_override(plistui.pltable, hidden);
@@ -12189,7 +12273,6 @@ handle_ui.on("js-plinfo", function (evt) {
     } else {
         plinfo(plistui, fname, hidden, this.form);
     }
-    evt.preventDefault();
 });
 
 })();
@@ -12774,7 +12857,7 @@ handle_ui.on("document-uploader", function (event) {
     }
 
     function check(event) {
-        var form = that.form,
+        const form = that.form,
             upload_limit = find_first_attr("data-upload-limit", [doce, form, document.body], Infinity),
             max_size = find_first_attr("data-document-max-size", [doce, form, document.body], upload_limit);
         blob_limit = Math.min(find_first_attr("data-blob-limit", [form, document.body], 5 << 20), upload_limit);
@@ -12783,11 +12866,11 @@ handle_ui.on("document-uploader", function (event) {
             that.value = "";
             handle_ui.stopImmediatePropagation ? handle_ui.stopImmediatePropagation(event) : event.stopImmediatePropagation();
             return false;
-        } else {
-            return file
-                && window.FormData
-                && file.size >= Math.min(0.45 * upload_limit, 4 << 20);
         }
+        return file
+            && window.FormData
+            && blob_limit > 0
+            && file.size >= Math.min(0.45 * upload_limit, 4 << 20);
     }
     if (!check(event)) {
         remove_feedback();
@@ -14651,7 +14734,7 @@ handle_ui.on("js-assign-potential-conflict", function () {
             is_none ? "Conflict ignored" : "Conflict confirmed"));
     }
     $ajax.condition(function () {
-        $.ajax(hoturl("=api/assign", {p: pid}), {
+        $.ajax(hoturl("=api/assign", {p: pid, format: "none"}), {
             method: "POST", data: {assignments: JSON.stringify([ass])},
             success: success, trackOutstanding: true
         });
@@ -14698,7 +14781,7 @@ handle_ui.on("js-assign-review", function (evt) {
         check_form_differs(form, self);
     }
     $ajax.condition(function () {
-        $.ajax(hoturl("=api/assign", {p: m[1]}), {
+        $.ajax(hoturl("=api/assign", {p: m[1], format: "none"}), {
             method: "POST", data: {assignments: JSON.stringify(ass)},
             success: success, trackOutstanding: true
         });

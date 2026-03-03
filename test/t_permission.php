@@ -2,6 +2,7 @@
 // t_permission.php -- HotCRP tests
 // Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
+#[RequireDb("fresh")]
 class Permission_Tester {
     /** @var Conf
      * @readonly */
@@ -68,19 +69,19 @@ class Permission_Tester {
         xassert(!$this->u_kohler->can_view_paper($paper1));
         xassert(!$this->u_nobody->can_view_paper($paper1));
 
-        xassert($this->u_chair->allow_administer($paper1));
-        xassert(!$this->u_estrin->allow_administer($paper1));
-        xassert(!$this->u_marina->allow_administer($paper1));
-        xassert(!$this->u_van->allow_administer($paper1));
-        xassert(!$this->u_kohler->allow_administer($paper1));
-        xassert(!$this->u_nobody->allow_administer($paper1));
+        xassert($this->u_chair->allow_admin($paper1));
+        xassert(!$this->u_estrin->allow_admin($paper1));
+        xassert(!$this->u_marina->allow_admin($paper1));
+        xassert(!$this->u_van->allow_admin($paper1));
+        xassert(!$this->u_kohler->allow_admin($paper1));
+        xassert(!$this->u_nobody->allow_admin($paper1));
 
-        xassert($this->u_chair->can_administer($paper1));
-        xassert(!$this->u_estrin->can_administer($paper1));
-        xassert(!$this->u_marina->can_administer($paper1));
-        xassert(!$this->u_van->can_administer($paper1));
-        xassert(!$this->u_kohler->can_administer($paper1));
-        xassert(!$this->u_nobody->can_administer($paper1));
+        xassert($this->u_chair->is_admin($paper1));
+        xassert(!$this->u_estrin->is_admin($paper1));
+        xassert(!$this->u_marina->is_admin($paper1));
+        xassert(!$this->u_van->is_admin($paper1));
+        xassert(!$this->u_kohler->is_admin($paper1));
+        xassert(!$this->u_nobody->is_admin($paper1));
 
         xassert($this->u_chair->can_view_tags($paper1));
         xassert(!$this->u_estrin->can_view_tags($paper1));
@@ -172,8 +173,8 @@ class Permission_Tester {
         $user_capability->apply_capability_text($tok->salt);
         xassert(!$user_capability->contactId);
         xassert($user_capability->can_view_paper($paper1));
-        xassert(!$user_capability->allow_administer($paper1));
-        xassert(!$user_capability->can_administer($paper1));
+        xassert(!$user_capability->allow_admin($paper1));
+        xassert(!$user_capability->is_admin($paper1));
         xassert(!$user_capability->can_view_tags($paper1));
         xassert(!$user_capability->can_edit_paper($paper1));
 
@@ -219,9 +220,9 @@ class Permission_Tester {
 
         // role assignment works
         $paper18 = $user_mgbaker->checked_paper_by_id(18);
-        xassert($this->u_shenker->can_administer($paper18));
-        xassert(!$user_mgbaker->can_administer($paper1));
-        xassert(!$user_mgbaker->can_administer($paper18));
+        xassert($this->u_shenker->is_admin($paper18));
+        xassert(!$user_mgbaker->is_admin($paper1));
+        xassert(!$user_mgbaker->is_admin($paper18));
 
         // author derivation works
         xassert($user_mgbaker->act_author_view($paper18));
@@ -390,15 +391,15 @@ class Permission_Tester {
         $this->conf->save_refresh_setting("tracks", 1, "{\"green\":{\"view\":\"-red\"}}");
         self::check_rights_version($users);
         xassert_eqq($user_chair->dangerous_track_mask(), 0);
-        xassert_eqq($user_jon->dangerous_track_mask() & Track::BITS_VIEW, Track::BITS_VIEW);
+        xassert_eqq($user_jon->dangerous_track_mask() & Track::FM_VIEW, Track::FM_VIEW);
         xassert_eqq($user_marina->dangerous_track_mask(), 0);
         xassert_eqq($user_pfrancis->dangerous_track_mask(), 0);
 
         $this->conf->save_refresh_setting("tracks", 1, "{\"green\":{\"view\":\"-red\"},\"_\":{\"view\":\"+blue\"}}");
         self::check_rights_version($users);
         xassert_eqq($user_chair->dangerous_track_mask(), 0);
-        xassert_eqq($user_jon->dangerous_track_mask() & Track::BITS_VIEW, Track::BITS_VIEW);
-        xassert_eqq($user_marina->dangerous_track_mask() & Track::BITS_VIEW, Track::BITS_VIEW);
+        xassert_eqq($user_jon->dangerous_track_mask() & Track::FM_VIEW, Track::FM_VIEW);
+        xassert_eqq($user_marina->dangerous_track_mask() & Track::FM_VIEW, Track::FM_VIEW);
         xassert_eqq($user_pfrancis->dangerous_track_mask(), 0);
 
         $this->conf->save_refresh_setting("tracks", null);
@@ -1016,18 +1017,18 @@ class Permission_Tester {
         xassert_assign($this->conf->root_user(), "action,paper,user,tag\nconflict,4 5,chair@_.com\ntag,4 5,,testtag");
         $paper4 = $this->u_chair->checked_paper_by_id(4);
         $paper5 = $this->u_chair->checked_paper_by_id(5);
-        assert(!$this->u_chair->can_administer($paper4));
-        assert(!$this->u_chair->allow_administer($paper4));
-        assert(!$this->u_chair->can_administer($paper5));
-        assert($this->u_chair->allow_administer($paper5));
+        assert(!$this->u_chair->is_admin($paper4));
+        assert(!$this->u_chair->allow_admin($paper4));
+        assert(!$this->u_chair->is_admin($paper5));
+        assert($this->u_chair->allow_admin($paper5));
         xassert_eqq($paper4->viewable_tags($this->u_chair), "");
         xassert_eqq($paper5->viewable_tags($this->u_chair), "");
 
         $overrides = $this->u_chair->add_overrides(Contact::OVERRIDE_CONFLICT);
-        assert(!$this->u_chair->can_administer($paper4));
-        assert(!$this->u_chair->allow_administer($paper4));
-        assert($this->u_chair->can_administer($paper5));
-        assert($this->u_chair->allow_administer($paper5));
+        assert(!$this->u_chair->is_admin($paper4));
+        assert(!$this->u_chair->allow_admin($paper4));
+        assert($this->u_chair->is_admin($paper5));
+        assert($this->u_chair->allow_admin($paper5));
         xassert_eqq($paper4->viewable_tags($this->u_chair), "");
         xassert_match($paper5->viewable_tags($this->u_chair), '/\A fart#\d+ testtag#0\z/');
         $this->u_chair->set_overrides($overrides);
@@ -1396,30 +1397,30 @@ class Permission_Tester {
         $this->conf->save_refresh_setting("tracks", null);
         for ($pid = 1; $pid <= 3; ++$pid) {
             $p = $this->u_chair->checked_paper_by_id($pid);
-            xassert($this->u_chair->allow_administer($p));
-            xassert(!$this->u_marina->allow_administer($p));
-            xassert($this->u_chair->can_administer($p));
+            xassert($this->u_chair->allow_admin($p));
+            xassert(!$this->u_marina->allow_admin($p));
+            xassert($this->u_chair->is_admin($p));
             xassert($this->u_chair->is_primary_administrator($p));
         }
         xassert_assign($this->u_chair, "paper,action,user\n2,administrator,marina@poema.ru");
         for ($pid = 1; $pid <= 3; ++$pid) {
             $p = $this->u_chair->checked_paper_by_id($pid);
-            xassert($this->u_chair->allow_administer($p));
-            xassert_eqq($this->u_marina->allow_administer($p), $pid === 2);
-            xassert($this->u_chair->can_administer($p));
-            xassert_eqq($this->u_marina->can_administer($p), $pid === 2);
+            xassert($this->u_chair->allow_admin($p));
+            xassert_eqq($this->u_marina->allow_admin($p), $pid === 2);
+            xassert($this->u_chair->is_admin($p));
+            xassert_eqq($this->u_marina->is_admin($p), $pid === 2);
             xassert_eqq($this->u_chair->is_primary_administrator($p), $pid !== 2);
             xassert_eqq($this->u_marina->is_primary_administrator($p), $pid === 2);
         }
         $this->conf->save_refresh_setting("tracks", 1, "{\"green\":{\"admin\":\"+red\"}}");
         for ($pid = 1; $pid <= 3; ++$pid) {
             $p = $this->u_chair->checked_paper_by_id($pid);
-            xassert($this->u_chair->allow_administer($p));
-            xassert_eqq($this->u_marina->allow_administer($p), $pid === 2);
-            xassert_eqq($this->u_estrin->allow_administer($p), $pid === 3);
-            xassert($this->u_chair->can_administer($p));
-            xassert_eqq($this->u_marina->can_administer($p), $pid === 2);
-            xassert_eqq($this->u_estrin->can_administer($p), $pid === 3);
+            xassert($this->u_chair->allow_admin($p));
+            xassert_eqq($this->u_marina->allow_admin($p), $pid === 2);
+            xassert_eqq($this->u_estrin->allow_admin($p), $pid === 3);
+            xassert($this->u_chair->is_admin($p));
+            xassert_eqq($this->u_marina->is_admin($p), $pid === 2);
+            xassert_eqq($this->u_estrin->is_admin($p), $pid === 3);
             xassert_eqq($this->u_chair->is_primary_administrator($p), $pid === 1);
             xassert_eqq($this->u_marina->is_primary_administrator($p), $pid === 2);
             xassert_eqq($this->u_estrin->is_primary_administrator($p), $pid === 3);
@@ -1458,13 +1459,13 @@ class Permission_Tester {
 
         $pex = new PaperExport($this->u_chair);
         $rjson = $pex->review_json($paper2, $review2b);
-        ReviewForm::update_review_author_seen();
+        $this->conf->call_shutdown_function("ReviewAuthorSeenUpdate");
         $review2b = fresh_review($paper2, $user_pdruschel);
         xassert(!$review2b->reviewAuthorSeen);
 
         $pex = new PaperExport($user_author2);
         $rjson = $pex->review_json($paper2, $review2b);
-        ReviewForm::update_review_author_seen();
+        $this->conf->call_shutdown_function("ReviewAuthorSeenUpdate");
         $review2b = fresh_review($paper2, $user_pdruschel);
         xassert(!!$review2b->reviewAuthorSeen);
 
@@ -1502,7 +1503,7 @@ class Permission_Tester {
         xassert_eqq($paper16->tag_value("app"), 1.0);
         xassert_eqq($paper16->sorted_viewable_tags($this->u_chair), " app#1 crap#3 vote#6");
         xassert_eqq($paper16->sorted_searchable_tags($this->u_chair), " 2~vote#5 4~app#0 4~bar#0 4~crap#1 8~crap#2 8~vote#1 app#1 crap#3 vote#6");
-        xassert(!$this->u_marina->allow_administer($paper16));
+        xassert(!$this->u_marina->allow_admin($paper16));
         xassert_eqq($paper16->sorted_viewable_tags($this->u_marina), " app#1 crap#3 vote#6");
         xassert_eqq($paper16->sorted_searchable_tags($this->u_marina), " 2~vote#5 4~app#0 4~crap#1 8~crap#2 8~vote#1 app#1 crap#3 vote#6");
         xassert(SettingValues::make_request($this->u_chair, [
@@ -1523,7 +1524,7 @@ class Permission_Tester {
         xassert_eqq($paper16->sorted_viewable_tags($this->u_marina), " app#2 crap#3 vote#6");
         xassert_eqq($paper16->sorted_searchable_tags($this->u_chair), " 2~vote#5 4~app#0 4~bar#0 4~crap#1 8~crap#2 8~vote#1 17~app#0 app#2 crap#3 vote#6");
 
-        $this->conf->invalidate_caches(["pc" => true]);
+        $this->conf->invalidate_caches("pc");
         xassert(SettingValues::make_request($this->u_chair, [
             "has_tag_vote_approval" => 1, "tag_vote_approval" => "app app2"
         ])->execute());
@@ -1822,7 +1823,7 @@ class Permission_Tester {
 
     function test_search_submission_field_edit_condition() {
         $this->conf->save_refresh_setting("options", 1, '[{"id":1,"name":"Calories","abbr":"calories","type":"numeric","position":1,"display":"default"},{"id":2,"name":"Fattening","type":"numeric","position":2,"display":"default","exists_if":"calories>200"}]');
-        $this->conf->invalidate_caches(["options" => true]);
+        $this->conf->invalidate_caches("options");
         $this->conf->qe("insert into PaperOption (paperId,optionId,value) values (1,2,1),(2,2,1),(3,2,1),(4,2,1),(5,2,1)");
         xassert_search($this->u_chair, "has:fattening", "1 3 4");
     }

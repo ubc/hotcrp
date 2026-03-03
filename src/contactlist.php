@@ -1,6 +1,6 @@
 <?php
 // contactlist.php -- HotCRP helper class for producing lists of contacts
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class ContactList {
     const FIELD_SELECTOR = 1000;
@@ -704,9 +704,9 @@ class ContactList {
         } else if ($limit === "au") {
             $args["finalized"] = true;
         } else if ($limit === "aurej") {
-            $args["dec:no"] = true;
+            $args["decision"] = ["no"];
         } else if ($limit === "auacc") {
-            $args["dec:yes"] = true;
+            $args["decision"] = ["yes"];
         } else if ($limit === "auuns") {
             $args["unsub"] = true;
         }
@@ -786,7 +786,7 @@ class ContactList {
             $this->_rating_data = [];
             foreach ($prows as $prow) {
                 if ($this->user->can_view_review_ratings($prow)) {
-                    $allow_admin = $this->user->allow_administer($prow);
+                    $allow_admin = $this->user->allow_admin($prow);
                     foreach ($prow->all_reviews() as $rrow) {
                         if (isset($ratings[$prow->paperId][$rrow->reviewId])
                             && ($allow_admin
@@ -979,7 +979,7 @@ class ContactList {
                 }
                 $lst = $this->_au_unsub[$row->contactId] ?? false ? "all" : "s";
                 return '<div class="has-hotlist" data-hotlist="'
-                    . htmlspecialchars("p/$lst/" . urlencode($lsx)) . '">' . join(", ", $t) . '</div>';
+                    . htmlspecialchars("p/{$lst}/" . urlencode($lsx)) . '">' . join(", ", $t) . '</div>';
             } else {
                 return "";
             }
@@ -999,13 +999,12 @@ class ContactList {
                     $last = $reord[0];
                 }
             }
-            if (!empty($t)) {
-                $ls = htmlspecialchars("p/s/" . urlencode("re:" . $row->email));
-                return '<div class="has-hotlist" data-hotlist="' . $ls . '">'
-                    . join(", ", $t) . '</div>';
-            } else {
+            if (empty($t)) {
                 return "";
             }
+            $ls = htmlspecialchars("p/s/" . urlencode("re:" . $row->email));
+            return '<div class="has-hotlist" data-hotlist="' . $ls . '">'
+                . join(", ", $t) . '</div>';
         case self::FIELD_TAGS:
             if ($this->user->isPC
                 && ($tags = $row->viewable_tags($this->user))) {

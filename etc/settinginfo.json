@@ -360,6 +360,7 @@
         "name_pattern": "sf/$/condition", "storage": "member.exists_if",
         "title": "/Presence condition",
         "type": "string", "subtype": "condition", "size": 30, "placeholder": "Search",
+        "parser_class": "SubFieldCondition_SettingParser",
         "parse_order": 3
     },
     {
@@ -530,10 +531,22 @@
         "tags": "submission"
     },
     {
-        "name": "submitted_document_early_visibility", "storage": "pc_seeallpdf",
-        "title": "PC can see all submitted PDFs",
+        "name": "document_early_visibility", "storage": "pc_seeallpdf",
+        "title": "PC can see all completed submission PDFs before submission deadline",
         "type": "checkbox",
         "tags": "submission"
+    },
+    {
+        "name": "submitted_document_early_visibility",
+        "alias": "document_early_visibility"
+    },
+    {
+        "name": "submission_visibility_conflict", "storage": "pc_confpdf",
+        "title": "Visibility of submissions to conflicted PC members",
+        "type": "radio",
+        "values": [0, 1, 2], "default_value": 0,
+        "json_values": ["yes", "no-pdf", "no"],
+        "tags": "submission visibility"
     },
     {
         "name": "pc_warn_bulk_download", "storage": "ova.pcWarnBulkDownload",

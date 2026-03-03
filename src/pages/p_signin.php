@@ -99,11 +99,7 @@ class Signin_Page {
         if (!$token) {
             return null;
         }
-        if (str_starts_with($token, "hcpw1")) {
-            $tok = TokenInfo::find_cdb($token, $conf);
-        } else {
-            $tok = TokenInfo::find($token, $conf);
-        }
+        $tok = TokenInfo::find_from($token, $conf, str_starts_with($token, "hcpw1"));
         if ($tok && $tok->is_active(TokenInfo::RESETPASSWORD)) {
             return $tok;
         }
@@ -257,12 +253,11 @@ class Signin_Page {
         }
         $buttons = [];
         $param = ["authtype" => null, "post" => $qreq->maybe_post_value()];
+        $nav = $qreq->navigation();
+        $param["success_redirect"] = $qreq->redirect;
+        $param["failure_redirect"] = $conf->selfurl($qreq, ["signedout" => null], Conf::HOTURL_SITEREL | Conf::HOTURL_RAW);
         if ($this->_oauth_hoturl_param) {
             $param += $this->_oauth_hoturl_param;
-        } else {
-            $nav = $qreq->navigation();
-            $param["success_redirect"] = $qreq->redirect;
-            $param["failure_redirect"] = $conf->selfurl($qreq, ["signedout" => null], Conf::HOTURL_SITEREL | Conf::HOTURL_RAW);
         }
         $top = "";
         foreach ($conf->oauth_providers() as $authdata) {

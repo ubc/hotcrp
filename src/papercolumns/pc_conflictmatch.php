@@ -1,6 +1,6 @@
 <?php
 // pc_conflictmatch.php -- HotCRP paper columns for author/collaborator match
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class ConflictMatch_PaperColumn extends PaperColumn {
     /** @var Contact */
@@ -29,7 +29,7 @@ class ConflictMatch_PaperColumn extends PaperColumn {
         return $is_text ? $t : "<strong>{$t}</strong>";
     }
     function content_empty(PaperList $pl, PaperInfo $row) {
-        return !$pl->user->allow_administer($row);
+        return !$pl->user->allow_admin($row);
     }
     function content(PaperList $pl, PaperInfo $row) {
         $pf = $row->preference($this->contact);
@@ -78,7 +78,7 @@ class ConflictMatch_PaperColumn extends PaperColumn {
             $rs[] = (object) $fj;
         }
         if (empty($rs)) {
-            PaperColumn::column_error($xtp, "<0>PC member ‘{$m[1]}’ not found");
+            PaperColumn::column_error_at($xtp, $name, "<0>PC member ‘{$m[1]}’ not found");
         }
         return $rs;
     }

@@ -658,11 +658,11 @@ class PaperOption implements JsonSerializable {
     }
 
     /** @return bool */
-    function is_document() {
+    function has_document() {
         return false;
     }
     /** @return bool */
-    function has_document() {
+    function is_document() {
         return false;
     }
     /** @return bool */
@@ -1175,13 +1175,17 @@ class Checkbox_PaperOption extends PaperOption {
     }
 
     function render(FieldRender $fr, PaperValue $ov) {
-        if ($ov->value || $fr->verbose()) {
+        if (!$ov->value && !$fr->verbose()) {
+            return;
+        }
+        if ($fr->want(FieldRender::CFPAGE)) {
+            $th = $this->title_html();
+            $fr->title = "";
+            $fr->set_html(($ov->value ? "✓" : "✗") . " <span class=\"pavfn\">{$th}</span>");
+        } else if ($fr->want(FieldRender::CFFORM)) {
+            $fr->set_text($ov->value ? "Yes" : "No");
+        } else {
             $fr->set_bool(!!$ov->value);
-            if ($fr->want(FieldRender::CFPAGE)) {
-                $fr->title = "";
-                $th = $this->title_html();
-                $fr->set_html($fr->value_html() . " <span class=\"pavfn\">{$th}</span>");
-            }
         }
     }
 
@@ -1419,11 +1423,11 @@ class Document_PaperOption extends PaperOption {
         parent::__construct($conf, $args);
     }
 
-    function is_document() {
+    function has_document() {
         return true;
     }
 
-    function has_document() {
+    function is_document() {
         return true;
     }
 

@@ -72,7 +72,7 @@ class SettingValues extends MessageSet {
     private $_diffs = [];
     /** @var associative-array<string,false> */
     private $_no_diffs = [];
-    /** @var associative-array<string,true> */
+    /** @var list<string> */
     private $_invalidate_caches = [];
 
     /** @var ?SearchExpr */
@@ -1579,7 +1579,7 @@ class SettingValues extends MessageSet {
             $cb();
         }
         if (!empty($this->_invalidate_caches)) {
-            $this->conf->invalidate_caches($this->_invalidate_caches);
+            $this->conf->invalidate_caches(...$this->_invalidate_caches);
         }
 
         // create changed_si
@@ -1610,10 +1610,14 @@ class SettingValues extends MessageSet {
         $this->_no_diffs[$siname] = false;
     }
 
-    /** @param associative-array<string,true> $caches */
-    function mark_invalidate_caches($caches) {
-        foreach ($caches as $c => $t) {
-            $this->_invalidate_caches[$c] = true;
+    /** @param string ...$caches */
+    function mark_invalidate_caches(...$caches) {
+        if (count($caches) === 1 && is_array($caches[0])) { // XXX backward compat
+            $caches = array_keys($caches[0]);
+        }
+        foreach ($caches as $c) {
+            if (!in_array($c, $this->_invalidate_caches, true))
+                $this->_invalidate_caches[] = $c;
         }
     }
 
@@ -1718,9 +1722,9 @@ class SettingValues extends MessageSet {
      * @return string */
     function json_path_link($html, $jpath, $js = null) {
         $lpfx = $html !== "" ? "<u>{$html}</u> " : "";
+        $ujpath = urlencode($jpath);
         $hjpath = htmlspecialchars($jpath);
-        $lpath = "<code class=\"settings-jpath\">{$hjpath}</code>";
-        return "<a href=\"\" class=\"ui js-settings-jpath noul\">{$lpfx}{$lpath}</a>";
+        return "<a href=\"#path={$ujpath}\" class=\"noul\">{$lpfx}<code class=\"settings-jpath\">{$hjpath}</code></a>";
     }
 
     /** @param string $html
@@ -1728,18 +1732,17 @@ class SettingValues extends MessageSet {
      * @return string */
     function setting_group_link($html, $sg, $js = null) {
         $gj = $this->group_item($sg);
-        if ($gj) {
-            $page = $this->cs()->canonical_group($gj);
-            if ($page === $this->canonical_page && ($gj->hashid ?? false)) {
-                $url = "#" . $gj->hashid;
-            } else {
-                $url = $this->conf->hoturl("settings", ["group" => $page, "#" => $gj->hashid ?? null]);
-            }
-            return Ht::link($html, $url, $js);
-        } else {
+        if (!$gj) {
             error_log("missing setting_group information for $sg\n" . debug_string_backtrace());
             return $html;
         }
+        $page = $this->cs()->canonical_group($gj);
+        if ($page === $this->canonical_page && ($gj->hashid ?? false)) {
+            $url = "#" . $gj->hashid;
+        } else {
+            $url = $this->conf->hoturl("settings", ["group" => $page, "#" => $gj->hashid ?? null]);
+        }
+        return Ht::link($html, $url, $js);
     }
 
     /** @param string $type
@@ -1819,10 +1822,14 @@ class SettingValues extends MessageSet {
     }
 
     /** @param string|Si $name
-     * @param string $class
+     * @param array<string,mixed>|string $class
      * @param ?array<string,mixed> $js */
     function print_group_open($name, $class, $js = null) {
         $si = is_string($name) ? $this->si($name) : $name;
+        if ($js === null && is_array($class)) {
+            $js = $class;
+            $class = ($js["horizontal"] ?? false) ? "entryi" : "f-i";
+        }
         $xjs = ["class" => $class];
         if (!isset($js["no_control_class"])) {
             if (isset($js["feedback_items"])) {
@@ -2032,14 +2039,6 @@ class SettingValues extends MessageSet {
     /** @param ?array<string,mixed> $js
      * @return void */
     function print_group_close($js = []) {
-        $horizontal = !!($js["horizontal"] ?? false);
-        echo $horizontal ? "</div></div>\n" : "</div>\n";
-    }
-
-    /** @param ?array<string,mixed> $js
-     * @return void
-     * @deprecated */
-    function print_close_control_group($js = []) {
         $horizontal = !!($js["horizontal"] ?? false);
         echo $horizontal ? "</div></div>\n" : "</div>\n";
     }

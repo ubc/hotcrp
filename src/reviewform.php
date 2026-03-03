@@ -1,6 +1,6 @@
 <?php
 // reviewform.php -- HotCRP helper class for producing review forms and tables
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class ReviewForm {
     /** @var Conf
@@ -44,7 +44,6 @@ class ReviewForm {
         1 => "E", 2 => "P", 3 => "2", 4 => "1", 5 => "M"
     ];
 
-    static private $review_author_seen = null;
 
     /** @param null|array|object $rfj */
     function __construct(Conf $conf, $rfj) {
@@ -244,25 +243,6 @@ class ReviewForm {
     }
 
 
-    static function update_review_author_seen() {
-        while (self::$review_author_seen) {
-            $conf = self::$review_author_seen[0][0];
-            $qstager = Dbl::make_multi_qe_stager($conf->dblink);
-            $next = [];
-            foreach (self::$review_author_seen as $x) {
-                if ($x[0] === $conf) {
-                    array_shift($x);
-                    /** @phan-suppress-next-line PhanParamTooFewUnpack */
-                    $qstager(...$x);
-                } else {
-                    $next[] = $x;
-                }
-            }
-            $qstager(null);
-            self::$review_author_seen = $next;
-        }
-    }
-
     /** @param PaperInfo $prow
      * @param ?ReviewInfo $rrow
      * @param Contact $viewer
@@ -277,26 +257,12 @@ class ReviewForm {
             return;
         }
         // XXX combination of review tokens & authorship gets weird -- old comment
-        if (!$rrow->reviewAuthorSeen) {
-            $rrow->reviewAuthorSeen = Conf::$now;
-            if (!$no_update) {
-                self::add_review_author_seen_update($prow->conf, "update PaperReview set reviewAuthorSeen=? where paperId=? and reviewId=?", $rrow->reviewAuthorSeen, $rrow->paperId, $rrow->reviewId);
-            }
+        $rrow->reviewAuthorSeen = $rrow->reviewAuthorSeen ? : Conf::$now;
+        $rrow->rflags |= ReviewInfo::RF_AUSEEN;
+        if (!$no_update) {
+            $prow->conf->register_shutdown_function("ReviewAuthorSeenUpdate")
+                ->add(Conf::$now, $rrow->paperId, $rrow->reviewId);
         }
-        if (($rrow->rflags & ReviewInfo::RF_AUSEEN) === 0) {
-            $rrow->rflags |= ReviewInfo::RF_AUSEEN;
-            if (!$no_update) {
-                self::add_review_author_seen_update($prow->conf, "update PaperReview set rflags=rflags|? where paperId=? and reviewId=?", ReviewInfo::RF_AUSEEN, $rrow->paperId, $rrow->reviewId);
-            }
-        }
-    }
-
-    static private function add_review_author_seen_update(...$args) {
-        if (!self::$review_author_seen) {
-            register_shutdown_function("ReviewForm::update_review_author_seen");
-            self::$review_author_seen = [];
-        }
-        self::$review_author_seen[] = $args;
     }
 
 
@@ -439,7 +405,7 @@ Ready\n";
         $submitted = $rrow && $rrow->reviewStatus === ReviewInfo::RS_COMPLETED;
         $disabled = !$user->can_clickthrough("review", $prow);
         $my_review = !$rrow || $user->is_my_review($rrow);
-        $pc_deadline = $user->act_pc($prow) || $user->allow_administer($prow);
+        $pc_deadline = $user->act_pc($prow) || $user->allow_admin($prow);
         if (!$this->conf->time_review($rrow ? $rrow->reviewRound : null, $rrow ? $rrow->reviewType : $pc_deadline, true)) {
             $whyNot = new FailureReason($this->conf, ["deadline" => ($rrow && $rrow->reviewType < REVIEW_PC ? "extrev_hard" : "pcrev_hard"), "confirmOverride" => true]);
             $override_text = $whyNot->unparse_html();
@@ -473,7 +439,7 @@ Ready\n";
                         $text = "Approve/adopt review";
                     }
                 }
-                if ($user->allow_administer($prow)
+                if ($user->allow_admin($prow)
                     || $this->conf->ext_subreviews !== 3) {
                     $class .= " can-approve-submit";
                 }
@@ -492,7 +458,7 @@ Ready\n";
         }
         $buttons[] = Ht::submit("cancel", "Cancel");
 
-        if ($rrow && $user->allow_administer($prow)) {
+        if ($rrow && $user->allow_admin($prow)) {
             $buttons[] = "";
             if ($rrow->reviewStatus >= ReviewInfo::RS_APPROVED) {
                 $buttons[] = [Ht::submit("unsubmitreview", "Unsubmit review"), "(admin only)"];
@@ -509,7 +475,7 @@ Ready\n";
         self::check_review_author_seen($prow, $rrow, $viewer);
 
         $reviewOrdinal = $rrow->unparse_ordinal_id();
-        $forceShow = $viewer->is_admin_force() ? "&amp;forceShow=1" : "";
+        $forceShow = $viewer->is_override_conflict() ? "&amp;forceShow=1" : "";
         $reviewlink = "p={$prow->paperId}" . ($rrow->reviewId ? "&amp;r={$reviewOrdinal}" : "");
         $reviewPostLink = $this->conf->hoturl("=review", "{$reviewlink}&amp;m=re{$forceShow}");
         $reviewDownloadLink = $this->conf->hoturl("review", "{$reviewlink}&amp;m=re&amp;download=1{$forceShow}");
@@ -609,7 +575,7 @@ Ready\n";
 
         // review card
         echo '<div class="revcard-form">';
-        $allow_admin = $viewer->allow_administer($prow);
+        $allow_admin = $viewer->allow_admin($prow);
 
         // blind?
         if ($this->conf->review_blindness() === Conf::BLIND_OPTIONAL) {
@@ -669,7 +635,7 @@ Ready\n";
             . "</a></td>"
             . "<td class=\"pl_eventid pl_rowclick\">{$a} class=\"pnum\">#{$prow->paperId}</a></td>"
             . "<td class=\"pl_eventdesc pl_rowclick\"><small>{$a} class=\"ptitle\">"
-            . htmlspecialchars(UnicodeHelper::utf8_abbreviate($prow->title, 80))
+            . htmlspecialchars(UnicodeHelper::utf8_word_abbreviate($prow->title, 80))
             . "</a>";
         if ($rrow->reviewStatus >= ReviewInfo::RS_DRAFTED) {
             if ($viewer->can_view_review_time($prow, $rrow)) {
@@ -729,5 +695,44 @@ Ready\n";
             $updatef("update PaperReview set reviewViewScore=? where paperId?a and reviewId?a and reviewViewScore=?", $last_view_score, $pids, $rids, ReviewInfo::VIEWSCORE_RECOMPUTE);
         }
         $updatef(null);
+    }
+}
+
+class ReviewAuthorSeenUpdate {
+    /** @var Conf */
+    private $conf;
+    /** @var list<non-empty-list<int>> */
+    private $_up = [];
+
+    function __construct(Conf $conf) {
+        $this->conf = $conf;
+    }
+
+    /** @param int $now
+     * @param int $pid
+     * @param int $rid */
+    function add($now, $pid, $rid) {
+        for ($i = 0; $i !== count($this->_up); ++$i) {
+            if ($this->_up[$i][0] === $now)
+                break;
+        }
+        if ($i === count($this->_up)) {
+            $this->_up[] = [$now];
+        }
+        $this->_up[$i][] = $pid;
+        $this->_up[$i][] = $rid;
+    }
+
+    function __invoke() {
+        $qstager = Dbl::make_multi_qe_stager($this->conf->dblink);
+        foreach ($this->_up as $l) {
+            $x = [];
+            for ($i = 1; $i !== count($l); $i += 2) {
+                $x[] = "(paperId={$l[$i]} and reviewId={$l[$i+1]})";
+            }
+            $qstager("update PaperReview set reviewAuthorSeen=if(reviewAuthorSeen=0,?,reviewAuthorSeen), rflags=rflags|? where " . join(" or ", $x), $l[0], ReviewInfo::RF_AUSEEN);
+        }
+        $qstager(null);
+        $this->_up = [];
     }
 }

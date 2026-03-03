@@ -1,6 +1,6 @@
 <?php
 // formula.php -- HotCRP helper class for formula expressions
-// Copyright (c) 2009-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2009-2026 Eddie Kohler; see LICENSE.
 
 abstract class Fexpr implements JsonSerializable {
     /** @var string */
@@ -927,18 +927,16 @@ class Variance_Fexpr extends Aggregate_Fexpr {
             return "({$t}[2] ? {$t}[0] / {$t}[2] - ({$t}[1] * {$t}[1]) / ({$t}[2] * {$t}[2]) : null)";
         } else if ($this->op === "stddev") {
             return "({$t}[2] > 1 ? sqrt({$t}[0] / ({$t}[2] - 1) - ({$t}[1] * {$t}[1]) / ({$t}[2] * ({$t}[2] - 1))) : ({$t}[2] ? 0.0 : null))";
-        } else {
-            return "({$t}[2] ? sqrt({$t}[0] / {$t}[2] - ({$t}[1] * {$t}[1]) / ({$t}[2] * {$t}[2])) : null)";
         }
+        return "({$t}[2] ? sqrt({$t}[0] / {$t}[2] - ({$t}[1] * {$t}[1]) / ({$t}[2] * {$t}[2])) : null)";
     }
 }
 
 class Quantile_Fexpr extends Aggregate_Fexpr {
     /** @var int */
-    private $varg;
+    private $varg = 0;
     function __construct($fn, array $values, ?int $index_type) {
         parent::__construct($fn, $values, $index_type);
-        $this->varg = $fn === "median" ? 0 : 1;
     }
     static function make(FormulaCall $ff) {
         return $ff->check_nargs($ff->name === "median" ? 1 : 2)
@@ -993,9 +991,8 @@ class Extremum_Fexpr extends Aggregate_Fexpr {
     static function make(FormulaCall $ff) {
         if (count($ff->args) > 1 && !$ff->modifier) {
             return new LeastGreatest_Fexpr($ff);
-        } else {
-            return $ff->check_nargs(1) ? new Extremum_Fexpr($ff->name, $ff->args[0], $ff->index_type) : null;
         }
+        return $ff->check_nargs(1) ? new Extremum_Fexpr($ff->name, $ff->args[0], $ff->index_type) : null;
     }
     function typecheck(Formula $formula) {
         return $this->typecheck_arguments($formula, true)
@@ -1053,9 +1050,8 @@ class Sum_Fexpr extends Aggregate_Fexpr {
     function compile(FormulaCompiler $state) {
         if ($this->args[0]->nonnull_format()) {
             return $state->_compile_loop("null", "(~r~ !== null ? ~r~ + ~l~ : +~l~)", $this);
-        } else {
-            return $state->_compile_loop("null", "(~l~ !== null ? (~r~ !== null ? ~r~ + ~l~ : +~l~) : ~r~)", $this);
         }
+        return $state->_compile_loop("null", "(~l~ !== null ? (~r~ !== null ? ~r~ + ~l~ : +~l~) : ~r~)", $this);
     }
 }
 
@@ -1584,14 +1580,13 @@ class FormulaCompiler {
         $body = join($indent, array_merge($prefix, $this->lstmt));
         if ($isblock) {
             return "{{$indent}{$body}" . substr($indent, 0, -2) . "}";
-        } else {
-            return $body;
         }
+        return $body;
     }
 
     /** @param int $index_types
      * @return string */
-    function loop_variable($index_types) {
+    function index_range($index_types) {
         if ($index_types === Fexpr::IDX_PC_SET_PRIVATE_TAG) {
             return $this->_add_pc_set_private_tag();
         } else if (($index_types & Fexpr::IDX_REVIEW_MASK) === $index_types) {
@@ -1599,8 +1594,8 @@ class FormulaCompiler {
         } else if ($index_types === Fexpr::IDX_PC) {
             return $this->_add_pc();
         }
-        assert($index_types === 0 || $index_types === Fexpr::IDX_X);
-        return $this->define_gvar("trivial_loop", "[0]");
+        assert($index_types === 0 || $index_types === Fexpr::IDX_MY || $index_types === Fexpr::IDX_X);
+        return "[0]";
     }
 
     function _compile_loop($initial_value, $combiner, Aggregate_Fexpr $e) {
@@ -1658,14 +1653,13 @@ class FormulaCompiler {
         if ($this->term_compiler !== null) {
             $loop = "foreach (\$extractor_results as \$v{$p}) " . $this->_join_lstmt(true, $lprefix);
         } else {
-            $g = $this->loop_variable($this->index_type);
+            $g = $this->index_range($this->index_type);
             if (($this->index_type & Fexpr::IDX_REVIEW) !== 0) {
                 $loop = "foreach ({$g} as \$v{$p}) ";
             } else {
                 $loop = "foreach ({$g} as \$i{$p} => \$v{$p}) ";
             }
             $loop .= str_replace("~i~", "\$i{$p}", $this->_join_lstmt(true, $lprefix));
-            $loop = str_replace("({$g}[\$i{$p}] ?? null)", "\$v{$p}", $loop);
         }
         $loopstmt[] = $loop;
 
@@ -1705,8 +1699,6 @@ class Formula implements JsonSerializable {
     /** @var string
      * @readonly */
     public $expression;
-    /** @var bool */
-    private $_allow_indexed;
 
     /** @var Fexpr */
     private $_fexpr;
@@ -1728,6 +1720,8 @@ class Formula implements JsonSerializable {
     private $_f_sortable;
     /** @var ?callable(PaperInfo,?int,Contact,Formula):mixed */
     private $_f_json;
+    /** @var ?callable(PaperInfo,Contact,Formula):list */
+    private $_f_indexer;
     /** @var ?callable(PaperInfo,?int,Contact,Formula):mixed */
     private $_f_extractor;
     /** @var ?callable(list<mixed>):mixed */
@@ -1783,10 +1777,9 @@ class Formula implements JsonSerializable {
         $f->conf = $user->conf;
         $f->user = $user;
         $f->expression = $expr;
-        $f->_allow_indexed = ($flags & self::ALLOW_INDEXED) !== 0;
 
         $fp = new FormulaParser($f, $expr);
-        $f->_fexpr = $f->_adjust_fexpr($fp->parse());
+        $f->_fexpr = $f->_adjust_fexpr($fp->parse(), $flags);
         if (MessageSet::list_status($f->lerrors) >= MessageSet::ERROR) {
             $f->_fexpr->set_format_error();
         }
@@ -1806,7 +1799,8 @@ class Formula implements JsonSerializable {
 
     /* parsing */
 
-    private function _adjust_fexpr(Fexpr $fe) {
+    /** @param int $flags */
+    private function _adjust_fexpr(Fexpr $fe, $flags) {
         if ($fe->format() === Fexpr::FERROR) {
             if (empty($this->lerrors)) {
                 $this->fexpr_lerror($fe, "<0>Formula parse error");
@@ -1821,16 +1815,17 @@ class Formula implements JsonSerializable {
         }
         $state = new FormulaCompiler($this);
         $fe->compile($state);
-        if ($state->indexed && !$this->_allow_indexed) {
+        if ($state->indexed && ($flags & self::ALLOW_INDEXED) === 0) {
             if ($fe->matches_at_most_once()) {
                 $some_fe = new Some_Fexpr($fe, $fe->some_inferred_index());
                 $some_fe->apply_strspan($fe->pos1, $fe->pos2, null);
-                return $this->_adjust_fexpr($some_fe);
+                return $this->_adjust_fexpr($some_fe, $flags);
             }
             $this->fexpr_lerror($fe, "<0>Need an aggregate function like ‘sum’ or ‘max’");
             return $fe;
         }
         if ($state->indexed) {
+            $this->_indexed = true;
             $this->_index_type = $fe->inferred_index();
         } else if ($fe instanceof Aggregate_Fexpr) {
             $this->_index_type = $fe->index_type;
@@ -1936,7 +1931,7 @@ class Formula implements JsonSerializable {
         $t .= $state->statement_text();
         if ($expr !== null) {
             if ($sortable & 3) {
-                $t .= "\n  \$x = $expr;";
+                $t .= "\n  \$x = {$expr};";
             }
             if ($sortable & 1) {
                 $t .= "\n  \$x = is_bool(\$x) ? (int) \$x : \$x;";
@@ -1950,6 +1945,10 @@ class Formula implements JsonSerializable {
         return $t;
     }
 
+    static private function protect_string($s) {
+        return str_replace("?>", "? >", simplify_whitespace($s));
+    }
+
     /** @param int $sortable
      * @return callable(PaperInfo,?int,Contact):mixed */
     private function _compile_function($sortable) {
@@ -1960,10 +1959,14 @@ class Formula implements JsonSerializable {
         } else {
             $body = "return null;\n";
         }
-        $function = "function (\$prow, \$rrow_cid, \$user, \$formula) {\n"
-            . "  // " . simplify_whitespace($this->expression)
-            . "\n  {$body}}";
-        self::DEBUG && self::debug_report($function);
+        $function = "function (\$prow, \$rrow_cid, \$user, \$formula) {\n  ";
+        if (self::DEBUG) {
+            $function .= "// " . self::protect_string($this->expression) . "\n  ";
+        }
+        $function .= $body . "}";
+        if (self::DEBUG) {
+            self::debug_report($function);
+        }
         return eval("return {$function};");
     }
 
@@ -2022,15 +2025,17 @@ class Formula implements JsonSerializable {
         return $rit;
     }
 
-    static function compile_indexes_function(Contact $user, $index_types) {
+    /** @param ?int $index_types
+     * @return $this */
+    function prepare_indexer($index_types = null) {
+        $index_types = $index_types ?? $this->index_type();
         if ($index_types === 0) {
-            return null;
+            $this->_f_indexer = function () { return [null]; };
+            return $this;
         }
-        $formula = Formula::make($user, "0");
-        $state = new FormulaCompiler($formula);
-        $g = $state->loop_variable($index_types);
-        $body = "assert(\$user->contactXid === {$user->contactXid});\n  "
-            . join("\n  ", $state->gstmt) . "\n";
+        $state = new FormulaCompiler($this);
+        $g = $state->index_range($index_types);
+        $body = join("\n  ", $state->gstmt) . "\n";
         if (($index_types & Fexpr::IDX_REVIEW) !== 0) {
             $check = "";
             if ($index_types === Fexpr::IDX_CREVIEW) {
@@ -2045,9 +2050,22 @@ class Formula implements JsonSerializable {
         } else {
             $body .= "  return array_keys({$g});\n";
         }
-        $function = "function (\$prow, \$user) {\n  {$body}}";
-        self::DEBUG && self::debug_report($function);
-        return eval("return {$function};");
+        $function = "function (\$prow, \$user, \$formula) {\n  ";
+        if (self::DEBUG) {
+            $function .= "// index types " . dechex($index_types) . "\n  ";
+        }
+        $function .= $body . "}";
+        if (self::DEBUG) {
+            self::debug_report($function);
+        }
+        $this->_f_indexer = eval("return {$function};");
+        return $this;
+    }
+
+    /** @param PaperInfo $prow
+     * @return mixed */
+    function eval_indexer($prow) {
+        return call_user_func($this->_f_indexer, $prow, $this->user, $this);
     }
 
     /** @return bool */
@@ -2065,15 +2083,18 @@ class Formula implements JsonSerializable {
             $this->_supports_combiner = false;
             return false;
         }
-        $expr_str = simplify_whitespace($this->expression);
-        $extractor_str = "function (\$prow, \$rrow_cid, \$user, \$formula) {\n"
-            . "  // extractor {$expr_str}\n  "
-            . self::compile_body($this->user, $state->term_compiler, "[" . join(",", $state->term_compiler->term_list) . "]", 0)
+        $extractor_str = "function (\$prow, \$rrow_cid, \$user, \$formula) {\n  ";
+        if (self::DEBUG) {
+            $extractor_str .= "// extractor " . self::protect_string($this->expression) . "\n  ";
+        }
+        $extractor_str .= self::compile_body($this->user, $state->term_compiler, "[" . join(",", $state->term_compiler->term_list) . "]", 0)
             . "}";
         $this->_f_extractor = eval("return {$extractor_str};\n");
-        $combiner_str = "function (\$extractor_results) {\n"
-            . "  // combiner {$expr_str}\n  "
-            . self::compile_body(null, $state, $fexpr, 0)
+        $combiner_str = "function (\$extractor_results) {\n  ";
+        if (self::DEBUG) {
+            $combiner_str .= "// combiner " . self::protect_string($this->expression) . "\n  ";
+        }
+        $combiner_str .= self::compile_body(null, $state, $fexpr, 0)
             . "}";
         $this->_f_combiner = eval("return {$combiner_str};\n");
         $this->_supports_combiner = true;
@@ -2110,8 +2131,8 @@ class Formula implements JsonSerializable {
             $state = new FormulaCompiler($this);
             $state->queryOptions =& $queryOptions;
             $this->_fexpr->compile($state);
-            if ($this->_indexed) {
-                $state->loop_variable($this->_index_type);
+            if ($this->_index_type > 0) {
+                $state->index_range($this->_index_type);
             }
         }
     }

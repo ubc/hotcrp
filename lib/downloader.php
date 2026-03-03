@@ -1,15 +1,19 @@
 <?php
 // downloader.php -- download helper class
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Downloader {
-    /** @var ?string */
+    /** @var ?string
+     * @readonly */
     public $etag;
-    /** @var ?int */
+    /** @var ?int
+     * @readonly */
     public $last_modified;
-    /** @var ?int */
+    /** @var ?int
+     * @readonly */
     public $content_length;
-    /** @var ?string */
+    /** @var ?string
+     * @readonly */
     public $mimetype;
 
     /** @var ?string */
@@ -34,9 +38,13 @@ class Downloader {
     public $cacheable = false;
     /** @var bool */
     public $no_accel = false;
+    /** @var ?int */
+    public $timestamp;
     /** @var ?Contact */
     public $log_user;
 
+    /** @var ?Conf */
+    private $conf;
     /** @var ?string */
     private $_content;
     /** @var ?string */
@@ -47,11 +55,22 @@ class Downloader {
     private $_content_function;
     /** @var ?string */
     private $_filename;
-    /** @var list<string> */
-    private $_headers = [];
+    /** @var ?string */
+    private $_boundary;
+    /** @var ?int */
+    private $_response_code;
+    /** @var HeaderSet */
+    private $_headers;
+
+    function __construct(?Conf $conf = null) {
+        $this->conf = $conf;
+        $this->_headers = new HeaderSet;
+    }
 
     /** @return $this */
     function parse_qreq(Qrequest $qreq) {
+        $this->conf = $qreq->conf();
+
         $this->if_match = $qreq->header("If-Match");
         if ($this->if_match === null
             && ($s = $qreq->header("If-Unmodified-Since"))) {
@@ -65,18 +84,21 @@ class Downloader {
         }
 
         $method = $qreq->method();
-        if ($method !== "GET") {
-            if ($method === "HEAD") {
-                $this->head = true;
-            }
-            return $this;
+        $this->head = $method === "HEAD";
+        if ($method === "GET") {
+            $this->if_range = $qreq->header("If-Range");
+            $this->_parse_range($qreq->header("Range"));
         }
 
-        $this->if_range = $qreq->header("If-Range");
-        $range = $qreq->header("Range");
+        return $this;
+    }
+
+    /** @param ?string $range */
+    private function _parse_range($range) {
         if ($range === null
             || !preg_match('/\Abytes\s*=\s*(?:(?:\d+-\d+|-\d+|\d+-)\s*,?\s*)+\z/', $range)) {
-            return $this;
+            $this->range = null;
+            return;
         }
         $this->range = [];
         $lastr = null;
@@ -100,10 +122,9 @@ class Downloader {
                 }
             } else {
                 $this->range = null;
-                break;
+                return;
             }
         }
-        return $this;
     }
 
     /** @return bool */
@@ -115,7 +136,8 @@ class Downloader {
     }
 
     /** @param string $mimetype
-     * @return $this */
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
     function set_mimetype($mimetype) {
         $this->mimetype = $mimetype;
         return $this;
@@ -136,14 +158,16 @@ class Downloader {
     }
 
     /** @param int $content_length
-     * @return $this */
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
     function set_content_length($content_length) {
         $this->content_length = $content_length;
         return $this;
     }
 
     /** @param string $content
-     * @return $this */
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
     function set_content($content) {
         assert(!$this->has_content());
         $this->_content = $content;
@@ -152,7 +176,8 @@ class Downloader {
     }
 
     /** @param string $content_file
-     * @return $this */
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
     function set_content_file($content_file) {
         assert(!$this->has_content());
         $this->_content_file = $content_file;
@@ -184,14 +209,16 @@ class Downloader {
     }
 
     /** @param ?string $etag
-     * @return $this */
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
     function set_etag($etag) {
         $this->etag = $etag;
         return $this;
     }
 
     /** @param ?int $last_modified
-     * @return $this */
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
     function set_last_modified($last_modified) {
         $this->last_modified = $last_modified;
         return $this;
@@ -204,30 +231,11 @@ class Downloader {
         return $this;
     }
 
-    /** @param string $h */
-    private function _remove_matching_headers($h) {
-        $n = strpos($h, ":") ? : strlen($h) - 1;
-        $delta = 0;
-        foreach ($this->_headers as $i => &$s) {
-            if (substr_compare($s, $h, 0, $n + 1, true) === 0) {
-                ++$delta;
-            } else if ($delta > 0) {
-                $this->_headers[$i - $delta] = $s;
-            }
-        }
-        if ($delta > 0) {
-            array_splice($this->_headers, count($this->_headers) - $delta);
-        }
-    }
-
     /** @param string $header
      * @param bool $replace
      * @return $this */
-    function header($header, $replace = true) {
-        if ($replace) {
-            $this->_remove_matching_headers($header);
-        }
-        $this->_headers[] = $header;
+    function set_header($header, $replace = true) {
+        $this->_headers->set($header, $replace);
         return $this;
     }
 
@@ -329,170 +337,22 @@ class Downloader {
                 $rs[] = [$r0, $r1];
             }
         }
-        $this->range = $rs;
-        return !empty($this->range);
+        if (empty($rs)) {
+            return false;
+        }
+        $this->range = $rs === [[0, $filesize]] ? null : $rs;
+        return true;
     }
 
-    static private function emit_header($h) {
-        header($h);
-    }
-
-    private function emit_main_headers() {
-        if ($this->etag !== null) {
-            self::emit_header("ETag: {$this->etag}");
+    /** @param Downloader $dl
+     * @return ?string */
+    static function content_security_policy_for($dl) {
+        if ($dl->mimetype === "image/svg+xml"
+            || $dl->mimetype === "text/html"
+            || $dl->mimetype === "application/xhtml+xml") {
+            return "default-src 'none'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://*.typekit.net; img-src 'self' data: https://*.typekit.net; font-src data: https://fonts.gstatic.com https://*.typekit.net; sandbox";
         }
-        if ($this->last_modified !== null) {
-            self::emit_header("Last-Modified: " . Navigation::http_date($this->last_modified));
-        }
-        if ($this->_filename !== null) {
-            $attachment = $this->attachment ?? !Mimetype::disposition_inline($this->mimetype);
-            self::emit_header("Content-Disposition: " . ($attachment ? "attachment" : "inline") . "; filename=" . mime_quote_string($this->_filename));
-        }
-        if ($this->cacheable) {
-            self::emit_cacheable_headers();
-        }
-        foreach ($this->_headers as $h) {
-            self::emit_header($h);
-        }
-    }
-
-    static private function emit_cacheable_headers() {
-        self::emit_header("Cache-Control: max-age=315576000, private");
-        self::emit_header("Expires: " . Navigation::http_date(Conf::$now + 315576000));
-    }
-
-    /** @return int */
-    function execute_conditions() {
-        if ($this->if_match !== null
-            && $this->etag !== null
-            && !$this->any_etag_match($this->if_match, true)) {
-            $status = 412;
-        } else if ($this->if_none_match !== null
-                   && $this->etag !== null
-                   && $this->any_etag_match($this->if_none_match, false)) {
-            $status = 304;
-        } else if ($this->if_match === null
-                   && $this->if_unmodified_since !== null
-                   && $this->last_modified !== null
-                   && $this->last_modified > $this->if_unmodified_since) {
-            $status = 412;
-        } else if ($this->if_none_match === null
-                   && $this->if_modified_since !== null
-                   && $this->last_modified !== null
-                   && $this->last_modified <= $this->if_modified_since) {
-            $status = 304;
-        } else if (!$this->check_ranges()) {
-            $status = 416;
-        } else {
-            return 200;
-        }
-        http_response_code($status);
-        if ($status !== 412 && $this->etag !== null) {
-            self::emit_header("ETag: {$this->etag}");
-        }
-        if ($status !== 412 && $this->cacheable) {
-            self::emit_cacheable_headers();
-        }
-        if ($status === 416) {
-            self::emit_header("Content-Range: bytes */{$this->content_length}");
-        }
-        return $status;
-    }
-
-    /** @return Generator<array{int,int}> */
-    private function run_output_ranges() {
-        assert($this->content_length !== null && $this->mimetype !== null);
-        $range = $this->range;
-        $rangeheader = [];
-        $clen = $this->content_length;
-        if ($this->head) {
-            self::emit_header("HTTP/1.1 204 No Content");
-            self::emit_header("Content-Type: {$this->mimetype}");
-            self::emit_header("Content-Length: {$clen}");
-            self::emit_header("Accept-Ranges: bytes");
-            $this->emit_main_headers();
-            return;
-        }
-
-        if (!isset($range)) {
-            $outsize = $clen;
-            self::emit_header("Content-Type: {$this->mimetype}");
-            self::emit_header("Accept-Ranges: bytes");
-        } else if (count($range) === 1) {
-            $outsize = $range[0][1] - $range[0][0];
-            self::emit_header("HTTP/1.1 206 Partial Content");
-            self::emit_header("Content-Type: {$this->mimetype}");
-            self::emit_header("Content-Range: bytes {$range[0][0]}-" . ($range[0][1] - 1) . "/{$clen}");
-        } else {
-            $boundary = "HotCRP-" . base64_encode(random_bytes(18));
-            $outsize = 0;
-            foreach ($range as $r) {
-                $rangeheader[] = "--{$boundary}\r\nContent-Type: {$this->mimetype}\r\nContent-Range: bytes {$r[0]}-" . ($r[1] - 1) . "/{$clen}\r\n\r\n";
-                $outsize += $r[1] - $r[0];
-            }
-            $rangeheader[] = "--{$boundary}--\r\n";
-            self::emit_header("HTTP/1.1 206 Partial Content");
-            self::emit_header("Content-Type: multipart/byteranges; boundary={$boundary}");
-            $outsize += strlen(join("", $rangeheader));
-        }
-        if (!self::skip_content_length_header()) {
-            self::emit_header("Content-Length: {$outsize}");
-        }
-        if ($outsize > 2000000) {
-            self::emit_header("X-Accel-Buffering: no");
-        }
-        $this->emit_main_headers();
-        flush();
-        while (@ob_end_flush()) {
-            // do nothing
-        }
-        if (!isset($range)) {
-            yield [0, $clen];
-        } else if (count($range) === 1) {
-            yield [$range[0][0], $range[0][1]];
-        } else {
-            for ($i = 0; $i !== count($range); ++$i) {
-                echo $rangeheader[$i];
-                yield [$range[$i][0], $range[$i][1]];
-            }
-            echo $rangeheader[count($range)];
-        }
-    }
-
-    /** @return int */
-    function emit() {
-        $status = $this->execute_conditions();
-        if ($status !== 200) {
-            return $status;
-        }
-        // if docstoreAccelRedirect, output X-Accel-Redirect header
-        // XXX Chromium issue 961617: beware of X-Accel-Redirect if you are
-        // using SameSite cookies!
-        if ($this->_content_file !== null
-            && !$this->no_accel
-            && !$this->head
-            && ($dar = Conf::$main->opt("docstoreAccelRedirect"))) {
-            $this->_try_content_redirect($dar);
-        }
-        // check for X-Accel-Redirect
-        if ($this->_content_redirect !== null) {
-            self::emit_header("Content-Type: {$this->mimetype}");
-            $this->emit_main_headers();
-            self::emit_header("X-Accel-Redirect: {$this->_content_redirect}");
-            return 200;
-        }
-        // write length header, flush output buffers
-        $out = fopen("php://output", "wb");
-        foreach ($this->run_output_ranges() as $r) {
-            if ($this->_content_function !== null) {
-                call_user_func($this->_content_function, $out, $r[0], $r[1]);
-            } else if ($this->_content_file !== null) {
-                self::readfile_subrange($out, $r[0], $r[1], 0, $this->_content_file, $this->content_length);
-            } else {
-                self::print_subrange($out, $r[0], $r[1], 0, $this->_content);
-            }
-        }
-        return 200;
+        return null;
     }
 
     /** @param string|list<string> $dars */
@@ -515,6 +375,201 @@ class Downloader {
                 return;
             }
         }
+    }
+
+    /** @return int */
+    function response_code() {
+        if ($this->_response_code !== null) {
+            return $this->_response_code;
+        }
+        if ($this->if_match !== null
+            && $this->etag !== null
+            && !$this->any_etag_match($this->if_match, true)) {
+            $this->_response_code = 412; // Precondition Failed
+        } else if ($this->if_none_match !== null
+                   && $this->etag !== null
+                   && $this->any_etag_match($this->if_none_match, false)) {
+            $this->_response_code = 304; // Not Modified
+        } else if ($this->if_match === null
+                   && $this->if_unmodified_since !== null
+                   && $this->last_modified !== null
+                   && $this->last_modified > $this->if_unmodified_since) {
+            $this->_response_code = 412; // Precondition Failed
+        } else if ($this->if_none_match === null
+                   && $this->if_modified_since !== null
+                   && $this->last_modified !== null
+                   && $this->last_modified <= $this->if_modified_since) {
+            $this->_response_code = 304; // Not Modified
+        } else if (!$this->check_ranges()) {
+            $this->_response_code = 416; // Range Not Satisfiable
+        } else {
+            // check docstoreAccelRedirect
+            // XXX Chromium issue 961617: beware of X-Accel-Redirect if you are
+            // using SameSite cookies!
+            if ($this->_content_file !== null
+                && !$this->no_accel
+                && !$this->head
+                && ($dar = Conf::$main->opt("docstoreAccelRedirect"))) {
+                $this->_try_content_redirect($dar);
+            }
+            if ($this->range !== null
+                && $this->_content_redirect === null) {
+                $this->_response_code = 206; // Partial Content
+            } else {
+                $this->_response_code = 200; // OK
+            }
+        }
+        return $this->_response_code;
+    }
+
+    /** @param ?int $index
+     * @param ?array{int,int} $range
+     * @return string */
+    private function _range_separator($index, $range) {
+        assert($this->_boundary !== null);
+        $pfx = $index === 0 ? "" : "\r\n";
+        if ($range === null) {
+            return "{$pfx}--{$this->_boundary}--\r\n";
+        }
+        $rb = $range[1] - 1;
+        return "{$pfx}--{$this->_boundary}\r\nContent-Type: {$this->mimetype}\r\nContent-Range: bytes {$range[0]}-{$rb}/{$this->content_length}\r\n\r\n";
+    }
+
+    /** @return Generator<string> */
+    function headers() {
+        $rc = $this->response_code();
+        if ($this->etag !== null) {
+            yield "ETag" => $this->etag;
+        }
+        if ($this->last_modified !== null) {
+            yield "Last-Modified" => Navigation::http_date($this->last_modified);
+        }
+        if ($this->cacheable) {
+            $this->timestamp = $this->timestamp ?? Conf::$now;
+            yield "Cache-Control" => "max-age=315576000, private";
+            yield "Expires" => Navigation::http_date($this->timestamp + 315576000);
+        }
+        if ($rc === 416) {
+            assert($this->content_length !== null);
+            yield "Content-Range" => "bytes */{$this->content_length}";
+        }
+        if ($rc >= 300) {
+            return;
+        }
+        assert($rc === 200 || $rc === 206);
+        assert($this->content_length !== null && $this->mimetype !== null);
+        if ($rc === 200) {
+            yield "Content-Type" => $this->mimetype;
+            if ($this->_content_redirect === null) {
+                yield "Accept-Ranges" => "bytes";
+            }
+        } else if (count($this->range) === 1) {
+            $ra = $this->range[0][0];
+            $rb = $this->range[0][1] - 1;
+            yield "Content-Type" => $this->mimetype;
+            yield "Content-Range" => "bytes {$ra}-{$rb}/{$this->content_length}";
+        } else {
+            $this->_boundary = $this->_boundary ?? "hcmpb-" . base64_encode(random_bytes(32));
+            yield "Content-Type" => "multipart/byteranges; boundary={$this->_boundary}";
+        }
+        if ($this->_filename !== null
+            && !$this->_headers->has("Content-Disposition")) {
+            $this->attachment = $this->attachment ?? !Mimetype::disposition_inline($this->mimetype);
+            $a = $this->attachment ? "attachment" : "inline";
+            yield "Content-Disposition" => "{$a}; filename=" . mime_quote_string($this->_filename);
+        }
+        if (!$this->_headers->has("Content-Security-Policy")
+            && ($conf = $this->conf ?? Conf::$main)
+            && ($cspf = $conf->opt("downloadContentSecurityPolicyFunction")) !== false) {
+            $cspf = $cspf ?? "Downloader::content_security_policy_for";
+            if (($csph = call_user_func($cspf, $this))) {
+                yield "Content-Security-Policy" => $csph;
+            }
+        }
+        if ($this->_content_redirect !== null
+            || (!$this->head && self::skip_content_length_header())) {
+            $bs = null;
+        } else if ($this->range === null) {
+            $bs = $this->content_length;
+        } else if (count($this->range) === 1) {
+            $bs = $this->range[0][1] - $this->range[0][0];
+        } else {
+            $bs = 0;
+            foreach ($this->range as $i => $r) {
+                $bs += $r[1] - $r[0] + strlen($this->_range_separator($i, $r));
+            }
+            $bs += strlen($this->_range_separator(count($this->range), null));
+        }
+        if ($bs !== null) {
+            yield "Content-Length" => "{$bs}"; // require string
+        }
+        if ($bs !== null && $bs > 2000000) {
+            yield "X-Accel-Buffering" => "no";
+        }
+        yield from $this->_headers->by_name();
+        if ($this->_content_redirect !== null) {
+            yield "X-Accel-Redirect" => $this->_content_redirect;
+        }
+    }
+
+    /** @param string $name
+     * @return ?string */
+    function header($name) {
+        foreach ($this->headers() as $n => $v) {
+            if (strcasecmp($name, $n) === 0)
+                return $v;
+        }
+        return null;
+    }
+
+    /** @param ?resource $outf
+     * @return Generator<array{int,int}> */
+    function output_ranges($outf = null) {
+        if ($this->range === null) {
+            yield [0, $this->content_length];
+        } else if (count($this->range) === 1) {
+            yield $this->range[0];
+        } else {
+            foreach ($this->range as $i => $r) {
+                if ($outf) {
+                    fwrite($outf, $this->_range_separator($i, $r));
+                }
+                yield $r;
+            }
+            if ($outf) {
+                fwrite($outf, $this->_range_separator(count($this->range), null));
+            }
+        }
+    }
+
+    /** @return int */
+    function emit() {
+        http_response_code($this->response_code());
+        // we never want the default CSP for a download
+        header_remove("Content-Security-Policy");
+        foreach ($this->headers() as $k => $v) {
+            header($k === "" ? $v : "{$k}: {$v}");
+        }
+        if ($this->_response_code >= 300
+            || $this->_content_redirect !== null
+            || $this->head) {
+            return $this->_response_code;
+        }
+        flush();
+        while (@ob_end_flush()) {
+            // do nothing
+        }
+        $out = fopen("php://output", "wb");
+        foreach ($this->output_ranges($out) as $r) {
+            if ($this->_content_function !== null) {
+                call_user_func($this->_content_function, $out, $r[0], $r[1]);
+            } else if ($this->_content_file !== null) {
+                self::readfile_subrange($out, $r[0], $r[1], 0, $this->_content_file, $this->content_length);
+            } else {
+                self::print_subrange($out, $r[0], $r[1], 0, $this->_content);
+            }
+        }
+        return $this->_response_code;
     }
 
 
