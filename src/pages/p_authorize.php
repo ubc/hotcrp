@@ -3,8 +3,8 @@
 // Copyright (c) 2022-2026 Eddie Kohler; see LICENSE.
 
 namespace HotCRP;
-use Conf, ComponentSet, Contact, Ht, JsonResult, Qrequest, Redirection, PageCompletion;
-use TokenInfo, TokenScope, Signin_Page, Authorization_Token, XtParams;
+use Conf, Contact, Navigation, Ht, JsonResult, Qrequest, Redirection, PageCompletion;
+use TokenInfo, TokenScope, Signin_Page, Authorization_Token, ComponentSet, XtParams;
 use MessageItem, FmtArg;
 
 class OAuthClient {
@@ -271,7 +271,7 @@ class Authorize_Page {
 
     private function signin_url() {
         $nav = $this->qreq->navigation();
-        return $this->conf->hoturl("signin", ["redirect" => "authorize{$nav->php_suffix}?code=" . urlencode($this->token->salt)]);
+        return $this->conf->hoturl_raw("signin", ["redirect" => "authorize{$nav->php_suffix}?code=" . urlencode($this->token->salt)]);
     }
 
     function print_form() {
@@ -298,7 +298,7 @@ class Authorize_Page {
         echo '<h1 id="h-title">Sign in</h1>';
         $clt = $this->client->title_html();
         if ($this->client->client_uri) {
-            $clt = Ht::link($clt, htmlspecialchars($this->client->client_uri));
+            $clt = Ht::link($clt, $this->client->client_uri);
         }
         echo '<div class="mb-4">to continue to ', $clt, '</div>';
         $this->conf->report_saved_messages();
@@ -365,7 +365,7 @@ class Authorize_Page {
                 MessageItem::error("<0>User {} cannot authorize access by {}", new FmtArg(0, $this->viewer->email, 0), new FmtArg(1, $this->client->title_text(), 0)),
                 MessageItem::inform("<0>This site limits which users can authenticate with {}. You may need to use another account.", new FmtArg(0, $this->client->title_text(), 0))
             );
-            http_response_code(401);
+            Navigation::http_response_code(401);
             $this->print_form();
             throw new PageCompletion;
         }
@@ -411,13 +411,13 @@ class Authorize_Page {
     /** @param string $m
      * @return never */
     private function print_error_exit($m) {
-        if (http_response_code() === 200) {
-            http_response_code(400);
+        if (Navigation::http_response_code() === 200) {
+            Navigation::http_response_code(400);
         }
         $this->qreq->print_header("Sign in", "authorize", ["action_bar" => "", "hide_header" => true, "body_class" => "body-error"]);
         $this->conf->error_msg($m);
         $this->qreq->print_footer();
-        exit(0);
+        Navigation::complete();
     }
 
     /** @param string $uri
@@ -450,7 +450,7 @@ class Authorize_Page {
         }
         $this->client = $this->find_client($this->qreq->client_id);
         if (!$this->client) {
-            http_response_code(404);
+            Navigation::http_response_code(404);
             $this->print_error_exit("<0>Authorization client not found");
         }
 
@@ -546,7 +546,7 @@ class Authorize_Page {
             return $this->oauthtoken_error("unsupported_grant_type");
         }
         if ($jr && $jr->status < 400) {
-            header("Cache-Control: no-store");
+            Navigation::header("Cache-Control: no-store");
         }
         return $jr ?? $this->oauthtoken_error("invalid_grant");
     }
@@ -829,7 +829,7 @@ class Authorize_Page {
         }
         $ctok->set_token_pattern($ctok->is_cdb ? "hcTk_[20]" : "hctk_[20]")
             ->insert();
-        header("Cache-Control: no-store");
+        Navigation::header("Cache-Control: no-store");
         return JsonResult::make_minimal(201, [
             "client_id" => $ctok->salt,
             "client_secret" => $csecret,

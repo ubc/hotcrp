@@ -39,7 +39,7 @@ class Deadlines_Page {
         $qreq->print_header("Deadlines", "deadlines");
 
         if ($this->user->privChair) {
-            echo "<p>As PC chair, you can <a href=\"", $this->conf->hoturl("settings"), "\">change the deadlines</a>.</p>\n";
+            echo "<p>As PC chair, you can ", $this->conf->hotlink("change the deadlines", "settings"), ".</p>\n";
         }
 
         // If you change these, also change Contact::has_reportable_deadline().
@@ -61,7 +61,7 @@ class Deadlines_Page {
                            "<5>{sclass} {submissions} must be completed by this deadline to be reviewed.", $srarg);
             }
             if ($sr->resubmit > 0 && $sr->resubmit > $sr->submit) {
-                $this->dl1($sr->submit, "<5>{sclass} resubmission deadline",
+                $this->dl1($sr->resubmit, "<5>{sclass} resubmission deadline",
                            "<5>Completed {sclass} {submissions} may be updated until this deadline.", $srarg);
             }
         }

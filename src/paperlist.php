@@ -178,12 +178,11 @@ class PaperListReviewAnalysis {
      * @return string */
     function wrap_link($html, $klass = null) {
         if ($this->rrow->reviewStatus >= ReviewInfo::RS_COMPLETED) {
-            $href = $this->prow->hoturl(["#" => "r" . $this->rrow->unparse_ordinal_id()]);
+            $href = $this->prow->hoturl(["#" => "r" . $this->rrow->unparse_ordinal_id()], Conf::HOTURL_RAW);
         } else {
-            $href = $this->prow->reviewurl(["r" => $this->rrow->unparse_ordinal_id()]);
+            $href = $this->prow->reviewurl(["r" => $this->rrow->unparse_ordinal_id()], Conf::HOTURL_RAW);
         }
-        $k = $klass ? " class=\"{$klass}\"" : "";
-        return "<a{$k} href=\"{$href}\">{$html}</a>";
+        return Ht::link($html, $href, $klass ? ["class" => $klass] : []);
     }
 }
 
@@ -311,7 +310,7 @@ final class PaperList extends MessageSet {
     public $qopts; // set by PaperColumn::prepare
     /** @var int
      * @readonly */
-    public $render_context;
+    public $render_context = FieldRender::CFLIST;
     /** @var bool
      * @readonly */
     public $long_mode;
@@ -1107,7 +1106,8 @@ final class PaperList extends MessageSet {
         $aidx = $pidx = 0;
         $plist = $this->_rowset->as_list();
         $alist = $dt->order_anno_list();
-        $ptagval = $pidx !== count($plist) ? $plist[$pidx]->tag_value($etag) : null;
+        $overrides = $this->user->add_overrides($this->_view_force);
+        $ptagval = $pidx !== count($plist) ? $plist[$pidx]->viewable_tag_value($etag, $this->user) : null;
         while ($aidx !== count($alist) || $pidx !== count($plist)) {
             if ($aidx !== count($alist)
                 && $alist[$aidx]->tagIndex <= ($ptagval ?? TAG_INDEXBOUND)) {
@@ -1120,9 +1120,10 @@ final class PaperList extends MessageSet {
             } else {
                 $this->_then_map[$plist[$pidx]->paperId] = count($groups) - 1;
                 ++$pidx;
-                $ptagval = $pidx !== count($plist) ? $plist[$pidx]->tag_value($etag) : null;
+                $ptagval = $pidx !== count($plist) ? $plist[$pidx]->viewable_tag_value($etag, $this->user) : null;
             }
         }
+        $this->user->set_overrides($overrides);
         return $groups;
     }
 
@@ -1480,18 +1481,19 @@ final class PaperList extends MessageSet {
     }
 
 
-    /** @return string */
-    function _paperLink(PaperInfo $row) {
+    /** @param string $html
+     * @return string */
+    function hotlink_to($html, PaperInfo $row, $js = []) {
         $pt = $this->_view_linkto ?? "paper";
-        $pm = "";
+        $pm = ["p" => $row->paperId];
         if ($pt === "finishreview") {
             $ci = $row->contact_info($this->user);
             $pt = $ci->review_status <= PaperContactInfo::CIRS_UNSUBMITTED ? "review" : "paper";
         } else if ($pt === "paperedit") {
             $pt = "paper";
-            $pm = "&amp;m=edit";
+            $pm["m"] = "edit";
         }
-        return $row->conf->hoturl($pt, "p=" . $row->paperId . $pm);
+        return $row->conf->hotlink($html, $pt, $pm, $js);
     }
 
     // content downloaders
@@ -2098,7 +2100,7 @@ final class PaperList extends MessageSet {
         $footsel_ncol = $this->_view_facets ? 0 : 1;
         return self::render_footer_row($footsel_ncol, $ncol - $footsel_ncol,
             "<b>Select papers</b> (or <a class=\"ui js-select-all\" href=\""
-            . ($selfhref ? $this->conf->selfurl($this->qreq, ["selectall" => 1, "#" => "plact"]) : "")
+            . ($selfhref ? Ht::escape_attr($this->conf->selfurl($this->qreq, ["selectall" => 1, "#" => "plact"])) : "")
             . '">select all ' . $this->count . "</a>), then&nbsp;",
             $plfts);
     }
@@ -2265,6 +2267,7 @@ final class PaperList extends MessageSet {
             && ($da = $this->_drag_action())) {
             $this->table_attr["class"][] = "pltable-draggable";
             $this->table_attr["data-drag-action"] = $da;
+            $this->need_render = true;
         }
         if ($this->_sort_etag) {
             $this->table_attr["data-drag-order"] = "tagval:{$this->_sort_etag}";
@@ -2273,7 +2276,7 @@ final class PaperList extends MessageSet {
         // collect row data
         $body = [];
         $grouppos = empty($this->_groups) ? -1 : 0;
-        $need_render = false;
+        $render_stashed = false;
         foreach ($rows as $row) {
             $this->_row_setup($row);
             if ($grouppos >= 0) {
@@ -2284,9 +2287,9 @@ final class PaperList extends MessageSet {
                 continue;
             }
             $body[] = $rowhtml;
-            if ($this->need_render && !$need_render) {
+            if ($this->need_render && !$render_stashed) {
                 $this->_stash_render();
-                $need_render = true;
+                $render_stashed = true;
             }
             if ($this->need_render && $this->count % 16 === 15) {
                 $body[count($body) - 1] .= "  " . Ht::script('hotcrp.render_list()') . "\n";
@@ -2338,7 +2341,7 @@ final class PaperList extends MessageSet {
                 if ($rstate->titlecol > 0) {
                     $t .= "<td class=\"plh\" colspan=\"{$rstate->titlecol}\"></td>";
                 }
-                $t .= "<td class=\"plh\" colspan=\"" . ($rstate->ncol - max($rstate->titlecol, 0)) . "\"><a class=\"ui js-annotate-order\" data-anno-tag=\"{$this->_sort_etag}\" href=\"\">Annotate order</a></td></tr>\n";
+                $t .= "<td class=\"plh\" colspan=\"" . ($rstate->ncol - max($rstate->titlecol, 0)) . "\"><button type=\"button\" class=\"ui js-annotate-order link\" data-anno-tag=\"{$this->_sort_etag}\">Annotate order</button></td></tr>\n";
                 Icons::stash_defs("trash");
             }
 

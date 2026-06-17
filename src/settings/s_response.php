@@ -1,6 +1,6 @@
 <?php
 // settings/s_response.php -- HotCRP settings > decisions page
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Response_Setting {
     /** @var int */
@@ -106,21 +106,18 @@ class Response_SettingParser extends SettingParser {
         if ($si->name0 === "response/" && $si->name2 === "/name") {
             if (!ctype_digit($sv->vstr("response/{$si->name1}/id"))) {
                 return "(new response)";
-            } else {
-                return "unnamed";
             }
-        } else {
-            return null;
+            return "unnamed";
         }
+        return null;
     }
 
     function default_value(Si $si, SettingValues $sv) {
         if ($si->name0 === "response/" && $si->name2 === "/instructions") {
             $n = $sv->oldv("response/{$si->name1}/wordlimit");
             return $sv->conf->fmt()->default_translation("resp_instrux", new FmtArg("wordlimit", $n));
-        } else {
-            return null;
         }
+        return null;
     }
 
     function set_oldv(Si $si, SettingValues $sv) {
@@ -212,10 +209,10 @@ class Response_SettingParser extends SettingParser {
 
     function print(SettingValues $sv) {
         // Authors' response
-        $sv->print_checkbox("response_active", '<strong>Collect authors’ responses to the reviews<span class="if-response-active">:</span></strong>', ["group_open" => true, "class" => "uich js-settings-resp-active"]);
+        $sv->print_checkbox("response_active", '<strong>Collect authors’ responses to the reviews<span class="js-if-response-active">:</span></strong>', ["group_open" => true, "class" => "uich js-settings-resp-active"]);
         Icons::stash_defs("trash");
         echo Ht::unstash(), Ht::hidden("response_requires_active", 1),
-            '<div class="if-response-active',
+            '<div class="js-if-response-active',
             $sv->vstr("response_active") ? "" : " hidden",
             '"><hr class="g">', Ht::hidden("has_response", 1);
 

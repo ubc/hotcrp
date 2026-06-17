@@ -292,15 +292,23 @@ abstract class SearchTerm {
         return null;
     }
 
-    const ABOUT_PAPER = 1;
-    const ABOUT_UNKNOWN = 2;
-    const ABOUT_REVIEW = 4;
-    const ABOUT_REVIEW_SET = 8;
-    const ABOUT_NO_SHORT_CIRCUIT = 16;
+    // What class of information does this search concern? (bitmask)
+    const ABOUT_SUB = 0x1;               // Submission information
+    const ABOUT_TAGS = 0x2;              // About tags
+    const ABOUT_PAPER = 0x3;             // Submission information or tags
+    const ABOUT_REVIEW = 0x4;            // About a single review
+    const ABOUT_REVIEW_SET = 0x8;        // About reviews as a class
+    const ABOUT_REVIEWS = 0xC;           // Either ABOUT_REVIEW or ABOUT_REVIEW_SET
+    const ABOUT_COMMENTS = 0x10;         // About comments
+    const ABOUT_REACTIONS = 0x20;        // About reactions (e.g. review ratings)
+    const ABOUT_PREFS = 0x40;            // About review preferences
+    const ABOUT_OTHER = 0x8000;          // About something else (prefs, comments)
+    const ABOUT_ANY = 0xFFFF;            // Who knows what it's about
+    const ABOUT_NO_SHORT_CIRCUIT = 0x10000;  // script_expression only
 
-    /** @return 1|2|4|8 */
+    /** @return int */
     function about() {
-        return self::ABOUT_PAPER;
+        return self::ABOUT_SUB;
     }
 
 
@@ -330,7 +338,7 @@ class False_SearchTerm extends SearchTerm {
         return false;
     }
     function about() {
-        return self::ABOUT_PAPER;
+        return 0;
     }
     function script_expression(PaperInfo $row, $about) {
         return false;
@@ -354,7 +362,7 @@ class True_SearchTerm extends SearchTerm {
         return true;
     }
     function about() {
-        return self::ABOUT_PAPER;
+        return 0;
     }
     function script_expression(PaperInfo $row, $about) {
         return true;
@@ -491,7 +499,7 @@ abstract class Op_SearchTerm extends SearchTerm {
     function about() {
         $x = 0;
         foreach ($this->child as $qv) {
-            $x = max($x, $qv->about());
+            $x |= $qv->about();
         }
         return $x;
     }
@@ -580,8 +588,7 @@ class Not_SearchTerm extends Op_SearchTerm {
         return !$this->child[0]->test($row, $xinfo);
     }
     function about() {
-        $x = $this->child[0]->about();
-        return $x === self::ABOUT_REVIEW ? self::ABOUT_UNKNOWN : $x;
+        return $this->child[0]->about();
     }
 }
 
@@ -1590,6 +1597,7 @@ class TextMatch_SearchTerm extends SearchTerm {
         } else if ($this->trivial !== null) {
             return $this->trivial;
         }
+        // XXX truncate abstract for hard wordlimit
         return $this->regex->match($row->{$this->field}());
     }
     function script_expression(PaperInfo $row, $about) {
@@ -1599,9 +1607,6 @@ class TextMatch_SearchTerm extends SearchTerm {
             return null;
         }
         return ["type" => $this->field, "match" => $this->trivial];
-    }
-    function about() {
-        return self::ABOUT_PAPER;
     }
     function debug_json() {
         if ($this->trivial !== null) {
@@ -1791,9 +1796,6 @@ class PaperID_SearchTerm extends SearchTerm {
             return new PaperIDOrder_PaperColumn($pl->conf, $this);
         }
         return null;
-    }
-    function about() {
-        return self::ABOUT_PAPER;
     }
     static function parse_pidcode($word, SearchWord $sword, PaperSearch $srch) {
         if (($ids = SessionList::decode_ids($word)) === null) {

@@ -246,6 +246,9 @@ if (!window.queueMicrotask) {
         setTimeout(f, 0);
     };
 }
+if (!window.customElements) {
+    window.customElements = { define: function () {} };
+}
 
 
 function lower_bound_index(a, v) {
@@ -751,14 +754,14 @@ function plural_word(n, singular, plural) {
         return singular;
     } else if (plural != null) {
         return plural;
-    } else {
-        return pluralize(singular);
     }
+    return pluralize(singular);
 }
 
 function plural(n, singular) {
-    if ($.isArray(n))
+    if ($.isArray(n)) {
         n = n.length;
+    }
     return n + " " + plural_word(n, singular);
 }
 
@@ -785,14 +788,21 @@ function commajoin(a, joinword) {
 
 /* exported common_prefix */
 function common_prefix(a, b) {
-    var i = 0;
-    while (i != a.length && i != b.length && a.charAt(i) == b.charAt(i))
+    let i = 0;
+    while (i !== a.length && i !== b.length && a.charCodeAt(i) === b.charCodeAt(i)) {
         ++i;
+    }
     return a.substring(0, i);
 }
 
 function count_words(text) {
-    return ((text || "").match(/[^-\s.,;:<>!?*_~`#|]\S*/g) || []).length;
+    const re = /[^-\s.,;:<>!?*_~`#|]\S*/g;
+    let n = 0;
+    text = text || "";
+    while (re.exec(text) !== null) {
+        ++n;
+    }
+    return n;
 }
 
 function count_words_split(text, wlimit) {
@@ -1651,7 +1661,7 @@ function redirect_with_messages(url, message_list) {
     $.post(hoturl("=api/stashmessages"),
         {message_list: JSON.stringify(message_list)},
         function (data) {
-            const smsg = data ? data.smsg || data._smsg /* XXX */ : false;
+            const smsg = data ? data.smsg : false;
             if (typeof smsg === "string"
                 && /^[a-zA-Z0-9_]*$/.test(smsg)) {
                 document.cookie = "hotcrp-smsg-".concat(smsg, "=", now_msec(), "; Max-Age=20", hoturl_cookie_params());
@@ -1693,7 +1703,9 @@ function render_with(context, renderer, text, ...rest) {
     var renderf = renderer.render;
     if (renderer.render_inline
         && (hasClass(context, "format-inline")
-            || window.getComputedStyle(context).display.startsWith("inline"))) {
+            || (context.isConnected
+                ? window.getComputedStyle(context).display.startsWith("inline")
+                : context.tagName === "SPAN"))) {
         renderf = renderer.render_inline;
     }
     var html = renderf.call(context, text, ...rest);
@@ -3480,11 +3492,21 @@ handle_ui.on("js-mark-submit", function () {
 
 // banner
 hotcrp.banner = (function () {
+function ensure_container() {
+    let b = $$("p-banner");
+    if (!b) {
+        b = document.createElement("div");
+        b.id = "p-banner";
+        document.body.prepend(b);
+    }
+    return b;
+}
 function resize(b) {
     const offs = document.querySelectorAll(".need-banner-offset"),
         pbody = document.getElementById("p-page");
     if (b) {
-        const h = b.offsetHeight;
+        const dpr = window.devicePixelRatio || 1,
+            h = Math.floor(b.offsetHeight * dpr - 0.5) / dpr;
         for (const e of offs) {
             let bo;
             if (e.hasAttribute("data-banner-offset")) {
@@ -3516,32 +3538,68 @@ function resize(b) {
     }
 }
 return {
-    add: function (id) {
-        let e = $$(id);
-        if (!e) {
-            let b = $$("p-banner");
-            if (!b) {
-                b = document.createElement("div");
-                b.id = "p-banner";
-                document.body.prepend(b);
-            }
-            e = document.createElement("div");
-            e.id = id;
-            b.append(e);
+    add: function (id, rest) {
+        let be = $$(id);
+        if (!be) {
+            be = $e("div", rest);
+            be.id = id;
+            ensure_container().append(be);
         }
-        return e;
+        return be;
     },
     remove: function (id) {
-        const e = $$(id);
-        if (e) {
-            hotcrp.tooltip.close_under(e);
-            const b = e.parentElement;
-            e.remove();
-            if (!b.firstChild) {
-                b.remove();
+        const be = $$(id);
+        if (be) {
+            hotcrp.tooltip.close_under(be);
+            const bc = be.parentElement;
+            be.remove();
+            if (!bc.firstChild) {
+                bc.remove();
                 resize(null);
             } else {
-                resize(b);
+                resize(bc);
+            }
+        }
+    },
+    replace_custom: function (banners) {
+        let bc = ensure_container(), be = bc.firstChild, changed = false;
+        for (const j of banners) {
+            const id = `p-cbanner-${j.id}`;
+            while (be && be.id !== id) {
+                const next = be.nextSibling;
+                if (hasClass(be, "cbanner")) {
+                    be.remove();
+                    changed = true;
+                }
+                be = next;
+            }
+            if (!be) {
+                be = $e("div", {class: "cbanner", id: id});
+                bc.append(be);
+            }
+            if (be.innerHTML !== j.html) {
+                be.innerHTML = j.html;
+                changed = true;
+            }
+            be = be.nextSibling;
+        }
+        while (be) {
+            const next = be.nextSibling;
+            if (hasClass(be, "cbanner")) {
+                be.remove();
+                changed = true;
+            }
+            be = next;
+        }
+        if (!bc.firstChild) {
+            bc.remove();
+            bc = null;
+        }
+        if (changed) {
+            if (document.readyState === "loading") {
+                $(hotcrp.banner.resize);
+            } else {
+                resize(bc);
             }
         }
     },
@@ -3567,7 +3625,7 @@ handle_ui.on("js-dismiss-alert", function (evt) {
 
 // initialization and tracker
 (function ($) {
-var dl, dlname, dltime, redisplay_timeout,
+let dl, dlname, dltime, redisplay_timeout, dlloading = 0,
     reload_outstanding = 0, reload_nerrors = 0, reload_count = 0,
     reload_token_max = 250, reload_token_rate = 500,
     reload_tokens = reload_token_max, reload_refill_at = 0, reload_refill_timeout = null,
@@ -4316,6 +4374,7 @@ function trevent_comet(prev_eventid, start_at) {
 
 // deadline loading
 function load(dlx, prev_eventid, is_initial) {
+    ++dlloading;
     siteinfo.snouns = siteinfo.snouns || ["submission", "submissions", "Submission", "Submissions"];
     if (dl && dl.tracker_recent && dlx)
         dlx.tracker_recent = dl.tracker_recent;
@@ -4339,12 +4398,14 @@ function load(dlx, prev_eventid, is_initial) {
     }
     if (dl.tracker_recent && (!is_initial || !dl.tracker_here))
         display_tracker();
+    if (dl.banners)
+        hotcrp.banner.replace_custom(dl.banners);
     if (!dl.tracker_here !== !tracker_refresher)
         tracker_refresh();
     if (tracker_configured)
         tracker_configure_success();
     if (reload_outstanding === 0) {
-        var t;
+        let t;
         if (is_initial && ($$("p-clock-drift") || dl.tracker_recent))
             t = 0.01;
         else if (dl.tracker_recent) {
@@ -4366,12 +4427,13 @@ function load(dlx, prev_eventid, is_initial) {
         trevent_store(dl.tracker_eventid || 0, prev_eventid, dl.load + t,
                       is_initial ? "initial" : "load");
     }
+    --dlloading;
 }
 
 function streload_track(trackparam, trackdata) {
     ++reload_outstanding;
     ++reload_count;
-    var prev_eventid = trevent().eventid;
+    const prev_eventid = trevent().eventid;
     function success(data) {
         --reload_outstanding;
         if (data && data.ok) {
@@ -4387,15 +4449,20 @@ function streload_track(trackparam, trackdata) {
             method: "POST", data: trackdata, success: success
         });
     } else {
-        $.ajax(hoturl("api/status", siteinfo.paperid ? {p: siteinfo.paperid} : {}), {
+        const arg = siteinfo.paperid ? {p: siteinfo.paperid} : {};
+        if (dl && dl.banners) {
+            arg.bannertoken = dl.bannertoken ?? "0";
+        }
+        $.ajax(hoturl("api/status", arg), {
             method: "GET", timeout: 30000, success: success
         });
     }
 }
 
 function streload() {
-    if (reload_outstanding > 0)
+    if (reload_outstanding > 0) {
         return;
+    }
     // token bucket rate limiter: at most one call to back end every 500ms on average
     clearTimeout(reload_refill_timeout);
     reload_refill_timeout = null;
@@ -4420,6 +4487,12 @@ hotcrp.init_deadlines = function (dl) {
 };
 
 hotcrp.tracker_show_elapsed = tracker_show_elapsed;
+
+hotcrp.update_banners = function () {
+    if (dl && dl.banners && dlloading === 0) {
+        streload();
+    }
+};
 
 })(jQuery);
 
@@ -4930,7 +5003,7 @@ function hashjump_destination(e, p) {
         return false;
     }
     $(".hashtarget").removeClass("hashtarget");
-    const border = wh > 300 && !hasClass(p, "revcard") ? 20 : 0;
+    const border = wh > 300 && !hasClass(p, "s-review") ? 20 : 0;
     window.scroll(0, pg.top - Math.max(border, (wh - pg.height) * 0.25));
     focus_at(e);
     return true;
@@ -4974,7 +5047,7 @@ handle_ui.on("hashjump.js-hash", function (hashc, focus) {
     }
 
     // highlight destination
-    if ((p = e.closest(".pfe, .rfe, .f-i, .form-g, .form-section, .entryi, .checki"))
+    if ((p = e.closest(".s-sf, .s-rf, .f-i, .form-g, .form-section, .entryi, .checki"))
         && hashjump_destination(e, p)) {
         $(p).find("label, .field-title, .label").first().addClass("hashtarget");
         return true;
@@ -4989,12 +5062,12 @@ handle_ui.on("hashjump.js-hash", function (hashc, focus) {
     if (hash.startsWith("cx")
         && hasClass(e, "cmtt")
         && (p = e.closest("article"))
-        && hasClass(p, "cmtcard")
+        && hasClass(p, "s-comment")
         && p.id) {
         hash = p.id;
         location.hash = "#" + hash;
     }
-    if ((hasClass(e, "cmtcard") || hasClass(e, "revcard"))
+    if ((hasClass(e, "s-comment") || hasClass(e, "s-review"))
         && hashjump_destination(e, e)
         && hash !== "cnew") {
         addClass(e, "hashtarget");
@@ -5443,7 +5516,7 @@ handle_ui.on("js-bulkassign-action", function () {
     foldup.call(this, null, {open: this.value === "review"});
     foldup.call(this, null, {open: /^(?:primary|secondary|(?:optional|meta)?review)$/.test(this.value), n:2});
     let selopt = this.selectedOptions[0] || this.options[0];
-    $("#k-bulkassign-entry").attr("placeholder", selopt.getAttribute("data-csv-header"));
+    $$("k-bulkassign-entry").setAttribute("placeholder", selopt.getAttribute("data-csv-header"));
 });
 
 (function () {
@@ -5719,7 +5792,7 @@ handle_ui.on("change.js-mail-recipients", function () {
         toelt = f.elements.to,
         subjelt = f.elements.subject,
         bodyelt = f.elements.body,
-        recip = toelt ? toelt.options[toelt.selectedIndex] : null;
+        recip = toelt && toelt.options && toelt.options[toelt.selectedIndex];
     foldup.call(this, null, {open: !plimit || plimit.checked, n: 8});
     if (!recip) {
         return;
@@ -6252,7 +6325,7 @@ function initialize() {
     if (window.WeakMap) {
         linkmap = new WeakMap;
     }
-    pslcard = $(".pslcard")[0];
+    pslcard = document.querySelector(".s-psl");
 }
 function fe(idelt) {
     return typeof idelt === "string" ? $$(idelt) : idelt;
@@ -6514,7 +6587,7 @@ function render_review_body_in(rrow, bodye) {
             fte.setAttribute("aria-describedby", ttid);
         }
         const h3 = document.createElement("h3");
-        h3.className = "rfehead";
+        h3.className = "s-rf-head";
         h3.appendChild(fte);
         let vis = f.visibility || "re";
         if (vis === "audec" && hotcrp.status && hotcrp.status.myperm
@@ -6592,7 +6665,7 @@ function rating_counts(ratings) {
 }
 
 function closest_rating_url(e) {
-    const card = e.closest(".revcard");
+    const card = e.closest(".s-review");
     return hoturl("=api", {p: card.getAttribute("data-pid"), r: card.getAttribute("data-rid"), fn: "reviewrating"});
 }
 
@@ -6857,7 +6930,7 @@ hotcrp.add_review = function (rrow) {
 
     const earticle = document.createElement("article");
     earticle.id = "r" + rid;
-    earticle.className = "pcard revcard " + (rrow.subreview || rrow.draft ? "" : "revsubmitted ") + "need-anchor-unfold";
+    earticle.className = "pcard s-review " + (rrow.subreview || rrow.draft ? "" : "s-review-submitted ") + "need-anchor-unfold";
     earticle.setAttribute("data-pid", rrow.pid);
     earticle.setAttribute("data-rid", rrow.rid);
     if (rrow.ordinal) {
@@ -6898,7 +6971,9 @@ hotcrp.add_review = function (rrow) {
 
     // complete render
     earticle.append(eheader, ebody);
-    document.querySelector(".pcontainer").append(earticle);
+    const particle = document.getElementById("p" + rrow.pid)
+        || document.querySelector(".s-paper");
+    particle.append(earticle);
     $(earticle).awaken();
     navsidebar.set("r" + rid, rdesc);
 };
@@ -7222,6 +7297,113 @@ hotcrp.set_review_form = function (rfj) {
 })($);
 
 
+// word limits
+function make_update_words() {
+    const ta = this;
+    if (ta.nodeName !== "TEXTAREA"
+        || !ta.hasAttribute("data-wordlimit")
+        || !hasClass(ta, "need-wordlimit")) {
+        return;
+    }
+    removeClass(ta, "need-wordlimit");
+    const wlimit = +ta.getAttribute("data-wordlimit");
+    let wce;
+    if (ta.hasAttribute("data-wordlimit-details")) {
+        wce = document.getElementById(ta.getAttribute("data-wordlimit-details"));
+    } else {
+        let fd = ta.previousElementSibling;
+        if (!fd || !hasClass(fd, "formatdescription")) {
+            ta.before((fd = $e("div", "formatdescription")));
+        }
+        wce = fd.querySelector(".words");
+        if (!wce) {
+            fd.firstChild && fd.append(" ", $e("span", "barsep", "·"), " ");
+            fd.append((wce = $e("span", "words")));
+        }
+    }
+    if (!wce || wlimit <= 0) {
+        return;
+    }
+    let scheduled = false, swc = null;
+    function setwc() {
+        scheduled = false;
+        const wc = count_words(ta.value);
+        if (wc === swc) {
+            return;
+        }
+        swc = wc;
+        wce.className = "words" + (wlimit < wc ? " wordsover" :
+                                   (wlimit * 0.9 < wc ? " wordsclose" : ""));
+        if (wlimit < wc) {
+            wce.textContent = plural(wc - wlimit, "word") + " over";
+        } else {
+            wce.textContent = plural(wlimit - wc, "word") + " left";
+        }
+        toggleClass(ta, "has-wordlimit-error", wlimit < wc);
+    }
+    function schedule() {
+        if (!scheduled) {
+            scheduled = true;
+            requestAnimationFrame(setwc);
+        }
+    }
+    ta.addEventListener("input", schedule);
+    setwc();
+}
+
+function overlong_truncation_site(e) {
+    let t = e;
+    while (t.nodeType === 1) {
+        let ch = t.lastChild;
+        while (ch && ch.nodeType === 3 && ch.data.trimEnd() === "") {
+            ch = ch.previousSibling;
+        }
+        const nn = ch ? ch.nodeName : null;
+        if (nn === "P"
+            || (nn === "LI" && ch.lastChild.nodeType === 3)) {
+            return ch;
+        } else if (nn === "DIV" || nn === "BLOCKQUOTE" || nn === "UL" || nn === "OL") {
+            t = ch;
+        } else {
+            break;
+        }
+    }
+    return e;
+}
+
+function render_with_overlong(onto, text, args, render_context) {
+    args = args || {};
+    const format = args.format || 0, wl = args.wl || 0, hwl = args.hwl || 0;
+    let aftertexte, wc = 0;
+    if (wl > 0) {
+        wc = count_words(text);
+        if (hwl > 0 && wc > hwl) {
+            const wcx = count_words_split(text, hwl);
+            text = wcx[0].trimEnd() + "… ";
+            aftertexte = $e("span", {class: "overlong-truncation", title: "Truncated for length"}, "✖");
+        }
+        if (wc > wl && ((hwl || 0) <= 0 || wl < hwl)) {
+            const wcx = count_words_split(text, wl),
+                allowede = $e("div", "overlong-allowed"),
+                dividere = $e("div", "overlong-divider",
+                    allowede,
+                    $e("div", "overlong-mark",
+                        $e("div", "overlong-expander",
+                            $e("button", {type: "button", class: "ui js-overlong-expand", "aria-expanded": "false"}, "Show more")))),
+                contente = $e("div", "overlong-content");
+            addClass(onto, "has-overlong");
+            addClass(onto, "overlong-collapsed");
+            onto.prepend(dividere, contente);
+            onto = contente;
+            render_text.onto(allowede, format, wcx[0], render_context);
+        }
+    }
+    render_text.onto(onto, format, text, render_context);
+    aftertexte && overlong_truncation_site(onto).append(aftertexte);
+    return wc;
+}
+
+
 // comments
 (function ($) {
 const vismap = {
@@ -7248,7 +7430,7 @@ function unparse_tag(tag, strip_value) {
 }
 
 function cj_find(elt) {
-    return cmts[elt.closest(".cmtid").id];
+    return cmts[elt.closest(".s-comment").id];
 }
 
 function cj_cid(cj) {
@@ -7369,27 +7551,29 @@ function cmt_is_editable(cj, override) {
 function cmt_render_form(cj) {
     const cid = cj_cid(cj),
         btnbox = $e("div", "btnbox"),
-        eform = $e("form", "cmtform");
+        eform = $e("form", "s-comment-form");
     cj.review_token && eform.append(hidden_input("review_token", cj.review_token));
     cj.by_author && eform.append(hidden_input("by_author", 1));
     cj.response && eform.append(hidden_input("response", cj.response));
 
-    const fmt = render_text.format(cj.format);
+    const fmt = render_text.format(cj.format),
+        etext = $e("textarea", {
+            name: "text", class: "w-text cmttext suggest-emoji mentions need-suggest c",
+            rows: 5, cols: 60, placeholder: "Leave a comment", spellcheck: "true"
+        });
     let efmtdesc = null;
     if (fmt.description || fmt.has_preview) {
         efmtdesc = $e("div", "formatdescription");
         if (fmt.description) {
             efmtdesc.innerHTML = fmt.description;
-            fmt.has_preview && efmtdesc.append(" ", $e("span", "barsep", "·"), " ");
         }
         if (fmt.has_preview) {
-            efmtdesc.append($e("button", {type: "button", class: "link ui js-togglepreview", "data-format": fmt.format || 0}, "Preview"));
+            efmtdesc.firstChild && efmtdesc.append(" ", $e("span", "barsep", "·"), " ");
+            efmtdesc.append($e("button", {type: "button", class: "link ui js-togglepreview"}, "Preview"));
+            etext.setAttribute("data-format", fmt.format || 0);
         }
     }
-    eform.append($e("div", "f-i", efmtdesc, $e("textarea", {
-        name: "text", class: "w-text cmttext suggest-emoji mentions need-suggest c",
-        rows: 5, cols: 60, placeholder: "Leave a comment"
-    })));
+    eform.append($e("div", "f-i", efmtdesc, etext));
 
     // attachments, visibility, tags, readiness
     eform.append(cmt_render_form_prop(cj, cid, btnbox));
@@ -7398,7 +7582,7 @@ function cmt_render_form(cj) {
     const eaa = $e("div", "w-text aabig aab mt-3");
     btnbox.firstChild && eaa.append($e("div", "aabut", btnbox));
     if (cj.response && resp_rounds[cj.response].wl > 0) {
-        eaa.append($e("div", "aabut", $e("div", "words")));
+        eaa.append($e("div", "aabut", $e("div", {class: "words", id: cid + "-wordlimit"})));
     }
     const btext = cj.response ? "Submit" : "Save",
         bnote = cmt_is_editable(cj) ? null : $e("div", "hint", "(admin only)");
@@ -7555,7 +7739,7 @@ function cmt_visibility_change() {
             topichint.replaceChildren("The comment will appear when the decision is visible.");
         } else {
             topichint.replaceChildren("The comment will appear when reviews are visible.");
-            if (!document.querySelector("article.revsubmitted")) {
+            if (!document.querySelector("article.s-review-submitted")) {
                 topichint.append("\n", $e("span", "is-diagnostic is-warning", "Reviews are not visible now."));
             }
         }
@@ -7564,21 +7748,6 @@ function cmt_visibility_change() {
 
 function cmt_ready_change() {
     this.form.elements.bsubmit.textContent = this.checked ? "Submit" : "Save draft";
-}
-
-function make_update_words(celt, wlimit) {
-    var wce = celt.querySelector(".words");
-    function setwc() {
-        var wc = count_words(this.value);
-        wce.className = "words" + (wlimit < wc ? " wordsover" :
-                                   (wlimit * 0.9 < wc ? " wordsclose" : ""));
-        if (wlimit < wc)
-            wce.textContent = plural(wc - wlimit, "word") + " over";
-        else
-            wce.textContent = plural(wlimit - wc, "word") + " left";
-    }
-    if (wce)
-        $(celt).find("textarea").on("input", setwc).each(setwc);
 }
 
 function cmt_edit_messages(cj, form) {
@@ -7625,7 +7794,7 @@ function cmt_edit_messages(cj, form) {
 function cmt_annotate_new(celt, cj) {
     // Choose new comment’s topic and visibility.
     // - Submission thread if there is no review.
-    if (!document.querySelector("article.revsubmitted")) {
+    if (!document.querySelector("article.s-review-submitted")) {
         cj.topic = "paper";
     } else {
         cj.topic = "rev";
@@ -7637,7 +7806,7 @@ function cmt_annotate_new(celt, cj) {
     while (prevcelt && prevcelt.tagName !== "ARTICLE") {
         prevcelt = prevcelt.previousElementSibling;
     }
-    const prevcj = prevcelt && hasClass(prevcelt, "cmtcard") && cj_find(prevcelt);
+    const prevcj = prevcelt && hasClass(prevcelt, "s-comment") && cj_find(prevcelt);
     if (cj.by_author
         || (prevcj && prevcj.by_author && !prevcj.response)) {
         cj.visibility = "au";
@@ -7656,10 +7825,19 @@ function cmt_start_edit(celt, cj) {
     const form = celt.querySelector("form");
     cmt_edit_messages(cj, form);
 
-    $(form.elements.text).text(cj.text || "")
+    const ta = form.elements.text;
+    $(ta).text(cj.text || "")
         .on("keydown", cmt_keydown)
-        .on("hotcrprenderpreview", cmt_render_preview)
         .autogrow();
+    if (cj.response && resp_rounds[cj.response].wl > 0) {
+        ta.setAttribute("data-wordlimit", resp_rounds[cj.response].wl);
+        if (resp_rounds[cj.response].hwl > 0) {
+            ta.setAttribute("data-hard-wordlimit", resp_rounds[cj.response].hwl);
+        }
+        ta.setAttribute("data-wordlimit-details", cj_cid(cj) + "-wordlimit");
+        addClass(ta, "need-wordlimit");
+        make_update_words.call(ta);
+    }
 
     $(form.elements.visibility).val(cj.visibility || "rev")
         .attr("data-default-value", cj.visibility || "rev")
@@ -7697,9 +7875,6 @@ function cmt_start_edit(celt, cj) {
     }
 
     if (cj.response) {
-        if (resp_rounds[cj.response].wl > 0) {
-            make_update_words(celt, resp_rounds[cj.response].wl);
-        }
         var $ready = $(form.elements.ready).on("click", cmt_ready_change);
         cmt_ready_change.call($ready[0]);
     }
@@ -7737,7 +7912,7 @@ function cmt_render_attachment(doc) {
 }
 
 function cmt_beforeunload() {
-    var i, $cs = $(".cmtform"), text;
+    var i, $cs = $(".s-comment-form"), text;
     if (has_unload) {
         for (i = 0; i !== $cs.length; ++i) {
             text = $cs[i].elements.text.value.trimEnd();
@@ -7773,7 +7948,7 @@ function cmt_edit_observer(entries) {
             e.target.removeAttribute("data-intersecting");
         }
     }
-    const focus = document.activeElement && document.activeElement.closest(".cmtcard");
+    const focus = document.activeElement && document.activeElement.closest(".s-comment");
     for (i = 0; i !== editing_list.length; ++i) {
         e = editing_list[i];
         want = have = hasClass(e, "popout");
@@ -7870,7 +8045,6 @@ function cmt_save_callback(cj) {
             } else {
                 celt.removeAttribute("id");
                 celt.replaceChildren($e("div", "cmtmsg"));
-                removeClass(celt, "cmtid");
                 navsidebar.remove(celt);
             }
         }
@@ -7946,7 +8120,7 @@ function cmt_button_click(evt) {
         evt.preventDefault();
         cmt_save(this, "submit");
     } else if (this.name === "cancel") {
-        cj.collapsed && fold(this.closest(".cmtcard"), true, 20);
+        cj.collapsed && fold(this.closest(".s-comment"), true, 20);
         cmt_render(cj, false);
     } else if (this.name === "delete") {
         override_deadlines.call(this, function () {
@@ -7978,7 +8152,7 @@ function cmt_render(cj, editing) {
 
     if (cj.is_new && !editing) {
         cmt_toggle_editing(article, false);
-        var ide = article.closest(".cmtid");
+        var ide = article.closest(".s-comment");
         navsidebar.remove(ide);
         $("#k-comment-actions a[href='#" + ide.id + "']").closest(".aabut").removeClass("hidden");
         $(ide).remove();
@@ -8075,69 +8249,17 @@ function cmt_render(cj, editing) {
     return $(article);
 }
 
-function overlong_truncation_site(e) {
-    let t = e;
-    while (t.nodeType === 1) {
-        let ch = t.lastChild;
-        while (ch && ch.nodeType === 3 && ch.data.trimEnd() === "") {
-            ch = ch.previousSibling;
-        }
-        const nn = ch ? ch.nodeName : null;
-        if (nn === "P"
-            || (nn === "LI" && ch.lastChild.nodeType === 3)) {
-            return ch;
-        } else if (nn === "DIV" || nn === "BLOCKQUOTE" || nn === "UL" || nn === "OL") {
-            t = ch;
-        } else {
-            break;
-        }
-    }
-    return e;
-}
-
 function cmt_render_text(texte, cj, article) {
-    const rrd = cj.response && resp_rounds[cj.response];
-    let text = cj.text || "", aftertexte = null;
-    if (rrd && rrd.wl > 0) {
-        const wc = count_words(text);
-        if (wc > 0 && article) {
-            let cth = article.querySelector("header");
-            cmt_header_dotsep(cth);
-            cth.append($e("div", "cmtwords words" + (wc > rrd.wl ? " wordsover" : ""), plural(wc, "word")));
-        }
-        if ((rrd.hwl || 0) > 0
-            && wc > rrd.hwl) {
-            const wcx = count_words_split(text, rrd.hwl);
-            text = wcx[0].trimEnd() + "… ";
-            aftertexte = $e("span", {class: "overlong-truncation", title: "Truncated for length"}, "✖");
-        }
-        if (wc > rrd.wl
-            && ((rrd.hwl || 0) <= 0
-                || rrd.wl < rrd.hwl)) {
-            const wcx = count_words_split(text, rrd.wl),
-                allowede = $e("div", "overlong-allowed"),
-                dividere = $e("div", "overlong-divider",
-                    allowede,
-                    $e("div", "overlong-mark",
-                        $e("div", "overlong-expander",
-                            $e("button", {type: "button", class: "ui js-overlong-expand", "aria-expanded": "false"}, "Show more")))),
-                contente = $e("div", "overlong-content");
-            addClass(texte, "has-overlong");
-            addClass(texte, "overlong-collapsed");
-            texte.prepend(dividere, contente);
-            texte = contente;
-            render_text.onto(allowede, cj.format, wcx[0], cj);
-        }
+    const rrd = cj.response && resp_rounds[cj.response],
+        wc = render_with_overlong(texte, cj.text || "", {
+            format: cj.format, wl: rrd && rrd.wl, hwl: rrd && rrd.hwl
+        }, cj);
+    if (wc && wc > 0 && article) {
+        let cth = article.querySelector("header");
+        cmt_header_dotsep(cth);
+        cth.append($e("div", "cmtwords words" + (wc > rrd.wl ? " wordsover" : ""), plural(wc, "word")));
     }
-    render_text.onto(texte, cj.format, text, cj);
-    aftertexte && overlong_truncation_site(texte).append(aftertexte);
-    toggleClass(texte, "emoji-only", emojiregex.test(text));
-}
-
-function cmt_render_preview(evt, format, text, dest) {
-    const cj = cj_find(evt.target) || {};
-    cmt_render_text(dest, {object: "comment", format: format, text: text, response: cj.response}, null);
-    return false;
+    toggleClass(texte, "emoji-only", emojiregex.test(cj.text || ""));
 }
 
 function add_comment(cj, editing) {
@@ -8175,8 +8297,8 @@ function add_new_comment_button(cj, cid) {
     }
     let eactions = $$("k-comment-actions");
     if (!eactions) {
-        eactions = $e("div", {id: "k-comment-actions", class: "pcard cmtcard"}, $e("div", "aab aabig"));
-        $(".pcontainer").append(eactions);
+        eactions = $e("div", {id: "k-comment-actions", class: "pcard s-comment"}, $e("div", "aab aabig"));
+        $(".s-paper").append(eactions);
     }
     const rname = cj.response && (cj.response == "1" ? "response" : cj.response + " response"),
         ebutton = $e("div", "aabut",
@@ -8195,8 +8317,10 @@ function add_new_comment_button(cj, cid) {
 }
 
 function add_new_comment(cj, cid) {
-    document.querySelector(".pcontainer").insertBefore($e("article", {
-        id: cid, class: "pcard cmtcard cmtid comment view need-anchor-unfold has-fold ".concat(cj.collapsed ? "fold20c" : "fold20o", cj.editable ? " editable" : "")
+    const particle = (cj.pid && document.getElementById("p" + cj.pid))
+        || document.querySelector(".s-paper");
+    particle.insertBefore($e("article", {
+        id: cid, class: "pcard s-comment comment view need-anchor-unfold has-fold ".concat(cj.collapsed ? "fold20c" : "fold20o", cj.editable ? " editable" : "")
     }), $$("k-comment-actions"));
 }
 
@@ -8275,39 +8399,42 @@ hotcrp.set_response_round = function (rname, rinfo) {
 })(jQuery);
 
 handle_ui.on("js-overlong-expand", function () {
-    var e = this.closest(".has-overlong");
+    const e = this.closest(".has-overlong");
     addClass(e, "overlong-expanded");
     removeClass(e, "overlong-collapsed");
+    const col = e.closest(".force-expanded");
+    col && $(col).trigger("foldtoggle");
 });
 
 
 // previewing
 (function ($) {
 function switch_preview(evt) {
-    var $j = $(this).parent(), $ta;
-    while ($j.length && ($ta = $j.find("textarea")).length == 0)
-        $j = $j.parent();
-    if ($ta.length) {
-        $ta = $ta.first();
-        if ($ta.is(":visible")) {
-            var format = +this.getAttribute("data-format");
-            $ta.addClass("hidden");
-            $ta.after('<div class="preview"><div class="preview-border" style="margin-bottom:6px"></div><div></div><div class="preview-border" style="margin-top:6px"></div></div>');
-            $ta.trigger("hotcrprenderpreview", [format, $ta[0].value, $ta[0].nextSibling.firstChild.nextSibling]);
-            this.innerHTML = "Edit";
+    let pe = this.parentElement, ta;
+    while (pe && !(ta = pe.querySelector("textarea"))) {
+        pe = pe.parentElement;
+    }
+    if (ta) {
+        if ($(ta).is(":visible")) {
+            const format = +this.getAttribute("data-format");
+            ta.hidden = true;
+            ta.after($e("div", "preview", $e("div", "preview-content")));
+            render_with_overlong(ta.nextSibling.firstChild, ta.value, {
+                format: ta.hasAttribute("data-format") && ta.getAttribute("data-format"),
+                wl: ta.hasAttribute("data-wordlimit") && +ta.getAttribute("data-wordlimit"),
+                hwl: ta.hasAttribute("data-hard-wordlimit") && +ta.getAttribute("data-hard-wordlimit")
+            });
+            this.textContent = "Edit";
         } else {
-            $ta.next().remove();
-            $ta.removeClass("hidden");
-            $ta[0].focus();
-            this.innerHTML = "Preview";
+            ta.nextSibling.remove();
+            ta.hidden = false;
+            ta.focus();
+            this.textContent = "Preview";
         }
     }
     evt.preventDefault();
     handle_ui.stopPropagation(evt);
 }
-$(document).on("hotcrprenderpreview", function (evt, format, value, dest) {
-    render_text.onto(dest, format, value);
-});
 handle_ui.on("js-togglepreview", switch_preview);
 })($);
 
@@ -8346,11 +8473,11 @@ function nextprev_shortcut(evt) {
         jqdir = key === "n" ? "first" : "last";
     if (hash
         && (ctr = document.getElementById(hash))
-        && (hasClass(ctr, "cmtcard") || hasClass(ctr, "revcard"))) {
+        && (hasClass(ctr, "s-comment") || hasClass(ctr, "s-review"))) {
         for (walk = ctr[siblingdir]; walk && !walk.hasAttribute("id"); walk = walk[siblingdir]) {
         }
     } else {
-        walk = $(".revcard[id], .cmtid")[jqdir]()[0];
+        walk = $(".s-review[id], .s-comment[id]")[jqdir]()[0];
     }
     if (walk && walk.hasAttribute("id"))
         location.hash = "#" + walk.getAttribute("id");
@@ -8363,7 +8490,7 @@ function make_selector_shortcut(type) {
             || $(e).find("input[type=text]")[0];
     }
     function end(evt) {
-        var e = $$("fold" + type);
+        var e = $$("fold" + type) || $$("s-" + type);
         e.className = e.className.replace(/ psfocus\b/g, "");
         e = find(e);
         e.removeEventListener("blur", end, false);
@@ -8372,7 +8499,7 @@ function make_selector_shortcut(type) {
             this.blur();
     }
     return function (evt) {
-        var e = $$("fold" + type);
+        var e = $$("fold" + type) || $$("s-" + type);
         if (e) {
             e.className += " psfocus";
             foldup.call(e, null, {open: true});
@@ -8815,6 +8942,7 @@ function CompletionSpan(value, indexPos) {
     this.limitReplacement = false; // After completion, replace only the edit
                                 // region and any subsequent characters that
                                 // match the chosen replacement
+    this.visiblePriority = false;  // Dim items with priority <= 0
 }
 
 CompletionSpan.at = function (elt) {
@@ -9017,15 +9145,11 @@ function suggest() {
         }
     }
 
-    function render_item(titem, prepend) {
+    function render_item(titem, prepend, visiblePriority) {
         const node = document.createElement("div");
         node.className = titem.no_space ? "suggestion s9nsp" : "suggestion";
-        if (titem.pri) {
-            if (titem.pri === 1) {
-                node.className += " s9pri1";
-            } else {
-                node.className += " s9pri" + (titem.pri < 0 ? "m1" : "2");
-            }
+        if (visiblePriority && (titem.pri || 0) <= 0) {
+            node.className += " s9lopri";
         }
         if (titem.r) {
             node.setAttribute("data-replacement", titem.r);
@@ -9132,7 +9256,7 @@ function suggest() {
             div = document.createElement("div");
             div.className = "suggesttable suggesttable" + (i + 1);
             for (const cliste of clist) {
-                div.appendChild(render_item(cliste, cspan.prefix));
+                div.appendChild(render_item(cliste, cspan.prefix, cspan.visiblePriority));
             }
             hintdiv.html(div);
         } else {
@@ -9537,7 +9661,7 @@ hotcrp.suggest.add_builder("mentions", function (elt, hintinfo) {
     cs.matchRight(/(?:[\p{L}\p{M}\p{N}]|[-.](?=\p{L}))*/uy);
     cs.prefix = "@";
     cs.minLength = Math.min(2, cs.indexPos - cs.startPos);
-    cs.smartPunctuation = cs.limitReplacement = true;
+    cs.smartPunctuation = cs.limitReplacement = cs.visiblePriority = true;
     let prom = demand_load.mentions();
     const vise = elt.form.elements.visibility;
     if (vise && vise.value === "admin") {
@@ -9964,9 +10088,7 @@ function default_click(evt) {
 }
 
 $(document).on("click", "a", function (evt) {
-    if (hasClass(this, "fn5")) {
-        foldup.call(this, evt, {n: 5, open: true});
-    } else if (!hasClass(this, "ui")) {
+    if (!hasClass(this, "ui")) {
         if (!event_key.is_default_a(evt)
             || this.target
             || !default_click.call(this, evt))
@@ -9990,30 +10112,28 @@ $(function () {
         document.body.setAttribute("data-hotlist", Hotlist.at(document.body).resolve().str);
     }
     // having resolved digests, insert quicklinks
-    if (siteinfo.paperid
-        && !$$("n-prev")
-        && !$$("n-next")) {
-        $(".quicklinks").each(function () {
-            var info = Hotlist.at(this.closest(".has-hotlist")), ids, pos, page, mode;
-            try {
-                mode = JSON.parse(this.getAttribute("data-link-params") || "{}");
-            } catch (e) {
-                mode = {};
-            }
-            page = mode.page || "paper";
-            delete mode.page;
-            if ((ids = info.ids())
-                && (pos = $.inArray(siteinfo.paperid, ids)) >= 0) {
-                if (pos > 0) {
-                    mode.p = ids[pos - 1];
-                    this.prepend($e("a", {id: "n-prev", class: "ulh", href: hoturl(page, mode)}, "< #" + ids[pos - 1]), " ");
-                }
-                if (pos < ids.length - 1) {
-                    mode.p = ids[pos + 1];
-                    this.append(" ", $e("a", {id: "n-next", class: "ulh", href: hoturl(page, mode)}, "#" + ids[pos + 1] + " >"));
-                }
-            }
-        });
+    const ql = $$("n-quicklinks");
+    if (!siteinfo.paperid || !ql || $$("n-prev") || $$("n-next")) {
+        return;
+    }
+    let info = Hotlist.at(ql.closest(".has-hotlist")), ids, pos, page, mode;
+    try {
+        mode = JSON.parse(ql.getAttribute("data-link-params") || "{}");
+    } catch (e) {
+        mode = {};
+    }
+    page = mode.page || "paper";
+    delete mode.page;
+    if ((ids = info.ids())
+        && (pos = $.inArray(siteinfo.paperid, ids)) >= 0) {
+        if (pos > 0) {
+            mode.p = ids[pos - 1];
+            ql.prepend($e("a", {id: "n-prev", class: "ulh", href: hoturl(page, mode)}, "< #" + ids[pos - 1]), " ");
+        }
+        if (pos < ids.length - 1) {
+            mode.p = ids[pos + 1];
+            ql.append(" ", $e("a", {id: "n-next", class: "ulh", href: hoturl(page, mode)}, "#" + ids[pos + 1] + " >"));
+        }
     }
 });
 })($);
@@ -10182,18 +10302,22 @@ function row_tagvalue(row, tag) {
 
 
 function tagannorow_fill(row, anno) {
-    if (!anno.blank) {
-        if (anno.tag && anno.annoid) {
-            row.setAttribute("data-tags", anno.tag + "#" + anno.tagval);
-        } else {
-            row.removeAttribute("data-tags");
-        }
-        var legend = anno.legend === null ? "" : anno.legend,
-            $g = $(row).find(".plheading-group").attr({"data-format": anno.format || 0, "data-title": legend});
-        $g.text(legend).toggleClass("pr-2", legend !== "");
-        anno.format && render_text.into($g[0]);
-        // `plheading-count` is taken care of in `tablelist_postreorder`
+    if (anno.blank) {
+        return;
     }
+    if (anno.tag && anno.annoid) {
+        row.setAttribute("data-tags", anno.tag + "#" + anno.tagval);
+    } else {
+        row.removeAttribute("data-tags");
+    }
+    const legend = anno.legend === null ? "" : anno.legend,
+        g = row.querySelector(".plheading-group");
+    g.setAttribute("data-format", anno.format || 0);
+    g.setAttribute("data-title", legend);
+    g.replaceChildren(legend);
+    toggleClass(g, "pr-2", legend !== "");
+    anno.format && render_text.into(g);
+    // `plheading-count` is taken care of in `tablelist_postreorder`
 }
 
 function tagannorow_add(tfacet, tbody, before, anno) {
@@ -10612,10 +10736,11 @@ function make_gapf() {
 }
 
 function taganno_success(rv) {
-    if (!rv.ok)
+    if (!rv.ok) {
         return;
+    }
     $(".pltable").each(function () {
-        var tblsort = hoturl_search(tablelist_search(this), "sort");
+        var tblsort = hoturl_search("?" + tablelist_search(this), "sort");
         if (!tblsort || strcasecmp_id(tblsort, "#" + rv.tag) !== 0) {
             return;
         }
@@ -10694,7 +10819,7 @@ handle_ui.on("js-annotate-order", function () {
                 legend: legend
             };
             if (deleted) {
-                anno.deleted = true;
+                anno["delete"] = true;
             } else if (need_session) {
                 anno.session_title = form.elements[pfx + "session_title"].value;
                 anno.time = form.elements[pfx + "time"].value;
@@ -10833,7 +10958,7 @@ function make_tag_save_callback(elt) {
     };
 }
 
-handle_ui.on("edittag", function (evt) {
+handle_ui.on("js-plist-tag", function (evt) {
     var key = null, m, ch, newval;
     if (evt.type === "keydown" && event_key.modcode(evt) === 0) {
         key = event_key(evt);
@@ -10851,7 +10976,7 @@ handle_ui.on("edittag", function (evt) {
             return;
         }
         $.post(hoturl("=api/tags", {p: m[2], forceShow: 1}),
-            {addtags: ch, search: tablelist_search(tablelist(this))},
+            {add_tags: ch, search: tablelist_search(tablelist(this))},
             make_tag_save_callback(this));
     } else if (key === "ArrowDown" || key === "ArrowUp") {
         var tr = this.closest("tr"), td = this.closest("td"), prop, e;
@@ -10861,7 +10986,7 @@ handle_ui.on("edittag", function (evt) {
             }
             if (tr
                 && (td = tr.cells[td.cellIndex])
-                && (e = td.querySelector("input.edittag"))) {
+                && (e = td.querySelector("input.js-plist-tag"))) {
                 focus_and_scroll_into_view(e, key === "ArrowDown");
             }
         }
@@ -11755,13 +11880,13 @@ handle_ui.on("js-plinfo-edittags", function () {
             return;
         const elt = $e("div", "d-inline-flex",
             $e("div", "mf mf-text w-text",
-                $e("textarea", {name: "tags " + rv.pid, cols: 120, rows: 1, class: "want-focus need-suggest editable-tags suggest-emoji-codes w-text", style: "vertical-align:-0.5rem", "data-tooltip-anchor": "v", "id": "tags " + rv.pid, "spellcheck": "false"})),
+                $e("textarea", {name: "tags " + rv.pid, cols: 120, rows: 1, class: "want-focus need-suggest editable-tags suggest-emoji-codes w-text", style: "vertical-align:-0.5rem", "data-tooltip-anchor": "v", "id": "tags " + rv.pid, spellcheck: "false"}, rv.tags_edit_text)),
             $e("button", {type: "button", name: "tagsave " + rv.pid, class: "btn-primary ml-2"}, "Save"),
             $e("button", {type: "button", name: "tagcancel " + rv.pid, class: "ml-2"}, "Cancel"));
         set_pidfield(plistui.fields.tags, pidfe, elt);
         ta = pidfe.querySelector("textarea");
         hotcrp.suggest.call(ta);
-        $(ta).val(rv.tags_edit_text).autogrow()
+        $(ta).autogrow()
             .on("keydown", make_onkey("Enter", do_submit))
             .on("keydown", make_onkey("Escape", do_cancel));
         $(pidfe).find("button[name^=tagsave]").click(do_submit);
@@ -11769,13 +11894,16 @@ handle_ui.on("js-plinfo-edittags", function () {
         focus_within(pidfe);
     }
     function do_submit() {
-        var tbl = tablelist(pidfe);
-        $.post(hoturl("=api/tags", {p: pid, forceShow: 1}),
-            {tags: $(ta).val(), search: tbl ? tablelist_search(tbl) : null},
-            function (rv) {
-                minifeedback(ta, rv);
-                rv.ok && $(window).trigger("hotcrptags", [rv]);
-            });
+        const tbl = tablelist(pidfe);
+        $.post(hoturl("=api/tags", {p: pid, forceShow: 1}), {
+            add_tags: hotcrp.parse_tags.delta(ta.defaultValue, ta.value).join(" "),
+            search: tbl ? tablelist_search(tbl) : null
+        }, function (rv) {
+            minifeedback(ta, rv);
+            if (rv.ok) {
+                $(window).trigger("hotcrptags", [rv]);
+            }
+        });
     }
     function do_cancel() {
         var focused = document.activeElement
@@ -12168,7 +12296,10 @@ function plist_hotcrptags(plistui, rv) {
 }
 
 $(window).on("hotcrptags", function (evt, rv) {
-    $(".need-plist").each(make_plist);
+    if (rv.ok) {
+        $(".need-plist").each(make_plist);
+        hotcrp.update_banners();
+    }
     if (rv.ids) {
         for (const plist of all_plists) {
             paperlist_tag_ui.try_reorder(plist.pltable, rv);
@@ -12182,11 +12313,6 @@ $(window).on("hotcrptags", function (evt, rv) {
         for (const paper of rv.papers) {
             $(window).trigger("hotcrptags", [paper]);
         }
-    } else if (rv.p) /* backward compat */ {
-        for (const i in rv.p) {
-            rv.p[i].pid = +i;
-            $(window).trigger("hotcrptags", [rv.p[i]]);
-        }
     }
 });
 
@@ -12198,10 +12324,22 @@ function change_color_classes(isconflicted) {
     };
 }
 
-function fold_override(tbl, dofold) {
+function fold_override(forcer, tbl, dofold) {
+    const formset = forcer.closest(".form-search-set");
+    for (const f of formset ? formset.querySelectorAll("form.form-search") : []) {
+        let fs = f.elements.forceShow;
+        if (fs === forcer) {
+            // do nothing
+        } else if (!dofold) {
+            fs || f.appendChild((fs = hidden_input("forceShow", "1")));
+            fs.value = "1";
+        } else if (fs) {
+            fs.id ? fs.value = "0" : fs.remove();
+        }
+    }
+    fold(tbl, dofold, 5);
+    tbl.closest("form").elements.forceShow.vaue = dofold ? "0" : "1";
     $(function () {
-        fold(tbl, dofold, 5);
-        $("#forceShow").val(dofold ? 0 : 1);
         // remove local hoverrides
         if (hasClass(tbl, "has-local-override")) {
             removeClass(tbl, "has-local-override");
@@ -12251,7 +12389,7 @@ handle_ui.on("change.js-plinfo", function (evt) {
         throw new Error("bad plinfo");
     }
     if (fname === "force") {
-        fold_override(plistui.pltable, hidden);
+        fold_override(this, plistui.pltable, hidden);
     } else if (fname === "rownum") {
         fold(plistui.pltable, hidden, 6);
     } else if (fname === "anonau") {
@@ -12721,11 +12859,17 @@ function background_format_check() {
         });
     } else if (hasClass(needed, "is-npages")
                && (pid = needed.closest("[data-pid]"))) {
-        const dt = needed.getAttribute("data-dt") || "0";
-        $.ajax(hoturl("api/formatcheck", {p: pid.getAttribute("data-pid"), dt: dt, soft: 1}), {
+        const dt = needed.getAttribute("data-dt") || "0",
+            detail = needed.getAttribute("data-npages-detail");
+        $.ajax(hoturl("api/formatcheck", {
+                p: pid.getAttribute("data-pid"),
+                dt: dt, soft: 1, detail: detail ? 1 : null
+            }), {
             success: function (data) {
-                if (data && data.ok)
-                    needed.parentNode.replaceChild(document.createTextNode(data.npages), needed);
+                if (data && data.ok) {
+                    const np = detail ? data.npages_detail[detail] : data.npages;
+                    needed.parentNode.replaceChild(document.createTextNode(np), needed);
+                }
                 next(data && data.ok);
             }
         });
@@ -13144,7 +13288,7 @@ handle_ui.on("js-clickthrough", function () {
     var self = this,
         $container = $(this).closest(".js-clickthrough-container");
     if (!$container.length)
-        $container = $(this).closest(".pcontainer");
+        $container = $(this).closest(".s-paper");
     $.post(hoturl("=api/clickthrough", {p: siteinfo.paperid}),
         $(this.form).serialize() + "&accept=1",
         function (data) {
@@ -13205,6 +13349,7 @@ function prepare_paper_select() {
                     ensure_pattern(data.color_classes);
                     $p.html('<span class="taghh ' + data.color_classes + '">' + $p.html() + '</span>');
                 }
+                hotcrp.update_banners();
             }
             ctl.disabled = false;
         }
@@ -13253,7 +13398,7 @@ function render_tag_messages(message_list) {
 function prepare_pstags() {
     var self = this,
         $f = this.tagName === "FORM" ? $(self) : $(self).find("form"),
-        $ta = $f.find("textarea");
+        ta = $f[0].elements.tags;
     removeClass(this, "need-tag-form");
     function handle_tag_report(data) {
         data.message_list && render_tag_messages.call(self, data.message_list);
@@ -13271,12 +13416,12 @@ function prepare_pstags() {
         handle_ui.stopImmediatePropagation(evt);
     });
     $f.find("button[name=cancel]").on("click", function (evt) {
-        $ta.val($ta.prop("defaultValue"));
-        $ta.removeClass("has-error");
+        ta.value = ta.defaultValue;
+        removeClass(ta, "has-error");
         $f.find(".is-error").remove();
         $f.find(".btn-highlight").removeClass("btn-highlight");
-        foldup.call($ta[0], evt, {open: false});
-        $ta[0].blur();
+        foldup.call(ta, evt, {open: false});
+        ta.blur();
     });
     $f.on("submit", save_pstags);
     $f.closest(".foldc, .foldo").on("foldtoggle", function (evt) {
@@ -13288,7 +13433,7 @@ function prepare_pstags() {
             $.get(hoturl("api/tagmessages", {p: $f.attr("data-pid")}), handle_tag_report);
         }
         $f.removeData("noTagReport");
-        $ta.autogrow();
+        $(ta).autogrow();
         focus_within($f[0]);
     });
     $(window).on("hotcrptags", function (evt, data) {
@@ -13299,30 +13444,31 @@ function prepare_pstags() {
             $p = $(self).find(".js-tag-result").first();
         if ($p.html() !== h)
             $p.html(h);
-        if ($ta.length
-            && $ta.val() !== data.tags_edit_text
-            && !$ta.is(":visible")
+        input_set_default_value(ta, data.tags_edit_text);
+        if (ta.value !== data.tags_edit_text
+            && !$(ta).is(":visible")
             && (!$f.data("everOpened")
-                || ($.trim($ta.val()).split(/\s+/).sort().join(" ")
-                    !== data.tags_edit_text.split(/\s+/).sort().join(" ")))) {
-            $ta.val(data.tags_edit_text);
+                || hotcrp.parse_tags.delta(data.tags_edit_text, ta.value).length)) {
+            ta.value = data.tags_edit_text;
         }
         handle_tag_report(data);
     });
 }
 
 function save_pstags(evt) {
-    var f = this, $f = $(f);
+    const f = this, $f = $(f), ta = f.elements.tags;
     evt.preventDefault();
     $f.find("input").prop("disabled", true);
     $.ajax(hoturl("=api/tags", {p: $f.attr("data-pid")}), {
-        method: "POST", data: $f.serialize(), timeout: 4000,
+        method: "POST", data: {
+            add_tags: hotcrp.parse_tags.delta(ta.defaultValue, ta.value).join(" ")
+        }, timeout: 4000,
         success: function (data) {
             $f.find("input").prop("disabled", false);
             if (data.ok) {
                 if (feedback.list_status(data.message_list) < 2) {
-                    foldup.call($f[0], null, {open: false});
-                    minifeedback(f.elements.tags, {ok: true});
+                    foldup.call(f, null, {open: false});
+                    minifeedback(ta, {ok: true});
                 }
                 $(window).trigger("hotcrptags", [data]);
                 removeClass(f.elements.tags, "has-error");
@@ -13339,7 +13485,7 @@ function save_pstags(evt) {
     });
 }
 
-handle_ui.on("is-tag-index", function () {
+handle_ui.on("js-tag-index", function () {
     const self = this;
     let m = self.id.match(/^tag:(\S+) (\d+)$/), value;
     if (this.type === "checkbox")
@@ -13348,8 +13494,8 @@ handle_ui.on("is-tag-index", function () {
         value = this.value.trim();
     if (value === "")
         value = "clear";
-    if (/^(?:\d+\.?\d*|\.\d+|clear)$/.test(value))
-        $.post(hoturl("=api/tags", {p: m[2]}), {addtags: m[1] + "#" + value}, done);
+    if (/^(?:\d+\.?\d*|\.\d+|clear|unset)$/.test(value))
+        $.post(hoturl("=api/tags", {p: m[2]}), {add_tags: m[1] + "#" + value}, done);
     else
         minifeedback(this, {ok: false, message_list: [{status: 2, message: "<0>Bad tag value"}]});
     function done(rv) {
@@ -13682,7 +13828,7 @@ function prepare_autoready_condition(f) {
         } else {
             t = "Save and submit";
         }
-        $("button.btn-savepaper").each(function () {
+        $("button.js-savepaper").each(function () {
             this.firstChild.data = t;
         });
     }
@@ -13698,14 +13844,14 @@ hotcrp.load_editable_paper = function () {
     var f = $$("f-paper");
     hotcrp.add_diff_check(f);
     prepare_autoready_condition(f);
-    $(".pfe").each(add_pslitem_pfe);
-    var h = $(".btn-savepaper").first(),
+    $(".s-sf").each(add_pslitem_pfe);
+    var h = $(".js-savepaper").first(),
         k = hasClass(f, "differs") ? "" : " hidden";
-    $(".pslcard-nav").append('<div class="paper-alert mt-5'.concat(k,
-        '"><button class="ui btn-highlight btn-savepaper">', h.html(),
+    $(".s-psl-nav").append('<div class="paper-alert mt-5'.concat(k,
+        '"><button class="ui btn-highlight js-savepaper">', h.html(),
         '</button></div>'))
-        .find(".btn-savepaper").click(function () {
-            $("#f-paper .btn-savepaper").first().trigger({type: "click", sidebarTarget: this});
+        .find(".js-savepaper").click(function () {
+            $("#f-paper .js-savepaper").first().trigger({type: "click", sidebarTarget: this});
         });
     $(f).on("change", "input, select, textarea", fieldchange);
     if (f.querySelector(".has-edit-condition")) {
@@ -13725,19 +13871,19 @@ hotcrp.load_editable_paper = function () {
 };
 
 hotcrp.load_editable_review = function () {
-    const rfehead = $(".rfehead");
+    const rfehead = $(".s-rf-head");
     rfehead.each(add_pslitem_header);
     if (rfehead.length) {
-        $(".pslcard > .pslitem:last-child").addClass("mb-3");
+        $(".s-psl > .pslitem:last-child").addClass("mb-3");
     }
     hotcrp.add_diff_check("#f-review");
     const k = $("#f-review").hasClass("differs") ? "" : " hidden",
-        h = $(".btn-savereview").first();
-    $(".pslcard-nav").append('<div class="review-alert mt-5'.concat(k,
-        '"><button class="ui btn-highlight btn-savereview">', h.html(),
+        h = $(".js-savereview").first();
+    $(".s-psl-nav").append('<div class="review-alert mt-5'.concat(k,
+        '"><button class="ui btn-highlight js-savereview">', h.html(),
         '</button></div>'))
-        .find(".btn-savereview").click(function () {
-            $("#f-review .btn-savereview").first().trigger({type: "click", sidebarTarget: this});
+        .find(".js-savereview").click(function () {
+            $("#f-review .js-savereview").first().trigger({type: "click", sidebarTarget: this});
         });
 };
 
@@ -13747,9 +13893,9 @@ hotcrp.load_editable_pc_assignments = function () {
     if (f) {
         hotcrp.add_diff_check(f);
         var k = hasClass(f, "differs") ? "" : " hidden";
-        $(".pslcard-nav").append('<div class="paper-alert mt-5'.concat(k,
-            '"><button class="ui btn-highlight btn-savepaper">Save PC assignments</button></div>'))
-            .find(".btn-savepaper").click(function () {
+        $(".s-psl-nav").append('<div class="paper-alert mt-5'.concat(k,
+            '"><button class="ui btn-highlight js-savepaper">Save PC assignments</button></div>'))
+            .find(".js-savepaper").click(function () {
                 $("#f-pc-assignments .btn-primary").first().trigger({type: "click", sidebarTarget: this});
             });
     }
@@ -13764,9 +13910,9 @@ hotcrp.load_paper_sidebar = function () {
 };
 
 hotcrp.replace_editable_field = function (field, elt) {
-    var pfe = $$(field).closest(".pfe");
+    const pfe = $$(field).closest(".s-sf");
     if ((elt.tagName !== "DIV" && elt.tagName !== "FIELDSET")
-        || !hasClass(elt, "pfe")) {
+        || !hasClass(elt, "s-sf")) {
         throw new Error("bad replacement");
     }
     pfe.className = elt.className;
@@ -13785,12 +13931,12 @@ hotcrp.evaluate_edit_condition = function (ec, form) {
 
 
 function tag_value(taglist, t) {
-    if (t.charCodeAt(0) === 126 /* ~ */ && t.charCodeAt(1) !== 126)
+    if (t.charCodeAt(0) === 126 /* ~ */ && t.charCodeAt(1) !== 126) {
         t = siteinfo.user.uid + t;
+    }
     t = t.toLowerCase();
-    var tlen = t.length;
-    for (var i = 0; i !== taglist.length; ++i) {
-        var s = taglist[i];
+    const tlen = t.length;
+    for (const s of taglist) {
         if (s.length > tlen + 1
             && s.charCodeAt(tlen) === 35 /* # */
             && s.substring(0, tlen).toLowerCase() === t)
@@ -13798,6 +13944,149 @@ function tag_value(taglist, t) {
     }
     return null;
 }
+
+hotcrp.parse_tags = (function () {
+
+function space_charcode(c) {
+    // * C whitespace: HT U+0009, NL U+000A, VT U+000B, FF U+000C,
+    //   CR U+000D, SP U+0020
+    // * Unicode space category: SP U+0020, NBSP U+00A0 (*C2 A0),
+    //   U+1680 (*E1 9A 80), U+2000-200A (*E2 80 80-E2 80 8A),
+    //   U+202F (*E2 80 AF), U+205F (*E2 81 9F), U+3000 (*E3 80 80),
+    //   U+2028 LINE SEPARATOR (*E2 80 A8),
+    //   U+2029 PARAGRAPH SEPARATOR (*E2 80 A9)
+    if (c < 0x2000) {
+        return (c >= 0x9 && c <= 0xD) || c === 0x20 || c === 0xA0;
+    }
+    return c === 0x1680 || (c >= 0x2000 && c <= 0x200A) || c === 0x2028
+        || c === 0x2029 || c === 0x202F || c === 0x205F || c === 0x3000;
+}
+
+function span_balanced_parens(str, pos, endchars) {
+    pos = pos ?? 0;
+    let pstack = "", plast = "", quote = false, startpos = pos, pcleared;
+    const len = str.length,
+        endsp = endchars === null || endchars.indexOf(" ") >= 0;
+    while (pos < len) {
+        let c = str.charCodeAt(pos), ch = str.charAt(pos);
+        // stop when done
+        if (plast === ""
+            && !quote
+            && ((endsp && space_charcode(c))
+                || (endchars !== null && endchars.indexOf(ch) >= 0))) {
+            break;
+        }
+        // translate “” -> "
+        if (c === 0x201C || c === 0x201D) {
+            c = 0x22 /* " */;
+        }
+        if (quote) {
+            if (c === 0x5C /* \ */ && pos + 1 < len) {
+                ++pos;
+            } else if (c === 0x22 /* " */) {
+                quote = false;
+            }
+        } else if (c === 0x28 /* ( */) {
+            pstack += plast;
+            plast = ")";
+        } else if (c === 0x5B /* [ */) {
+            pstack += plast;
+            plast = "]";
+        } else if (c === 0x7B /* { */) {
+            pstack += plast;
+            plast = "}";
+        } else if (c === 0x29 || c === 0x5D || c === 0x7D) {
+            if (pos === startpos) {
+                ++startpos;
+            } else {
+                do {
+                    pcleared = plast;
+                    plast = pstack.slice(-1);
+                    pstack = pstack.slice(0, -1);
+                } while (ch !== pcleared && pcleared !== "");
+                if (pcleared === "") {
+                    break;
+                }
+            }
+        } else if (c === 0x22 /* " */) {
+            quote = true;
+        }
+        ++pos;
+    }
+    return pos;
+}
+
+function split_tag_list(str) {
+    // [split, {str: word, ltag: ltag, value: value}, ...]
+    const len = str.length, a = [];
+    let pos = 0;
+    while (true) {
+        const pos1 = pos;
+        while (pos !== len) {
+            const c = str.charCodeAt(pos);
+            if (!space_charcode(c) && c !== 0x2C /* , */ && c !== 0x3B /* ; */) {
+                break;
+            }
+            ++pos;
+        }
+        a.push(str.substring(pos1, pos));
+
+        if (pos === len) {
+            return a;
+        }
+
+        const pos2 = pos;
+        pos = span_balanced_parens(str, pos2, " ,;");
+        const word = str.substring(pos2, pos);
+        let m = word.match(/^([-+]?)#*([^#=([{]*)(?:[#=]?)(.*)$/);
+        if (m && (m[1] === "" || m[3] === "")) {
+            let ltag = m[2].toLowerCase();
+            if (ltag.charCodeAt(0) === 126 && ltag.charCodeAt(1) !== 126) {
+                ltag = siteinfo.user.uid + ltag;
+            }
+            const value = m[1] === "-" ? "clear" : (m[3] === "" ? "0" : m[2]);
+            a.push({str: word, ltag: ltag, value: value});
+        } else {
+            a.push({str: word});
+        }
+    }
+}
+
+function find_tag_list_index(tl, ltag) {
+    for (let i = 1; i < tl.length; i += 2) {
+        if (tl[i].ltag === ltag)
+            return i;
+    }
+    return -1;
+}
+
+function find_tag_list_value(tl, ltag) {
+    const i = find_tag_list_index(tl, ltag);
+    return i < 0 ? null : tl[i].value;
+}
+
+return {
+    delta: function (oldstr, str) {
+        const atl = split_tag_list(oldstr), btl = split_tag_list(str), ch = [];
+        for (let i = 1; i < btl.length; i += 2) {
+            const x = btl[i];
+            if (!x.ltag
+                || x.ltag.indexOf("~") > 0
+                || find_tag_list_value(atl, x.ltag) !== x.value) {
+                ch.push(x.str);
+            }
+        }
+        for (let i = 1; i < atl.length; i += 2) {
+            const x = atl[i];
+            if (x.ltag && find_tag_list_index(btl, x.ltag) < 0) {
+                ch.push(x.ltag + "#clear");
+            }
+        }
+        return ch;
+    }
+};
+
+})();
 
 function set_tag_index(e, taglist) {
     const val = tag_value(taglist, e.getAttribute("data-tag"));
@@ -13862,13 +14151,13 @@ if (siteinfo.paperid) {
             return;
         }
         data.color_classes && ensure_pattern(data.color_classes, "", true);
-        $(".has-tag-classes").each(function () {
+        $(".js-tag-classes").each(function () {
             var t = $.trim(this.className.replace(/(?: |^)(?:tagbg|dark|tag-\S+)(?= |$)/g, " "));
             if (data.color_classes)
                 t += " " + data.color_classes;
             this.className = t;
         });
-        $(".is-tag-index").each(function () {
+        $(".js-tag-index").each(function () {
             set_tag_index(this, data.tags);
         });
         hotcrp.update_tag_decoration($("h1.paptitle"), data.tag_decoration_html);
@@ -13936,7 +14225,7 @@ handle_ui.on("js-disable-user", function () {
                     removeClass(self, "btn-success");
                     addClass(self, "btn-danger");
                 }
-                const h2 = document.querySelector("h2.leftmenu");
+                const h2 = document.querySelector("h2#h-subtitle");
                 if (h2) {
                     if (h2.lastChild.nodeType === 1
                         && h2.lastChild.className === "n dim user-disabled-marker") {
@@ -14732,6 +15021,7 @@ handle_ui.on("js-assign-potential-conflict", function () {
         }
         div.replaceChildren($e("div", "is-diagnostic is-success",
             is_none ? "Conflict ignored" : "Conflict confirmed"));
+        hotcrp.update_banners();
     }
     $ajax.condition(function () {
         $.ajax(hoturl("=api/assign", {p: pid, format: "none"}), {
@@ -14779,11 +15069,32 @@ handle_ui.on("js-assign-review", function (evt) {
         input_set_default_value(self, value);
         minifeedback(self, rv);
         check_form_differs(form, self);
+        hotcrp.update_banners();
     }
     $ajax.condition(function () {
         $.ajax(hoturl("=api/assign", {p: m[1], format: "none"}), {
             method: "POST", data: {assignments: JSON.stringify(ass)},
             success: success, trackOutstanding: true
+        });
+    });
+});
+
+handle_ui.on("js-decide", function (evt) {
+    let form = this.form, m;
+    if (evt.type !== "change"
+        || !(m = /^decision(\d+)$/.exec(this.name))
+        || (form && form.autosave && !form.autosave.checked)) {
+        return;
+    }
+    const self = this, value = self.value;
+    function success(rv) {
+        input_set_default_value(self, value);
+        minifeedback(self, rv);
+        hotcrp.update_banners();
+    }
+    $ajax.condition(function () {
+        $.ajax(hoturl("=api/decision", {p: m[1], decision: value}), {
+            method: "POST", success: success, trackOutstanding: true
         });
     });
 });
@@ -15149,7 +15460,7 @@ function load_more_events() {
                 events = (events || []).concat(data.rows);
                 events_at = data.to;
                 events_more = data.more;
-                $(".has-events").each(function () { render_events(this, data.rows); });
+                $(".js-events").each(function () { render_events(this, data.rows); });
             }
         }
     });
@@ -15182,6 +15493,123 @@ handle_ui.on("js-open-activity", function (evt) {
     }
 });
 })(jQuery);
+
+
+customElements.define("hotcrp-multimeter", class extends HTMLElement {
+    static observedAttributes = ["values", "colors", "pointers", "pointer-colors", "width", "height"];
+
+    constructor() {
+        super();
+        this.attachShadow({ mode: "open" });
+        const style = document.createElement("style"),
+            ctr = document.createElement("div"),
+            flex = document.createElement("div");
+        ctr.style.position = "relative";
+        ctr.style.width = flex.style.width = "100%";
+        ctr.style.height = flex.style.height = "100%";
+        flex.style.display = "flex";
+        flex.style.overflow = "hidden";
+        ctr.append(flex);
+        this.shadowRoot.append(style, ctr);
+    }
+
+    connectedCallback() {
+        const cs = getComputedStyle(this),
+            style = this.shadowRoot.firstChild,
+            width = style.width || this.getAttribute("width") || "10em",
+            height = style.height || this.getAttribute("height") || "2ex",
+            flex = this.shadowRoot.lastChild.firstChild;
+        style.textContent = `:host { display: inline-block; width: ${width}; height: ${height}; }`;
+        flex.style.borderRadius = cs.borderRadius;
+        this.render();
+    }
+
+    attributeChangedCallback() {
+        this.render();
+    }
+
+    resolveColor(value) {
+        let m;
+        if ((m = value.match(/^([a-z]+\(\s*from\s*)(\.[^\s)]+)(.*)$/))) {
+            return m[1] + this.resolveColor(m[2]) + m[3];
+        } else if ((m = value.match(/^(color-mix\([^,]+,\s*)(.*)\)$/))) {
+            let t = m[1], s = m[2];
+            while ((m = s.match(/^((?:[^,()\s]|\([^()]*\))+)(\s*,?\s*)(.*)$/))) {
+                t += this.resolveColor(m[1]) + m[2];
+                s = m[3];
+            }
+            return t + s;
+        } else if (!value.startsWith(".")) {
+            return value;
+        }
+        const e = document.createElement("div");
+        e.style.display = "none";
+        e.style.position = "absolute";
+        e.className = value.substring(1).replaceAll(".", " ");
+        this.appendChild(e);
+        const style = getComputedStyle(e);
+        let color = style.backgroundColor;
+        if (color === "rgba(0, 0, 0, 0)") {
+            color = style.color;
+        }
+        e.remove();
+        return color;
+    }
+
+    render() {
+        const vstr = (this.getAttribute("values") || "").trim(),
+            cstr = (this.getAttribute("colors") || "").trim(),
+            pstr = (this.getAttribute("pointers") || "").trim(),
+            pcstr = (this.getAttribute("pointer-colors") || "").trim(),
+            vs = vstr === "" ? [] : vstr.split(/\s+/).map(Number),
+            ps = pstr === "" ? [] : pstr.split(/\s+/).map(Number).filter(x => Number.isFinite(x)),
+            cs = [], pcs = [];
+        if (vs.find(x => Number.isFinite(x) && x < 0)) {
+            vs.length = 0;
+        }
+        const vtotal = vs.reduce((a, b) => a + b, 0) || 1;
+        for (const cm of cstr.matchAll(/[a-z]+\((?:[^()]*|\([^()]*\))*\)|\S+/g)) {
+            cs.push(this.resolveColor(cm[0]));
+        }
+        for (const cm of pcstr.matchAll(/[a-z]+\((?:[^()]*|\([^()]*\))*\)|\S+/g)) {
+            pcs.push(this.resolveColor(cm[0]));
+        }
+        if (pcs.length === 0) {
+            pcs.push("#888");
+        }
+        const flex = this.shadowRoot.lastChild.firstChild;
+        flex.replaceChildren(...vs.map((v, i) => {
+            const e = document.createElement("div");
+            e.style.flex = v;
+            e.style.background = cs[i] ?? "transparent";
+            return e;
+        }));
+        let pe = flex.nextSibling;
+        for (const i in ps) {
+            const pv = ps[i];
+            if (pv < 0 || pv > vtotal) {
+                continue;
+            }
+            if (!pe) {
+                pe = document.createElement("span");
+                pe.style.position = "absolute";
+                pe.style.top = "100%";
+                pe.style.transform = "translateX(-50%)";
+                pe.style.borderLeft = "3px solid transparent";
+                pe.style.borderRight = "3px solid transparent";
+                pe.style.borderBottom = "5px solid " + pcs[Math.min(i, pcs.length - 1)];
+                this.shadowRoot.lastChild.appendChild(pe);
+            }
+            pe.style.left = `${pv / vtotal * 100}%`;
+            pe = pe.nextSibling;
+        }
+        while (pe) {
+            const next = pe.nextSibling;
+            pe.remove();
+            pe = next;
+        }
+    }
+});
 
 
 // autogrowing text areas; based on https://github.com/jaz303/jquery-grab-bag
@@ -15264,13 +15692,13 @@ function make_textarea_autogrower(e) {
                 setTimeout(autogrower_retry, timeout, f, e);
                 return;
             }
-            var css = window.getComputedStyle(e);
+            const css = window.getComputedStyle(e);
             minHeight = parseFloat(css.height);
             lineHeight = computed_line_height(css);
             borderPadding = parseFloat(css.borderTopWidth) + parseFloat(css.borderBottomWidth);
         }
         ++state;
-        var sh = state === 1 ? e : make_shadow(e),
+        let sh = state === 1 ? e : make_shadow(e),
             wh = Math.max(0.8 * window.innerHeight, 4 * lineHeight);
         e.style.height = Math.min(wh, Math.max(sh.scrollHeight + borderPadding, minHeight)) + "px";
     }
@@ -15351,10 +15779,12 @@ function awakenf() {
         hotcrp.suggest.call(this);
     if (hasClass(this, "need-tooltip"))
         hotcrp.tooltip.call(this);
+    if (hasClass(this, "need-wordlimit"))
+        make_update_words.call(this);
 }
 $.fn.awaken = function () {
     this.each(awakenf);
-    this.find(".need-diff-check, .need-autogrow, .need-suggest, .need-tooltip").each(awakenf);
+    this.find(".need-diff-check, .need-autogrow, .need-suggest, .need-tooltip, .need-wordlimit").each(awakenf);
     return this;
 };
 $(function () { $(document.body).awaken(); });
@@ -15383,10 +15813,10 @@ $(function () {
         err.push(locator(e.form) + ": no .js-selector-summary");
         elt.push(e.form);
     }
-    /*$(".xinfo,.xconfirm,.xwarning,.xmerror,.aa,.strong,td.textarea,a.btn[href=''],.p,.mg,.editor").each(function () {
+    $("a.fn5,a.btn[href=''],.p,.mg,.editor").each(function () {
         err.push(locator(this));
         elt.push(this);
-    });*/
+    });
     if (document.documentMode || window.attachEvent) {
         var msg = $('<div class="msg msg-error"></div>').appendTo("#h-messages");
         feedback.append_item_near(msg[0], {message: "<0>This site no longer supports Internet Explorer", status: 2});
@@ -15451,6 +15881,8 @@ Object.assign(window.hotcrp, {
     // monitor_autoassignment
     // monitor_job
     // onload
+    // parse_tags
+    pidcode: encode_session_list_ids,
     // render_list
     render_text: render_text,
     render_text_page: render_text.on_page,
@@ -15464,6 +15896,7 @@ Object.assign(window.hotcrp, {
     // text
     // tooltip
     // tracker_show_elapsed
+    // update_banners
     // update_tag_decoration
     usere: usere
     // wstorage

@@ -34,6 +34,16 @@ final class PaperReviewPreference {
         return $this->preference . unparse_expertise($this->expertise);
     }
 
+    /** @return string */
+    function unparse_fancy() {
+        if ($this->preference < 0) {
+            $t = "−" /* U+2212 */ . (-$this->preference);
+        } else {
+            $t = "{$this->preference}";
+        }
+        return $t . unparse_expertise($this->expertise);
+    }
+
     /** @param PaperReviewPreference $a
      * @param PaperReviewPreference $b
      * @return -1|0|1 */
@@ -146,6 +156,9 @@ final class PaperContactInfo {
     public $vreviews_array;
     /** @var ?int */
     public $vreviews_version;
+
+    /** @var ?int */
+    public $tag_perm_bits;
     /** @var ?string */
     public $viewable_tags;
     /** @var ?string */
@@ -430,7 +443,7 @@ final class PaperContactInfo {
         if (!$ci) {
             $ci = clone $this;
             $this->forced_rights_link = $ci;
-            $ci->vreviews_array = $ci->viewable_tags = $ci->searchable_tags = null;
+            $ci->vreviews_array = $ci->tag_perm_bits = $ci->viewable_tags = $ci->searchable_tags = null;
             $ci->ciflags = $set0;
         }
         return $ci;
@@ -460,6 +473,15 @@ final class PaperConflictInfo {
         $this->conflictType = $ctype;
         $this->author_index = self::UNINITIALIZED_INDEX;
     }
+
+    /** @param PaperInfo $prow
+     * @return ?Author */
+    function author($prow) {
+        if ($this->author_index === null) {
+            return null;
+        }
+        return $prow->author_by_index($this->author_index);
+    }
 }
 
 final class PaperDocumentLink {
@@ -488,7 +510,7 @@ final class PaperDocumentLink {
     }
 }
 
-final class PaperInfoSet implements IteratorAggregate, Countable {
+final class PaperInfoSet implements ArrayAccess, IteratorAggregate, Countable {
     /** @var Conf
      * @readonly */
     public $conf;
@@ -565,6 +587,26 @@ final class PaperInfoSet implements IteratorAggregate, Countable {
     /** @return bool */
     function is_empty() {
         return empty($this->prows);
+    }
+    #[\ReturnTypeWillChange]
+    /** @return bool */
+    function offsetExists($offset) {
+        return isset($this->by_pid[$offset]);
+    }
+    #[\ReturnTypeWillChange]
+    /** @return ?PaperInfo */
+    function offsetGet($offset) {
+        return $this->by_pid[$offset] ?? null;
+    }
+    #[\ReturnTypeWillChange]
+    /** @return void */
+    function offsetSet($offset, $value) {
+        assert(false);
+    }
+    #[\ReturnTypeWillChange]
+    /** @return void */
+    function offsetUnset($offset) {
+        assert(false);
     }
     /** @param callable(PaperInfo,PaperInfo):int $compare */
     function sort_by($compare) {
@@ -718,6 +760,10 @@ class PaperInfo {
     public $timeModified;
     /** @var ?int */
     public $timeFinalSubmitted;
+    /** @var ?int */
+    public $timeSubmittedReviewable;
+    /** @var ?int */
+    public $timeAcceptNotified;
     /** @var ?string */
     public $withdrawReason;
     /** @var ?int */
@@ -925,6 +971,12 @@ class PaperInfo {
         }
         if (isset($this->timeFinalSubmitted)) {
             $this->timeFinalSubmitted = (int) $this->timeFinalSubmitted;
+        }
+        if (isset($this->timeSubmittedReviewable)) {
+            $this->timeSubmittedReviewable = (int) $this->timeSubmittedReviewable;
+        }
+        if (isset($this->timeAcceptNotified)) {
+            $this->timeAcceptNotified = (int) $this->timeAcceptNotified;
         }
         if (isset($this->shepherdContactId)) {
             $this->shepherdContactId = (int) $this->shepherdContactId;
@@ -1375,7 +1427,7 @@ class PaperInfo {
     /** @return bool */
     function user_prop_changed() {
         foreach ($this->_old_prop ?? [] as $prop => $x) {
-            if (!in_array($prop, ["outcome", "leadContactId", "shepherdContactId", "managerContactId", "pdfFormatStatus"])) {
+            if (!in_array($prop, ["outcome", "leadContactId", "shepherdContactId", "managerContactId", "pdfFormatStatus", "timeModified"])) {
                 return true;
             }
         }
@@ -1613,6 +1665,12 @@ class PaperInfo {
      * @return bool */
     function has_author($contact) {
         return $this->conflict_type($contact) >= CONFLICT_AUTHOR;
+    }
+
+    /** @param Contact|int $contact
+     * @return bool */
+    function has_listed_author($contact) {
+        return ($this->conflict_type($contact) & CONFLICT_AUTHOR) !== 0;
     }
 
     /** @return bool */
@@ -1903,6 +1961,20 @@ class PaperInfo {
         if ($this->paperTags !== ""
             && ($pos = stripos($this->paperTags, " {$tag}#")) !== false) {
             return (float) substr($this->paperTags, $pos + strlen($tag) + 2);
+        }
+        return null;
+    }
+
+    /** @param string $tag
+     * @return ?float */
+    function viewable_tag_value($tag, Contact $user) {
+        if ($this->paperTags === null) {
+            $this->load_tags();
+        }
+        $tags = $this->viewable_tags($user);
+        if ($tags !== ""
+            && ($pos = stripos($tags, " {$tag}#")) !== false) {
+            return (float) substr($tags, $pos + strlen($tag) + 2);
         }
         return null;
     }
@@ -2223,6 +2295,14 @@ class PaperInfo {
     function viewable_decision(Contact $user) {
         if ($this->outcome === 0 || !$user->can_view_decision($this)) {
             return $this->conf->unspecified_decision;
+        }
+        // record when an author first views an accept-class decision
+        if ($this->outcome > 0
+            && $this->timeAcceptNotified === 0
+            && $user->act_author_view($this)) {
+            $this->conf->qe("update Paper set timeAcceptNotified=? where paperId=? and timeAcceptNotified=0 and outcome>0",
+                Conf::$now, $this->paperId);
+            $this->timeAcceptNotified = Conf::$now;
         }
         return $this->decision();
     }
@@ -2558,6 +2638,23 @@ class PaperInfo {
         return $this->document($this->finalPaperStorageId > 0 ? DTYPE_FINAL : DTYPE_SUBMISSION);
     }
 
+    /** @return ?DocumentInfo */
+    function viewable_primary_document(Contact $user) {
+        $doc = null;
+        if ($this->finalPaperStorageId > 1
+            && $this->outcome > 0
+            && $user->can_view_decision($this)
+            && $user->can_view_option($this, $this->conf->option_by_id(DTYPE_FINAL))) {
+            $doc = $this->document(DTYPE_FINAL);
+        }
+        if (!$doc
+            && $this->paperStorageId > 1
+            && $user->can_view_option($this, $this->conf->option_by_id(DTYPE_SUBMISSION))) {
+            $doc = $this->document(DTYPE_SUBMISSION);
+        }
+        return $doc;
+    }
+
     /** @return bool */
     function is_primary_document(DocumentInfo $doc) {
         return $doc->paperStorageId > 1
@@ -2601,7 +2698,8 @@ class PaperInfo {
         return $ov ? $ov->attachment($name) : null;
     }
 
-    /** @return ?int */
+    /** @return ?int
+     * @deprecated */
     function npages() {
         $doc = $this->document($this->finalPaperStorageId <= 0 ? DTYPE_SUBMISSION : DTYPE_FINAL);
         return $doc ? $doc->npages() : 0;

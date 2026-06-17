@@ -67,6 +67,7 @@ class MailRecipients extends MessageSet {
     const F_REV_EXT = 0x400;
     const F_REV_PC = 0x800;
     const F_REV_MYREQ = 0x1000;
+    const F_ACCEPT = 0x2000;
 
     const FM_REV = 0x30;
     const FM_REV_SPECIFIC = 0xD0;
@@ -128,9 +129,8 @@ class MailRecipients extends MessageSet {
             }
             if ($dmaxcount > 0) {
                 return "dec:{$dmaxname}";
-            } else {
-                return substr($t, 4);
             }
+            return substr($t, 4);
         } else if ($t === "myuncextrev") {
             return "uncmyextrev";
         }
@@ -183,11 +183,12 @@ class MailRecipients extends MessageSet {
             $this->add_recpt_group("bydec_group", "Contact authors by decision");
             foreach ($this->conf->decision_set() as $dec) {
                 if ($dec->id !== 0) {
-                    $hide = ($this->_dcounts[$dec->id] ?? 0) === 0;
-                    $this->add_recpt("dec:{$dec->name}", "Contact authors of " . $dec->name_as(5) . " applications", "dec:{$dec->name}", $hide ? self::F_HIDE : 0);
+                    $hflag = ($this->_dcounts[$dec->id] ?? 0) === 0 ? self::F_HIDE : 0;
+                    $aflag = $dec->sign > 0 ? self::F_ACCEPT : 0;
+                    $this->add_recpt("dec:{$dec->name}", "Contact authors of {$dec->name} applications", "dec:{$dec->name}", $hflag | $aflag);
                 }
             }
-            $this->add_recpt("dec:yes", "Contact authors of accept-class applications", "dec:yes", $this->_has_dt[2] ? 0 : self::F_HIDE);
+            $this->add_recpt("dec:yes", "Contact authors of accept-class applications", "dec:yes", ($this->_has_dt[2] ? 0 : self::F_HIDE) | self::F_ACCEPT);
             $this->add_recpt("dec:no", "Contact authors of reject-class applications", "dec:no", $this->_has_dt[0] ? 0 : self::F_HIDE);
             $this->add_recpt("dec:none", "Contact authors of undecided applications", "dec:none", $this->_has_dt[1] && ($this->_has_dt[0] || $this->_has_dt[2]) ? 0 : self::F_HIDE);
             $this->add_recpt("dec:any", "Contact authors of decided applications", "dec:any", self::F_HIDE);
@@ -235,7 +236,7 @@ class MailRecipients extends MessageSet {
         $this->recipt_default_message = "reviewers";
         $hide = !$this->user->is_requester();
         $this->add_recpt("myextrev", "Your requested reviewers", "req", self::F_ANYPC | ($hide ? self::F_HIDE : 0) | self::F_REV | self::F_REV_EXT | self::F_REV_MYREQ);
-        $this->add_recpt("uncmyextrev", "Your requested reviewers with incomplete reviews", "req", self::F_ANYPC | ($hide ? self::F_HIDE : 0) | self::F_REV_INCOMPLETE | self::F_REV_EXT | self::F_REV_MYREQ);
+        $this->add_recpt("uncmyextrev", "Your requested reviewers with incomplete reviews", "req", self::F_ANYPC | ($hide ? self::F_HIDE : 0) | self::F_REV | self::F_REV_INCOMPLETE | self::F_REV_EXT | self::F_REV_MYREQ);
 
         if ($user->is_manager()) {
             $this->add_recpt("lead", "Discussion leads", "s", $any_lead ? 0 : self::F_HIDE);
@@ -287,7 +288,7 @@ class MailRecipients extends MessageSet {
     function set_search(?PaperSearch $srch) {
         if ($srch
             && ($this->rect->flags & self::F_REV) !== 0
-            && $srch->main_term()->about() !== SearchTerm::ABOUT_PAPER) {
+            && ($srch->main_term()->about() & ~SearchTerm::ABOUT_PAPER)) {
             $this->search = $srch->main_term();
         } else {
             $this->search = null;
@@ -395,6 +396,11 @@ class MailRecipients extends MessageSet {
     function is_authors() {
         return in_array($this->rect->name, ["s", "unsub", "active", "au"], true)
             || str_starts_with($this->rect->name, "dec:");
+    }
+
+    /** @return bool */
+    function is_accepted_authors() {
+        return ($this->rect->flags & self::F_ACCEPT) !== 0;
     }
 
     /** @return bool */
@@ -521,30 +527,62 @@ class MailRecipients extends MessageSet {
         if (($rf & self::F_REV) === 0) {
             return true;
         }
-        if ((($rf & self::F_REV_COMPLETE)
-             && ($rrow->reviewSubmitted ?? 0) <= 0)
-            || (($rf & self::F_REV_INCOMPLETE)
-                && ($rrow->reviewSubmitted !== null
-                    || $rrow->reviewNeedsSubmit == 0
-                    || $prow->timeSubmitted <= 0))
-            || (($rf & self::F_REV_SINCE)
-                && ($rrow->timeRequested <= $rrow->timeRequestNotified
-                    || ($this->newrev_since
-                        && $rrow->timeRequested < $this->newrev_since)))
-            || (($rf & self::FM_REV_SPECIFIC) === 0
-                && $prow->timeSubmitted <= 0
-                && ($rrow->reviewSubmitted ?? 0) <= 0)
-            || (($rf & self::F_REV_EXT)
-                && $rrow->reviewType !== REVIEW_EXTERNAL)
-            || (($rf & self::F_REV_MYREQ)
-                && $rrow->requestedBy !== $this->user->contactId)
-            || (($rf & self::F_REV_PC)
-                && $rrow->reviewType <= REVIEW_PC)
-            || (($rf & self::F_REV_NONACCEPTED)
-                && $rrow->reviewModified > 0)) {
+        // withdrawn papers + incomplete reviews generally uninteresting
+        if (($rf & self::FM_REV_SPECIFIC) === 0
+            && $prow->timeSubmitted <= 0
+            && ($rrow->reviewSubmitted ?? 0) <= 0) {
+            return false;
+        }
+        // check completeness
+        if (($rf & self::F_REV_COMPLETE)
+            && ($rrow->reviewSubmitted ?? 0) <= 0) {
+            return false;
+        }
+        if (($rf & self::F_REV_INCOMPLETE)
+            && (($rrow->reviewSubmitted ?? 0) > 0
+                || $rrow->reviewNeedsSubmit == 0
+                || $prow->timeSubmitted <= 0)) {
+            return false;
+        }
+        if (($rf & self::F_REV_NONACCEPTED)
+            && $rrow->reviewModified > 0) {
+            return false;
+        }
+        // check type
+        if (($rf & self::F_REV_EXT)
+            && $rrow->reviewType !== REVIEW_EXTERNAL) {
+            return false;
+        }
+        if (($rf & self::F_REV_PC)
+            && $rrow->reviewType <= REVIEW_PC) {
+            return false;
+        }
+        // check requester
+        if (($rf & self::F_REV_MYREQ)
+            && $rrow->requestedBy !== $this->user->contactId) {
+            return false;
+        }
+        // check time requested (NB requires full review)
+        if (($rf & self::F_REV_SINCE)
+            && ($this->newrev_since
+                ? $this->newrev_since > $rrow->timeRequested
+                : $rrow->timeRequested <= $rrow->timeRequestNotified)) {
             return false;
         }
         return true;
+    }
+
+    /** @return list<ReviewInfo> */
+    function reviews_for_recipient(PaperInfo $prow, Contact $recipient) {
+        if ($this->rect->flags & self::F_REV_SINCE) {
+            $prow->ensure_full_reviews();
+        }
+        $rrows = [];
+        foreach ($prow->reviews_by_user($recipient) as $rrow) {
+            if ($this->test_for_assignment_keyword($prow, $rrow))
+                $rrows[] = $rrow;
+        }
+        return $rrows;
     }
 
     /** @param bool $paper_sensitive
@@ -599,9 +637,10 @@ class MailRecipients extends MessageSet {
                 $where[] = "(PaperReview.rflags&" . ReviewInfo::RF_LIVE . ")!=0";
             }
             if ($rf & self::F_REV_SINCE) {
-                $where[] = "PaperReview.timeRequested>PaperReview.timeRequestNotified";
                 if ($this->newrev_since) {
                     $where[] = "PaperReview.timeRequested>={$this->newrev_since}";
+                } else {
+                    $where[] = "PaperReview.timeRequested>PaperReview.timeRequestNotified";
                 }
             }
             if ($rf & self::F_ALLCOMPLETEREV) {

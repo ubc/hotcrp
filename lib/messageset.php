@@ -136,6 +136,12 @@ class MessageItem implements JsonSerializable {
         return $this->field === $field ? $this : $this->with(["field" => $field]);
     }
 
+    /** @param int $status
+     * @return MessageItem */
+    function with_max_status($status) {
+        return $this->status <= $status ? $this : $this->with(["status" => $status]);
+    }
+
     /** @param ?string $landmark
      * @return MessageItem */
     function with_landmark($landmark) {
@@ -950,7 +956,7 @@ class MessageSet {
                 && ($mi->status !== self::INFORM || $mi->landmark !== $last_landmark)) {
                 $lmx = $mi->landmark;
                 if (str_starts_with($lmx, "<5>")
-                    && ($clmx = CleanHTML::basic_clean(substr($lmx, 3))) !== false) {
+                    && ($clmx = CleanHTML::basic_clean(substr($lmx, 3))) !== null) {
                     $lmx = $clmx;
                 } else {
                     $lmx = htmlspecialchars($lmx);

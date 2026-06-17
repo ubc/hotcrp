@@ -41,7 +41,7 @@ class Review_Page {
 
     /** @param ?FailureReason $perm */
     function error_exit($perm = null) {
-        http_response_code($this->user->is_signed_in() ? 403 : 401);
+        Navigation::http_response_code($this->user->is_signed_in() ? 403 : 401);
         if ($perm && (!$perm->secondary || $this->conf->saved_messages_status() < 2)) {
             $perm->set("expand", true);
             $perm->set("listViewable", $this->user->is_author() || $this->user->is_reviewer());
@@ -110,7 +110,7 @@ class Review_Page {
     }
 
     function handle_cancel() {
-        $this->conf->redirect($this->prow->hoturl([], Conf::HOTURL_RAW));
+        $this->qreq->redirect($this->prow->hoturl([], Conf::HOTURL_RAW));
     }
 
     function handle_update() {
@@ -121,7 +121,7 @@ class Review_Page {
         }
         $rv->report();
         if (!$rv->has_error() && !$rv->has_problem_at("ready")) {
-            $this->conf->redirect_self($this->qreq);
+            $this->qreq->redirect_self();
         }
         $this->rv = $rv;
         $this->reload_prow();
@@ -152,11 +152,11 @@ class Review_Page {
             $rv->error_at(null, "<0>Uploaded form was not for this {submission}");
         } else if ($other) {
             $rv->warning_at(null, "<0>Reviews for other {submissions} ignored");
-            $rv->inform_at(null, "<5>Upload multiple-review files " . Ht::link("here", $this->conf->hoturl("offline")) . ".");
+            $rv->inform_at(null, "<5>Upload multiple-review files " . $this->conf->hotlink("here", "offline") . ".");
         }
         $rv->report();
         if (!$rv->has_error()) {
-            $this->conf->redirect_self($this->qreq);
+            $this->qreq->redirect_self();
         }
         $this->reload_prow();
     }
@@ -232,7 +232,7 @@ class Review_Page {
             }
         }
         $rv->report();
-        $this->conf->redirect_self($this->qreq, ["r" => $want_rid]);
+        $this->qreq->redirect_self(["r" => $want_rid]);
     }
 
     function handle_delete() {
@@ -245,7 +245,7 @@ class Review_Page {
         if ($this->rrow->delete($this->user)) {
             $this->conf->success_msg("<0>Review deleted");
         }
-        $this->conf->redirect_self($this->qreq, ["r" => null, "reviewId" => null]);
+        $this->qreq->redirect_self(["r" => null, "reviewId" => null]);
     }
 
     function handle_unsubmit() {
@@ -259,7 +259,7 @@ class Review_Page {
         if ($rv->check_and_save($this->user, $this->prow, $this->rrow)) {
             $this->conf->success_msg("<0>Review unsubmitted");
         }
-        $this->conf->redirect_self($this->qreq);
+        $this->qreq->redirect_self();
     }
 
     function handle_valid_post() {
@@ -300,8 +300,8 @@ class Review_Page {
         if (($u = $this->conf->user_by_id($capuid, USER_SLICE))) {
             if (PaperRequest::simple_qreq($this->qreq)
                 && ($i = Contact::session_index_by_email($this->qreq, $u->email)) >= 0) {
-                $selfurl = $this->conf->selfurl($this->qreq, null, Conf::HOTURL_SITEREL | Conf::HOTURL_RAW);
-                $this->conf->redirect($this->qreq->navigation()->base_absolute() . "u/{$i}/{$selfurl}");
+                $selfurl = $this->conf->selfurl($this->qreq, null, Conf::HOTURL_SITEREL);
+                $this->qreq->redirect($this->qreq->navigation()->base_absolute() . "u/{$i}/{$selfurl}");
                 return;
             }
 
@@ -310,13 +310,13 @@ class Review_Page {
                 $mx = "You’re accessing this review using a special link for reviewer {$hemail}. (You are signed in as " . htmlspecialchars($this->user->email) . ".)";
                 if ($this->rrow->reviewStatus <= ReviewInfo::RS_DRAFTED) {
                     $m = "<5><p class=\"mb-0\">{$mx} If you wish, you can reassign the linked review to one your current accounts.</p>"
-                        . Ht::form("", ["class" => "has-fold foldo"])
+                        . Ht::form("", ["class" => "has-fold foldo"], Conf::HOTURL_RAW)
                         . '<div class="aab mt-2 fx">';
                     foreach ($this->user->session_emails($this->qreq) as $e) {
                         if ($e === "") {
                             continue;
                         }
-                        $url = $this->conf->hoturl("=api/claimreview", ["p" => $this->prow->paperId, "r" => $this->rrow->reviewId, "email" => $e]);
+                        $url = $this->conf->hoturl_raw("=api/claimreview", ["p" => $this->prow->paperId, "r" => $this->rrow->reviewId, "email" => $e]);
                         $m .= '<div class="aabut">'
                             . Ht::submit("Reassign to " . htmlspecialchars($e), [
                                 "formaction" => $url, "class" => "ui js-acceptish-review"
@@ -327,7 +327,7 @@ class Review_Page {
                     $m = "<5>{$mx}";
                 }
             } else {
-                $m = "<5>You’re accessing this review using a special link for reviewer {$hemail}. " . Ht::link("Sign in to the site", $this->conf->hoturl("signin", ["email" => $u->email, "cap" => null]), ["class" => "nw"]);
+                $m = "<5>You’re accessing this review using a special link for reviewer {$hemail}. " . $this->conf->hotlink("Sign in to the site", "signin", ["email" => $u->email, "cap" => null], ["class" => "nw"]);
             }
             $this->pt()->add_pre_status_feedback(MessageItem::warning_note($m));
         }
@@ -355,17 +355,18 @@ class Review_Page {
             && !($this->rrow
                  ? $this->user->can_edit_review($this->prow, $this->rrow)
                  : $this->user->can_create_review($this->prow, $this->user))) {
-            $pt->paptabEndWithReviewMessage();
+            $pt->print_no_reviews_message();
         } else {
             if ($pt->mode === "re" || $this->rrow) {
                 $pt->print_review_form(); // might just render review
                 $pt->print_main_link();
             } else {
-                $pt->paptabEndWithReviewsAndComments();
+                $pt->print_prepare_reviews();
             }
         }
 
         echo "</article>\n";
+        $pt->print_finish_reviews();
         $this->qreq->print_footer();
     }
 

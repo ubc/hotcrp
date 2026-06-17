@@ -135,6 +135,10 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
 
     /** @return $this */
     function set_paper(?PaperInfo $prow) {
+        assert(!$prow || !$this->_conf || $this->_conf === $prow->conf);
+        if ($prow) {
+            $this->_conf = $prow->conf;
+        }
         $this->_requested_paper = $prow;
         return $this;
     }
@@ -446,11 +450,8 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
      * @param array|QrequestFile $finfo
      * @return $this */
     function set_file($name, $finfo) {
-        if (is_array($finfo)) {
-            $this->_files[$name] = QrequestFile::make_finfo($finfo);
-        } else {
-            $this->_files[$name] = $finfo;
-        }
+        $qf = is_array($finfo) ? QrequestFile::make_finfo($finfo) : $finfo;
+        $this->_files[$name] = $qf;
         return $this;
     }
     /** @param string $name
@@ -536,9 +537,11 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
         }
         return $x;
     }
-    /** @param string $name */
+    /** @param string $name
+     * @return $this */
     function set_annex($name, $x) {
         $this->_annexes[$name] = $x;
+        return $this;
     }
     /** @return $this */
     function approve_token() {
@@ -661,8 +664,7 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
 
     /** @return Qrequest */
     static function set_main_request(Qrequest $qreq) {
-        global $Qreq;
-        Qrequest::$main_request = $Qreq = $qreq;
+        Qrequest::$main_request = $qreq;
         return $qreq;
     }
 
@@ -697,6 +699,20 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
      * @param int $expires_at */
     function set_httponly_cookie($name, $value, $expires_at) {
         $this->set_cookie_opt($name, $value, ["expires" => $expires_at, "httponly" => true]);
+    }
+
+
+    /** @param Contact|Author $au
+     * @param string $prefix
+     * @return string */
+    function actas_link_for($au, $prefix = "") {
+        if (!$au->email
+            || !$this->_conf
+            || ($this->_user && $au->contactId === $this->_user->contactId)) {
+            return "";
+        }
+        $url = $this->_conf->selfurl($this, ["actas" => $au->email]);
+        return $prefix . Ht::link(Ht::img("viewas.png", "[Act as]", ["title" => "Act as " . Text::nameo($au, NAME_P)]), $url, ["tabindex" => "-1"]);
     }
 
 
@@ -842,6 +858,31 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
     }
 
 
+    /** @param ?string $url
+     * @param 301|302|303|307|308 $status
+     * @return never
+     * @throws Redirection */
+    function redirect($url = null, $status = 302) {
+        $this->_conf->saved_messages_commit($this);
+        Navigation::redirect_absolute($this->_navigation->resolve($url ?? $this->_conf->hoturl_raw("index")), $status);
+    }
+
+    /** @param string $page
+     * @param ?array $param
+     * @return never
+     * @throws Redirection */
+    function redirect_hoturl($page, $param = null) {
+        $this->redirect($this->_conf->hoturl($page, $param, Conf::HOTURL_RAW));
+    }
+
+    /** @param ?array $param
+     * @return never
+     * @throws Redirection */
+    function redirect_self($param = null) {
+        $this->redirect($this->_conf->selfurl($this, $param));
+    }
+
+
     /** @return array<string,string|list> */
     function debug_json() {
         $a = [];
@@ -871,6 +912,8 @@ class Qrequest implements ArrayAccess, IteratorAggregate, Countable, JsonSeriali
 }
 
 class QrequestFile {
+    /** @var ?string */
+    public $input_name;
     /** @var string */
     public $name;
     /** @var string */

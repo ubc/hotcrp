@@ -47,8 +47,8 @@ class API_Page {
         // CORS: Allow if user provides CSRF token or auth is explicitly false.
         if ((($uf && ($uf->auth ?? null) === false) || $qreq->valid_token())
             && ($origin = $qreq->raw_header("HTTP_ORIGIN")) !== null) {
-            header("Access-Control-Allow-Origin: {$origin}");
-            header("Access-Control-Allow-Credentials: true");
+            Navigation::header("Access-Control-Allow-Origin: {$origin}");
+            Navigation::header("Access-Control-Allow-Credentials: true");
         }
         $validator = null;
         if ($uf && $conf->opt("validateApiSpec")) {
@@ -62,16 +62,16 @@ class API_Page {
         if ($jr instanceof Downloader) {
             $conf->emit_browser_security_headers($qreq);
             $jr->emit();
-            exit(0);
+            Navigation::complete();
         } else if ($jr instanceof PageCompletion) {
             $jr->emit($qreq);
-            exit(0);
+            Navigation::complete();
         }
         if ($uf
             && ($uf->redirect ?? false)
             && ($url = $conf->qreq_redirect_url($qreq))) {
             $conf->feedback_msg(self::export_messages($jr));
-            $conf->redirect($url);
+            $qreq->redirect($url);
         }
         return $jr;
     }
@@ -83,9 +83,8 @@ class API_Page {
     static private function status_api($fn, $user, $qreq) {
         $prow = $qreq->paper();
         // default status API to not being pretty printed; it's frequently called
-        $jr = (new JsonResult($user->status_json($prow ? [$prow] : [])))
+        $jr = (new JsonResult($user->status_json(["ok" => true], $prow)))
             ->set_pretty_print(false);
-        $jr["ok"] = true;
         if ($fn === "track"
             && ($new_trackerid = $qreq->annex("new_trackerid"))) {
             $jr["new_trackerid"] = $new_trackerid;
@@ -98,6 +97,14 @@ class API_Page {
             $prow->add_tag_info_json($pj, $user);
             if (count((array) $pj) > 1) {
                 $jr["p"] = [$prow->paperId => $pj];
+            }
+        }
+        if (($btoken = $qreq->bannertoken) !== null
+            && $user->conf->setting("banners")) {
+            $cb = new CustomBanners($user->conf, $user, $qreq);
+            if (!$cb->check_token($btoken)) {
+                $jr["banners"] = $cb->active_json();
+                $jr["bannertoken"] = $cb->token();
             }
         }
         return $jr;
@@ -137,31 +144,29 @@ class API_Page {
             $allow = "OPTIONS, GET, HEAD, POST";
         }
         if ($cors_type !== null) {
-            header("Access-Control-Allow-Origin: " . ($_SERVER["HTTP_ORIGIN"] ?? "*"));
+            Navigation::header("Access-Control-Allow-Origin: " . ($_SERVER["HTTP_ORIGIN"] ?? "*"));
         }
         if ($cors_type === "api") {
-            header("Access-Control-Allow-Credentials: true");
+            Navigation::header("Access-Control-Allow-Credentials: true");
         }
         $ok = true;
         if ($_SERVER["HTTP_ACCESS_CONTROL_REQUEST_METHOD"] ?? null) {
             if ($cors_type === null) {
-                http_response_code(403);
-                exit(0);
+                Navigation::complete(403);
             }
-            header("Access-Control-Allow-Headers: *");
-            header("Access-Control-Allow-Methods: {$allow}");
-            header("Access-Control-Max-Age: 86400");
+            Navigation::header("Access-Control-Allow-Headers: *");
+            Navigation::header("Access-Control-Allow-Methods: {$allow}");
+            Navigation::header("Access-Control-Max-Age: 86400");
         }
-        header("Allow: {$allow}");
-        http_response_code(204);
-        exit(0);
+        Navigation::header("Allow: {$allow}");
+        Navigation::complete(204);
     }
 
     static function parameter_error_exit($param, $message) {
-        http_response_code(400);
-        header("Content-Type: application/json; charset=utf-8");
+        Navigation::http_response_code(400);
+        Navigation::header("Content-Type: application/json; charset=utf-8");
         echo "{\"ok\": false, \"message_list\": [{\"field\": \"{$param}\", \"message\": \"{$message}\", \"status\": 2}]}\n";
-        exit(0);
+        Navigation::complete();
     }
 
     /** @param NavigationState $nav

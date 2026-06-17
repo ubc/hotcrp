@@ -47,9 +47,6 @@ class ReviewSearchMatcher extends ContactCountMatcher {
     /** @var ?ReviewFieldSearch<ReviewField> */
     private $rfsrch;
 
-    /** @var int */
-    static public $mode = 0;
-
     static private $status_map = [
         // preferred names come first
         "complete" => self::COMPLETE,
@@ -478,5 +475,17 @@ class ReviewSearchMatcher extends ContactCountMatcher {
     function test_finish($n) {
         return $this->test($n)
             && (!$this->rfsrch || $this->rfsrch->finished === 0);
+    }
+
+    /** @return int */
+    function about() {
+        $a = 0;
+        if ($this->rate_bits !== null) {
+            $a |= SearchTerm::ABOUT_REACTIONS;
+        }
+        if ($this->has_count()) {
+            return $a | SearchTerm::ABOUT_REVIEW_SET;
+        }
+        return $a | SearchTerm::ABOUT_REVIEW;
     }
 }

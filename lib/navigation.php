@@ -1,6 +1,6 @@
 <?php
 // navigation.php -- HotCRP navigation helper functions
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class NavigationState {
     // Base URL:    PROTOCOL://HOST[:PORT]/BASEPATH/
@@ -172,9 +172,9 @@ class NavigationState {
     }
 
     /** @param string $base_uri
-     * @param string $path
+     * @param string $rest
      * @return NavigationState */
-    static function make_base($base_uri, $path = "") {
+    static function make_base($base_uri, $rest = "") {
         // no query or fragment allowed
         $is_https = substr_compare($base_uri, "https://", 0, 8, true) === 0;
         if (strpos($base_uri, "?") !== false
@@ -185,8 +185,8 @@ class NavigationState {
         }
         if (!str_ends_with($base_uri, "/")) {
             $base_uri .= "/";
-            if (str_starts_with($path, "/")) {
-                $path = substr($path, 1);
+            if (str_starts_with($rest, "/")) {
+                $rest = substr($rest, 1);
             }
         }
         // protocol, host
@@ -211,20 +211,25 @@ class NavigationState {
         }
         $nav->base_path_relative = $nav->site_path = $nav->site_path_relative = $nav->base_path;
         // rest
-        if (($n = strpos($path, "/")) === false) {
-            $n = strlen($path);
+        if (($q = strpos($rest, "?")) !== false) {
+            $nav->query = substr($rest, $q);
+            $rest = substr($rest, 0, $q);
+        } else {
+            $nav->query = "";
+        }
+        if (($n = strpos($rest, "/")) === false) {
+            $n = strlen($rest);
         }
         if ($n === 0) {
             $nav->raw_page = "";
             $nav->page = "index";
             $nav->path = "";
         } else {
-            $nav->raw_page = substr($path, 0, $n);
+            $nav->raw_page = substr($rest, 0, $n);
             $nav->page = $nav->raw_page;
-            $nav->path = substr($path, $n);
+            $nav->path = substr($rest, $n);
         }
-        $nav->query = "";
-        $nav->request_uri = $nav->base_path . $nav->path;
+        $nav->request_uri = $nav->base_path . $nav->path . $nav->query;
         return $nav;
     }
 
@@ -282,17 +287,18 @@ class NavigationState {
     }
 
     private function apply_php_suffix() {
-        if ($this->page === $this->raw_page) {
-            $pagelen = strlen($this->page);
-            if ($pagelen > 4
-                && substr($this->page, $pagelen - 4) === ".php") {
-                $this->page = substr($this->page, 0, $pagelen - 4);
-            } else if ($this->php_suffix !== ""
-                       && $this->php_suffix !== ".php"
-                       && $pagelen > ($sfxlen = strlen($this->php_suffix))
-                       && substr($this->page, $pagelen - $sfxlen) === $this->php_suffix) {
-                $this->page = substr($this->page, 0, $pagelen - $sfxlen);
-            }
+        if ($this->page !== $this->raw_page) {
+            return;
+        }
+        $pagelen = strlen($this->page);
+        if ($pagelen > 4
+            && str_ends_with($this->page, ".php")) {
+            $this->page = substr($this->page, 0, -4);
+        } else if ($this->php_suffix !== ""
+                   && $this->php_suffix !== ".php"
+                   && $pagelen > strlen($this->php_suffix)
+                   && str_ends_with($this->page, $this->php_suffix)) {
+            $this->page = substr($this->page, 0, -strlen($this->php_suffix));
         }
     }
 
@@ -320,6 +326,9 @@ class NavigationState {
     /** @param bool $downcase_host
      * @return string */
     function base_absolute($downcase_host = false) {
+        if ($this->server === null) {
+            return null;
+        }
         $x = $downcase_host ? strtolower($this->server) : $this->server;
         return $x . $this->base_path;
     }
@@ -327,6 +336,9 @@ class NavigationState {
     /** @param bool $downcase_host
      * @return string */
     function site_absolute($downcase_host = false) {
+        if ($this->server === null) {
+            return null;
+        }
         $x = $downcase_host ? strtolower($this->server) : $this->server;
         return $x . $this->site_path;
     }
@@ -339,9 +351,8 @@ class NavigationState {
             return $x;
         } else if (substr($url, 0, 5) !== "index" || substr($url, 5, 1) === "/") {
             return $x . $url;
-        } else {
-            return ($x ? : $this->site_path) . substr($url, 5);
         }
+        return ($x ? : $this->site_path) . substr($url, 5);
     }
 
     /** @param ?string $url
@@ -458,21 +469,12 @@ class NavigationState {
             $this->raw_page = "";
             $this->page = "index";
         }
-        // NB: str_ends_with is not available in this file in older PHPs
-        if (($pagelen = strlen($this->page)) > 4
-            && substr($this->page, $pagelen - 4) === ".php") {
-            $this->page = substr($this->page, 0, $pagelen - 4);
+        $pagelen = strlen($this->page);
+        if ($pagelen > 4 && str_ends_with($this->page, ".php")) {
+            $this->page = substr($this->page, 0, -4);
         }
         $this->path = (string) substr($path, $spos);
         return $this->page;
-    }
-
-    /** @param string $url
-     * @param ?string $ref
-     * @return string
-     * @deprecated */
-    function make_absolute($url, $ref = null) {
-        return $this->resolve($url, $ref);
     }
 
     /** @param string $url
@@ -586,14 +588,6 @@ class NavigationState {
 
     /** @param ?string $url
      * @param string $ref
-     * @return ?string
-     * @deprecated */
-    function make_absolute_under($url, $ref) {
-        return $this->resolve_within($url, $ref);
-    }
-
-    /** @param ?string $url
-     * @param string $ref
      * @return ?string */
     function resolve_within($url, $ref = "") {
         // Like `resolve`, but result is constrained to live under
@@ -675,8 +669,8 @@ class NavigationState {
     function redirect_http_to_https($allow_http_if_localhost = false) {
         if ($this->protocol !== "http://"
             || ($allow_http_if_localhost
-                && ($_SERVER["REMOTE_ADDR"] !== "127.0.0.1"
-                    || $_SERVER["REMOTE_ADDR"] !== "::1"))) {
+                && ($_SERVER["REMOTE_ADDR"] === "127.0.0.1"
+                    || $_SERVER["REMOTE_ADDR"] === "::1"))) {
             return;
         }
         Navigation::redirect_absolute("https://" . ($this->host ? : "localhost")
@@ -687,6 +681,14 @@ class NavigationState {
 class Navigation {
     /** @var ?NavigationState */
     static private $s;
+
+    /** @var int */
+    static public $test_mode = 0;
+    /** @var int */
+    static public $http_response_code = 200;
+    /** @var list<string> */
+    static public $headers = [];
+
 
     /** @return NavigationState */
     static function get() {
@@ -700,15 +702,86 @@ class Navigation {
         return self::$s;
     }
 
+    static function set(NavigationState $state) {
+        self::$s = $state;
+    }
+
     /** @return string */
     static function self() {
         return self::get()->self();
+    }
+
+
+    static function headers_reset() {
+        self::$http_response_code = 200;
+        self::$headers = [];
+    }
+
+    /** @param ?int $status
+     * @return int */
+    static function http_response_code($status = null) {
+        $prev = self::$http_response_code;
+        if ($status) {
+            self::$http_response_code = $status;
+            if (self::$test_mode <= 0) {
+                http_response_code($status);
+            }
+        }
+        return $prev;
+    }
+
+    /** @param string $header
+     * @param bool $replace */
+    static function header($header, $replace = true) {
+        if (self::$test_mode <= 0) {
+            header($header, $replace);
+            return;
+        }
+        if ($replace && ($colon = strpos($header, ":")) !== false) {
+            self::header_remove(substr($header, 0, $colon));
+        }
+        self::$headers[] = $header;
+    }
+
+    /** @param string $name */
+    static function header_remove($name) {
+        if (self::$test_mode <= 0) {
+            header_remove($name);
+            return;
+        }
+        self::$headers = array_values(array_filter(self::$headers ?? [],
+            function ($h) use ($name) {
+                return strlen($h) <= strlen($name)
+                    || $h[strlen($name)] !== ":"
+                    || substr_compare($h, $name, 0, strlen($name), true) !== 0;
+            }
+        ));
+    }
+
+    /** @return list<string> */
+    static function headers_list() {
+        return self::$headers;
+    }
+
+    /** @param ?int $status
+     * @return never */
+    static function complete($status = null) {
+        if ($status) {
+            self::http_response_code($status);
+        }
+        if (self::$test_mode > 0) {
+            throw new PageCompletion(self::$http_response_code);
+        }
+        exit(0);
     }
 
     /** @param string $url
      * @param 301|302|303|307|308 $status
      * @return never */
     static function redirect_absolute($url, $status = 302) {
+        if (self::$test_mode > 0) {
+            throw new Redirection($url, $status);
+        }
         assert(substr_compare($url, "https://", 0, 8) === 0
                || substr_compare($url, "http://", 0, 7) === 0);
         // Might have an HTML-encoded URL; decode at least &amp;.
@@ -725,6 +798,7 @@ class Navigation {
         exit(0);
     }
 
+
     /** @param int $t
      * @return string */
     static function http_date($t) {
@@ -739,6 +813,35 @@ class Navigation {
             return $dt !== false ? $dt->getTimestamp() : null;
         } catch (Exception $ex) {
             return null;
+        }
+    }
+}
+
+class Redirection extends Exception {
+    /** @var string */
+    public $url;
+    /** @var int */
+    public $status;
+    /** @param string $url
+     * @param 301|302|303|307|308 $status */
+    function __construct($url, $status = 302) {
+        parent::__construct("Redirect to {$url}");
+        $this->url = $url;
+        $this->status = $status;
+    }
+}
+
+class PageCompletion extends Exception {
+    /** @var ?int */
+    public $status;
+    function __construct($status = null) {
+        parent::__construct("Page complete");
+        $this->status = $status;
+    }
+    /** @param ?Qrequest $qreq */
+    function emit($qreq = null) {
+        if ($this->status !== null) {
+            http_response_code($this->status);
         }
     }
 }

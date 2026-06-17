@@ -99,6 +99,8 @@ class Contact implements JsonSerializable {
     /** @var ?string */
     private $collaborators;
     /** @var ?string */
+    private $collaboratorsOverflow;
+    /** @var ?string */
     public $preferredEmail;
     /** @var ?string */
     private $country;
@@ -272,6 +274,7 @@ class Contact implements JsonSerializable {
     const PROP_UPDATE = 0x4000;
     const PROP_IMPORT = 0x8000;
     const PROP_SPECIAL = 0x10000;
+    const PROP_OVERFLOWABLE = 0x20000;
     static public $props = [
         "email" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_STRING | self::PROP_SIMPLIFY | self::PROP_SLICE,
         "firstName" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_STRING | self::PROP_SIMPLIFY | self::PROP_SLICE | self::PROP_NAME | self::PROP_UPDATE | self::PROP_IMPORT,
@@ -284,7 +287,7 @@ class Contact implements JsonSerializable {
         "password" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_STRING | self::PROP_NOUPDATECDB,
         "passwordTime" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_INT | self::PROP_NOUPDATECDB,
         "passwordUseTime" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_INT | self::PROP_NOUPDATECDB,
-        "collaborators" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_NULL | self::PROP_STRING | self::PROP_UPDATE | self::PROP_IMPORT,
+        "collaborators" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_NULL | self::PROP_STRING | self::PROP_UPDATE | self::PROP_IMPORT | self::PROP_OVERFLOWABLE,
         "updateTime" => self::PROP_LOCAL | self::PROP_CDB | self::PROP_INT | self::PROP_NOUPDATECDB,
         "lastLogin" => self::PROP_LOCAL | self::PROP_INT,
         "defaultWatch" => self::PROP_LOCAL | self::PROP_INT,
@@ -444,17 +447,23 @@ class Contact implements JsonSerializable {
         }
         $this->_slice = (int) $this->_slice;
 
+        // handle collaborators property
+        if (isset($this->collaboratorsOverflow)) {
+            $this->collaborators = $this->collaboratorsOverflow;
+            $this->collaboratorsOverflow = null;
+        }
+
         // handle unsliced properties
         if ($this->_slice === 0) {
             foreach (self::$props as $prop => $shape) {
-                if (($shape & (self::PROP_SLICE | self::PROP_DATA | self::PROP_STRING)) === 0
-                    && isset($this->$prop)) {
-                    if (($shape & self::PROP_INT) !== 0) {
-                        $this->$prop = (int) $this->$prop;
-                    } else {
-                        assert(($shape & self::PROP_BOOL) !== 0);
-                        $this->$prop = (bool) $this->$prop;
-                    }
+                if (($shape & (self::PROP_SLICE | self::PROP_DATA | self::PROP_STRING)) !== 0
+                    || !isset($this->$prop)) {
+                    continue;
+                } else if (($shape & self::PROP_INT) !== 0) {
+                    $this->$prop = (int) $this->$prop;
+                } else {
+                    assert(($shape & self::PROP_BOOL) !== 0);
+                    $this->$prop = (bool) $this->$prop;
                 }
             }
         }
@@ -499,16 +508,21 @@ class Contact implements JsonSerializable {
             $wantshape = self::PROP_CDB;
         }
         foreach (self::$props as $prop => $shape) {
-            if (($shape & $shapemask) === $wantshape) {
+            if (($shape & $shapemask) !== $wantshape) {
+                continue;
+            }
+            if (($shape & self::PROP_OVERFLOWABLE) !== 0) {
+                $value = $x->{"{$prop}Overflow"} ?? $x->$prop;
+            } else {
                 $value = $x->$prop;
-                if ($value === null || ($shape & self::PROP_STRING) !== 0) {
-                    $this->$prop = $value;
-                } else if (($shape & self::PROP_INT) !== 0) {
-                    $this->$prop = (int) $value;
-                } else {
-                    assert(($shape & self::PROP_BOOL) !== 0);
-                    $this->$prop = (bool) $value;
-                }
+            }
+            if ($value === null || ($shape & self::PROP_STRING) !== 0) {
+                $this->$prop = $value;
+            } else if (($shape & self::PROP_INT) !== 0) {
+                $this->$prop = (int) $value;
+            } else {
+                assert(($shape & self::PROP_BOOL) !== 0);
+                $this->$prop = (bool) $value;
             }
         }
         // unaccentedName and activity_at are special
@@ -535,27 +549,22 @@ class Contact implements JsonSerializable {
 
     /** @return string */
     function collaborators() {
-        if (($this->_slice & self::SLICEBIT_COLLABORATORS) === 0) {
-            return $this->collaborators ?? "";
+        if (($this->_slice & self::SLICEBIT_COLLABORATORS) !== 0) {
+            assert($this->cdb_confid === 0);
+            $set = $this->_row_set ?? ContactSet::make_singleton($this);
+            foreach ($set as $u) {
+                $u->collaborators = $u->collaboratorsOverflow = null;
+                $u->_slice &= ~self::SLICEBIT_COLLABORATORS;
+            }
+            $co = $this->conf->sversion >= 323 ? "collaboratorsOverflow" : "null collaboratorsOverflow";
+            $result = $this->conf->qe("select contactId, collaborators, {$co} from ContactInfo where contactId?a", $set->user_ids());
+            while (($row = $result->fetch_row())) {
+                $u = $set->get(intval($row[0]));
+                $u->collaborators = $row[2] ?? $row[1];
+            }
+            $result->close();
         }
-        assert($this->cdb_confid === 0);
-        $set = $this->_row_set ?? ContactSet::make_singleton($this);
-        foreach ($set as $u) {
-            $u->collaborators = null;
-            $u->_slice &= ~self::SLICEBIT_COLLABORATORS;
-        }
-        $result = $this->conf->qe("select contactId, collaborators from ContactInfo where contactId?a", $set->user_ids());
-        while (($row = $result->fetch_row())) {
-            $set->get(intval($row[0]))->collaborators = $row[1];
-        }
-        $result->close();
         return $this->collaborators ?? "";
-    }
-
-    /** @param ?string $x */
-    function set_collaborators($x) {
-        $this->_slice &= ~self::SLICEBIT_COLLABORATORS;
-        $this->collaborators = $x;
     }
 
     /** @return Generator<AuthorMatcher> */
@@ -727,9 +736,8 @@ class Contact implements JsonSerializable {
                 $c->_sortspec = $sortspec;
             }
             return $c->_sorter;
-        } else {
-            return self::make_sorter($c, $sortspec);
         }
+        return self::make_sorter($c, $sortspec);
     }
 
 
@@ -894,8 +902,7 @@ class Contact implements JsonSerializable {
     function _activate_smsg($qreq, $smsgs) {
         $nsmsgs = [];
         foreach ($smsgs as $ml) {
-            if ($ml[0] === $qreq->_smsg
-                || isset($_COOKIE["hotcrp-smsg-{$ml[0]}"])) {
+            if (isset($_COOKIE["hotcrp-smsg-{$ml[0]}"])) {
                 for ($i = 2; $i !== count($ml); ++$i) {
                     Conf::msg_on($this->conf, $ml[$i][0], $ml[$i][1]);
                 }
@@ -1717,15 +1724,16 @@ class Contact implements JsonSerializable {
     /** @param string $key */
     function set_data_prop($key, $value) {
         $d = $this->make_data();
-        if (($d->$key ?? null) !== $value) {
-            if (!array_key_exists("data", $this->_mod_undo ?? [])) {
-                $this->_mod_undo["data"] = $this->data;
-            }
-            if ($value !== null) {
-                $d->$key = $value;
-            } else {
-                unset($d->$key);
-            }
+        if (($d->$key ?? null) === $value) {
+            return;
+        }
+        if (!array_key_exists("data", $this->_mod_undo ?? [])) {
+            $this->_mod_undo["data"] = $this->data;
+        }
+        if ($value !== null) {
+            $d->$key = $value;
+        } else {
+            unset($d->$key);
         }
     }
 
@@ -1932,7 +1940,7 @@ class Contact implements JsonSerializable {
         if (($path = $qreq->path())) {
             $x["__PATH__"] = preg_replace('/^\/+/', "", $path);
         }
-        $url = $this->conf->selfurl($qreq, $x, Conf::HOTURL_RAW | Conf::HOTURL_SITEREL);
+        $url = $this->conf->selfurl($qreq, $x, Conf::HOTURL_SITEREL);
 
         if (!$qreq->valid_post()) {
             Multiconference::fail($qreq, 401, new FailureReason($this->conf, [
@@ -1948,7 +1956,7 @@ class Contact implements JsonSerializable {
             MessageItem::error($this->conf->_i("signin_required", new FmtArg("action", $qreq->page()))),
             MessageItem::inform("<0>Your changes were not saved. After signing in, you may try to submit them again")
         ]);
-        $this->conf->redirect();
+        $qreq->redirect(null);
     }
 
 
@@ -1975,6 +1983,15 @@ class Contact implements JsonSerializable {
         }
         assert(false);
         return $value;
+    }
+
+    /** @param string $prop
+     * @param mixed $value
+     * @return bool */
+    private function prop_value_overflows($prop, $value) {
+        return $prop === "collaborators"
+            && is_string($value)
+            && strlen($value) >= 8190;
     }
 
     /** @param string $prop */
@@ -2160,21 +2177,29 @@ class Contact implements JsonSerializable {
         }
         $qf = $qv = [];
         foreach (self::$props as $prop => $shape) {
-            if (($shape & $flag) !== 0
-                && (array_key_exists($prop, $this->_mod_undo)
-                    || ($this->$idk <= 0 && ($shape & self::PROP_NULL) === 0))) {
+            if (($shape & $flag) === 0
+                || (!array_key_exists($prop, $this->_mod_undo)
+                    && ($this->$idk > 0 || ($shape & self::PROP_NULL) !== 0))) {
+                continue;
+            }
+            $value = $this->prop1($prop, $shape);
+            if (($shape & self::PROP_SPECIAL) !== 0) {
+                $value = $this->clean_prop_value($prop, $value);
+            }
+            if ($value === false || $value === true) {
+                $value = (int) $value;
+            } else if ($value === null && ($shape & self::PROP_NULL) === 0) {
+                $value = 0;
+            }
+            if (($shape & self::PROP_OVERFLOWABLE) !== 0) {
+                $overflow = $this->prop_value_overflows($prop, $value);
                 $qf[] = "{$prop}=?";
-                $value = $this->prop1($prop, $shape);
-                if (($shape & self::PROP_SPECIAL) !== 0) {
-                    $value = $this->clean_prop_value($prop, $value);
-                }
-                if ($value === false || $value === true) {
-                    $qv[] = (int) $value;
-                } else if ($value === null && ($shape & self::PROP_NULL) === 0) {
-                    $qv[] = 0;
-                } else {
-                    $qv[] = $value;
-                }
+                $qv[] = $overflow ? null : $value;
+                $qf[] = "{$prop}Overflow=?";
+                $qv[] = $overflow ? $value : null;
+            } else {
+                $qf[] = "{$prop}=?";
+                $qv[] = $value;
             }
         }
         if (array_key_exists("data", $this->_mod_undo)) {
@@ -3330,13 +3355,15 @@ class Contact implements JsonSerializable {
             $ci->ciflags |= PCI::CIF_SET0;
             if ($prow->managerContactId === $this->contactXid
                 || ($this->privChair
-                    && (!$prow->managerContactId || $ci->conflictType <= CONFLICT_MAXUNCONFLICTED)
+                    && (!$prow->managerContactId
+                        || $ci->conflictType <= CONFLICT_MAXUNCONFLICTED)
                     && (($this->dangerous_track_mask() & Track::FM_VIEWADMIN) === 0
                         || ($this->conf->check_tracks($prow, $this, Track::VIEW)
                             && $this->conf->check_tracks($prow, $this, Track::ADMIN))))
                 || ($this->isPC
                     && $this->is_track_manager()
-                    && (!$prow->managerContactId || $ci->conflictType <= CONFLICT_MAXUNCONFLICTED)
+                    && (!$prow->managerContactId
+                        || $ci->conflictType <= CONFLICT_MAXUNCONFLICTED)
                     && $this->conf->check_admin_tracks($prow, $this))
                 || $this->_root_user) {
                 $ci->ciflags |= PCI::CIF_ALLOW_ADMIN_0;
@@ -3932,7 +3959,8 @@ class Contact implements JsonSerializable {
                 || $prow->timeSubmitted == 0)
             && ($sub_withdraw !== 0
                 || !$prow->has_author_seen_any_review())
-            && ($prow->outcome_sign === 0
+            && ($sub_withdraw === 2
+                || $prow->outcome_sign === 0
                 || ($display_only && !$prow->can_author_view_decision()));
     }
 
@@ -4850,24 +4878,32 @@ class Contact implements JsonSerializable {
 
     /** @return bool */
     function allow_view_preference(?PaperInfo $prow = null, $aggregate = false) {
-        if ($prow) {
-            $rights = $this->rights($prow);
-            return $aggregate
-                ? $rights->allow_pc() && $this->can_view_pc()
-                : $rights->allow_admin();
+        if (!$prow) {
+            return $this->is_manager();
         }
-        return $this->is_manager();
+        $rights = $this->rights($prow);
+        return $aggregate
+            ? $rights->allow_pc() && $this->can_view_pc()
+            : $rights->allow_admin();
     }
 
     /** @return bool */
     function can_view_preference(?PaperInfo $prow = null, $aggregate = false) {
-        if ($prow) {
-            $rights = $this->rights($prow);
-            return $aggregate
-                ? $rights->allow_pc() && $this->can_view_pc()
-                : $rights->is_admin();
+        if (!$prow) {
+            return $this->is_manager();
         }
-        return $this->is_manager();
+        $rights = $this->rights($prow);
+        return $aggregate
+            ? $rights->allow_pc() && $this->can_view_pc()
+            : $rights->is_admin();
+    }
+
+    /** @return bool */
+    function can_edit_preference_for(?PaperInfo $prow, Contact $user) {
+        return $user->isPC
+            && (($user->contactId === $this->contactId
+                 && $user->conf->allow_pc_edit_preference())
+                || ($prow ? $this->can_manage_reviews($prow) : $this->is_manager()));
     }
 
     /** @return bool */
@@ -5055,15 +5091,21 @@ class Contact implements JsonSerializable {
             return false;
         }
         $rights = $this->rights($prow);
-        if (!$rights->allow_pc() && !$rights->is_reviewer()) {
+        if (!$rights->allow_pc()
+            && !$rights->is_reviewer()) {
             return false;
         }
         if (!$rrow
             || $override_self
-            || $rrow->contactId != $this->contactId
-            || $this->is_admin($prow)
-            || $this->conf->review_ratings_visible() > 0
-            || $this->conf->setting("viewrev") === Conf::VIEWREV_ALWAYS
+            || !$this->is_my_review($rrow)
+            || $this->is_admin($prow)) {
+            return true;
+        }
+        $rrv = $this->conf->review_ratings_visible();
+        if ($rrv != 0) {
+            return $rrv > 0;
+        }
+        if ($this->conf->setting("viewrev") === Conf::VIEWREV_ALWAYS
             || $rrow->has_multiple_ratings()) {
             return true;
         }
@@ -5570,140 +5612,119 @@ class Contact implements JsonSerializable {
     }
 
 
-    /** @return bool */
-    function can_view_tags(?PaperInfo $prow = null) {
-        // see also AllTags_API::alltags, PaperInfo::{searchable,viewable}_tags
-        if (!$this->isPC
-            || !$this->scope_allows_some(TS::S_TAG_READ)) {
-            return false;
+    // Tag permissions
+
+    /** @param ?PaperInfo $prow
+     * @return int */
+    function tag_perm_flags(?PaperInfo $prow) {
+        if (!$this->isPC) {
+            return 0;
+        } else if ($this->_overrides & self::OVERRIDE_TAG_CHECKS) {
+            return TagInfo::TFM_PERM;
         } else if (!$prow) {
-            return true;
+            if (!$this->scope_allows_some(TS::S_TAG_READ)) {
+                return 0;
+            } else if ($this->privChair) {
+                return TagInfo::TFM_PERM_CHAIR;
+            } else if ($this->is_manager()) {
+                return TagInfo::TFM_PERM_ADMIN;
+            } else if ($this->conf->check_any_required_tracks($this, Track::HIDDENTAG)) {
+                return TagInfo::TF_HIDDEN | TagInfo::TF_PC_PUBLIC | TagInfo::TF_PC;
+            }
+            return TagInfo::TF_PC_PUBLIC | TagInfo::TF_PC;
         }
         $rights = $this->rights($prow);
-        return $rights->scope_allows(TS::S_TAG_READ)
-            && ($rights->allow_pc()
-                || ($rights->allow_pc_broad()
-                    && $this->conf->pc_can_view_conflicted_tags())
-                || ($this->privChair
-                    && $rights->scope_allows(TS::S_TAG_ADMIN)
-                    && $this->conf->tags()->has(TagInfo::TF_SITEWIDE)));
+        if ($rights->tag_perm_bits !== null) {
+            return $rights->tag_perm_bits;
+        }
+        if (!$rights->scope_allows(TS::S_TAG_READ)) {
+            $fl = 0;
+        } else if ($rights->is_admin()) {
+            $fl = $this->privChair ? TagInfo::TFM_PERM_CHAIR : TagInfo::TFM_PERM_ADMIN;
+        } else if (!$rights->allow_pc_broad()) {
+            $fl = $this->privChair ? TagInfo::TFM_ADMIN_PUBLIC : 0;
+        } else {
+            $fl = TagInfo::TF_PC_PUBLIC;
+            if ($this->privChair) {
+                $fl |= TagInfo::TFM_ADMIN_PUBLIC;
+            } else if ($rights->allow_admin()) {
+                $fl |= TagInfo::TF_ADMIN_PUBLIC;
+            }
+            if ($rights->allow_pc()) {
+                $fl |= TagInfo::TF_PC;
+                if ($this->conf->check_required_tracks($prow, $this, Track::HIDDENTAG)) {
+                    $fl |= TagInfo::TF_HIDDEN;
+                }
+            }
+        }
+        $rights->tag_perm_bits = $fl;
+        return $fl;
+    }
+
+    function __view_tags_complain(?PaperInfo $prow, $tag, $v1) {
+        if ($tag) {
+            $ts = sprintf("tag %s [%x]", $tag, $this->conf->tags()->perm_flags($tag, $this->contactId));
+        } else {
+            $ts = sprintf("[tp %x]", $this->conf->tags()->flags);
+        }
+        if ($prow) {
+            $ps = sprintf("paper %d [%x S%x]", $prow->paperId, $this->tag_perm_flags($prow), $this->rights($prow)->scope_bits & 0xFFFF);
+        } else {
+            $ps = sprintf("[utp %x]", $this->tag_perm_flags(null));
+        }
+        error_log(caller_landmark() . " alignment error: expected " . json_encode($v1)
+            . ", user {$this->contactId}, {$ts}, {$ps}");
+        assert(false);
+    }
+
+    /** @return bool */
+    function can_view_tags(?PaperInfo $prow = null) {
+        return ($this->tag_perm_flags($prow) & $this->conf->tags()->flags) !== 0;
+    }
+
+    /** @return ?FailureReason */
+    function perm_view_tags(PaperInfo $prow) {
+        if ($this->can_view_tags($prow)) {
+            return null;
+        }
+        $rights = $this->rights($prow);
+        $whyNot = $prow->failure_reason();
+        if (!$this->isPC
+            || $rights->scope_allows(TS::S_TAG_READ)) {
+            $whyNot["permission"] = "tag:view";
+        } else {
+            $whyNot["scope"] = TS::S_TAG_READ;
+        }
+        return $whyNot;
     }
 
     /** @return bool */
     function can_view_most_tags(?PaperInfo $prow = null) {
-        if (!$this->isPC
-            || !$this->scope_allows_some(TS::S_TAG_READ)) {
-            return false;
-        } else if (!$prow) {
-            return true;
-        }
-        $rights = $this->rights($prow);
-        return $rights->scope_allows(TS::S_TAG_READ)
-            && ($rights->allow_pc()
-                || ($rights->allow_pc_broad()
-                    && $this->conf->pc_can_view_conflicted_tags()));
+        return ($this->tag_perm_flags($prow) & TagInfo::TF_PC) !== 0;
     }
 
     /** @return bool */
     function can_view_hidden_tags(?PaperInfo $prow = null) {
-        if (!$this->isPC
-            || !$this->scope_allows_some(TS::S_TAG_READ)) {
-            return false;
-        } else if (!$prow) {
-            return $this->privChair
-                || $this->conf->check_default_track($this, Track::HIDDENTAG);
-        }
-        $rights = $this->rights($prow);
-        return $rights->scope_allows(TS::S_TAG_READ)
-            && ($rights->is_admin()
-                || $this->conf->check_required_tracks($prow, $this, Track::HIDDENTAG));
+        return ($this->tag_perm_flags($prow) & TagInfo::TF_HIDDEN) !== 0;
+    }
+
+    /** @param string $tag
+     * @return bool
+     * @deprecated */
+    function can_view_some_tag($tag) {
+        return $this->can_view_tag_somewhere($tag);
     }
 
     /** @param string $tag
      * @return bool */
-    function can_view_some_tag($tag) {
-        // non-PC or scope may prevent viewing
-        if (!$this->isPC
-            || !$this->scope_allows_some(TS::S_TAG_READ)) {
-            return false;
-        }
-
-        // chair can always view
-        if ($this->privChair) {
-            return true;
-        }
-
-        // chair tag: only chairs can view
-        $tw = strpos($tag, "~");
-        if ($tw === 0 && $tag[1] === "~") {
-            return false;
-        }
-
-        // manager can always view
-        if ($this->is_manager()) {
-            return true;
-        }
-
-        // private: can always view own
-        if ($tw === 0 || ($tw > 0 && str_starts_with($tag, "{$this->contactId}~"))) {
-            return true;
-        }
-
-        // private other: can view others only if public per-user
-        $tagmap = $this->conf->tags();
-        if ($tw > 0) {
-            return $tagmap->has(TagInfo::TF_PUBLIC_PERUSER)
-                && $tagmap->is_public_peruser(substr($tag, $tw + 1));
-        }
-
-        // otherwise, public
-        return !$tagmap->is_hidden($tag)
-            || $this->conf->check_any_required_tracks($this, Track::HIDDENTAG);
+    function can_view_tag_somewhere($tag) {
+        return ($this->tag_perm_flags(null) & $this->conf->tags()->perm_flags($tag, $this->contactId)) !== 0;
     }
 
     /** @param string $tag
      * @return bool */
     function can_view_tag(?PaperInfo $prow, $tag) {
-        // basic checks
-        if (!$this->isPC) {
-            return false;
-        } else if ($this->_overrides & self::OVERRIDE_TAG_CHECKS) {
-            return true;
-        }
-
-        // conflict checks
-        $tag = Tagger::tv_tag($tag);
-        $tagmap = $this->conf->tags();
-        if ($prow) {
-            $rights = $this->rights($prow);
-            if (!$rights->scope_allows(TS::S_TAG_READ)
-                || (!$rights->allow_pc()
-                    && (!$this->privChair
-                        || !$tagmap->is_sitewide($tag))
-                    && (!$rights->allow_pc_broad()
-                        || (!$this->conf->pc_can_view_conflicted_tags()
-                    && !$tagmap->is_conflict_free($tag))))) {
-                return false;
-            }
-            $allow_administer = $rights->allow_admin();
-        } else {
-            if (!$this->scope_allows_some(TS::S_TAG_READ)) {
-                return false;
-            }
-            $allow_administer = $this->privChair;
-        }
-
-        // twiddle and hidden-tag checks
-        $twiddle = strpos($tag, "~");
-        return ($allow_administer
-                || $twiddle === false
-                || ($twiddle === 0 && $tag[1] !== "~")
-                || ($twiddle > 0
-                    && (substr($tag, 0, $twiddle) == $this->contactId
-                        || $tagmap->is_public_peruser(substr($tag, $twiddle + 1)))))
-            && ($twiddle !== false
-                || !$tagmap->is_hidden($tag)
-                || $this->can_view_hidden_tags($prow));
+        return ($this->tag_perm_flags($prow) & $this->conf->tags()->perm_flags($tag, $this->contactId)) !== 0;
     }
 
     /** @param string $tag
@@ -5726,70 +5747,150 @@ class Contact implements JsonSerializable {
                 || $this->conf->tags()->has(TagInfo::TF_PUBLIC_PERUSER));
     }
 
-    /** @param string $tag
-     * @return bool */
-    function can_edit_tag(PaperInfo $prow, $tag, $previndex, $index) {
-        assert(!!$tag);
-        if (($this->_overrides & self::OVERRIDE_TAG_CHECKS)
-            || $this->_root_user) {
-            return true;
-        } else if (!$this->isPC) {
+    /** @return bool */
+    function can_edit_some_tag(?PaperInfo $prow = null) {
+        if (!$this->isPC) {
             return false;
+        } else if (($this->_overrides & self::OVERRIDE_TAG_CHECKS)
+                   || $this->_root_user) {
+            return true;
+        } else if (!$prow) {
+            return $this->scope_allows_some(TS::S_TAG_WRITE);
         }
         $rights = $this->rights($prow);
         if (!$rights->scope_allows(TS::S_TAG_WRITE)) {
             return false;
         }
-        $tagmap = $this->conf->tags();
-        $privChair = $this->privChair
-            && $rights->scope_allows(TS::S_TAG_ADMIN);
-        if (!$rights->allow_pc_broad()
-            || (!$rights->allow_pc() && !$tagmap->has(TagInfo::TF_CONFLICT_FREE))
-            || (!$rights->can_manage() && !$this->conf->time_pc_view($prow, false))) {
-            if (!$privChair
-                || !$tagmap->has(TagInfo::TF_SITEWIDE)) {
-                return false;
-            }
-            $tag = Tagger::tv_tag($tag);
-            $tw = strpos($tag, "~");
-            return ($tw === false || ($tw === 0 && $tag[1] === "~"))
-                && ($t = $tagmap->find($tag))
-                && $t->is(TagInfo::TF_SITEWIDE)
-                && !$t->is(TagInfo::TF_AUTOMATIC);
-        }
-        $tag = Tagger::tv_tag($tag);
-        $tw = strpos($tag, "~");
-        if ($tw === false || ($tw === 0 && $tag[1] === "~")) {
-            $t = $tagmap->find($tag);
-            // conflicted PC can change conflict-free tags
-            if (!$rights->allow_pc()
-                && (!$t || !$t->is(TagInfo::TF_CONFLICT_FREE))) {
-                return false;
-            }
-            // all other flags only limit rights
-            if (!$t) {
-                return true;
-            }
-            // check remaining flags
-            return !$t->is(TagInfo::TF_AUTOMATIC)
-                && (!$t->is(TagInfo::TF_CHAIR)
-                    || $privChair)
-                && (!$t->is(TagInfo::TF_HIDDEN)
-                    || $this->can_view_hidden_tags($prow))
-                && (!$t->is(TagInfo::TF_READONLY | TagInfo::TF_RANK)
-                    || $rights->can_manage_tags()
-                    || ($privChair && $t->is(TagInfo::TF_SITEWIDE)));
-        }
-        $t = $tagmap->find(substr($tag, $tw + 1));
         return ($rights->allow_pc()
-                || ($t && $t->is(TagInfo::TF_CONFLICT_FREE)))
-            && ($tw === 0
-                || $rights->can_manage_tags()
-                || ($tw === strlen((string) $this->contactId)
-                    && str_starts_with($tag, (string) $this->contactId)))
-            && (!($index < 0)
-                || !$t
-                || !$t->allotment);
+                && ($rights->can_manage_tags()
+                    || $this->conf->time_pc_view($prow, false)))
+            || ($this->privChair
+                && $rights->scope_allows(TS::S_TAG_ADMIN)
+                && $this->conf->tags()->has(TagInfo::TFM_ADMIN_PUBLIC));
+    }
+
+    /** @return ?FailureReason */
+    function perm_edit_some_tag(PaperInfo $prow) {
+        if ($this->can_edit_some_tag($prow)) {
+            return null;
+        }
+        $rights = $this->rights($prow);
+        $whyNot = $prow->failure_reason();
+        if (!$rights->scope_allows(TS::S_TAG_WRITE)) {
+            $whyNot["scope"] = TS::S_TAG_WRITE;
+            return $whyNot;
+        }
+        if (!$this->isPC) {
+            $whyNot["permission"] = "tag:edit";
+        } else if ($rights->conflicted()) {
+            $whyNot["conflict"] = true;
+        } else if ($prow->timeWithdrawn > 0)  {
+            $whyNot["withdrawn"] = true;
+        } else {
+            $whyNot["notSubmitted"] = true;
+        }
+        if ($rights->allow_admin()) {
+            $whyNot["forceShow"] = true;
+        }
+        return $whyNot;
+    }
+
+    /** @return bool */
+    function can_edit_most_tags(?PaperInfo $prow = null) {
+        if (!$this->isPC) {
+            return false;
+        } else if (!$prow) {
+            return $this->scope_allows_some(TS::S_TAG_WRITE);
+        }
+        $rights = $this->rights($prow);
+        return $rights->allow_pc()
+            && $rights->scope_allows(TS::S_TAG_WRITE)
+            && ($rights->can_manage_tags()
+                || $this->conf->time_pc_view($prow, false));
+    }
+
+    /** @param string $tag
+     * @return bool */
+    function can_edit_tag_somewhere($tag) {
+        assert(!!$tag);
+        if (!$this->isPC) {
+            return false;
+        } else if (($this->_overrides & self::OVERRIDE_TAG_CHECKS)
+                   || $this->_root_user) {
+            return true;
+        } else if (!$this->scope_allows_some(TS::S_TAG_WRITE)) {
+            return false;
+        }
+        $tagmap = $this->conf->tags();
+        $tag = Tagger::tv_tag($tag);
+        $twiddle = strpos($tag, "~");
+        if ($twiddle !== false) {
+            if ($twiddle > 0) {
+                return substr($tag, 0, $twiddle) == $this->contactId
+                    || $this->is_manager();
+            }
+            return $tag[1] !== "~"
+                || ($this->privChair && !$tagmap->is_automatic($tag));
+        }
+        $t = $tagmap->find($tag);
+        return !$t
+            || (!$t->is(TagInfo::TF_AUTOMATIC)
+                && (!$t->is(TagInfo::TF_CHAIR_HIDDEN | TagInfo::TF_CHAIR_READONLY) || $this->privChair)
+                && (!$t->is(TagInfo::TF_HIDDEN | TagInfo::TF_READONLY) || $this->is_manager()));
+    }
+
+    /** @param string $tag
+     * @return bool */
+    function can_edit_tag(PaperInfo $prow, $tag, $previndex, $index) {
+        assert(!!$tag);
+        if (!$this->isPC) {
+            return false;
+        } else if ($this->_root_user
+                   || ($this->_overrides & self::OVERRIDE_TAG_CHECKS)) {
+            return true;
+        }
+        $rights = $this->rights($prow);
+        if (!$rights->scope_allows(TS::S_TAG_WRITE)) {
+            return false;
+        }
+        // look up permission flags for user and tag
+        $ufl = $this->tag_perm_flags($prow);
+        $tagmap = $this->conf->tags();
+        $tfl = $tagmap->perm_flags($tag, $this->contactId);
+        // cannot view, or can only view because pc-public -> cannot edit
+        if (($ufl & $tfl & ~TagInfo::TF_PC_PUBLIC) === 0) {
+            return false;
+        }
+        // adjust tag flags
+        if ($tfl & TagInfo::TFM_PRIVATE) {
+            $ti = $tagmap->find_having(substr($tag, strpos($tag, "~") + 1), ~TagInfo::TFM_PERM & ~TagInfo::TF_AUTOMATIC);
+            $tfl |= $ti ? $ti->flags & ~TagInfo::TFM_PERM & ~TagInfo::TF_AUTOMATIC : 0;
+            $tfl &= ~TagInfo::TFM_READONLY;
+        } else {
+            $ti = $tagmap->find_having($tag, ~TagInfo::TFM_PERM);
+            $tfl |= $ti ? $ti->flags & ~TagInfo::TFM_PERM : 0;
+        }
+        // adjust user flags
+        if ($index >= 0 && ($tfl & TagInfo::TFM_PRIVATE)) {
+            $ufl |= TagInfo::TF_ALLOTMENT;
+        }
+        if ($this->privChair && $rights->scope_allows(TS::S_TAG_ADMIN)) {
+            $ufl |= TagInfo::TF_CHAIR_READONLY;
+            if ($tfl & TagInfo::TFM_ADMIN_PUBLIC) {
+                $ufl |= TagInfo::TF_READONLY;
+            }
+        }
+        if ($rights->can_manage_tags()) {
+            $ufl |= TagInfo::TF_READONLY | TagInfo::TF_OTHER_PRIVATE;
+        } else {
+            $ufl &= ~TagInfo::TF_OTHER_PRIVATE;
+        }
+        // check non-visibility flags
+        if ($tfl & ~$ufl & (TagInfo::TF_AUTOMATIC | TagInfo::TF_ALLOTMENT | TagInfo::TFM_READONLY | TagInfo::TF_OTHER_PRIVATE)) {
+            return false;
+        }
+        return ($ufl & TagInfo::TFM_ADMIN_PUBLIC)
+            || $this->conf->time_pc_view($prow, false);
     }
 
     /** @param string $tag
@@ -5839,100 +5940,6 @@ class Contact implements JsonSerializable {
         return $whyNot;
     }
 
-    /** @return bool */
-    function can_edit_some_tag(?PaperInfo $prow = null) {
-        if (($this->_overrides & self::OVERRIDE_TAG_CHECKS)
-            || $this->_root_user) {
-            return true;
-        } else if (!$this->isPC) {
-            return false;
-        } else if (!$prow) {
-            return $this->scope_allows_some(TS::S_TAG_WRITE);
-        }
-        $rights = $this->rights($prow);
-        if (!$rights->scope_allows(TS::S_TAG_WRITE)) {
-            return false;
-        }
-        return ($rights->allow_pc()
-                && ($rights->can_manage_tags()
-                    || $this->conf->time_pc_view($prow, false)))
-            || ($this->privChair
-                && $rights->scope_allows(TS::S_TAG_ADMIN)
-                && $this->conf->tags()->has(TagInfo::TF_SITEWIDE));
-    }
-
-    /** @return ?FailureReason */
-    function perm_edit_some_tag(PaperInfo $prow) {
-        if ($this->can_edit_some_tag($prow)) {
-            return null;
-        }
-        $rights = $this->rights($prow);
-        $whyNot = $prow->failure_reason();
-        if (!$rights->scope_allows(TS::S_TAG_WRITE)) {
-            $whyNot["scope"] = TS::S_TAG_WRITE;
-            return $whyNot;
-        }
-        if (!$this->isPC) {
-            $whyNot["permission"] = "tag:edit";
-        } else if ($rights->conflicted()) {
-            $whyNot["conflict"] = true;
-        } else if ($prow->timeWithdrawn > 0)  {
-            $whyNot["withdrawn"] = true;
-        } else {
-            $whyNot["notSubmitted"] = true;
-        }
-        if ($rights->allow_admin()) {
-            $whyNot["forceShow"] = true;
-        }
-        return $whyNot;
-    }
-
-    /** @return bool */
-    function can_edit_most_tags(?PaperInfo $prow = null) {
-        if (!$this->isPC) {
-            return false;
-        }
-        if (!$prow) {
-            return $this->scope_allows_some(TS::S_TAG_WRITE);
-        }
-        $rights = $this->rights($prow);
-        return $rights->allow_pc()
-            && $rights->scope_allows(TS::S_TAG_WRITE)
-            && ($rights->can_manage_tags()
-                || $this->conf->time_pc_view($prow, false));
-    }
-
-    /** @param string $tag
-     * @return bool */
-    function can_edit_tag_somewhere($tag) {
-        assert(!!$tag);
-        if (($this->_overrides & self::OVERRIDE_TAG_CHECKS)
-            || $this->_root_user) {
-            return true;
-        } else if (!$this->isPC
-                   || !$this->scope_allows_some(TS::S_TAG_WRITE)) {
-            return false;
-        }
-        $tagmap = $this->conf->tags();
-        $tag = Tagger::tv_tag($tag);
-        $twiddle = strpos($tag, "~");
-        if ($twiddle !== false) {
-            if ($twiddle > 0) {
-                return substr($tag, 0, $twiddle) == $this->contactId
-                    || $this->is_manager();
-            } else {
-                return $tag[1] !== "~"
-                    || ($this->is_manager() && !$tagmap->is_automatic($tag));
-            }
-        } else {
-            $t = $tagmap->find($tag);
-            return !$t
-                || (!$t->is(TagInfo::TF_AUTOMATIC)
-                    && (!$t->is(TagInfo::TF_CHAIR) || $this->privChair)
-                    && (!$t->is(TagInfo::TF_READONLY) || $this->is_manager()));
-        }
-    }
-
     /** @param string $tag
      * @return bool */
     function can_edit_tag_anno($tag) {
@@ -5945,7 +5952,7 @@ class Contact implements JsonSerializable {
         $t = $this->conf->tags()->find($tag);
         // XXXXXXX
         return $this->isPC
-            && (!$t || !$t->is(TagInfo::TF_CHAIR | TagInfo::TF_READONLY | TagInfo::TF_HIDDEN))
+            && (!$t || !$t->is(TagInfo::TF_CHAIR_READONLY | TagInfo::TF_READONLY | TagInfo::TF_HIDDEN))
             && ($twiddle === false
                 || ($twiddle === 0 && $tag[1] !== "~")
                 || ($twiddle > 0 && substr($tag, 0, $twiddle) == $this->contactId));
@@ -6067,11 +6074,14 @@ class Contact implements JsonSerializable {
 
     // deadlines
 
-    /** @param ?list<PaperInfo> $prows
+    /** @param array<string,mixed> $base
+     * @param ?PaperInfo $prow
      * @return object */
-    function status_json($prows = null) {
+    function status_json($base = [], $prow = null) {
         // Return cleaned deadline-relevant settings that this user can see.
-        $dl = (object) ["now" => Conf::$unow, "email" => $this->email ? : null];
+        $dl = (object) $base;
+        $dl->now = Conf::$unow;
+        $dl->email = $this->email ? : null;
         if (($disabled = $this->is_disabled())) {
             $dl->disabled = true;
         }
@@ -6088,7 +6098,7 @@ class Contact implements JsonSerializable {
 
         // submissions
         // XXX submission rounds
-        $sr = $prows ? $prows[0]->submission_round() : $this->conf->unnamed_submission_round();
+        $sr = $prow ? $prow->submission_round() : $this->conf->unnamed_submission_round();
         $dl->sub->open = $sr->open > 0 && $sr->open <= Conf::$now;
         if ($sr->submit > 0) {
             $dl->sub->sub = $sr->submit;
@@ -6209,12 +6219,10 @@ class Contact implements JsonSerializable {
         }
 
         // permissions
-        if ($prows && !$disabled) {
+        if ($prow && !$disabled) {
             $dl->perm = [];
-            foreach ($prows as $prow) {
-                if (($perm = $this->paper_permission_json($prow))) {
-                    $dl->perm[$prow->paperId] = $perm;
-                }
+            if (($perm = $this->paper_permission_json($prow))) {
+                $dl->perm[$prow->paperId] = $perm;
             }
         }
 
@@ -6512,7 +6520,7 @@ class Contact implements JsonSerializable {
 
         self::update_rights();
         if (!($extra["no_autosearch"] ?? false)) {
-            $this->conf->update_automatic_tags($pid, "review");
+            $this->conf->update_automatic_tags($pid, SearchTerm::ABOUT_REVIEWS);
         }
         if (($type > 0) !== ($oldtype > 0)) {
             $reviewer->update_cdb_roles();

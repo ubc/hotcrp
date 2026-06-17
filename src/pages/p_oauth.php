@@ -3,7 +3,7 @@
 // Copyright (c) 2022-2026 Eddie Kohler; see LICENSE.
 
 namespace HotCRP;
-use Conf, Contact, MessageItem, NavigationState, Qrequest, Redirection;
+use Conf, Contact, MessageItem, Navigation, NavigationState, Qrequest, Redirection;
 use LoginHelper, TokenInfo, UserSecurityEvent, UserStatus;
 
 class OAuthProvider {
@@ -70,7 +70,7 @@ class OAuthProvider {
         $instance->auth_uri = $authdata->auth_uri ?? null;
         $instance->token_uri = $authdata->token_uri ?? null;
         $instance->redirect_uri = $authdata->redirect_uri
-            ?? $conf->hoturl("oauth", null, Conf::HOTURL_RAW | Conf::HOTURL_ABSOLUTE);
+            ?? $conf->hoturl_raw("oauth", null, Conf::HOTURL_ABSOLUTE);
         $instance->token_function = $authdata->token_function ?? null;
         $instance->require = $authdata->require ?? null;
         $instance->roles = $authdata->roles ?? false;
@@ -139,7 +139,7 @@ class OAuth_Page {
         if (friendly_boolean($this->qreq->quiet)) {
             $tokdata["quiet"] = true;
         }
-        if (($r = $this->qreq->sucess_redirect ?? $this->qreq->redirect) !== null) {
+        if (($r = $this->qreq->success_redirect ?? $this->qreq->redirect) !== null) {
             $tokdata["success_redirect"] = $r;
         }
         if (($r = $this->qreq->failure_redirect ?? $this->qreq->redirect) !== null) {
@@ -472,13 +472,13 @@ class OAuth_Page {
         } else if ($qreq->qsid()) {
             $oap->resolve($oap->start());
         } else if ($qreq->setcookie) {
-            http_response_code(400);
+            Navigation::http_response_code(400);
             $user->conf->feedback_msg(MessageItem::error($user->conf->_i("session_failed_error")));
             $qreq->print_header("Authentication", "oauth", ["action_bar" => "", "body_class" => "body-error"]);
             $qreq->print_footer();
         } else {
             $qreq->open_session();
-            $user->conf->redirect_self($qreq, ["setcookie" => 1]);
+            $qreq->redirect_self(["setcookie" => 1]);
         }
     }
 }

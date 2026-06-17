@@ -1,6 +1,6 @@
 <?php
 // papersearch.php -- HotCRP class for searching for papers
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class SearchScope {
     /** @var int */
@@ -713,9 +713,8 @@ class PaperSearch extends MessageSet {
         if ($kw !== "") {
             if (($kwdef = $this->_find_search_keyword($kw, $sword, $scope, false))) {
                 return $this->_kwdef_parse($kwdef, $sword, true);
-            } else {
-                return new False_SearchTerm;
             }
+            return new False_SearchTerm;
         }
 
         // Paper ID search term (`1-2`, `#1-#2`, `1-`, etc.)
@@ -753,9 +752,8 @@ class PaperSearch extends MessageSet {
             $sword->kwpos1 = $scope->defkw->kwpos1;
             if (($kwdef = $this->_find_search_keyword($scope->defkw->kword, $sword, $scope, true))) {
                 return $this->_kwdef_parse($kwdef, $sword, true);
-            } else {
-                return new False_SearchTerm;
             }
+            return new False_SearchTerm;
         }
 
         // Special words: unquoted `*`, `ANY`, `ALL`, `NONE`; empty string
@@ -1108,10 +1106,7 @@ class PaperSearch extends MessageSet {
         // XXX some of this should be shared with paperQuery
         if ($this->conf->rights_need_tags()
             || $this->conf->has_tracks() /* XXX probably only need check_track_view_sensitivity */
-            || ($sqi->query_options["tags"] ?? false)
-            || ($this->user->privChair
-                && $this->conf->has_any_manager()
-                && $this->conf->tags()->has(TagInfo::TF_SITEWIDE))) {
+            || ($sqi->query_options["tags"] ?? false)) {
             $sqi->add_column("paperTags", "coalesce((select group_concat(' ', tag, '#', tagIndex separator '') from PaperTag force index (primary) where PaperTag.paperId=Paper.paperId), '')");
         }
         if ($sqi->query_options["reviewSignatures"] ?? false) {
@@ -1296,24 +1291,23 @@ class PaperSearch extends MessageSet {
 
     /** @return list<TagAnno> */
     function group_anno_list() {
-        if (($ng = $this->ngroups()) > 1) {
-            $gs = [];
-            for ($i = 0; $i !== $ng; ++$i) {
-                $ch = $this->_then_term->group_head_term($i);
-                $srchstr = $ch->source_subquery($this->q);
-                if ($ch->get_float("view") || str_starts_with($srchstr, "(")) {
-                    $srchstr = self::strip_show($srchstr);
-                }
-                $h = $ch->get_float("legend");
-                $ta = TagAnno::make_legend($h ?? $srchstr);
-                $ta->set_prop("search", $srchstr);
-                $gs[] = $ta;
-            }
-            return $gs;
-        } else if (($h = $this->_qe->get_float("legend"))) {
-            return [TagAnno::make_legend($h)];
+        if (($ng = $this->ngroups()) <= 1) {
+            $h = $this->_qe->get_float("legend");
+            return $h ? [TagAnno::make_legend($h)] : [];
         }
-        return [];
+        $gs = [];
+        for ($i = 0; $i !== $ng; ++$i) {
+            $ch = $this->_then_term->group_head_term($i);
+            $srchstr = $ch->source_subquery($this->q);
+            if ($ch->get_float("view") || str_starts_with($srchstr, "(")) {
+                $srchstr = self::strip_show($srchstr);
+            }
+            $h = $ch->get_float("legend");
+            $ta = TagAnno::make_legend($h ?? $srchstr);
+            $ta->set_prop("search", $srchstr);
+            $gs[] = $ta;
+        }
+        return $gs;
     }
 
     /** @param int $pid

@@ -114,7 +114,7 @@ class Autoassign_API {
             $jr = new JsonResult(202 /* Accepted */, [
                 "ok" => true,
                 "job" => $jobid,
-                "job_url" => $qreq->conf()->hoturl("api/job", ["job" => $jobid], Conf::HOTURL_RAW | Conf::HOTURL_ABSOLUTE)
+                "job_url" => $qreq->conf()->hoturl_raw("api/job", ["job" => $jobid], Conf::HOTURL_ABSOLUTE)
             ]);
             $jr->emit($qreq);
             $qreq->qsession()->commit();
@@ -133,7 +133,9 @@ class Autoassign_API {
         if ($tok->data("exit_status") === 0) {
             return $tok->json_result("string");
         }
-        $jr = JsonResult::make_message_list($tok->data("message_list") ?? []);
+        // The job ran but failed; report `status: failed`, matching `/job`.
+        $jr = JsonResult::make_message_list($tok->data("message_list") ?? [])
+            ->set("status", "failed");
         $tok->delete();
         return $jr;
     }

@@ -1,7 +1,7 @@
 [
   {
     "name": "paper", "get": true, "post": true, "delete": true,
-    "tags": ["Submissions"], "order": 0
+    "tags": ["Submissions"]
   },
   {
     "name": "paper", "get": true, "merge": true,
@@ -10,7 +10,7 @@
   },
   {
     "name": "paper", "post": true, "merge": true,
-    "parameters": "?p ?+dry_run ?+disable_users ?+add_topics ?+notify ?+notify_authors ?+reason ?+json ?forceShow",
+    "parameters": "?p ?+dry_run ?+disable_users ?+add_topics ?+notify ?+notify_authors ?+reason ?=json ?forceShow *",
     "response": "?+dry_run +change_list +valid ?+pid ?paper"
   },
   {
@@ -20,11 +20,11 @@
 
   {
     "name": "papers", "get": true, "post": true,
-    "tags": ["Submissions"], "order": 1
+    "tags": ["Submissions"]
   },
   {
     "name": "papers", "get": true, "merge": true,
-    "parameters": "q ?t ?qt ?scoresort ?sort ?reviewer ?warn_missing ?forceShow",
+    "parameters": "q ?t ?qt ?sort ?scoresort ?reviewer ?warn_missing ?forceShow",
     "response": "?papers"
   },
   {
@@ -35,36 +35,44 @@
 
   {
     "name": "share", "get": true, "post": true, "delete": true,
-    "tags": ["Submissions"], "order": 2,
+    "tags": ["Submissions"],
     "parameters": "+share ?+expires_in"
   },
 
   {
     "name": "document", "get": true,
-    "tags": ["Documents"], "order": 0,
-    "parameters": "?doc ?p ?dt ?file ?hash ?docid ?<at ?<attachment"
+    "tags": ["Documents"],
+    "parameters": "?doc ?p ?dt ?file ?hash ?docid ?<at ?<attachment",
+    "response_content": {
+      "200": {
+        "description": "The document contents. The response `Content-Type` header is the document's MIME type (e.g. `application/pdf`).",
+        "content": {
+          "*/*": { "schema": { "type": "string", "format": "binary" } }
+        }
+      }
+    }
   },
   {
     "name": "documentlist", "get": true,
-    "tags": ["Documents"], "order": 1,
+    "tags": ["Documents"],
     "parameters": "?doc ?p ?dt ?history",
     "response": "dt document_history"
   },
   {
     "name": "formatcheck", "get": true,
-    "tags": ["Documents"], "order": 2,
-    "parameters": "?doc ?p ?dt ?file ?hash ?docid ?<at ?<attachment ?soft",
+    "tags": ["Documents"],
+    "parameters": "?doc ?p ?dt ?file ?hash ?docid ?<at ?<attachment ?soft ?detail",
     "response": "npages nwords problem_fields has_error docid"
   },
   {
     "name": "archivecontents", "get": true,
-    "tags": ["Documents"], "order": 3,
+    "tags": ["Documents"],
     "parameters": "?doc ?p ?dt ?file ?hash ?docid ?<at ?<attachment ?summary",
     "response": "archive_contents ?archive_contents_summary"
   },
   {
     "name": "upload", "post": true,
-    "tags": ["Documents"], "order": 4,
+    "tags": ["Documents"],
     "parameters": "?p ?dt ?<dtype ?start ?temp ?offset ?size ?finish ?token ?cancel ?=mimetype ?=filename ?@blob",
     "response": "token ?dt ?filename ?mimetype ?size ?ranges ?hash ?crc32 ?progress_value ?progress_max"
   },
@@ -72,8 +80,8 @@
   {
     "name": "assign", "post": true,
     "tags": ["Assignments"],
-    "parameters": "?p ?dry_run format ?<quiet ?<summary ?<csv ?forceShow ?search ?upload ?=assignments",
-    "response": "?dry_run valid ?assignment_count ?assignment_actions ?assignment_pids ?output ?output_mimetype ?output_size ?assignment_header ?assignments ?papers ?ids ?groups ?search_params"
+    "parameters": "?p ?dry_run ?format ?<quiet ?<summary ?<csv ?forceShow ?search ?upload ?json5 ?=assignments",
+    "response": "?dry_run valid ?assignment_count ?assignment_actions ?assignment_pids ?output ?output_mimetype ?output_size ?assignment_header ?assignments ?papers"
   },
   {
     "name": "assigners", "get": true,
@@ -89,7 +97,7 @@
   {
     "name": "autoassign", "post": true,
     "tags": ["Assignments"],
-    "parameters": "autoassigner ?dry_run ?minimal_dry_run q ?t ?u ?disjoint ?param"
+    "parameters": "autoassigner ?dry_run ?minimal_dry_run q ?t ?u ?disjoint ?param ?count"
   },
   {
     "name": "autoassigners", "get": true,
@@ -139,19 +147,19 @@
   },
   {
     "name": "search", "get": true,
-    "tags": ["Search"], "order": 0,
+    "tags": ["Search"],
     "parameters": "q ?t ?qt ?sort ?scoresort ?reviewer ?report ?warn_missing ?hotlist ?f ?format ?search ?session",
     "response": "ids groups search_params ?hotlist ?fields ?papers ?statistics"
   },
   {
     "name": "searchactions", "get": true,
-    "tags": ["Search"], "order": 1,
+    "tags": ["Search"],
     "response": "actions"
   },
   {
     "name": "searchaction", "get": true, "post": true,
-    "tags": ["Search"], "order": 2,
-    "parameters": "?action q ?t ?qt ?sort ?report ?scoresort ?reviewer ?p"
+    "tags": ["Search"],
+    "parameters": "?action q ?t ?qt ?sort ?scoresort ?reviewer ?report ?p"
   },
   {
     "name": "graphdata", "get": true,
@@ -159,7 +167,7 @@
   },
   {
     "name": "namedsearch", "get": true, "post": true,
-    "tags": ["Search"],
+    "tags": ["Settings"],
     "response": "searches"
   },
   {
@@ -185,12 +193,12 @@
   },
   {
     "name": "tags", "get": true, "post": true,
-    "tags": ["Tags"], "order": 0,
+    "tags": ["Tags"],
     "response": "pid tags tags_edit_text tags_view_html tag_decoration_html color_classes ?tags_conflicted ?color_classes_conflicted"
   },
   {
     "name": "tags", "post": true, "merge": true,
-    "parameters": "?=tags ?=addtags ?=deltags ?=search",
+    "parameters": "?=tags ?=add_tags ?=remove_tags ?=expected_tags ?=search ?<=addtags ?<=deltags",
     "response": "pid ?tags ?tags_edit_text ?tags_view_html ?tag_decoration_html ?color_classes ?tags_conflicted ?color_classes_conflicted ?ids ?groups ?hotlist ?search_params"
   },
   {
@@ -230,11 +238,15 @@
   },
   {
     "name": "review", "get": true, "post": true, "merge": true,
-    "tags": ["Reviews"], "order": 0
+    "tags": ["Reviews"]
+  },
+  {
+    "name": "reviews", "get": true,
+    "tags": ["Reviews"]
   },
   {
     "name": "reviewhistory", "get": true, "merge": true,
-    "tags": ["Reviews"], "order": 1
+    "tags": ["Reviews"]
   },
   {
     "name": "acceptreview", "post": true,
@@ -275,15 +287,15 @@
   },
   {
     "name": "comment", "get": true,
-    "tags": ["Comments"], "order": 0,
-    "parameters": "?c ?content",
-    "response": "?comment ?comments",
-    "response_info": {"comment": "comment", "comments": "[comment]"}
+    "tags": ["Comments"],
+    "parameters": "c ?content",
+    "response": "?comment",
+    "response_info": {"comment": "comment"}
   },
   {
     "name": "comment", "post": true,
-    "tags": ["Comments"], "order": 0,
-    "parameters": "c ?override ?=text ?=:attachment ?=tags ?=topic ?=visibility ?=ready ?=draft ?=blind ?=response ?=by_author ?=review_token ?delete",
+    "tags": ["Comments"],
+    "parameters": "c ?=text ?=:attachment ?=tags ?=topic ?=visibility ?=draft ?=blind ?=response ?=review_token ?delete",
     "response": "?comment ?conflict",
     "response_info": {"comment": "comment"}
   },
@@ -295,12 +307,12 @@
   },
   {
     "name": "track", "post": true,
-    "tags": ["Meeting tracker"], "order": 0,
+    "tags": ["Meeting tracker"],
     "parameters": "track ?tracker_start_at ?p ?=hotlist-info"
   },
   {
     "name": "trackerstatus", "get": true,
-    "tags": ["Meeting tracker"], "order": 1,
+    "tags": ["Meeting tracker"],
     "response": "tracker_status tracker_eventid"
   },
   {
@@ -311,7 +323,7 @@
   },
   {
     "name": "user", "get": true,
-    "tags": ["Users"], "order": 0,
+    "tags": ["Users"],
     "parameters": "email ?p ?potential_conflict",
     "response": "match ?email ?given_name ?family_name ?affiliation ?potential_conflict ?orcid ?country"
   },
@@ -323,7 +335,7 @@
   },
   {
     "name": "clickthrough", "post": true,
-    "tags": ["Profile"],
+    "tags": ["Account"],
     "parameters": "?p ?=accept =clickthrough_id =clickthrough_type =clickthrough_time"
   },
   {
@@ -340,13 +352,13 @@
   },
   {
     "name": "mailtext", "get": true,
-    "tags": ["Site information"],
+    "tags": ["Settings"],
     "parameters": "?template ?p ?r ?email ?given_name ?family_name ?affiliation ?reason ?width ?text ?subject ?body",
-    "response": "?templates ?subject ?body"
+    "response": "?templates ?subject ?body ?text ?recipients ?recipient_description ?t"
   },
   {
     "name": "settings", "get": true, "post": true,
-    "tags": ["Settings"], "order": 0,
+    "tags": ["Settings"],
     "parameters": "?+dry_run ?=settings ?+filename ?filter ?exclude ?reset",
     "response": "?+dry_run +valid +change_list settings"
   },
@@ -367,7 +379,7 @@
   },
   {
     "name": "account", "get": true, "post": true,
-    "tags": ["Site administration"],
+    "tags": ["Users"],
     "parameters": "email",
     "response": "email disabled placeholder"
   },
@@ -377,7 +389,7 @@
   },
   {
     "name": "namedformula", "get": true, "post": true,
-    "tags": ["Site administration"],
+    "tags": ["Settings"],
     "response": "formulas"
   },
   {
@@ -388,7 +400,7 @@
     "name": "job", "get": true,
     "tags": ["Task management"],
     "parameters": "job ?output",
-    "response": "status update_at ?output ?output_base64 *"
+    "response": "status update_at ?output *"
   },
   {
     "name": "jserror", "post": true,
@@ -396,8 +408,14 @@
     "parameters": "=error ?=url ?=lineno ?=colno ?=stack"
   },
   {
+    "name": "oauthregister", "post": true,
+    "tags": ["Session"],
+    "response_content": { "default": {} }
+  },
+  {
     "name": "oauthtoken", "post": true,
-    "tags": ["Session"]
+    "tags": ["Session"],
+    "response_content": { "default": {} }
   },
   {
     "name": "session", "get": true, "post": true,
@@ -410,8 +428,8 @@
   },
   {
     "name": "whoami", "get": true,
-    "tags": ["Profile"],
-    "response": "?email ?given_name ?family_name ?affiliation"
+    "tags": ["Session"],
+    "response": "email given_name family_name affiliation ?roles"
   },
   {
     "name": "reauth", "post": true,
@@ -430,10 +448,12 @@
   },
   {
     "name": "dismissalert", "post": true,
+    "tags": ["Account"],
     "parameters": "alertid"
   },
   {
     "name": "potentialconflicts", "get": true,
+    "tags": ["Submissions"],
     "parameters": "?sclass ?p ?*has_authors ?:*authors ?*collaborators ?*json",
     "response": "potential_conflicts"
   }

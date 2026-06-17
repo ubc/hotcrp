@@ -162,9 +162,9 @@ class MailChecker {
                     "       got {$havel[$badline-1]}\n",
                     $color ? "\x1b[90m" : "",
                     "  expected ",
-                    str_replace("\n", "\n           ", rtrim($have)),
-                    "\n       got ",
                     str_replace("\n", "\n           ", rtrim($wtext)),
+                    "\n       got ",
+                    str_replace("\n", "\n           ", rtrim($have)),
                     $color ? "\x1b[m\n" : "\n"
                 );
             } else {
@@ -337,18 +337,6 @@ class Xassert {
         }
     }
 
-    static function print_landmark() {
-        list($location, $rest) = self::landmark(true);
-        $x = $location . $rest;
-        if ($x !== "") {
-            self::will_print();
-            if (!str_ends_with($x, "\n")) {
-                $x .= "\n";
-            }
-            fwrite(STDERR, $x);
-        }
-    }
-
     /** @param list<string> $sl */
     static private function fail_message($sl) {
         if (self::$retry) {
@@ -361,7 +349,11 @@ class Xassert {
             $x = join("", array_slice($sl, 1));
         } else {
             list($location, $rest) = self::landmark(true);
-            $x = $location . join("", $sl) . $rest;
+            $x = $location . join("", $sl);
+            if ($x !== "" && $rest !== "" && !str_ends_with($x, "\n")) {
+                $x .= "\n";
+            }
+            $x .= $rest;
         }
         if ($x !== "" && !str_ends_with($x, "\n")) {
             $x .= "\n";
@@ -1173,7 +1165,8 @@ class TestRunner {
     /** @var array<string,list<string>> */
     static public $collections = [
         "test01" => [
-            "fresh_db", "Permission_Tester", "Tags_Tester", "Tracks_Tester"
+            "fresh_db", "Permission_Tester", "Tags_Tester", "Tracks_Tester",
+            "Banners_Tester", "Session_Tester"
         ],
         "test02" => [
             "Unit_Tester", "XtCheck_Tester", "Navigation_Tester",
@@ -1197,7 +1190,7 @@ class TestRunner {
         "test06" => [
             "fresh_db", "Reviews_Tester", "Comments_Tester", "UserAPI_Tester",
             "UploadAPI_Tester", "Mailer_Tester", "Events_Tester",
-            "Autoassign_Tester"
+            "Autoassign_Tester", "fresh_db", "Formulas_Tester"
         ],
         "test07" => [
             "DiffMatchPatch_Tester"
@@ -1423,26 +1416,6 @@ class TestRunner {
         $conf->call_shutdown_function("CdbUserUpdate");
         $timer->mark("assignment");
         MailChecker::clear();
-    }
-
-    /** @param string $url */
-    static function set_navigation_base($url) {
-        $nav = Navigation::get();
-        $urlp = parse_url($url);
-        $nav->protocol = ($urlp["scheme"] ?? "http") . "://";
-        $nav->host = $urlp["host"] ?? "example.com";
-        $nav->server = $nav->protocol . $nav->host;
-        if (($s = $urlp["pass"] ?? null)) {
-            $nav->server .= ":{$s}";
-        }
-        if (($s = $urlp["user"] ?? null)) {
-            $nav->server .= "@{$s}";
-        }
-        if (($s = $urlp["port"] ?? null)) {
-            $nav->server .= ":{$s}";
-        }
-        $nav->base_path = $nav->base_path_relative = $nav->site_path = $nav->site_path_relative =
-            $urlp["path"] ?? "/";
     }
 
 
@@ -1777,7 +1750,7 @@ class TestRunner {
 }
 
 TestRunner::$original_opt = $Opt;
-TestRunner::set_navigation_base("/");
+Navigation::set(NavigationState::make_base("https://hotcrp-test.invalid/"));
 
 
 class TestQreq {

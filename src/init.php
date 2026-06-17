@@ -3,7 +3,7 @@
 // Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 declare(strict_types=1);
-const HOTCRP_VERSION = "3.2.1";
+const HOTCRP_VERSION = "3.3.1";
 
 // All positive review types must be 1 digit
 const REVIEW_META = 5;
@@ -66,7 +66,7 @@ require_once(SiteLoader::find("src/conference.php"));
 require_once(SiteLoader::find("src/contact.php"));
 Conf::set_current_time();
 if (defined("HOTCRP_TESTHARNESS")) {
-    Conf::$test_mode = true;
+    Navigation::$test_mode = 1;
 }
 if (PHP_SAPI === "cli") {
     set_exception_handler("BatchProcess::exception_handler");
@@ -215,13 +215,12 @@ function initialize_request($conf, $nav) {
         && $method !== "POST"
         && $method !== "HEAD"
         && ($page !== "api" || $method !== "DELETE")) {
-        http_response_code(405 /* Method Not Allowed */);
-        exit(0);
+        Navigation::complete(405 /* Method Not Allowed */);
     }
 
     // mark as already expired to discourage caching, but allow the browser
     // to cache for history buttons
-    header("Cache-Control: max-age=0,must-revalidate,private");
+    Navigation::header("Cache-Control: max-age=0,must-revalidate,private");
 
     // set up Content-Security-Policy if appropriate
     $conf->emit_security_headers();
@@ -414,7 +413,7 @@ function initialize_user($qreq, $kwarg = null) {
     if ($reqemail !== ""
         && $uemail !== ""
         && strcasecmp($reqemail, $uemail) !== 0) {
-        $conf->error_msg("<5>You are signed in as " . htmlspecialchars($uemail) . ", not " . htmlspecialchars($reqemail) . ". <a href=\"" . $conf->hoturl("signin", ["email" => $reqemail]) . "\">Add account</a>");
+        $conf->error_msg("<5>You are signed in as " . htmlspecialchars($uemail) . ", not " . htmlspecialchars($reqemail) . ". " . $conf->hotlink("Add account", "signin", ["email" => $reqemail]));
     }
 
     // potentially mark preferred account index for this conference
@@ -438,7 +437,7 @@ function initialize_user($qreq, $kwarg = null) {
     if ($muser->email === ""
         && $muser->has_author_view_capability()
         && !$conf->opt("allowIndexPapers")) {
-        header("X-Robots-Tag: noindex, noarchive");
+        Navigation::header("X-Robots-Tag: noindex, noarchive");
     }
 
     // exit early if no session

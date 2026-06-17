@@ -477,6 +477,9 @@ final class PaperStatus extends MessageSet {
             $edoc = DocumentInfo::fetch($result, $this->conf, $this->prow);
             Dbl::free($result);
             if ($edoc) {
+                if (($docj->inactive ?? null) === true) {
+                    $edoc->set_prefer_inactive();
+                }
                 return $edoc;
             }
         }
@@ -519,6 +522,9 @@ final class PaperStatus extends MessageSet {
             && is_int($docj->size)
             && ($this->doc_savef & DocumentInfo::SAVEF_SKIP_CONTENT) !== 0) {
             $doc->set_size($docj->size);
+        }
+        if (($docj->inactive ?? null) === true) {
+            $doc->set_prefer_inactive();
         }
 
         // analyze content, complain if not available
@@ -959,8 +965,20 @@ final class PaperStatus extends MessageSet {
 
         // mark whether submitted, mark diff
         $this->_paper_submitted = $pj_submitted && !$pj_withdrawn;
-        if ($pj_withdrawn !== $old_withdrawn || $pj_submitted !== $old_submitted) {
+        if ($pj_withdrawn !== $old_withdrawn
+            || $pj_submitted !== $old_submitted) {
             $this->status_change_at("status");
+        }
+
+
+        // track last author modification before review
+        if ($pj_submitted
+            && (($this->prow->timeSubmittedReviewable === 0
+                 && !$old_submitted)
+                || (($this->prow->user_prop_changed() || !empty($this->_fdiffs))
+                    && ($this->_save_status & self::SSF_ADMIN_UPDATE) === 0
+                    && empty($this->prow->all_reviews())))) {
+            $this->prow->set_prop("timeSubmittedReviewable", Conf::$now);
         }
     }
 
@@ -971,6 +989,10 @@ final class PaperStatus extends MessageSet {
         }
         if ($this->prow->outcome !== $pj->decision) {
             $this->prow->set_prop("outcome", $pj->decision);
+            // reset acceptance notification when leaving accept-class
+            if ($this->prow->timeAcceptNotified > 0 && $pj->decision <= 0) {
+                $this->prow->set_prop("timeAcceptNotified", 0);
+            }
             $this->status_change_at("decision");
         }
     }
@@ -1769,7 +1791,9 @@ final class PaperStatus extends MessageSet {
             if ($doc->paperId === 0 || $doc->paperId === -1) {
                 $doc->set_prop("paperId", $this->paperId);
             }
-            $doc->set_prop("inactive", 0);
+            if (!$doc->prefer_inactive()) {
+                $doc->set_prop("inactive", 0);
+            }
             $baseov = $this->prow->base_option($doc->documentType);
             if (!in_array($doc->paperStorageId, $baseov->value_list())
                 && ($doc->timeReferenced ?? $doc->timestamp) < $this->prow->timeModified) {
@@ -1854,11 +1878,16 @@ final class PaperStatus extends MessageSet {
         $this->_execute_author_changes();
         $this->_execute_documents();
 
-        // maybe update `papersub` settings
+        // maybe update `papersub` and `paperacc` settings
         $was_submitted = $this->prow->base_prop("timeWithdrawn") <= 0
             && $this->prow->base_prop("timeSubmitted") > 0;
         if ($this->_paper_submitted !== $was_submitted) {
             $this->conf->update_papersub_setting($this->_paper_submitted ? 1 : -1);
+        }
+        $was_accepted = $was_submitted && $this->prow->base_prop("outcome") > 0;
+        $paper_accepted = $this->_paper_submitted && $this->prow->outcome > 0;
+        if ($was_accepted !== $paper_accepted) {
+            $this->conf->update_paperacc_setting($paper_accepted ? 1 : -1);
         }
 
         // track submit-type flags
@@ -1883,7 +1912,7 @@ final class PaperStatus extends MessageSet {
         }
 
         // update automatic tags
-        $this->conf->update_automatic_tags($this->paperId, "paper");
+        $this->conf->update_automatic_tags($this->paperId, SearchTerm::ABOUT_PAPER);
 
         // after tags set, update document inactivity and send mail to
         // newly created users

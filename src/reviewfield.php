@@ -457,14 +457,14 @@ abstract class ReviewField implements JsonSerializable {
     protected function print_web_edit_open($id, $label_for, $rvalues, $args = null) {
         $fieldset = $args["fieldset"] ?? false;
         if ($fieldset) {
-            echo '<fieldset class="rf rfe" data-rf="', $this->uid(), '"><legend>';
+            echo '<fieldset class="rf s-rf" data-rf="', $this->uid(), '"><legend>';
             assert(!$label_for);
             $label_tag = "span";
         } else {
-            echo '<div class="rf rfe" data-rf="', $this->uid(), '">';
+            echo '<div class="rf s-rf" data-rf="', $this->uid(), '">';
             $label_tag = "label";
         }
-        echo '<h3 class="', $rvalues->control_class($this->short_id, "rfehead");
+        echo '<h3 class="', $rvalues->control_class($this->short_id, "s-rf-head");
         if ($id !== null) {
             echo '" id="', $id;
         }
@@ -1401,9 +1401,16 @@ class Text_ReviewField extends ReviewField {
         if (($fi = $args["format"])) {
             echo $fi->description_preview_html();
         }
-        $opt = ["class" => "w-text need-autogrow need-suggest suggest-emoji", "rows" => $this->display_space, "cols" => 60, "spellcheck" => true, "id" => $this->short_id];
+        $opt = [
+            "id" => $this->short_id,
+            "class" => "w-text need-autogrow need-suggest suggest-emoji",
+            "rows" => $this->display_space, "cols" => 60, "spellcheck" => true
+        ];
         if ($reqstr !== null && $fval !== $reqstr) {
             $opt["data-default-value"] = (string) $fval;
+        }
+        if ($fi) {
+            $opt["data-format"] = $fi->format;
         }
         echo Ht::textarea($this->short_id, $reqstr ?? $fval ?? "", $opt), '</div></div>';
     }
