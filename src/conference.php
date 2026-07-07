@@ -4813,8 +4813,6 @@ class Conf {
             $integrity = "sha256-oP6HI9z1XaZNBrJURtCoUT5SUnxFr8s3BzRl+cbzUq8=";
         } else if ($jqueryVersion === "3.6.0") {
             $integrity = "sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=";
-        } else if ($jqueryVersion === "1.12.4") {
-            $integrity = "sha256-ZosEbRLbNQzLpnKIkEdrPv7lOy9C27hHQ+Xp8a4MxAQ=";
         }
         if ($this->opt["jqueryCdn"] ?? $this->opt["jqueryCDN"] ?? false) {
             $jquery = "//code.jquery.com/jquery-{$jqueryVersion}.min.js";
@@ -4969,12 +4967,7 @@ class Conf {
             Ht::stash_html($this->make_script_file($jqurl, true) . "\n");
         } else {
             $jqueryVersion = $this->opt["jqueryVersion"] ?? "3.7.1";
-            if ($jqueryVersion[0] === "3") {
-                Ht::stash_html("<!--[if lt IE 9]>" . $this->make_jquery_script_file("1.12.4") . "<![endif]-->\n");
-                Ht::stash_html("<![if !IE|gte IE 9]>" . $this->make_jquery_script_file($jqueryVersion) . "<![endif]>\n");
-            } else {
-                Ht::stash_html($this->make_jquery_script_file($jqueryVersion) . "\n");
-            }
+            Ht::stash_html($this->make_jquery_script_file($jqueryVersion) . "\n");
         }
         if ($this->opt("jqueryMigrate")) {
             Ht::stash_html($this->make_script_file("//code.jquery.com/jquery-migrate-3.0.0.js", true));

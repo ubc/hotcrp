@@ -675,7 +675,6 @@ scripts/buzzer.js
 scripts/d3-hotcrp.min.js
 scripts/emojicodes.json
 scripts/graph.js
-scripts/jquery-1.12.4.min.js
 scripts/jquery-3.7.1.min.js
 scripts/script.js
 scripts/settings.js
