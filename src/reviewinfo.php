@@ -8,10 +8,14 @@ class ReviewInfo implements JsonSerializable {
     /** @var ?PaperInfo */
     public $prow;
 
-    // When adding database fields, consider ReviewInfo::make_db_default()
-    // and ReviewInfo::insert_full()
+    // Exposed version of field values, indexed by ReviewField::$order
+    /** @var list<null|int|string> */
+    public $fields;
 
-    // fields always present
+    // When adding database fields, see ReviewInfo::make_db_default()
+    // and ReviewInfo::$db_fields
+
+    // database fields always loaded
     /** @var int */
     public $paperId;
     /** @var int */
@@ -34,7 +38,7 @@ class ReviewInfo implements JsonSerializable {
     public $reviewTime;
     /** @var int */
     public $reviewModified;
-    /** @var ?int */
+    /** @var int */
     public $reviewSubmitted;
     /** @var int */
     public $reviewAuthorSeen;
@@ -51,7 +55,7 @@ class ReviewInfo implements JsonSerializable {
     /** @var int */
     public $reviewStatus;
 
-    // sometimes loaded
+    // database fields sometimes loaded
     /** @var ?int */
     public $timeRequested;
     /** @var ?int */
@@ -70,14 +74,8 @@ class ReviewInfo implements JsonSerializable {
     private $tfields;
     /** @var ?string */
     private $sfields;
-    /** @var ?string */
-    private $data; // XXX backward compat
 
-    /** @var list<null|int|string> */
-    public $fields;
-
-    // scores
-    // These scores are loaded from the database, but exposed only in `fields`
+    // database scores; sometimes loaded, but exposed only in `fields`
     private $s01;
     private $s02;
     private $s03;
@@ -91,8 +89,6 @@ class ReviewInfo implements JsonSerializable {
     private $s11;
 
     // sometimes joined
-    /** @var ?bool */
-    public $nameAmbiguous;
     /** @var ?string */
     public $ratingSignature;
 
@@ -107,13 +103,37 @@ class ReviewInfo implements JsonSerializable {
     private $_history;
     /** @var ?Contact */
     private $_reviewer;
+    /** @var ?bool */
+    private $_name_ambiguous; // viewer-independent; use `name_ambiguous_for`
     /** @var ?ReviewDiffInfo */
     private $_diff;
-    /** @var ?array<string,mixed> */
-    private $_old_prop;
+
+
+    /** @var list<string> */
+    static private $db_fields = [
+        "paperId", "reviewId", "contactId", "reviewType",
+        "requestedBy", "reviewToken", "reviewRound", "reviewOrdinal",
+        "reviewBlind", "reviewTime", "reviewModified", "reviewSubmitted",
+        "reviewAuthorSeen", "timeDisplayed", "timeApprovalRequested",
+        "reviewNeedsSubmit", "reviewViewScore", "rflags", "timeRequested",
+        "timeRequestNotified", "reviewAuthorModified", "reviewNotified",
+        "reviewAuthorNotified", "reviewEditVersion", "reviewWordCount",
+        "s01", "s02", "s03", "s04", "s05", "s06", "s07", "s08", "s09",
+        "s10", "s11", "tfields", "sfields"
+    ];
+
+    /** @var array<string,true> */
+    static private $historyless_fields = [
+        "reviewType" => true, "rflags" => true, "reviewNeedsSubmit" => true,
+        "reviewBlind" => true, "reviewRound" => true, "timeRequested" => true,
+        "requestedBy" => true
+    ];
+
 
     const VIEWSCORE_RECOMPUTE = -100;
 
+    // $reviewStatus values;
+    // also used in ReviewSearchMatcher::$status_completeness_antirequirements
     const RS_EMPTY = 0;
     const RS_ACKNOWLEDGED = 1;
     const RS_DRAFTED = 2;
@@ -121,21 +141,25 @@ class ReviewInfo implements JsonSerializable {
     const RS_APPROVED = 4;
     const RS_COMPLETED = 5;
 
-    const RF_LIVE = 1;
-    const RFM_TYPES = 0xFE;
-    const RF_ACKNOWLEDGED = 0x100;
-    const RF_DRAFTED = 0x200;
-    const RF_DELIVERED = 0x400;
-    const RF_APPROVED = 0x800;
-    const RF_SUBMITTED = 0x1000;
-    const RFM_NONDRAFT = 0x1C00; /* RF_DELIVERED | RF_APPROVED | RF_SUBMITTED */
-    const RFM_NONEMPTY = 0x1F00; /* RF_ACKNOWLEDGED | RF_DRAFTED | RFM_NONDRAFT */
-    const RF_BLIND = 0x10000;
-    const RF_SELF_ASSIGNED = 0x20000;
-    const RF_CONTENT_EDITED = 0x40000;
-    const RF_AUSEEN = 0x80000;
-    const RF_AUSEEN_PREVIOUS = 0x100000;
-    const RF_AUSEEN_LIVE = 0x200000;
+    const RF_LIVE = 1;                  // review is not a ghost
+    const RFM_TYPES = 0xFE;             // the bit (1 << reviewType) is set
+    const RF_ACKNOWLEDGED = 0x100;      // review request acknowledged (accepted)
+    const RF_DRAFTED = 0x200;           // review has some content
+    const RF_DELIVERED = 0x400;         // review has been delivered for approval
+    const RF_APPROVED = 0x800;          // review has been approved; implies DELIVERED
+    const RF_SUBMITTED = 0x1000;        // review is submitted
+    const RFM_NONDRAFT = 0x1C00;        // DELIVERED | APPROVED | SUBMITTED
+    const RFM_NONEMPTY = 0x1F00;        // ACKNOWLEDGED | DRAFTED | NONDRAFT
+    const RF_BLIND = 0x10000;           // review is blind (overridable by conference)
+    const RF_SELF_ASSIGNED = 0x20000;   // review was self assigned
+    const RF_CONTENT_EDITED = 0x40000;  // review content edited since first entry
+    const RF_AUSEEN = 0x80000;          // review has been seen by author
+    const RF_AUSEEN_PREVIOUS = 0x100000;  // previous version of review has AUSEEN
+    const RF_AUSEEN_LIVE = 0x200000;    // this version was edited while authors could see it
+    const RF_BOT_EDITED = 0x400000;     // this edit was made by a bot
+    const RF_BOT_EDITED_PREVIOUS = 0x800000; // previous version was made by a bot
+    const RF_BOT = 0x1000000;           // the reviewer is a bot user
+    const RFM_ASSIGN = 0x300FF;         // LIVE | TYPES | SELF_ASSIGNED | BLIND
 
     const RATING_GOODMASK = 1;
     const RATING_BADMASK = 126;
@@ -176,6 +200,7 @@ class ReviewInfo implements JsonSerializable {
 
     /** @var list<string> */
     static public $status_names = ["empty", "acknowledged", "draft", "delivered", "approved", "complete"];
+
 
     /** @param string $str
      * @param bool $required
@@ -240,6 +265,7 @@ class ReviewInfo implements JsonSerializable {
         $rrow->rflags = self::RF_LIVE | (1 << $rrow->reviewType) | ($rrow->reviewBlind ? self::RF_BLIND : 0);
         $rrow->reviewStatus = self::RS_EMPTY;
         $rrow->fields = $rrow->conf->review_form()->order_array(null);
+        $rrow->_reviewer = $user;
         return $rrow;
     }
 
@@ -248,9 +274,9 @@ class ReviewInfo implements JsonSerializable {
         $rrow = new ReviewInfo;
         $rrow->conf = $conf;
         $rrow->paperId = null;
-        $rrow->reviewId = null;
+        $rrow->reviewId = 0;
         $rrow->contactId = null;
-        $rrow->reviewType = null;
+        $rrow->reviewType = 0;
         $rrow->requestedBy = 0;
         $rrow->reviewToken = 0;
         $rrow->reviewRound = 0;
@@ -258,13 +284,13 @@ class ReviewInfo implements JsonSerializable {
         $rrow->reviewBlind = null;
         $rrow->reviewTime = 0;
         $rrow->reviewModified = 0;
-        $rrow->reviewSubmitted = null;
+        $rrow->reviewSubmitted = 0;
         $rrow->reviewAuthorSeen = 0;
         $rrow->timeDisplayed = 0;
         $rrow->timeApprovalRequested = 0;
         $rrow->reviewNeedsSubmit = 1;
         $rrow->reviewViewScore = -3;
-        $rrow->rflags = null;
+        $rrow->rflags = 0;
         $rrow->timeRequested = 0;
         $rrow->timeRequestNotified = 0;
         $rrow->reviewAuthorModified = null;
@@ -272,17 +298,17 @@ class ReviewInfo implements JsonSerializable {
         $rrow->reviewAuthorNotified = 0;
         $rrow->reviewEditVersion = 0;
         $rrow->reviewWordCount = null;
-        $rrow->s01 = 0;
-        $rrow->s02 = 0;
-        $rrow->s03 = 0;
-        $rrow->s04 = 0;
-        $rrow->s05 = 0;
-        $rrow->s06 = 0;
-        $rrow->s07 = 0;
-        $rrow->s08 = 0;
-        $rrow->s09 = 0;
-        $rrow->s10 = 0;
-        $rrow->s11 = 0;
+        $rrow->s01 = "0";
+        $rrow->s02 = "0";
+        $rrow->s03 = "0";
+        $rrow->s04 = "0";
+        $rrow->s05 = "0";
+        $rrow->s06 = "0";
+        $rrow->s07 = "0";
+        $rrow->s08 = "0";
+        $rrow->s09 = "0";
+        $rrow->s10 = "0";
+        $rrow->s11 = "0";
         $rrow->tfields = null;
         $rrow->sfields = null;
         $rrow->reviewStatus = self::RS_EMPTY;
@@ -305,9 +331,7 @@ class ReviewInfo implements JsonSerializable {
         $this->reviewBlind = (int) $this->reviewBlind;
         $this->reviewTime = (int) $this->reviewTime;
         $this->reviewModified = (int) $this->reviewModified;
-        if ($this->reviewSubmitted !== null) {
-            $this->reviewSubmitted = (int) $this->reviewSubmitted;
-        }
+        $this->reviewSubmitted = (int) $this->reviewSubmitted;
         $this->reviewAuthorSeen = (int) $this->reviewAuthorSeen;
         $this->timeDisplayed = (int) $this->timeDisplayed;
         $this->timeApprovalRequested = (int) $this->timeApprovalRequested;
@@ -377,7 +401,7 @@ class ReviewInfo implements JsonSerializable {
      * @param ?list<ReviewField> $scores
      * @return string */
     static function review_signature_sql(Conf $conf, $scores = null) {
-        $t = "r.reviewId, ' ', r.contactId, ' ', r.reviewToken, ' ', r.reviewType, ' ', r.reviewRound, ' ', r.requestedBy, ' ', r.reviewBlind, ' ', r.reviewModified, ' ', coalesce(r.reviewSubmitted,0), ' ', coalesce(r.reviewAuthorSeen,0), ' ', r.reviewOrdinal, ' ', r.timeDisplayed, ' ', r.timeApprovalRequested, ' ', r.reviewNeedsSubmit, ' ', r.reviewViewScore, ' ', r.rflags";
+        $t = "r.reviewId, ' ', r.contactId, ' ', r.reviewToken, ' ', r.reviewType, ' ', r.reviewRound, ' ', r.requestedBy, ' ', r.reviewBlind, ' ', r.reviewModified, ' ', r.reviewSubmitted, ' ', coalesce(r.reviewAuthorSeen,0), ' ', r.reviewOrdinal, ' ', r.timeDisplayed, ' ', r.timeApprovalRequested, ' ', r.reviewNeedsSubmit, ' ', r.reviewViewScore, ' ', r.rflags";
         foreach ($scores ?? [] as $f) {
             if ($f->order && $f->main_storage)
                 $t .= ", ' {$f->order}=', {$f->main_storage}";
@@ -431,9 +455,19 @@ class ReviewInfo implements JsonSerializable {
 
 
     /** @return bool */
+    function is_blind() {
+        return ($this->rflags & ReviewInfo::RF_BOT) === 0
+            && $this->conf->is_review_blind(($this->rflags & ReviewInfo::RF_BLIND) !== 0);
+    }
+
+    /** @return bool */
     function is_ghost() {
-        $m = $this->conf->time_review_open() ? self::RF_LIVE : self::RFM_NONEMPTY;
-        return ($this->rflags & $m) === 0;
+        return ($this->rflags & $this->conf->ghost_review_flags()) === 0;
+    }
+
+    /** @return bool */
+    function is_bot() {
+        return ($this->rflags & self::RF_BOT) !== 0;
     }
 
     /** @return int */
@@ -442,17 +476,16 @@ class ReviewInfo implements JsonSerializable {
             return self::RS_COMPLETED;
         } else if ($this->reviewType === REVIEW_EXTERNAL
                    && $this->timeApprovalRequested !== 0) {
-            if ($this->timeApprovalRequested > 0) {
-                return self::RS_DELIVERED;
-            } else {
+            if ($this->timeApprovalRequested < 0) {
                 return self::RS_APPROVED;
             }
-        } else if ($this->reviewModified === 0) {
-            return self::RS_EMPTY;
-        } else if ($this->reviewModified === 1) {
+            return self::RS_DELIVERED;
+        } else if ($this->reviewModified > 1) {
+            return self::RS_DRAFTED;
+        } else if ($this->reviewModified > 0) {
             return self::RS_ACKNOWLEDGED;
         }
-        return self::RS_DRAFTED;
+        return self::RS_EMPTY;
     }
 
     /** @param int $rflags
@@ -487,16 +520,16 @@ class ReviewInfo implements JsonSerializable {
     /** @param bool $hard
      * @return ?int */
     function deadline($hard = false) {
-        return $this->conf->setting($this->deadline_name($hard));
+        return $this->conf->review_deadline($this->reviewRound, $this->reviewType, $hard);
     }
 
     /** @return int */
-    function mtime(Contact $viewer) {
+    function mtime(ContactPermissions $viewer) {
         return ($this->mtime_info($viewer))[0];
     }
 
     /** @return array{int,bool} */
-    function mtime_info(Contact $viewer) {
+    function mtime_info(ContactPermissions $viewer) {
         // Return the modification time of this review according to $viewer,
         // plus a bool indicating whether the time was obscured.
 
@@ -545,7 +578,8 @@ class ReviewInfo implements JsonSerializable {
             }
         } else {
             if ($viewer->can_view_review_identity($this->prow, $this)
-                || (($viewer_rrow = $this->prow->review_by_user($viewer))
+                || ($viewer instanceof Contact
+                    && ($viewer_rrow = $this->prow->review_by_user($viewer))
                     && $viewer_rrow->timeDisplayed > 0
                     && $this->timeDisplayed > 0
                     && $viewer_rrow->timeDisplayed < $this->timeDisplayed)) {
@@ -570,11 +604,12 @@ class ReviewInfo implements JsonSerializable {
     }
 
     /** @param int $rflags
+     * @param int $ghost_flags
      * @return string */
-    static function rflags_icon_class_suffix($rflags) {
+    static function rflags_icon_class_suffix($rflags, $ghost_flags) {
         if (($rflags & self::RF_SUBMITTED) !== 0) {
             return "";
-        } else if (($rflags & self::RF_LIVE) === 0) {
+        } else if (($rflags & $ghost_flags) === 0) {
             return " rtghost";
         } else if (($rflags & self::RF_APPROVED) !== 0) {
             return " rtsubrev";
@@ -589,7 +624,7 @@ class ReviewInfo implements JsonSerializable {
         if ($classes !== null) {
             $k = Ht::add_tokens($k, $classes);
         }
-        return $k . self::rflags_icon_class_suffix($this->rflags);
+        return $k . self::rflags_icon_class_suffix($this->rflags, $this->conf->ghost_review_flags());
     }
 
     /** @param ?string $classes
@@ -766,9 +801,8 @@ class ReviewInfo implements JsonSerializable {
     }
 
     /** @param ReviewField $f
-     * @param null|int|string $v
-     * @param bool $diff */
-    function set_fval_prop($f, $v, $diff) {
+     * @param null|int|string $v */
+    function set_fval_prop($f, $v) {
         $diff = $this->prop_diff();
         $changed = false;
         if ($f->main_storage) {
@@ -807,9 +841,14 @@ class ReviewInfo implements JsonSerializable {
     /** @param string $prop
      * @param null|int|string $v */
     function set_prop($prop, $v) {
+        if ($this->$prop === $v) {
+            return;
+        }
         $diff = $this->prop_diff();
         if (!array_key_exists($prop, $diff->_old_prop)) {
             $diff->_old_prop[$prop] = $this->$prop;
+        } else if ($diff->_old_prop[$prop] === $v) {
+            unset($diff->_old_prop[$prop]);
         }
         $this->$prop = $v;
     }
@@ -831,6 +870,10 @@ class ReviewInfo implements JsonSerializable {
                 if (!array_key_exists($k, $diff->_old_prop)) {
                     $diff->_old_prop[$k] = $this->$k;
                 }
+            }
+            // ensure non-null values are recorded in the diff
+            if ($this->finfoval($f) !== null) {
+                $diff->mark_field($f);
             }
         }
     }
@@ -856,70 +899,154 @@ class ReviewInfo implements JsonSerializable {
         return $this->_diff && !$this->_diff->is_empty();
     }
 
-    const SAVE_PROP_STAGED = 2;
-    const SAVE_PROP_OK = 1;
-    const SAVE_PROP_EMPTY = 0;
-    const SAVE_PROP_CONFLICT = -1;
-    const SAVE_PROP_ERROR = -2;
+    /** @return bool */
+    private function _prop_diff_no_history() {
+        if ((($this->rflags ^ $this->base_prop("rflags")) & ~self::RFM_ASSIGN) !== 0) {
+            return false;
+        }
+        foreach ($this->prop_diff()->_old_prop as $prop => $v) {
+            if (!isset(self::$historyless_fields[$prop]))
+                return false;
+        }
+        return true;
+    }
 
-    /** @param ?callable(?string,string|int|null...):void $stager
+    // save_prop behavior flags
+    const SAVEF_NO_HISTORY = 1;
+    const SAVEF_CHECK_RFLAGS = 2;
+    const SAVEF_NO_CHECK_HISTORY = 4;
+
+    // save_prop return values; >= 0 means success
+    const SAVERET_STAGED = 2;
+    const SAVERET_OK = 1;
+    const SAVERET_EMPTY = 0;
+    const SAVERET_CONFLICT = -1;
+    const SAVERET_ERROR = -2;
+
+    /** @param ?callable(?string,string|int|float|null|list...):void $stager
+     * @param int $flags
      * @return -2|-1|0|1|2 */
-    function save_prop($stager = null) {
-        // do not save if no changes
-        if ($this->reviewId > 0 && !$this->prop_changed()) {
-            return self::SAVE_PROP_EMPTY;
+    function save_prop($stager = null, $flags = 0) {
+        $inserting = $this->base_prop("reviewId") <= 0;
+
+        // do not save if no changes; maybe delete
+        if ($this->reviewType === 0) {
+            return $this->_save_prop_delete($stager, $flags);
+        } else if (!$this->prop_changed()) {
+            return self::SAVERET_EMPTY;
         }
 
         // update reviewTime, set required fields
         $diff = $this->prop_diff();
-        assert(!isset($diff->_old_prop["reviewTime"]));
         $this->_seal_fstorage();
-        if ($this->reviewId <= 0) {
-            foreach (["paperId", "contactId", "reviewType", "requestedBy", "reviewRound", "reviewBlind", "rflags"] as $k) {
-                if (!array_key_exists($k, $diff->_old_prop)) {
-                    $diff->_old_prop[$k] = $this->$k;
-                }
-            }
-            $this->set_prop("reviewTime", mt_rand(2000, 1000000));
-        } else {
-            $this->set_prop("reviewTime", $this->reviewTime + mt_rand(1, 10000));
+
+        if (!$inserting
+            && ($flags & self::SAVEF_NO_HISTORY) === 0
+            && $this->_prop_diff_no_history()) {
+            $flags |= self::SAVEF_NO_HISTORY;
+        }
+
+        if (($flags & self::SAVEF_NO_HISTORY) === 0) {
+            assert(!isset($diff->_old_prop["reviewTime"]));
+            $rt = $inserting ? mt_rand(2000, 1000000) : $this->reviewTime + mt_rand(1, 10000);
+            $this->set_prop("reviewTime", $rt);
+        }
+
+        if ($inserting
+            && $this->reviewer()->is_bot()) {
+            $this->set_prop("rflags", $this->rflags | self::RF_BOT);
         }
 
         // construct query
-        $qf = $qv = [];
+        $qp = [];
         foreach ($diff->_old_prop as $prop => $v) {
-            $qf[] = "{$prop}=?";
-            $qv[] = $this->$prop;
+            $qp[$prop] = $this->$prop;
+        }
+        if ($inserting) {
+            foreach (["paperId", "contactId", "reviewType", "requestedBy", "reviewRound", "reviewBlind", "rflags", "reviewSubmitted"] as $k) {
+                if (!array_key_exists($k, $qp)) {
+                    $qp[$k] = $this->$k;
+                }
+            }
         }
         //error_log("PaperReview {$this->paperId}/{$this->reviewId} " . json_encode($diff->_old_prop));
         $xstager = $stager ?? [$this->conf, "qe"];
-        if ($this->reviewId <= 0) {
-            $result = $xstager("insert into PaperReview set " . join(", ", $qf), ...$qv);
+        if ($inserting) {
+            if (!isset($qp["reviewId"])
+                && $this->conf->setting("random_pids")) {
+                $result = $this->conf->id_randomizer()->insert(DatabaseIDRandomizer::REVIEWID, $qp);
+                $stager = null;
+            } else {
+                $result = $xstager("insert into PaperReview (" . join(",", array_keys($qp)) . ") values ?v", [array_values($qp)]);
+            }
         } else {
+            $q = "update PaperReview set " . join("=?, ", array_keys($qp))
+                . "=? where paperId=? and reviewId=? and reviewTime=?";
+            $qv = array_values($qp);
             array_push($qv, $this->paperId, $this->reviewId, $this->base_prop("reviewTime"));
-            $result = $xstager("update PaperReview set " . join(", ", $qf)
-                . " where paperId=? and reviewId=? and reviewTime=?", ...$qv);
+            if (($flags & self::SAVEF_CHECK_RFLAGS) !== 0) {
+                $q .= " and rflags=?";
+                $qv[] = $this->base_prop("rflags");
+            }
+            $result = $xstager($q, ...$qv);
         }
         if ($stager) {
             $this->reviewStatus = $this->compute_review_status();
-            $r = self::SAVE_PROP_STAGED;
+            $r = self::SAVERET_STAGED;
         } else if ($result->is_error()) {
-            $r = self::SAVE_PROP_ERROR;
+            $r = self::SAVERET_ERROR;
         } else if ($result->affected_rows === 0) {
-            $r = self::SAVE_PROP_CONFLICT;
+            $r = self::SAVERET_CONFLICT;
         } else {
             if ($result->insert_id) {
+                $diff->_old_prop["reviewId"] = $diff->_old_prop["reviewId"] ?? $this->reviewId;
                 $this->reviewId = $result->insert_id;
             }
             $this->reviewStatus = $this->compute_review_status();
-            $r = self::SAVE_PROP_OK;
+            $r = self::SAVERET_OK;
         }
         $result && $result->close();
-        if ($r >= 0) {
+        if ($r >= 0
+            && !$inserting
+            && ($flags & self::SAVEF_NO_HISTORY) === 0) {
             $diff->save_history($stager);
-            $this->_diff = null;
         }
         return $r;
+    }
+
+    private function _save_prop_delete($stager, $flags) {
+        $reviewId = $this->base_prop("reviewId");
+        if ($reviewId <= 0) {
+            return self::SAVERET_EMPTY;
+        }
+        $q = "delete from PaperReview where paperId=? and reviewId=?";
+        $qv = [$this->base_prop("paperId"), $reviewId];
+        if (($flags & self::SAVEF_NO_CHECK_HISTORY) === 0) {
+            $q .= " and reviewTime=?";
+            $qv[] = $this->reviewTime;
+        }
+        if (($flags & self::SAVEF_CHECK_RFLAGS) !== 0) {
+            $q .= " and rflags=?";
+            $qv[] = $this->base_prop("rflags");
+        }
+        $xstager = $stager ?? [$this->conf, "qe"];
+        $result = $xstager($q, ...$qv);
+        if ($stager) {
+            $r = self::SAVERET_STAGED;
+        } else if ($result->is_error()) {
+            $r = self::SAVERET_ERROR;
+        } else if ($result->affected_rows === 0) {
+            $r = self::SAVERET_CONFLICT;
+        } else {
+            $r = self::SAVERET_OK;
+        }
+        $result && $result->close();
+        return $r;
+    }
+
+    /** Discard the pending diff after a successful `save_prop()`. */
+    function commit_prop() {
+        $this->_diff = null;
     }
 
     function abort_prop() {
@@ -933,9 +1060,128 @@ class ReviewInfo implements JsonSerializable {
         }
     }
 
+    /** @param int $type
+     * @param int $round
+     * @return string */
+    private function review_explanation($type, $round) {
+        $t = ReviewForm::$revtype_names_lc[$type];
+        if ($round && ($rname = $this->conf->round_name($round))) {
+            $t .= ", round {$rname}";
+        }
+        return $t;
+    }
+
+    function commit_prop_assignment(Contact $actor, $extra = []) {
+        if (!$this->prop_changed()) {
+            return;
+        }
+
+        $type = $this->reviewType;
+        $oldtype = $this->base_prop("reviewType");
+        if ($type === 0) {
+            $this->_commit_prop_delete_assignment($actor, $extra);
+            return;
+        }
+
+        if ($oldtype === 0) {
+            $verb = $extra["action"] ?? (($this->rflags & ReviewInfo::RF_SELF_ASSIGNED) !== 0 ? "self-assigned" : "assigned");
+            $msg = "Review {$this->reviewId} {$verb}: " . $this->review_explanation($this->reviewType, $this->reviewRound);
+        } else {
+            $msg = "Review {$this->reviewId} changed: " . $this->review_explanation($this->base_prop("reviewType"), $this->base_prop("reviewRound")) . " to " . $this->review_explanation($this->reviewType, $this->reviewRound);
+        }
+        $actor->log_activity_for($this->contactId, $msg, $this->paperId);
+
+        // on new review, update PaperReviewRefused, ReviewRequest, delegation
+        if ($oldtype === 0) {
+            $this->reviewer()->activate_placeholder(false, $actor);
+            $this->conf->ql("delete from PaperReviewRefused where paperId=? and contactId=?", $this->paperId, $this->contactId);
+            if (($req_email = $extra["requested_email"] ?? null)) {
+                $this->conf->qe("delete from ReviewRequest where paperId=? and email=?", $this->paperId, $req_email);
+            }
+            if ($this->reviewType < REVIEW_SECONDARY) {
+                $this->conf->update_review_delegation($this->paperId, $this->requestedBy, 1);
+            } else if ($this->reviewType === REVIEW_SECONDARY) {
+                // We must update delegation even on a newly inserted review
+                // because maybe this reviewer requested reviews before being
+                // assigned. (e.g. a previous secondary review got deleted)
+                $this->conf->update_review_delegation($this->paperId, $this->contactId, -2);
+            }
+            if ($type >= REVIEW_PC
+                && ($this->conf->setting("pcrev_assigntime") ?? 0) < Conf::$now) {
+                $this->conf->save_setting("pcrev_assigntime", Conf::$now);
+            }
+        } else if ($type === REVIEW_SECONDARY
+                   && $oldtype !== REVIEW_SECONDARY
+                   && $this->reviewStatus < ReviewInfo::RS_COMPLETED) {
+            $this->conf->update_review_delegation($this->paperId, $this->contactId, 0);
+        }
+        if (($type === REVIEW_META) !== ($oldtype === REVIEW_META)) {
+            $this->conf->update_metareviews_setting($type === REVIEW_META ? 1 : -1);
+        }
+        if (!($extra["no_rights"] ?? false)) {
+            Contact::update_rights();
+        }
+        if ($oldtype === 0) {
+            $this->reviewer()->update_cdb_roles();
+        }
+        if (!($extra["no_autosearch"] ?? false)) {
+            $this->conf->update_automatic_tags($this->paperId, SearchTerm::ABOUT_REVIEWS);
+        }
+        $this->commit_prop();
+    }
+
+    private function _commit_prop_delete_assignment(Contact $actor, $extra) {
+        $action = $extra["action"] ?? ($this->reviewStatus >= ReviewInfo::RS_DRAFTED ? "deleted" : "unassigned");
+        if (!($extra["no_log"] ?? false)) {
+            $actor->log_activity_for($this->contactId, "Review {$this->reviewId} {$action}", $this->paperId);
+        }
+        $this->conf->qe("delete from ReviewRating where paperId=? and reviewId=?",
+            $this->paperId, $this->reviewId);
+        // update global settings
+        if ($this->reviewToken !== 0) {
+            $this->conf->update_rev_tokens_setting(-1);
+        }
+        $oldtype = $this->base_prop("reviewType");
+        if ($oldtype === REVIEW_META) {
+            $this->conf->update_metareviews_setting(-1);
+        }
+        // perhaps a delegator needs to redelegate
+        if ($oldtype < REVIEW_SECONDARY && $this->requestedBy > 0) {
+            $this->conf->update_review_delegation($this->paperId, $this->requestedBy, -1);
+        }
+        // update rights
+        if (!($extra["no_rights"] ?? false)) {
+            Contact::update_rights();
+        }
+        $this->reviewer()->update_cdb_roles();
+        // run autosearch
+        if (!($extra["no_autosearch"] ?? false)) {
+            $this->conf->update_automatic_tags($this->paperId, SearchTerm::ABOUT_REVIEWS);
+        }
+        $this->commit_prop();
+        $this->reviewId = 0;
+    }
+
+    /** @return bool */
+    function delete(Contact $actor, $extra = []) {
+        if ($extra["snapshot"] ?? false) {
+            $this->snapshot_fval_prop();
+            if (!$this->save_prop()) {
+                return false;
+            }
+            $this->commit_prop();
+        }
+        if ($this->reviewId <= 0
+            || $this->_save_prop_delete(null, self::SAVEF_NO_CHECK_HISTORY) <= 0) {
+            return false;
+        }
+        $this->_commit_prop_delete_assignment($actor, $extra);
+        return true;
+    }
+
 
     /** @return array<string,ReviewField> */
-    function viewable_fields(Contact $user, $include_nonexistent = false) {
+    function viewable_fields(ContactPermissions $user, $include_nonexistent = false) {
         $bound = $user->view_score_bound($this->prow, $this);
         $fs = [];
         foreach ($this->conf->all_review_fields() as $fid => $f) {
@@ -959,24 +1205,56 @@ class ReviewInfo implements JsonSerializable {
         return $this->_reviewer;
     }
 
-    /** @param list<ReviewInfo> $rrows */
-    static function check_ambiguous_names($rrows) {
-        // XXXX fuck... this exposes information about whether 2 people with
-        // the same name reviewed a paper, even if only one of their identities
-        // should be visible
-        foreach ($rrows as $i => $rrow) {
-            $rrow->nameAmbiguous = false;
-            $u1 = $rrow->reviewer();
-            for ($j = 0; $j !== $i; ++$j) {
-                $u2 = $rrows[$j]->_reviewer;
-                if ($u1->firstName === $u2->firstName
-                    && $u1->lastName === $u2->lastName
-                    && ($u1->firstName !== "" || $u1->lastName !== "")) {
-                    $rrow->nameAmbiguous = $rrows[$j]->nameAmbiguous = true;
-                    break;
+    /** @return $this */
+    function set_reviewer(Contact $reviewer) {
+        assert($this->contactId === $reviewer->contactId);
+        $this->_reviewer = $reviewer;
+        return $this;
+    }
+
+    /** @return bool */
+    function name_ambiguous_for(Contact $viewer) {
+        if (!$this->prow) {
+            return false;  // should not happen
+        }
+        if ($this->_name_ambiguous === null) {
+            $rrows = $this->prow->all_reviews();
+            $byname = [];
+            foreach ($rrows as $rrow) {
+                $rrow->_name_ambiguous = false;
+                if (!($u = $rrow->reviewer())
+                    || ($n = "{$u->firstName}\0{$u->lastName}") === "\0") {
+                    continue;
+                }
+                if (isset($byname[$n])) {
+                    $byname[$n]->_name_ambiguous = $rrow->_name_ambiguous = true;
+                } else {
+                    $byname[$n] = $rrow;
                 }
             }
+            // `$this` may predate the current review array
+            $this->_name_ambiguous = $rrows[$this->reviewId]->_name_ambiguous ?? false;
         }
+        if (!$this->_name_ambiguous) {
+            return false;
+        } else if ($viewer->is_admin($this->prow)) {
+            return true;
+        }
+        // only disambiguate against reviewers whose identities the viewer
+        // can see
+        $u1 = $this->reviewer();
+        foreach ($this->prow->all_reviews() as $rrow) {
+            if ($rrow->reviewId === $this->reviewId) {
+                continue;
+            }
+            $u2 = $rrow->reviewer();
+            if ($u1->firstName === $u2->firstName
+                && $u1->lastName === $u2->lastName
+                && $viewer->can_view_review_identity($this->prow, $rrow)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** @param ?TextPregexes $reg
@@ -1118,7 +1396,7 @@ class ReviewInfo implements JsonSerializable {
             } else if ($w === "bad" || $w === "-" || $w === "\xE2\x88\x92" /* MINUS */) {
                 $n |= ReviewInfo::RATING_BADMASK;
             } else if ($w !== "") {
-                $re = '/\A' . str_replace('\*', '.*', preg_quote(str_replace("_", "-", $w))) . '\z/';
+                $re = '/\A' . str_replace('\*', '.*', preg_quote(str_replace("_", "-", $w), '/')) . '\z/';
                 $matches = preg_grep($re, self::$rating_match_strings);
                 if (empty($matches) && strpos($w, "*") === false) {
                     return null;
@@ -1225,9 +1503,12 @@ class ReviewInfo implements JsonSerializable {
 
     /** @param ReviewRefusalInfo $refrow
      * @return ReviewInfo */
-    static function make_reconstruct_refusal($refrow) {
+    static function reconstruct_refusal(Contact $actor, $refrow) {
         $rrow = self::make_db_default($refrow->conf);
-        $rrow->conf = $refrow->conf;
+        $diff = $rrow->prop_diff();
+        foreach (self::$db_fields as $prop) {
+            $diff->_old_prop[$prop] = $rrow->$prop;
+        }
         $rrow->paperId = $refrow->paperId;
         $rrow->reviewId = $refrow->refusedReviewId;
         $rrow->contactId = $refrow->contactId;
@@ -1257,55 +1538,12 @@ class ReviewInfo implements JsonSerializable {
         }
         $result->close();
         $rrow->reviewStatus = $rrow->compute_review_status();
+
+        // insert the reconstructed review, preserving its reviewId and
+        // reviewTime, without recording a new history entry
+        $rrow->save_prop(null, self::SAVEF_NO_HISTORY);
+        $rrow->commit_prop_assignment($actor, ["action" => "undeclined"]);
         return $rrow;
-    }
-
-    function insert_full() {
-        $this->_seal_fstorage();
-        $qf = [
-            "paperId", "reviewId", "contactId", "reviewType",
-            "requestedBy", "reviewToken", "reviewRound", "reviewOrdinal",
-            "reviewBlind", "reviewTime", "reviewModified", "reviewSubmitted",
-            "reviewAuthorSeen", "timeDisplayed", "timeApprovalRequested",
-            "reviewNeedsSubmit", "reviewViewScore", "rflags", "timeRequested",
-            "timeRequestNotified", "reviewAuthorModified", "reviewNotified",
-            "reviewAuthorNotified", "reviewEditVersion", "reviewWordCount",
-            "s01", "s02", "s03", "s04", "s05", "s06", "s07", "s08", "s09",
-            "s10", "s11", "tfields", "sfields"
-        ];
-        $qv = array_map(function ($k) { return $this->$k; }, $qf);
-        return $this->conf->qe("insert into PaperReview (" . join(", ", $qf) . ") values ?v", [$qv]);
-    }
-
-    /** @return bool */
-    function delete(Contact $actor, $opts = []) {
-        if ($this->reviewId <= 0) {
-            return false;
-        }
-        $result = $this->conf->qe("delete from PaperReview where paperId=? and reviewId=?",
-            $this->paperId, $this->reviewId);
-        if (!$result->affected_rows) {
-            return false;
-        }
-        $actor->log_activity_for($this->contactId, "Review {$this->reviewId} deleted", $this->paperId);
-        $this->conf->qe("delete from ReviewRating where paperId=? and reviewId=?",
-            $this->paperId, $this->reviewId);
-        // update global settings
-        if ($this->reviewToken !== 0) {
-            $this->conf->update_rev_tokens_setting(-1);
-        }
-        if ($this->reviewType === REVIEW_META) {
-            $this->conf->update_metareviews_setting(-1);
-        }
-        // perhaps a delegator needs to redelegate
-        if ($this->reviewType < REVIEW_SECONDARY && $this->requestedBy > 0) {
-            $this->conf->update_review_delegation($this->paperId, $this->requestedBy, -1);
-        }
-        // run autosearch
-        if (!($opts["no_autosearch"] ?? false)) {
-            $this->conf->update_automatic_tags($this->prow, SearchTerm::ABOUT_REVIEWS);
-        }
-        return true;
     }
 
     /** @param ReviewInfo $a

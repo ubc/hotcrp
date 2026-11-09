@@ -35,7 +35,8 @@ class Completion_API {
         }
         if ($user->can_view_some_decision()) {
             $comp[] = "has:decision";
-            if ($conf->setting("final_open")) {
+            if ($conf->setting("final_open")
+                && $user->can_view_some_standard_decision()) {
                 $comp[] = "has:final";
             }
         }
@@ -186,7 +187,10 @@ class Completion_API {
         }
 
         if (!$category || $category === "ss") {
-            foreach ($user->viewable_named_searches(false) as $sj) {
+            foreach ($user->conf->named_searches() as $sj) {
+                if (!$user->can_view_named_search($sj, false)) {
+                    continue;
+                }
                 $twiddle = strpos($sj->name, "~");
                 $comp[] = "ss:" . ($twiddle > 0 ? substr($sj->name, $twiddle) : $sj->name);
             }
@@ -301,26 +305,5 @@ class Completion_API {
             "ok" => true,
             "fields" => $fs
         ];
-    }
-
-    const MENTION_PARSE = 0;
-    const MENTION_COMPLETION = 1;
-
-    /** @param Contact $user
-     * @param ?PaperInfo $prow
-     * @param int $cvis
-     * @param 0|1 $reason
-     * @return list<list<Contact|Author>>
-     * @deprecated */
-    static function mention_lists($user, $prow, $cvis, $reason) {
-        $mlister = new MentionLister($user, $prow, $cvis, $reason);
-        return $mlister->list_values();
-    }
-
-    /** @param Qrequest $qreq
-     * @param ?PaperInfo $prow
-     * @deprecated */
-    static function mentioncompletion_api(Contact $user, $qreq, $prow) {
-        return MentionLister::mentioncompletion_api($user, $qreq, $prow);
     }
 }

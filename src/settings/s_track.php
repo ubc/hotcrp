@@ -174,7 +174,7 @@ class Track_SettingParser extends SettingParser {
         if ($si->name === "track") {
             $this->settings_json = $this->settings_json ?? $sv->conf->setting_json("tracks");
             $m = [];
-            foreach ($sv->conf->track_tags() as $tag) {
+            foreach ($sv->conf->tags()->sort_array($sv->conf->track_tags()) as $tag) {
                 $m[] = new Track_Setting($sv->conf->track($tag),
                                          $this->settings_json->{$tag} ?? null);
             }
@@ -196,7 +196,7 @@ class Track_SettingParser extends SettingParser {
 
     /** @param SettingValues $sv
      * @param string $right
-     * @param string|array{string,string} $label
+     * @param string|array{string,string|list<MessageItem>} $label
      * @param int $flags */
     function print_perm($sv, $right, $label, $flags = 0) {
         $deftype = Track::right_name_required($right) ? "none" : "all";
@@ -219,9 +219,15 @@ class Track_SettingParser extends SettingParser {
             $permts = ["none" => $permts["none"], "+" => $permts["+"], "-" => $permts["-"]];
         }
 
-        $hint = "";
+        $hints = [];
         if (is_array($label)) {
-            $hint = $label[1] ?? "";
+            if (count($label) === 2) {
+                if (is_string($label[1])) {
+                    $hints[] = MessageItem::plain("<5>{$label[1]}");
+                } else {
+                    $hints = $label[1];
+                }
+            }
             $label = $label[0];
         }
 
@@ -234,14 +240,12 @@ class Track_SettingParser extends SettingParser {
             '<div class="entry">',
             Ht::select("{$pfx}/type", $permts, $reqtype, $sv->sjs("{$pfx}/type", ["class" => "uich js-foldup"])),
             " &nbsp;",
-            Ht::entry("{$pfx}/tag", $reqtag, $sv->sjs("{$pfx}/tag", ["class" => "fx need-suggest pc-tags", "spellcheck" => false, "autocomplete" => "off"]));
-        $sv->print_feedback_at($pfx);
-        $sv->print_feedback_at("{$pfx}/type");
-        $sv->print_feedback_at("{$pfx}/tag");
-        if ($hint) {
-            echo str_starts_with($hint, "<") ? $hint : "<div class=\"f-d\">{$hint}</div>";
-        }
-        echo "</div></div>";
+            Ht::entry("{$pfx}/tag", $reqtag, $sv->sjs("{$pfx}/tag", ["class" => "fx need-suggest pc-tags", "data-suggest-role-tags" => true, "spellcheck" => false, "autocomplete" => "off"])),
+            MessageSet::feedback_html([
+                ...$sv->message_list_for([$pfx, "{$pfx}/type", "{$pfx}/tag"]),
+                ...$hints
+            ], ["class" => "f-d"]),
+            "</div></div>";
     }
 
     function print_view_perm(SettingValues $sv, $gj) {
@@ -249,8 +253,7 @@ class Track_SettingParser extends SettingParser {
     }
 
     function print_viewrev_perm(SettingValues $sv, $gj) {
-        $hint = "<div class=\"f-d fx\">This setting constrains all users including co-reviewers.</div>";
-        $this->print_perm($sv, "viewrev", ["Who can see reviews?", $hint]);
+        $this->print_perm($sv, "viewrev", ["Who can see reviews?", [MessageItem::plain("<0>This setting constrains all users including co-reviewers.")->set_item_class("fx")]]);
     }
 
     private function print_track(SettingValues $sv, $ctr) {
@@ -264,7 +267,7 @@ class Track_SettingParser extends SettingParser {
             echo 'Submissions not on other tracks';
         } else {
             echo 'Track #', $sv->entry("track/{$ctr}/tag", ["class" => "settings-track-name need-suggest tags want-delete-marker ml-1", "spellcheck" => false, "autocomplete" => "off"]),
-                Ht::button(Icons::ui_use("trash"), ["id" => "track/{$ctr}/deleter", "class" => "ui js-settings-track-delete ml-2 btn-licon-s need-tooltip", "aria-label" => "Delete track", "tabindex" => -1]),
+                Ht::button(Ht::make_licon("trash", "s"), ["id" => "track/{$ctr}/deleter", "class" => "ui js-settings-track-delete ml-2 btn-licon-s need-tooltip", "aria-label" => "Delete track", "tabindex" => -1]),
                 $sv->feedback_at("track/{$ctr}/tag");
             if ($sv->reqstr("track/{$ctr}/delete")) {
                 echo Ht::hidden("track/{$ctr}/delete", "1", ["data-default-value" => ""]);
@@ -356,7 +359,7 @@ class Track_SettingParser extends SettingParser {
         } else if ($type === "none") {
             $pv = Track::right_name_required($si->name1) ? null : "+none";
         } else {
-            if (($t = $sv->tagger()->check($tag, Tagger::NOVALUE | Tagger::NOPRIVATE))) {
+            if (($t = $sv->tagger()->check_syntax($tag, Tagger::NOVALUE | Tagger::NOPRIVATE))) {
                 $pv = $type . $t;
             } else {
                 $sv->error_at($pfx, $sv->tagger()->error_ftext());
@@ -390,7 +393,7 @@ class Track_SettingParser extends SettingParser {
                     $sv->error_if_duplicate_member("track", $ctr, "tag", "Track tag");
                     if (!$sv->has_error_at("track/{$ctr}/tag")
                         && ($this->cur_trx->tag === "_"
-                            || !$sv->tagger()->check($this->cur_trx->tag, Tagger::NOVALUE))) {
+                            || !$sv->tagger()->check_syntax($this->cur_trx->tag, Tagger::NOVALUE))) {
                         $sv->error_at("track/{$ctr}/tag", "<0>Track name ‘{$this->cur_trx->tag}’ is reserved");
                     }
                 }

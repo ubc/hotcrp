@@ -6,9 +6,23 @@ class Mailer_Tester {
     /** @var Conf
      * @readonly */
     public $conf;
+    /** @var array<string,?int> */
+    private $saved_settings = [];
 
     function __construct(Conf $conf) {
         $this->conf = $conf;
+        // `ensure_reviews` changes these to make reviews visible; restore them
+        // in `finalize` so the settings do not leak into a later test class
+        foreach (["viewrev", "au_seerev", "rev_open"] as $k) {
+            $this->saved_settings[$k] = $conf->setting($k);
+        }
+    }
+
+    function finalize() {
+        foreach ($this->saved_settings as $k => $v) {
+            $this->conf->save_setting($k, $v);
+        }
+        $this->conf->refresh_settings();
     }
 
     function run_send_template(MailRecipients $mr, $template, $qreq = []) {
@@ -17,7 +31,7 @@ class Mailer_Tester {
         }
         ob_start();
         try {
-            $ms = new MailSender($mr, $qreq, 2);
+            $ms = new MailSender($mr, $qreq, MailSender::PHASE_SEND);
             $ms->set_template($template);
             $ms->set_no_print(true)->set_send_all(true);
             $ms->prepare_sending_mailid();
@@ -25,6 +39,169 @@ class Mailer_Tester {
         } catch (PageCompletion $unused) {
         }
         ob_end_clean();
+    }
+
+    /** @return string */
+    function run_check_template(MailRecipients $mr, $template, $qreq = []) {
+        if (!($qreq instanceof Qrequest)) {
+            $qreq = (new Qrequest("POST", $qreq))->set_user($mr->user)->approve_token();
+        }
+        ob_start();
+        try {
+            $ms = new MailSender($mr, $qreq, MailSender::PHASE_PREVIEW);
+            $ms->set_template($template);
+            $ms->run();
+        } catch (PageCompletion $unused) {
+        }
+        return ob_get_clean();
+    }
+
+    /** Run a mail preview and return the feedback the sender would see
+     * (messages copied to MailRecipients), without printing the form. `$qreq`
+     * may set subject/body/reply-to/cc.
+     * @param string $recipients
+     * @return string */
+    function preview_feedback(Contact $user, $recipients, $args = []) {
+        $mr = (new MailRecipients($user))->set_recipients($recipients);
+        $args["subject"] = $args["subject"] ?? "Test subject";
+        $args["body"] = $args["body"] ?? "Test body";
+        $qreq = TestQreq::user_post($user, $args);
+        MailSender::clean_request($qreq);
+        $old_main = Qrequest::$main_request;
+        Qrequest::set_main_request($qreq);
+        $old_test_mode = Navigation::$test_mode;
+        Navigation::$test_mode = 2; // route page feedback through the buffer, not STDOUT/STDERR
+        ob_start();
+        try {
+            $ms = new MailSender($mr, $qreq, MailSender::PHASE_PREVIEW);
+            $ms->set_no_print(true);
+            $ms->run();
+        } catch (PageCompletion $unused) {
+        }
+        ob_end_clean();
+        Navigation::$test_mode = $old_test_mode;
+        $this->conf->claim_saved_messages(); // discard queued page feedback
+        Qrequest::$main_request = $old_main;
+        return $mr->full_feedback_text();
+    }
+
+    function test_paper_admin_mail_preview_hides_password_link() {
+        $conf = $this->conf;
+        $jon = $conf->checked_user_by_email("jon@cs.ucl.ac.uk"); // PC, tagged "red"
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        xassert(!$jon->privChair);
+        xassert(!$jon->is_manager());
+
+        $old_tracks = $conf->setting("tracks");
+        $old_tracks_data = $conf->setting_data("tracks");
+        $conf->save_refresh_setting("tracks", 1, '{"green":{"admin":"+red"}}');
+        Contact::update_rights();
+        $jon = $conf->checked_user_by_email("jon@cs.ucl.ac.uk");
+        xassert($jon->is_manager()); // track manager => non-chair is_manager principal
+
+        $captype = TokenInfo::RESETPASSWORD;
+        $nchair = $conf->fetch_ivalue("select count(*) from Capability where capabilityType=? and contactId=?", $captype, $chair->contactId);
+
+        MailChecker::clear();
+        // the sender-visible feedback (messages copied to MailRecipients) must not
+        // carry any recipient's reset token
+        $fb = $this->preview_feedback($jon, "pc", ["reply-to" => "{{PASSWORDLINK}}"]);
+        xassert(!str_contains($fb, "hcpw"));
+        // and none was minted for the chair (the would-be victim)
+        xassert_eqq($conf->fetch_ivalue("select count(*) from Capability where capabilityType=? and contactId=?", $captype, $chair->contactId), $nchair);
+
+        // {{IF}} expansion errors are still surfaced (guards the Mailer::warning
+        // -> MailPreparation message unification)
+        MailChecker::clear();
+        $fb = $this->preview_feedback($jon, "pc", ["body" => "hello {{IF(t01)}} world"]);
+        xassert_str_contains($fb, "Incomplete {{IF}}");
+
+        if ($old_tracks === null) {
+            $conf->save_refresh_setting("tracks", null);
+        } else {
+            $conf->save_refresh_setting("tracks", $old_tracks, $old_tracks_data);
+        }
+        Contact::update_rights();
+        MailChecker::clear();
+    }
+
+    function test_author_view_capability_manager_only() {
+        $conf = $this->conf;
+        $pc = $conf->checked_user_by_email("jon@cs.ucl.ac.uk"); // PC, not a manager
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $author = $conf->checked_user_by_email("puneet@catarina.usc.edu"); // author of #1
+        xassert(!$pc->is_manager());
+
+        $prow = $conf->checked_paper_by_id(1);
+        xassert($prow->has_author($author));
+
+        $old_sharing = $conf->opt("authorSharing");
+        $conf->set_opt("authorSharing", 1); // let author-view links be minted
+
+        $rest = ["prow" => $prow, "width" => 10000];
+        // an administrator may put the author-view link in custom text
+        $cmailer = new HotCRPMailer($chair, $author, $rest);
+        xassert_str_contains($cmailer->expand("x={{AUTHORVIEWCAPABILITY}}", "body"), "cap=");
+
+        // a non-manager sender may not: the keyword is left unexpanded, so the
+        // sender cannot mint an author-view token in text they control
+        $pmailer = new HotCRPMailer($pc, $author, $rest);
+        $t = $pmailer->expand("x={{AUTHORVIEWCAPABILITY}}", "body");
+        xassert_not_str_contains($t, "cap=");
+        xassert_str_contains($t, "{{AUTHORVIEWCAPABILITY}}");
+
+        $conf->set_opt("authorSharing", $old_sharing);
+    }
+
+    function test_password_link_body_only_and_standalone() {
+        $conf = $this->conf;
+        xassert(!$conf->login_type()); // password sign-in, so the keyword is live
+        $recipient = $conf->checked_user_by_email("estrin@usc.edu");
+        $rest = ["no_error_quit" => true, "width" => 10000];
+
+        // a password link on its own line expands (HotCRP’s own templates do this)
+        $prep = HotCRPMailer::prepare_to($recipient, ["subject" => "S", "body" => "{{PASSWORDLINK}}"], $rest);
+        xassert_str_contains($prep->body, "resetpassword/hcpw");
+
+        // whitespace on both sides is also fine
+        $prep = HotCRPMailer::prepare_to($recipient, ["subject" => "S", "body" => "Reset here: {{PASSWORDLINK}}"], $rest);
+        xassert_str_contains($prep->body, "resetpassword/hcpw");
+
+        // glued into a sender-controlled URL: left unexpanded, no token delivered
+        $prep = HotCRPMailer::prepare_to($recipient, ["subject" => "S", "body" => "http://evil.example/p?r={{PASSWORDLINK}}"], $rest);
+        xassert_not_str_contains($prep->body, "hcpw");
+        xassert_str_contains($prep->body, "{{PASSWORDLINK}}");
+
+        // in a header (Reply-To), even on its own: left unexpanded (body only)
+        $prep = HotCRPMailer::prepare_to($recipient, ["subject" => "S", "body" => "hi", "reply-to" => "{{PASSWORDLINK}}"], $rest);
+        xassert_not_str_contains(json_encode($prep->headers), "hcpw");
+
+        // the Reply-To display-name trick: also unexpanded
+        $prep = HotCRPMailer::prepare_to($recipient, ["subject" => "S", "body" => "hi", "reply-to" => "\"{{PASSWORDLINK}}\" <evil@example.com>"], $rest);
+        xassert_not_str_contains(json_encode($prep->headers), "hcpw");
+
+        // a conditional wrapper is transparent: a standalone link inside an
+        // {{IF}} body still expands
+        $prep = HotCRPMailer::prepare_to($recipient, ["subject" => "S", "body" => "{{IF(CONFNAME)}}\n{{PASSWORDLINK}}\n{{ENDIF}}"], $rest);
+        xassert_str_contains($prep->body, "resetpassword/hcpw");
+
+        // but it cannot be smuggled through another keyword’s arguments, where
+        // its value would land in the string that keyword builds
+        $prep = HotCRPMailer::prepare_to($recipient, ["subject" => "S", "body" => "http://evil.example/p?r={{URLENC(PASSWORDLINK)}}"], $rest);
+        xassert_not_str_contains($prep->body, "hcpw");
+        $prep = HotCRPMailer::prepare_to($recipient, ["subject" => "S", "body" => "see {{LINK(resetpassword, {{PASSWORDLINK}})}}"], $rest);
+        xassert_not_str_contains($prep->body, "hcpw");
+
+        // the built-in templates that carry the link still expand it (each
+        // uses {{PASSWORDLINK}} as its own body line, so none is affected)
+        foreach (["@resetpassword", "@newaccount.selfregister"] as $tmpl) {
+            $prep = HotCRPMailer::prepare_to($recipient, $tmpl, $rest);
+            xassert_str_contains($prep->body, "resetpassword/hcpw");
+        }
+
+        // tidy up the reset tokens the standalone expansions minted
+        $conf->qe("delete from Capability where capabilityType=? and contactId=?",
+            TokenInfo::RESETPASSWORD, $recipient->contactId);
     }
 
     function test_send() {
@@ -62,6 +239,1031 @@ class Mailer_Tester {
 
         // clean up: clear decision so no papers remain accepted
         xassert_assign($chair, "paper,action,decision\n13,cleardecision,yes\n");
+        MailChecker::clear();
+    }
+
+    function test_mailtext_hides_decision_and_shepherd() {
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $shepherd = $conf->checked_user_by_email("estrin@usc.edu");
+        $probe = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+
+        // paper 13 is accepted and shepherded; the probe is conflicted with it
+        xassert_assign($chair, "paper,action,decision\n13,decision,yes\n");
+        xassert_assign($chair, "paper,action,user\n13,shepherd,{$shepherd->email}\n");
+        xassert_assign($chair, "paper,action,user\n13,conflict,{$probe->email}\n");
+
+        $prow = $conf->checked_paper_by_id(13);
+        $decname = $prow->decision()->name;
+        xassert_gt($prow->outcome, 0);
+        xassert_eqq($prow->shepherdContactId, $shepherd->contactId);
+
+        $probe = $conf->checked_user_by_email($probe->email);
+        xassert($probe->isPC);
+        xassert($probe->can_view_paper($prow));
+        xassert(!$probe->can_view_decision($prow));
+        xassert(!$probe->can_view_shepherd($prow));
+
+        $args = ["p" => 13, "email" => "probe@example.invalid", "text" => "", "subject" => "",
+                 "body" => "D[{{DECISION}}] S[{{SHEPHERDEMAIL}}] T[{{TITLE}}]"];
+
+        // control: the keywords do expand for someone who may see them
+        $cbody = call_api_result("mailtext", $chair, $args, $prow)->content["body"];
+        xassert_str_contains($cbody, $decname);
+        xassert_str_contains($cbody, $shepherd->email);
+
+        // the probe expands the same text, but learns neither secret
+        $pbody = call_api_result("mailtext", $probe, $args, $prow)->content["body"];
+        xassert_str_contains($pbody, $prow->title); // expansion ran at all
+        xassert_not_str_contains($pbody, $decname);
+        xassert_not_str_contains($pbody, $shepherd->email);
+
+        xassert_assign($chair, "paper,action,user\n13,noconflict,{$probe->email}\n");
+        xassert_assign($chair, "paper,action,user\n13,clearshepherd,{$shepherd->email}\n");
+        xassert_assign($chair, "paper,action,decision\n13,cleardecision,yes\n");
+    }
+
+    /** Ensure a finalized paper has completed reviews that a non-reviewer PC and
+     * the paper's authors can see, plus the settings that permit it. In the full
+     * test06 run Reviews_Tester establishes this; doing it here lets the review-
+     * and comment-content mailer tests also pass when Mailer_Tester runs alone.
+     * Idempotent: a no-op once such reviews exist. */
+    private function ensure_reviews() {
+        $conf = $this->conf;
+        if ($this->find_distinctive_review() && $this->find_author_readable_review()) {
+            return;
+        }
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $conf->save_setting("rev_open", 1);
+        $conf->save_setting("viewrev", Conf::VIEWREV_ALWAYS);
+        $conf->save_setting("au_seerev", Conf::AUSEEREV_YES);
+        $conf->refresh_settings();
+        xassert_assign($chair, "paper,action,user\n1,primary,mgbaker@cs.stanford.edu\n1,primary,lixia@cs.ucla.edu\n");
+        // a distinctive word in one field (papsum) only, so find_distinctive_review can key on it
+        foreach ([["mgbaker@cs.stanford.edu", "Xylophonics"], ["lixia@cs.ucla.edu", "Kaleidoscopy"]] as list($email, $word)) {
+            $u = $conf->checked_user_by_email($email);
+            $prow = $conf->checked_paper_by_id(1, $u);
+            $rrow = $prow->review_by_user($u);
+            if (!$rrow || $rrow->reviewStatus < ReviewInfo::RS_COMPLETED) {
+                $tf = new ReviewValues($u);
+                xassert($tf->parse_json(["ovemer" => 2, "revexp" => 1, "ready" => true,
+                    "papsum" => "Summary that mentions {$word} exactly once.",
+                    "comaut" => "Comments for the authors of this submission."]));
+                xassert($tf->check_and_save($prow));
+            }
+        }
+        $conf->refresh_settings();
+    }
+
+    /** Find a complete review whose text distinguishes one field from the rest,
+     * plus its author and a PC member who may read it but does not administer it.
+     * @return ?array{PaperInfo,ReviewInfo,Contact,Contact,ReviewField,string} */
+    private function find_distinctive_review() {
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        foreach ($conf->paper_set(["finalized" => true], $chair) as $prow) {
+            $prow->ensure_full_reviews();
+            foreach ($prow->reviews_as_display() as $rrow) {
+                if ($rrow->reviewStatus < ReviewInfo::RS_COMPLETED) {
+                    continue;
+                }
+                // find a PC-visible field with a word that appears nowhere else
+                // in the review
+                $field = $word = null;
+                foreach ($conf->review_form()->all_fields() as $f) {
+                    if ($f->view_score < VIEWSCORE_PC
+                        || !is_string($fv = $rrow->fval($f))) {
+                        continue;
+                    }
+                    preg_match_all('/[A-Za-z]{8,}/', $fv, $m);
+                    foreach ($m[0] as $w) {
+                        if (self::review_word_count($conf, $rrow, $w) === 1) {
+                            $field = $f;
+                            $word = $w;
+                            break 2;
+                        }
+                    }
+                }
+                if (!$field) {
+                    continue;
+                }
+                foreach ($conf->pc_members() as $pc) {
+                    if ($pc->contactId !== $rrow->contactId
+                        && !$pc->allow_admin($prow)
+                        && !$pc->act_author_view($prow) // read it as PC, not as author
+                        && $pc->can_view_review($prow, $rrow)) {
+                        $reviewer = $conf->user_by_id($rrow->contactId);
+                        xassert(!!$reviewer);
+                        return [$prow, $rrow, $reviewer, $pc, $field, $word];
+                    }
+                }
+            }
+        }
+        return null;
+    }
+
+    /** @param string $word
+     * @return int */
+    static private function review_word_count(Conf $conf, ReviewInfo $rrow, $word) {
+        $n = 0;
+        foreach ($conf->review_form()->all_fields() as $f) {
+            if (is_string($fv = $rrow->fval($f))) {
+                $n += preg_match_all('/\b' . preg_quote($word) . '\b/', $fv);
+            }
+        }
+        return $n;
+    }
+
+    function test_censored_review_expansion_narrows_fields() {
+        $conf = $this->conf;
+        $this->ensure_reviews();
+        $chair = $conf->checked_user_by_email("chair@_.com");
+
+        $x = $this->find_distinctive_review();
+        xassert(!!$x);
+        if (!$x) {
+            return;
+        }
+        list($prow, $rrow, $reviewer, $reader, $field, $secret) = $x;
+        $visibility = $field->unparse_visibility();
+
+        // make that field visible only to the review’s author and administrators
+        $sv = SettingValues::make_request($chair, [
+            "has_rf" => 1,
+            "rf/1/id" => $field->short_id,
+            "rf/1/visibility" => "admin"
+        ]);
+        xassert($sv->execute());
+
+        $prow = $conf->checked_paper_by_id($prow->paperId);
+        $prow->ensure_full_reviews();
+        $rrow = $prow->review_by_id($rrow->reviewId);
+        xassert(!!$rrow);
+        xassert($reader->can_view_review($prow, $rrow));
+        xassert_lt($reviewer->view_score_bound($prow, $rrow), $reader->view_score_bound($prow, $rrow));
+
+        $rest = ["prow" => $prow, "rrow" => $rrow, "width" => 10000];
+
+        // the mail that will actually be sent shows the reviewer their own field
+        $mailer = new HotCRPMailer($reader, $reviewer, $rest);
+        $sent = $mailer->expand("{{REVIEWS}}", "body");
+        xassert_str_contains($sent, $secret);
+
+        // the sender’s preview of that same mail does not
+        $mailer = new HotCRPMailer($reader, $reviewer, $rest + ["censor" => Mailer::CENSOR_PREVIEW, "preview" => true]);
+        $shown = $mailer->expand("{{REVIEWS}}", "body");
+        xassert_str_contains($shown, "Review"); // the review itself is still expanded
+        xassert_not_str_contains($shown, $secret);
+
+        // a chair sees everything they would send
+        $mailer = new HotCRPMailer($chair, $reviewer, $rest + ["censor" => Mailer::CENSOR_PREVIEW, "preview" => true]);
+        xassert_str_contains($mailer->expand("{{REVIEWS}}", "body"), $secret);
+
+        $sv = SettingValues::make_request($chair, [
+            "has_rf" => 1,
+            "rf/1/id" => $field->short_id,
+            "rf/1/visibility" => $visibility
+        ]);
+        xassert($sv->execute());
+    }
+
+    function test_sender_visible_cc_narrows_expansion() {
+        $conf = $this->conf;
+        $this->ensure_reviews();
+        $chair = $conf->checked_user_by_email("chair@_.com");
+
+        $x = $this->find_distinctive_review();
+        xassert(!!$x);
+        if (!$x) {
+            return;
+        }
+        list($prow, $rrow, $reviewer, $reader, $field, $secret) = $x;
+        $visibility = $field->unparse_visibility();
+
+        // make that field visible only to the review’s author and administrators
+        $sv = SettingValues::make_request($chair, [
+            "has_rf" => 1,
+            "rf/1/id" => $field->short_id,
+            "rf/1/visibility" => "admin"
+        ]);
+        xassert($sv->execute());
+
+        $prow = $conf->checked_paper_by_id($prow->paperId);
+        $prow->ensure_full_reviews();
+        $rrow = $prow->review_by_id($rrow->reviewId);
+        xassert(!!$rrow);
+        xassert_lt($reviewer->view_score_bound($prow, $rrow), $reader->view_score_bound($prow, $rrow));
+
+        $rest = ["prow" => $prow, "rrow" => $rrow, "width" => 10000];
+
+        // A conference-configured cc censors credentials, but does not bound
+        // the content: the recipient still reads their own reviewer-only field.
+        $mailer = new HotCRPMailer($reader, $reviewer, $rest + ["cc" => "archive@example.invalid"]);
+        $t = $mailer->expand("R[{{REVIEWS}}] A[{{REVIEWACCEPTOR}}]", "body");
+        xassert_str_contains($t, $secret);
+        xassert_str_contains($t, "{{REVIEWACCEPTOR}}"); // suppressed, so left unexpanded
+
+        // A cc the sender chose also bounds the content by the sender, and so
+        // does a sender’s preview — even when that preview carries a cc, whose
+        // credential-censoring must not clobber the sender-narrowed content.
+        foreach ([["cc" => "friend@example.invalid", "sender_visible" => true],
+                  ["cc" => "archive@example.invalid", "censor" => Mailer::CENSOR_PREVIEW, "preview" => true]] as $extra) {
+            $mailer = new HotCRPMailer($reader, $reviewer, $rest + $extra);
+            $t = $mailer->expand("R[{{REVIEWS}}] A[{{REVIEWACCEPTOR}}]", "body");
+            xassert_str_contains($t, "Review"); // the review itself is still expanded
+            xassert_not_str_contains($t, $secret);
+            xassert_str_contains($t, "{{REVIEWACCEPTOR}}");
+        }
+
+        $sv = SettingValues::make_request($chair, [
+            "has_rf" => 1,
+            "rf/1/id" => $field->short_id,
+            "rf/1/visibility" => $visibility
+        ]);
+        xassert($sv->execute());
+    }
+
+    function test_configured_cc_is_not_sender_supplied() {
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $old_cc = $conf->opt("emailCc");
+        $conf->set_opt("emailCc", "  archive@example.invalid  ");
+
+        // MailSender treats a cc as sender-supplied when it differs from the
+        // configured one, so the two must be normalized the same way
+        $qreq = (new Qrequest("POST", []))->set_user($chair)->approve_token();
+        MailSender::clean_request($qreq);
+        xassert_eqq(trim($qreq->cc), trim($conf->opt("emailCc")));
+
+        $qreq = (new Qrequest("POST", ["cc" => " friend@example.invalid "]))
+            ->set_user($chair)->approve_token();
+        MailSender::clean_request($qreq);
+        xassert_eqq($qreq->cc, "friend@example.invalid");
+
+        $conf->set_opt("emailCc", $old_cc);
+    }
+
+    function test_censored_comment_expansion() {
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $probe = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        $prow = $conf->checked_paper_by_id(13);
+
+        // add a PC-visible comment, and conflict the probe with its submission
+        $j = call_api("=comment", $chair, ["text" => "SECRETCOMMENTARY", "visibility" => "pc"], $prow);
+        xassert($j->ok);
+        $cid = $j->comment->cid;
+        xassert_assign($chair, "paper,action,user\n13,conflict,{$probe->email}\n");
+
+        $prow = $conf->checked_paper_by_id(13);
+        $crow = ($prow->fetch_comments("commentId={$cid}"))[0];
+        xassert(!!$crow);
+
+        // find a PC member who may read the comment
+        $reader = null;
+        foreach ($conf->pc_members() as $pc) {
+            if ($pc->contactId !== $probe->contactId
+                && $pc->can_view_comment($prow, $crow)) {
+                $reader = $pc;
+                break;
+            }
+        }
+        xassert(!!$reader);
+
+        xassert($probe->isPC);
+        xassert(!$probe->privChair);
+        xassert(!$probe->can_view_comment($prow, $crow));
+
+        $rest = ["prow" => $prow, "width" => 10000];
+
+        // the mail that will actually be sent shows the reader the comment
+        $mailer = new HotCRPMailer($probe, $reader, $rest);
+        xassert_str_contains($mailer->expand("{{COMMENTS}}", "body"), "SECRETCOMMENTARY");
+
+        // the conflicted sender’s preview of that same mail does not
+        $mailer = new HotCRPMailer($probe, $reader, $rest + ["censor" => Mailer::CENSOR_PREVIEW, "preview" => true]);
+        xassert_not_str_contains($mailer->expand("{{COMMENTS}}", "body"), "SECRETCOMMENTARY");
+
+        // a chair sees everything they would send
+        $mailer = new HotCRPMailer($chair, $reader, $rest + ["censor" => Mailer::CENSOR_PREVIEW, "preview" => true]);
+        xassert_str_contains($mailer->expand("{{COMMENTS}}", "body"), "SECRETCOMMENTARY");
+
+        xassert_assign($chair, "paper,action,user\n13,noconflict,{$probe->email}\n");
+        $j = call_api("=comment", $chair, ["c" => $cid, "delete" => 1], $prow);
+        xassert($j->ok);
+        MailChecker::clear();
+    }
+
+    function test_censored_comment_expansion_renders_tags_and_mentions() {
+        $conf = $this->conf;
+        $this->ensure_reviews();
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $mentioned = $conf->checked_user_by_email("lixia@cs.ucla.edu");
+        $prow = $conf->checked_paper_by_id(1);
+
+        // a comment with both tags and a mention exercises CommentInfo::content()
+        // and the tag machinery, neither of which is a permission predicate
+        $j = call_api("=comment", $chair, ["c" => "new", "visibility" => "pc", "tags" => "hot",
+                                           "text" => "SPICYCOMMENTARY @Lixia Zhang"], $prow);
+        xassert($j->ok);
+        $cid = $j->comment->cid;
+
+        $prow = $conf->checked_paper_by_id(1);
+        $crow = ($prow->fetch_comments("commentId={$cid}"))[0];
+        xassert(!!$crow);
+        xassert_neqq($crow->commentTags, null);
+        xassert(!empty($crow->data("mentions")));
+
+        // two non-chair PC readers, so neither end of the intersection is root
+        $readers = [];
+        foreach ($conf->pc_members() as $pc) {
+            if (!$pc->privChair && $pc->can_view_comment($prow, $crow)) {
+                $readers[] = $pc;
+            }
+        }
+        xassert_gt(count($readers), 1);
+        if (count($readers) < 2) {
+            return;
+        }
+
+        $mailer = new HotCRPMailer($readers[0], $readers[1],
+            ["prow" => $prow, "width" => 10000, "censor" => Mailer::CENSOR_PREVIEW, "preview" => true]);
+        $t = $mailer->expand("{{COMMENTS}}", "body");
+        xassert_str_contains($t, "SPICYCOMMENTARY");
+        xassert_str_contains($t, "#hot");
+        xassert_str_contains($t, "@" . $mentioned->firstName);
+
+        $j = call_api("=comment", $chair, ["c" => (string) $cid, "delete" => 1], $prow);
+        xassert($j->ok);
+        MailChecker::clear();
+    }
+
+    function test_comment_tag_filter_censors_hidden_tags() {
+        $conf = $this->conf;
+        $this->ensure_reviews();
+        $conf->save_refresh_setting("tag_hidden", 1, "secret");
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $prow = $conf->checked_paper_by_id(1);
+
+        // a PC-visible comment carrying a hidden tag ("secret") and a normal tag
+        $j = call_api("=comment", $chair, ["c" => "new", "visibility" => "pc",
+                                           "tags" => "hot secret", "text" => "ORACLECOMMENTARY"], $prow);
+        xassert($j->ok);
+        $cid = $j->comment->cid;
+
+        $prow = $conf->checked_paper_by_id(1);
+        $crow = ($prow->fetch_comments("commentId={$cid}"))[0];
+        xassert(!!$crow);
+        xassert($crow->has_tag("secret"));
+
+        // two non-chair PC readers, so neither end of the intersection is root
+        $readers = [];
+        foreach ($conf->pc_members() as $pc) {
+            if (!$pc->privChair && $pc->can_view_comment($prow, $crow)) {
+                $readers[] = $pc;
+            }
+        }
+        xassert_gt(count($readers), 1);
+        xassert(!$readers[0]->can_view_tag($prow, "secret"));
+
+        $rest = ["prow" => $prow, "width" => 10000, "censor" => Mailer::CENSOR_PREVIEW, "preview" => true];
+
+        // a non-chair viewer reads the comment and may filter by the visible tag
+        $mailer = new HotCRPMailer($readers[0], $readers[1], $rest);
+        xassert_str_contains($mailer->expand("{{COMMENTS}}", "body"), "ORACLECOMMENTARY");
+        $mailer = new HotCRPMailer($readers[0], $readers[1], $rest);
+        xassert_str_contains($mailer->expand("{{COMMENTS(hot)}}", "body"), "ORACLECOMMENTARY");
+
+        // ...but the hidden tag must not act as a filter oracle (HC-172)
+        $mailer = new HotCRPMailer($readers[0], $readers[1], $rest);
+        xassert_not_str_contains($mailer->expand("{{COMMENTS(secret)}}", "body"), "ORACLECOMMENTARY");
+
+        // a chair sender may still filter by the hidden tag
+        $mailer = new HotCRPMailer($chair, $readers[0], $rest);
+        xassert_str_contains($mailer->expand("{{COMMENTS(secret)}}", "body"), "ORACLECOMMENTARY");
+
+        $j = call_api("=comment", $chair, ["c" => (string) $cid, "delete" => 1], $prow);
+        xassert($j->ok);
+        $conf->save_refresh_setting("tag_hidden", null);
+        MailChecker::clear();
+    }
+
+    /** Find an ordinaled complete review that the submission’s authors may read.
+     * @return ?array{PaperInfo,ReviewInfo} */
+    private function find_author_readable_review() {
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        foreach ($conf->paper_set(["finalized" => true], $chair) as $prow) {
+            $prow->ensure_full_reviews();
+            $au = $prow->author_user();
+            foreach ($prow->reviews_as_display() as $rrow) {
+                if ($rrow->reviewStatus >= ReviewInfo::RS_COMPLETED
+                    && $rrow->reviewOrdinal > 0
+                    && $au->can_view_review($prow, $rrow)) {
+                    return [$prow, $rrow];
+                }
+            }
+        }
+        return null;
+    }
+
+    /** @param int $reviewId
+     * @return int */
+    private function author_seen_after_shutdown($reviewId) {
+        $this->conf->call_shutdown_function("ReviewAuthorSeenUpdate");
+        return (int) $this->conf->fetch_ivalue("select reviewAuthorSeen from PaperReview where reviewId=?", $reviewId);
+    }
+
+    function test_mail_preview_does_not_mark_review_author_seen() {
+        $conf = $this->conf;
+        $this->ensure_reviews();
+        $chair = $conf->checked_user_by_email("chair@_.com");
+
+        $x = $this->find_author_readable_review();
+        xassert(!!$x);
+        if (!$x) {
+            return;
+        }
+        list($prow, $rrow) = $x;
+        $pid = $prow->paperId;
+        $rid = $rrow->reviewId;
+        $rtext = "Review #" . $rrow->unparse_ordinal_id();
+
+        $unseen = ~ReviewInfo::RF_AUSEEN;
+        // drain any author-seen update queued by an earlier test before
+        // establishing the zero baseline (test order is otherwise significant)
+        $conf->call_shutdown_function("ReviewAuthorSeenUpdate");
+        $conf->qe("update PaperReview set reviewAuthorSeen=0, rflags=rflags&{$unseen} where reviewId=?", $rid);
+        xassert_eqq($this->author_seen_after_shutdown($rid), 0);
+
+        MailChecker::clear();
+        $qreq = ["template" => "acceptnotify"];
+        $mr = (new MailRecipients($chair))->set_recipients("au")->set_paper_ids([$pid]);
+        xassert($mr->is_authors());
+
+        // previewing the mail shows the review to its authors...
+        $out = $this->run_check_template($mr, "@acceptnotify", $qreq);
+        xassert_str_contains($out, $rtext);
+
+        // ...but does not record that the authors have seen it
+        xassert_eqq($this->author_seen_after_shutdown($rid), 0);
+
+        // previewing through the mail API does not either. (The API renders for
+        // the requested recipient, who is not an author, so it shows no review.)
+        $j = call_api("mailtext", $chair,
+            ["p" => $pid, "template" => "acceptnotify", "email" => "probe@example.invalid"], $prow);
+        xassert($j->ok);
+        xassert_not_str_contains($j->body ?? "", $rtext);
+        xassert_eqq($this->author_seen_after_shutdown($rid), 0);
+
+        // sending the same mail does record it
+        $mr = (new MailRecipients($chair))->set_recipients("au")->set_paper_ids([$pid]);
+        $this->run_send_template($mr, "@acceptnotify", $qreq);
+        xassert_gt($this->author_seen_after_shutdown($rid), 0);
+
+        $conf->qe("update PaperReview set reviewAuthorSeen=0, rflags=rflags&{$unseen} where reviewId=?", $rid);
+        MailChecker::clear();
+    }
+
+    function test_track_manager_walled_off_by_paper_administrator() {
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $marina = $conf->checked_user_by_email("marina@poema.ru");
+        $old_tracks = $conf->setting_data("tracks");
+
+        // estrin (pc, red) is a contact author of paper 1; PC members
+        // tagged red administer the `mailtrk` track, which contains
+        // papers 1 and 2
+        $conf->save_refresh_setting("tracks", 1, '{"mailtrk":{"admin":"+red"}}');
+        xassert_assign($chair, "paper,tag\n1 2,mailtrk\n");
+        Contact::update_rights();
+        $estrin = $conf->checked_user_by_email("estrin@usc.edu");
+        xassert($estrin->is_track_manager() && !$estrin->privChair);
+        xassert($conf->checked_paper_by_id(1)->has_author($estrin));
+
+        // a track manager may administer papers on their track, even over
+        // their own conflict, so the mail tool reaches them...
+        foreach (["pcrev", "au"] as $rec) {
+            $mr = (new MailRecipients($estrin))->set_recipients($rec)->set_paper_ids([1, 2]);
+            xassert(!$mr->has_error());
+            xassert_eqq($mr->paper_set()->paper_ids(), [1, 2]);
+        }
+
+        // ...but not once the chair assigns paper 1 its own administrator,
+        // which walls off conflicted managers
+        xassert_assign($chair, "paper,action,user\n1,administrator,{$marina->email}\n");
+        Contact::update_rights();
+        $estrin = $conf->checked_user_by_email("estrin@usc.edu");
+        xassert(!$estrin->allow_admin($conf->checked_paper_by_id(1)));
+        foreach (["pcrev", "au"] as $rec) {
+            $mr = (new MailRecipients($estrin))->set_recipients($rec)->set_paper_ids([1, 2]);
+            xassert(!$mr->has_error());
+            xassert_eqq($mr->paper_set()->paper_ids(), [2]);
+            xassert_eqq($mr->paper(1), null);
+        }
+
+        // the paper administrator still reaches paper 1
+        $marina = $conf->checked_user_by_email($marina->email);
+        $mr = (new MailRecipients($marina))->set_recipients("pcrev")->set_paper_ids([1, 2]);
+        xassert_eqq($mr->paper_set()->paper_ids(), [1]);
+
+        xassert_assign($chair, "paper,action,user\n1,clearadministrator,{$marina->email}\n");
+        xassert_assign($chair, "paper,tag\n1 2,-mailtrk\n");
+        if ($old_tracks === null) {
+            $conf->save_refresh_setting("tracks", null);
+        } else {
+            $conf->save_refresh_setting("tracks", 1, $old_tracks);
+        }
+        Contact::update_rights();
+    }
+
+    function test_recipient_address_curly_quotes() {
+        // A display name containing curly quotes and address syntax must
+        // reach the To: header as one mailbox: MimeText straightens curly
+        // quotes that users type as delimiters, but must not do so inside
+        // the quoted-string that Text::name produces.
+        $u = Contact::make_keyed($this->conf, [
+            "email" => "victim@_.com",
+            "firstName" => "Eve",
+            "lastName" => "” <evil@example.net>, “Christian"
+        ]);
+        $addr = MailPreparation::recipient_address($u);
+        xassert_str_starts_with($addr, "\"");
+        $mt = new MimeText;
+        $to = $mt->encode_email_header("To", $addr);
+        xassert(is_string($to));
+        xassert_str_contains($to, "<victim@_.com>");
+        xassert_not_str_contains($to, "evil@example.net");
+        xassert_eqq(substr_count($to, "@"), 1);
+        // decode_email_header re-quotes a name that would not re-parse as one
+        xassert_eqq(MimeText::decode_email_header(substr($to, 4)),
+                    "\"Eve ” <evil@example.net>, “Christian\" <victim@_.com>");
+
+        // an unbalanced curly quote is quoted too, and does not disturb
+        // other recipients merged into the same header
+        $u2 = Contact::make_keyed($this->conf, [
+            "email" => "other@_.com", "firstName" => "Bob”", "lastName" => "Jones"
+        ]);
+        $addr2 = MailPreparation::recipient_address($u2);
+        xassert_str_starts_with($addr2, "\"");
+        $to = $mt->encode_email_header("To", "{$addr2}, {$addr}, {$addr2}");
+        xassert(is_string($to));
+        xassert_eqq(substr_count($to, "<other@_.com>"), 2);
+        xassert_eqq(substr_count($to, "<victim@_.com>"), 1);
+        xassert_not_str_contains($to, "evil@example.net");
+        xassert_eqq(substr_count($to, "@"), 3);
+
+        // nor do many curly quotes in one name
+        $u3 = Contact::make_keyed($this->conf, [
+            "email" => "victim@_.com",
+            "firstName" => "Eve",
+            "lastName" => str_repeat("a”", 250) . " <evil@example.net>, “Christian"
+        ]);
+        $to = $mt->encode_email_header("To", MailPreparation::recipient_address($u3));
+        xassert(is_string($to));
+        xassert_str_contains($to, "<victim@_.com>");
+        xassert_not_str_contains($to, "evil@example.net");
+        xassert_eqq(substr_count($to, "@"), 1);
+
+        // curly quotes typed as delimiters are still straightened
+        $to = $mt->encode_email_header("To", "“Jones, Bob” <other@_.com>, “Eve” <victim@_.com>");
+        xassert_eqq($to, "To: \"Jones, Bob\" <other@_.com>, \"Eve\" <victim@_.com>");
+    }
+
+    function test_recipient_address_encoded_word() {
+        // A display name that looks like an encoded-word must not be
+        // decoded into raw control characters (extra header lines)
+        $evil = "=?utf-8?q?V=0D=0ABcc=3A_evil=40example=2Enet?=";
+        // decode_email_header leaves a word that decodes to control characters alone
+        xassert_eqq(MimeText::decode_email_header($evil), $evil);
+        $u = Contact::make_keyed($this->conf, [
+            "email" => "mimevictim@_.com", "lastName" => $evil
+        ]);
+        $addr = MailPreparation::recipient_address($u);
+        xassert_str_starts_with($addr, "\"=?");
+        $mt = new MimeText;
+        $to = $mt->encode_email_header("To", $addr);
+        xassert_eqq(Unit_Tester::mail_header_skeleton($to), "To: <mimevictim@_.com>");
+
+        // same for a name that has been stored, in a folded header
+        $u->store();
+        $u = $this->conf->fresh_user_by_email("mimevictim@_.com");
+        xassert_eqq($u->lastName, $evil);
+        $addr = MailPreparation::recipient_address($u);
+        $to = $mt->encode_email_header("To", "{$addr}, {$addr}");
+        xassert(is_string($to));
+        xassert_str_contains($to, "\r\n ");
+        xassert(!preg_match('/\r(?!\n )|[^\r]\n/', $to));
+        xassert_eqq(substr_count($to, "@"), 2);
+        $this->conf->qe("delete from ContactInfo where email='mimevictim@_.com'");
+        $this->conf->invalidate_user($u);
+
+        // an unquoted encoded-word is decoded, but control characters
+        // are encoded again
+        $to = $mt->encode_email_header("To", "{$evil} <victim@_.com>, =?utf-8?Q?=22x=0Ay=3A=22?= <other@_.com>, =?utf-8?q?a=09b?= <tab@_.com>");
+        // (a tab is whitespace between words, so it becomes a space)
+        xassert_eqq($to, "To: {$evil} <victim@_.com>, \r\n =?utf-8?q?=22x=0Ay=3A=22?= <other@_.com>, a b <tab@_.com>");
+        xassert(!preg_match('/\r(?!\n )|[^\r]\n/', $to));
+    }
+
+    function test_mailtext_without_recipient() {
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $probe = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        $prow = $conf->checked_paper_by_id(1);
+
+        // No name or email arguments, so the mail has no recipient. Paper
+        // keywords do not expand without one, but expansion must not fail.
+        $args = ["p" => 1, "text" => "", "subject" => "",
+                 "body" => "T[{{TITLE}}] A[{{AUTHORS}}] R[{{REVIEWS}}] C[{{COMMENTS}}]"];
+        foreach ([$chair, $probe] as $user) {
+            $j = call_api("mailtext", $user, $args, $prow);
+            xassert($j->ok);
+            xassert_str_contains($j->body ?? "", "{{TITLE}}");
+        }
+
+        // ... and with no submission either
+        foreach ([$chair, $probe] as $user) {
+            $j = call_api("mailtext", $user, ["template" => "all"]);
+            xassert($j->ok);
+            xassert(!empty($j->templates));
+        }
+    }
+
+    function test_preview_expands_field_with_phase_condition() {
+        // A chair’s mail preview evaluates field conditions for both sender and
+        // recipient. A compound condition involving `phase:` must work there.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $old_final_open = $conf->setting("final_open");
+        $old_au_seedec = $conf->setting("au_seedec");
+        $conf->save_refresh_setting("final_open", 1);
+        $conf->save_refresh_setting("au_seedec", 2);
+        xassert_assign($chair, "paper,action,decision\n13,decision,yes\n");
+
+        $sv = SettingValues::make_request($chair, [
+            "has_sf" => 1,
+            "sf/1/id" => "new",
+            "sf/1/name" => "Camera note",
+            "sf/1/type" => "text",
+            "sf/1/presence" => "custom",
+            "sf/1/condition" => "phase:final OR #camnote"
+        ]);
+        xassert($sv->execute());
+        $opt = $conf->options()->find("Camera note");
+        xassert(!!$opt);
+        $ps = new PaperStatus($conf->root_user());
+        xassert($ps->save_paper_json((object) ["id" => 13, $opt->json_key() => "Final-phase note"]));
+
+        // a non-chair sender, so the preview bounds expansion by both users
+        $sender = $conf->checked_user_by_email("marina@poema.ru");
+        xassert(!$sender->privChair);
+        xassert(!$conf->checked_paper_by_id(13)->has_conflict($sender));
+        xassert_assign($chair, "paper,action,user\n13,manager,{$sender->email}\n");
+        $sender = $conf->checked_user_by_email($sender->email);
+
+        $prow = $conf->checked_paper_by_id(13);
+        xassert_eqq($prow->phase(), PaperInfo::PHASE_FINAL);
+        $author = $prow->author_user();
+        $mailer = new HotCRPMailer($sender, $author, ["prow" => $prow, "width" => 10000, "censor" => Mailer::CENSOR_PREVIEW, "preview" => true]);
+        xassert_eqq($mailer->expand("[{{CameraNote}}]", "body"), "[Final-phase note]\n");
+        xassert_assign($chair, "paper,action\n13,clearmanager\n");
+
+        $sv = SettingValues::make_request($chair, [
+            "has_sf" => 1,
+            "sf/1/id" => $opt->id,
+            "sf/1/delete" => 1
+        ]);
+        xassert($sv->execute());
+        xassert_assign($chair, "paper,action,decision\n13,cleardecision,yes\n");
+        $conf->save_refresh_setting("au_seedec", $old_au_seedec);
+        $conf->save_refresh_setting("final_open", $old_final_open);
+    }
+
+    function test_preparation_errors_block_send_and_merge() {
+        // A preparation with a rejected header is withheld and never merged
+        // with others; one with only warnings is still sent.
+        $conf = $this->conf;
+        $u = $conf->checked_user_by_email("estrin@usc.edu");
+        $tmpl = ["subject" => "Hello", "body" => "Hi there"];
+        $rest = ["no_error_quit" => true];
+        xassert($conf->opt("debugShowSensitiveEmail")); // doesn't override errors
+        $good = HotCRPMailer::prepare_to($u, $tmpl, $rest);
+        $bad = HotCRPMailer::prepare_to($u, $tmpl + ["cc" => "bad@@address"], $rest);
+        xassert(!$good->has_error());
+        xassert($bad->has_error());
+        xassert($good->can_send());
+        xassert(!$bad->can_send());
+        xassert(!$good->can_merge($bad));
+        xassert(!$bad->can_merge($good));
+
+        $warn = HotCRPMailer::prepare_to($u, ["subject" => "Hello", "body" => "Hi {{IF(1)}}"], $rest);
+        xassert($warn->has_message());
+        xassert(!$warn->has_error());
+        xassert($warn->can_send());
+    }
+
+    /** Send the mail tool's `$body` to `$recipients` for `$pids`; return
+     * each sent message's recipient emails.
+     * @param list<int> $pids
+     * @return list<list<string>> */
+    private function send_mail_tool(Contact $user, $recipients, $pids, $body) {
+        $mr = (new MailRecipients($user))->set_recipients($recipients)->set_paper_ids($pids);
+        $qreq = (new Qrequest("POST", ["to" => $recipients, "subject" => "Grouping", "body" => $body]))
+            ->set_user($user)->approve_token();
+        MailSender::clean_request($qreq);
+        MailChecker::clear();
+        ob_start();
+        try {
+            $ms = new MailSender($mr, $qreq, MailSender::PHASE_SEND);
+            $ms->set_no_print(true)->set_send_all(true);
+            $ms->prepare_sending_mailid();
+            $ms->run();
+        } catch (PageCompletion $unused) {
+        }
+        ob_end_clean();
+        $sent = [];
+        foreach (MailChecker::$preps as $prep) {
+            $emails = array_map(function ($u) { return $u->email; }, $prep->recipients());
+            sort($emails);
+            $sent[] = $emails;
+        }
+        MailChecker::clear();
+        return $sent;
+    }
+
+    function test_mail_tool_grouping_respects_reviewer_anonymity() {
+        // The mail tool gathers a paper's reviewers into one message only if
+        // they may see each other's identities.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $r1 = "mgbaker@cs.stanford.edu";
+        $r2 = "lixia@cs.ucla.edu";
+        $old = ["viewrevid" => $conf->setting("viewrevid"), "viewrevid_ext" => $conf->setting("viewrevid_ext"),
+                "rev_open" => $conf->setting("rev_open")];
+        $conf->save_setting("rev_open", 1);
+        xassert_assign($chair, "paper,action,user\n1,primary,{$r1}\n1,primary,{$r2}\n");
+        $together = function ($sent) use ($r1, $r2) {
+            foreach ($sent as $emails) {
+                if (in_array($r1, $emails, true) && in_array($r2, $emails, true))
+                    return true;
+            }
+            return false;
+        };
+        $body = "Dear reviewer,\n\nA note about {{TITLE}}.\n";
+        // notifications (review, comment, status) combine the same way
+        $notify = function () use ($conf, $r1, $r2, $together) {
+            $p1 = $conf->checked_paper_by_id(1);
+            $preps = [];
+            foreach ([$r1, $r2] as $email) {
+                $preps[] = HotCRPMailer::prepare_to($conf->checked_user_by_email($email),
+                    ["subject" => "Note", "body" => "A note about {{TITLE}}.\n"],
+                    ["prow" => $p1, "combination_type" => HotCRPMailer::COMBINE_PAPER]);
+            }
+            MailChecker::clear();
+            HotCRPMailer::send_combined_preparations($preps);
+            $sent = [];
+            foreach (MailChecker::$preps as $prep) {
+                $sent[] = array_map(function ($u) { return $u->email; }, $prep->recipients());
+            }
+            MailChecker::clear();
+            return $together($sent);
+        };
+
+        // reviewers who see each other's identities share one message
+        $conf->save_setting("viewrevid", 1);
+        $conf->save_setting("viewrevid_ext", 1);
+        $conf->refresh_settings();
+        $p1 = $conf->checked_paper_by_id(1);
+        xassert($p1->can_view_review_identity_of($conf->checked_user_by_email($r2)->contactId, $conf->checked_user_by_email($r1)));
+        xassert($together($this->send_mail_tool($chair, "rev", [1], $body)));
+        xassert($notify());
+
+        // reviewers who may not see each other's identities get their own
+        $conf->save_setting("viewrevid", -1);
+        $conf->save_setting("viewrevid_ext", -1);
+        $conf->refresh_settings();
+        $p1 = $conf->checked_paper_by_id(1);
+        xassert(!$p1->can_view_review_identity_of($conf->checked_user_by_email($r2)->contactId, $conf->checked_user_by_email($r1)));
+        $sent = $this->send_mail_tool($chair, "rev", [1], $body);
+        xassert(!$together($sent));
+        xassert_ge(count($sent), 2);
+        xassert(!$notify());
+
+        foreach ($old as $k => $v) {
+            $conf->save_setting($k, $v);
+        }
+        $conf->refresh_settings();
+    }
+
+    function test_mail_tool_groups_listed_and_unlisted_pc() {
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $email = "unlisted.mail@cs.hotcrp-test.edu";
+        $conf->qe("delete from ContactInfo where email=?", $email);
+        $conf->invalidate_caches("users", "pc");
+        $us = new UserStatus($conf->root_user());
+        $acct = $us->save_user((object) ["email" => $email, "roles" => ["unlistedpc"]]);
+        xassert(!!$acct);
+        // placeholders get no mail
+        $conf->qe("update ContactInfo set cflags=cflags&~? where contactId=?", Contact::CF_PLACEHOLDER, $acct->contactId);
+        $conf->invalidate_caches("users", "pc");
+
+        $body = "Dear PC member,\n\nA general note.\n";
+        foreach (["pc", "listedpc", "unlistedpc"] as $recip) {
+            $sent = $this->send_mail_tool($chair, $recip, null, $body);
+            xassert_eqq(count($sent), 1);
+        }
+        $sent = $this->send_mail_tool($chair, "listedpc", null, $body);
+        xassert_eqq(count($sent[0]), count($conf->listed_pc_members()));
+
+        $conf->qe("delete from ContactInfo where email=?", $email);
+        $conf->invalidate_caches("users", "pc");
+    }
+
+    /** Return the paper IDs the mail tool selects for request `$args`, or
+     * null if it selects no paper set.
+     * @param array<string,string|list> $args
+     * @return ?list<int> */
+    private function mail_tool_paper_ids(Contact $user, $args) {
+        $qreq = TestQreq::user_post($user);
+        foreach ($args as $k => $v) {
+            $qreq->set_req($k, $v);
+        }
+        $page = new Mail_Page($user, $qreq);
+        $page->clean_request();
+        $f = Closure::bind(function () {
+            return $this->recip->has_paper_ids() ? $this->recip->paper_ids() : null;
+        }, $page, Mail_Page::class);
+        return $f();
+    }
+
+    function test_mail_tool_paper_selection() {
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $all = (new PaperSearch($chair, ["t" => "s", "q" => ""]))->paper_ids();
+        sort($all);
+        xassert(count($all) > 3);
+        $base = ["to" => "au", "t" => "s", "q" => "", "plimit" => "1"];
+        xassert_eqq($this->mail_tool_paper_ids($chair, $base), $all);
+        // an explicit selection overrides the search
+        xassert_eqq($this->mail_tool_paper_ids($chair, $base + ["p" => "3 1 2"]), [1, 2, 3]);
+        xassert_eqq($this->mail_tool_paper_ids($chair, $base + ["p" => ["3", "1"]]), [1, 3]);
+        xassert_eqq($this->mail_tool_paper_ids($chair, $base + ["pap" => ["3", "1"]]), [1, 3]);
+        // ...unless the search changed
+        xassert_eqq($this->mail_tool_paper_ids($chair, $base + ["p" => "3 1 2", "recheck" => "1"]), $all);
+        // ...or the search is off
+        xassert_eqq($this->mail_tool_paper_ids($chair, ["to" => "au", "has_plimit" => "1", "p" => "3 1 2"]), null);
+        // invalid entries are dropped
+        xassert_eqq($this->mail_tool_paper_ids($chair, $base + ["p" => ["1 or 1=1", "3", "2"]]), [2, 3]);
+        // a selection with no valid entries selects no papers
+        xassert_eqq($this->mail_tool_paper_ids($chair, $base + ["p" => ["1*updatexml(1,concat(0x7e,(select 1)),1)", "10x"]]), []);
+        xassert_eqq($this->mail_tool_paper_ids($chair, $base + ["p" => [["1 or 1=1", "100"]]]), []);
+    }
+
+    /** Run the mail page for request `$args` and return its output.
+     * @param array<string,string> $args
+     * @return string */
+    private function run_mail_page(Contact $user, $args) {
+        $qreq = TestQreq::post_page("mail", $args)->set_user($user);
+        $rc = RenderCapture::make($qreq);
+        xassert($rc->ok());
+        return $rc->content;
+    }
+
+    function test_mail_page_paper_selection() {
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $base = ["to" => "au", "t" => "s", "subject" => "Selection", "body" => "Paper [%NUMBER%]"];
+
+        // a selection implies a search limit, which the preview form keeps
+        $out = $this->run_mail_page($chair, $base + ["q" => "", "p" => "3 1 2", "check" => "1"]);
+        xassert_str_contains($out, "Paper [1]");
+        xassert_str_contains($out, "Paper [3]");
+        xassert_not_str_contains($out, "Paper [4]");
+        xassert_str_contains($out, '<input type="hidden" name="plimit" value="1">');
+
+        // sending an unchanged search starts sending
+        $maxmailid = $this->conf->fetch_ivalue("select coalesce(max(mailId),0) from MailLog");
+        $args = $base + ["q" => "1-3", "plimit" => "1", "has_plimit" => "1", "send" => "1"];
+        $out = $this->run_mail_page($chair, $args + ["prevt" => "s", "prevq" => "1-3"]);
+        xassert_str_contains($out, '<input type="hidden" name="send" value="1">');
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from MailLog where mailId>?", $maxmailid), 1);
+        $this->conf->qe("delete from MailLog where mailId>?", $maxmailid);
+
+        // sending a changed search shows the new search's papers instead
+        $out = $this->run_mail_page($chair, $args + ["prevt" => "s", "prevq" => "1-2"]);
+        xassert_not_str_contains($out, '<input type="hidden" name="send" value="1">');
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from MailLog where mailId>?", $maxmailid), 0);
+        xassert_str_contains($out, '<input type="hidden" name="prevq" value="1-3">');
+    }
+
+    function test_unparseable_email_from_omits_header() {
+        // an emailFrom setting that can't be encoded leaves out the From
+        // header rather than breaking every message
+        $conf = $this->conf;
+        $old_from = $conf->opt("emailFrom");
+        $conf->set_opt("emailFrom", "noreply@example.org (HotCRP)");
+        $u = $conf->checked_user_by_email("estrin@usc.edu");
+        $prep = HotCRPMailer::prepare_to($u, ["subject" => "Hello", "body" => "Hi there"], ["no_error_quit" => true]);
+        xassert(!isset($prep->headers["from"]));
+        xassert(!$prep->has_error());
+        xassert($prep->can_send());
+        $conf->set_opt("emailFrom", $old_from);
+    }
+
+    /** @return string */
+    private function expand_assignments(Contact $sender, Contact $recipient, $recipients) {
+        $mr = (new MailRecipients($sender))->set_recipients($recipients);
+        $mailer = (new HotCRPMailer($sender, $recipient))->set_recip_set($mr);
+        return $mailer->expand("{{ASSIGNMENTS}}", "body");
+    }
+
+    function test_assignments_keyword_skips_withdrawn_papers() {
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $marina = $conf->checked_user_by_email("marina@poema.ru");
+        $rev_open = $conf->setting("rev_open");
+        $conf->save_refresh_setting("rev_open", 1);
+        $prow = $conf->checked_paper_by_id(17);
+        xassert($prow->timeSubmitted > 0 && !$prow->has_conflict($marina));
+        $had_review = !!$prow->review_by_user($marina);
+        if (!$had_review) {
+            xassert_assign($chair, "paper,action,user\n17,pcreview,marina@poema.ru\n");
+        }
+
+        xassert_str_contains($this->expand_assignments($chair, $marina, "pc"), "#17 ");
+
+        // a withdrawn paper's assignments are not listed
+        xassert_assign($chair, "paper,action,notify\n17,withdraw,no\n");
+        xassert_not_str_contains($this->expand_assignments($chair, $marina, "pc"), "#17 ");
+
+        xassert_assign($chair, "paper,action,notify\n17,revive,no\n");
+        if (!$had_review) {
+            xassert_assign($chair, "paper,action,user\n17,clearreview,marina@poema.ru\n");
+        }
+        $conf->save_refresh_setting("rev_open", $rev_open);
+        MailChecker::clear();
+    }
+
+    /** PC-reviewer recipient classes include optional PC reviews, both as
+     * recipients and in {{ASSIGNMENTS}}; but self-assigned reviews are not new
+     * review assignments. */
+    function test_new_assignment_mail_skips_self_assigned_reviews() {
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $assigned = $conf->checked_user_by_email("marina@poema.ru");
+        $selfer = $conf->checked_user_by_email("lixia@cs.ucla.edu");
+        $old = ["rev_open" => $conf->setting("rev_open"), "pcrev_any" => $conf->setting("pcrev_any")];
+        $conf->save_refresh_setting("rev_open", 1);
+        $conf->save_refresh_setting("pcrev_any", 1);
+        $pid = null;
+        foreach ($conf->paper_set(["where" => "timeSubmitted>0"], $chair) as $prow) {
+            if (!$prow->has_conflict($assigned) && !$prow->has_conflict($selfer)
+                && !$prow->review_by_user($assigned) && !$prow->review_by_user($selfer)) {
+                $pid = $prow->paperId;
+                break;
+            }
+        }
+        xassert_neqq($pid, null);
+
+        // an administrator assigns an optional review; a PC member starts one
+        xassert_assign($chair, "paper,action,user\n{$pid},pcreview,{$assigned->email}\n");
+        save_review($pid, $selfer, ["s01" => 2, "s02" => 2, "ready" => false]);
+        $prow = $conf->checked_paper_by_id($pid);
+        xassert_eqq($prow->review_by_user($assigned)->reviewType, REVIEW_PC);
+        xassert_eqq($prow->review_by_user($selfer)->reviewType, REVIEW_PC);
+        xassert(($prow->review_by_user($selfer)->rflags & ReviewInfo::RF_SELF_ASSIGNED) !== 0);
+
+        $recipients = function ($rec) use ($chair, $pid) {
+            return array_merge(...$this->send_mail_tool($chair, $rec, [$pid], "{{EMAIL}}"));
+        };
+        foreach (["pcrev", "uncpcrev"] as $rec) {
+            $emails = $recipients($rec);
+            foreach ([$assigned, $selfer] as $u) {
+                xassert_in_eqq($u->email, $emails);
+                xassert_str_contains($this->expand_assignments($chair, $u, $rec), "#{$pid} ");
+            }
+        }
+
+        // only the assigned review is a new assignment, even if the
+        // self-assigned review was never marked notified
+        $conf->qe("update PaperReview set timeRequestNotified=0 where paperId=? and contactId=?", $pid, $selfer->contactId);
+        xassert_str_contains($this->expand_assignments($chair, $assigned, "newpcrev"), "#{$pid} ");
+        xassert_not_str_contains($this->expand_assignments($chair, $selfer, "newpcrev"), "#{$pid} ");
+        // (sending marks the new assignments as notified)
+        $emails = $recipients("newpcrev");
+        xassert_in_eqq($assigned->email, $emails);
+        xassert_not_in_eqq($selfer->email, $emails);
+
+        // a self-assigned review promoted to a primary review is one
+        xassert_assign($chair, "paper,action,user\n{$pid},primary,{$selfer->email}\n");
+        $conf->qe("update PaperReview set timeRequestNotified=0 where paperId=? and contactId=?", $pid, $selfer->contactId);
+        xassert_str_contains($this->expand_assignments($chair, $selfer, "newpcrev"), "#{$pid} ");
+        xassert_in_eqq($selfer->email, $recipients("newpcrev"));
+
+        $conf->qe("delete from PaperReview where paperId=? and contactId?a", $pid, [$assigned->contactId, $selfer->contactId]);
+        foreach ($old as $k => $v) {
+            $conf->save_refresh_setting($k, $v);
+        }
         MailChecker::clear();
     }
 }

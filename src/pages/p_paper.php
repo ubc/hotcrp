@@ -38,15 +38,22 @@ class Paper_Page {
         PaperTable::print_header($pt, $this->qreq, $error);
     }
 
-    /** @param ?FailureReason $perm */
-    function error_exit($perm = null) {
-        Navigation::http_response_code($this->user->is_signed_in() ? 403 : 401);
-        // 401 spec requires WWW-Authenticate, but many sites omit it
-        if ($perm && (!$perm->secondary || $this->conf->saved_messages_status() < 2)) {
+    /** @return never
+     * @throws PageCompletion */
+    function error_exit(FailureReason $perm) {
+        Navigation::http_response_code($perm->response_code($this->user));
+        if (!$perm->secondary || $this->conf->saved_messages_status() < 2) {
             $perm->set("expand", true);
             $perm->set("listViewable", $this->user->is_author() || $this->user->is_reviewer());
             $this->conf->feedback_msg($perm->message_list());
         }
+        $this->print_exit();
+    }
+
+    /** Render the terminal page and stop.
+     * @return never
+     * @throws PageCompletion */
+    function print_exit() {
         $this->print_header(true);
         Ht::stash_script("hotcrp.shortcut().add()");
         $this->qreq->print_footer();
@@ -64,6 +71,16 @@ class Paper_Page {
         } catch (FailureReason $perm) {
             $this->error_exit($perm);
         }
+        // check path suffix for `/main` or `/edit`
+        if ($this->qreq->path_component_index() === 1
+            && ($pc = (string) $this->qreq->path_component(0)) !== ""
+            && in_array($pc, ["main", "edit", "p", "r", "rea"], true)) {
+            $this->qreq->m = $pc;
+            $this->qreq->consume_path_components(1);
+        }
+        if ((string) $this->qreq->path_component(0) !== "") {
+            $this->error_exit(new FailureReason($this->conf, ["invalidPath" => $this->qreq->path_component(0)]));
+        }
     }
 
     function handle_cancel() {
@@ -79,11 +96,11 @@ class Paper_Page {
             return;
         }
 
-        $reason = (string) $this->qreq->reason;
+        $reason = $this->qreq->reason ?? "";
         if ($reason === ""
             && $this->user->can_manage($this->prow)
             && $this->qreq["status:notify"] > 0) {
-            $reason = (string) $this->qreq["status:notify_reason"];
+            $reason = $this->qreq["status:notify_reason"] ?? "";
         }
 
         $aset = new AssignmentSet($this->user);
@@ -124,14 +141,14 @@ class Paper_Page {
             // mail first, before contact info goes away
             if ($this->qreq["status:notify"]) {
                 HotCRPMailer::send_contacts("@deletepaper", $this->prow, [
-                    "reason" => (string) $this->qreq["status:notify_reason"],
+                    "reason" => $this->qreq["status:notify_reason"],
                     "confirm_message_for" => $this->user
                 ]);
             }
             if ($this->prow->delete_from_database($this->user)) {
                 $this->conf->success_msg("<0>{$this->conf->snouns[2]} #{$this->prow->paperId} deleted");
             }
-            $this->error_exit();
+            $this->print_exit();
         }
     }
 
@@ -144,7 +161,7 @@ class Paper_Page {
             $this->ps->inform_at("status:if_unmodified_since",
                 $this->conf->_("<5>Your changes were not saved because the {submission} has changed since you last loaded this page. Unsaved changes to {:list} are highlighted. Check them and save again, or <a href=\"{url}\" class=\"uic js-ignore-unload-protection\">discard your edits</a>.",
                     PaperTable::field_title_links($fields, "edit_title"),
-                    new FmtArg("url", $this->prow->hoturl(["m" => "edit"], Conf::HOTURL_RAW), 0)));
+                    new FmtArg("url", $this->prow->hoturl(["m" => "edit"]), 0)));
         }
     }
 
@@ -157,10 +174,9 @@ class Paper_Page {
             && $this->qreq["status:phase"] === "final";
         $this->useRequest = true;
 
+        // prepare save and check permissions
         $this->ps = new PaperStatus($this->user);
-        $prepared = $this->ps->prepare_save_paper_web($this->qreq, $this->prow);
-
-        if (!$prepared) {
+        if (!$this->ps->prepare_save_paper_web($this->qreq, $this->prow)) {
             if ($is_new && $this->qreq->has_files()) {
                 // XXX save uploaded files
                 $this->ps->prepend_item(MessageItem::error("<5><strong>Your uploaded files were ignored.</strong>"));
@@ -171,22 +187,6 @@ class Paper_Page {
                 $this->ps->prepend_item(MessageItem::error("<5><strong>Changes not saved.</strong> Please correct these issues and try again."));
             }
             $conf->feedback_msg($this->ps->decorated_message_list());
-            return;
-        }
-
-        // check deadlines
-        // NB PaperStatus also checks deadlines now; this is likely redundant.
-        $whynot = $this->user->perm_edit_paper($this->prow);
-        if ($whynot
-            && !$is_new
-            && !$is_final
-            && !count(array_diff($this->ps->changed_keys(), ["contacts", "status"]))) {
-            $whynot = $this->user->perm_finalize_paper($this->prow);
-        }
-        if ($whynot) {
-            $conf->feedback_msg($whynot->set("expand", true)->message_list());
-            $this->useRequest = !$is_new; // XXX used to have more complex logic
-            $this->ps->abort_save();
             return;
         }
 
@@ -260,6 +260,16 @@ class Paper_Page {
         }
     }
 
+    /** @return list<int> */
+    private function deadline_exempt_oids() {
+        $oids = [];
+        foreach ($this->prow->form_fields() as $o) {
+            if ($o->deadline_exempt())
+                $oids[] = $o->id;
+        }
+        return $oids;
+    }
+
     function handle_updatecontacts() {
         $conf = $this->conf;
         $this->useRequest = true;
@@ -273,20 +283,29 @@ class Paper_Page {
         $this->ps = new PaperStatus($this->user);
         $this->qreq["status:phase"] = "contacts";
         if (!$this->ps->prepare_save_paper_web($this->qreq, $this->prow)) {
-            $conf->feedback_msg($this->ps->decorated_message_list([PaperOption::CONTACTSID]));
+            $conf->feedback_msg($this->ps->decorated_message_list($this->deadline_exempt_oids()));
             return;
         }
 
         if (!$this->ps->has_change()) {
             $ml = [MessageItem::warning_note("<0>No changes"), MessageItem::warning("")];
-        } else  if ($this->ps->execute_save()) {
-            $ml = [MessageItem::success($conf->_("<0>Updated contacts"))];
+        } else if ($this->ps->execute_save()) {
+            $chf = [];
+            $notify = false;
+            foreach ($this->ps->changed_fields() as $f) {
+                $chf[] = $f->edit_title();
+                $notify = $notify || $f->id !== PaperOption::CONTACTSID;
+            }
+            $ml = [MessageItem::success($conf->_("<0>Updated {submission} (changed {:list})", $chf, new FmtArg("phase", "review")))];
             $this->ps->log_save_activity();
+            if ($notify) {
+                $this->ps->notify_followers();
+            }
         } else {
             $ml = [];
         }
         if (!empty($ml)) {
-            $conf->feedback_msg($ml, $this->ps->decorated_message_list([PaperOption::CONTACTSID]));
+            $conf->feedback_msg($ml, $this->ps->decorated_message_list($this->deadline_exempt_oids()));
         }
 
         if (!$this->ps->has_error()) {
@@ -314,12 +333,15 @@ class Paper_Page {
     }
 
     /** @param int $capuid */
-    private function print_capability_user_message($capuid) {
-        if (($u = $this->conf->user_by_id($capuid, USER_SLICE))) {
+    private function print_capability_user_message() {
+        if (($u = $this->user->reviewer_capability_user($this->prow))) {
             $m = $this->conf->_("<0>You’re accessing this {submission} using a special link for reviewer {reviewer}",
                 new FmtArg("reviewer", $u->email, 0),
                 new FmtArg("self", $this->user->email, 0),
-                new FmtArg("signinurl", $this->conf->hoturl_raw("signin", ["email" => $u->email, "cap" => null])));
+                new FmtArg("signinurl", $this->conf->hoturl("signin", ["email" => $u->email, "cap" => null])));
+            $this->pt()->add_pre_status_feedback(MessageItem::warning_note($m));
+        } else {
+            $m = $this->conf->_("<0>Your reviewer link is no longer active");
             $this->pt()->add_pre_status_feedback(MessageItem::warning_note($m));
         }
     }
@@ -373,13 +395,14 @@ class Paper_Page {
             $preferred_resp_round = $this->user->preferred_response_round($this->prow);
         }
         $j = null;
+        $pex = (new PaperExport($this->user))->set_ignore_soft_word_limits(true);
         foreach ($this->prow->viewable_comments($this->user) as $crow) {
             if ($crow->commentId == $cid
                 || ($cid === null
                     && ($crow->commentType & CommentInfo::CT_RESPONSE) != 0
                     && $preferred_resp_round
                     && $crow->commentRound === $preferred_resp_round->id)) {
-                $j = $crow->unparse_json($this->user);
+                $j = $pex->comment_json($this->prow, $crow);
             }
         }
         if (!$j) {
@@ -396,16 +419,14 @@ class Paper_Page {
             $j->visibility = $this->qreq->visibility;
             $tags = trim((string) $this->qreq->tags);
             $j->tags = $tags === "" ? [] : preg_split('/\s+/', $tags);
-            $j->blind = !!$this->qreq->blind;
-            $j->draft = !!$this->qreq->draft;
+            $j->blind = friendly_boolean($this->qreq->blind) ?? false;
+            $j->draft = friendly_boolean($this->qreq->draft) ?? false;
         }
         Ht::stash_script("hotcrp.edit_comment(" . json_encode_browser($j) . ")");
     }
 
     static function go(Contact $user, Qrequest $qreq) {
-        if (!isset($qreq->m) && ($pc = $qreq->path_component(1))) {
-            $qreq->m = $pc;
-        } else if (!isset($qreq->m) && isset($qreq->mode)) {
+        if (!isset($qreq->m) && isset($qreq->mode)) {
             $qreq->m = $qreq->mode;
         }
 
@@ -427,9 +448,13 @@ class Paper_Page {
         $pp->useRequest = isset($qreq->title) && $qreq->has_annex("after_login");
         if ($qreq["status:notify_reason"] === "Optional explanation") {
             unset($qreq["status:notify_reason"]);
+        } else if ($qreq["status:notify_reason"]) {
+            $qreq["status:notify_reason"] = convert_to_utf8($qreq["status:notify_reason"]);
         }
         if ($qreq->reason === "Optional explanation") {
             unset($qreq->reason);
+        } else if ($qreq->reason) {
+            $qreq->reason = convert_to_utf8($qreq->reason);
         }
         if ($qreq->post && $qreq->post_empty()) {
             $pp->conf->post_missing_msg();
@@ -458,7 +483,7 @@ class Paper_Page {
         // capability messages: decline, accept to different user
         if (($capuid = $user->reviewer_capability($pp->prow))
             && $capuid !== $user->contactXid) {
-            $pp->print_capability_user_message($capuid);
+            $pp->print_capability_user_message();
         }
 
         // render

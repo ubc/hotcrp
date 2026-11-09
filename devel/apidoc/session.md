@@ -22,7 +22,7 @@ session.
 
 CSRF protection does **not** apply to requests authenticated with an
 `Authorization: bearer` token, so external applications using API tokens never
-need the `post` parameter. See [Authentication](#overview-authentication).
+need the `post` parameter. See [Authentication](#authentication).
 
 ## Session cookies
 
@@ -47,11 +47,14 @@ them, drawn from:
 
 * `chair`—a conference chair
 * `pc`—a program committee member; this is also present for chairs
+* `unlistedpc`—a program committee member who is left off PC lists, such as a
+  bot account; such a user has PC permissions but not `pc`
 * `sysadmin`—a system administrator
 * `manager`—an administrator of some submissions who is not a full chair
 * `author`—an author or contact of at least one submission
 * `reviewer`—assigned at least one review
 
+* scope none
 * badge featured
 * response email email: Email of the signed-in user
 * response given_name string: First (given) name
@@ -80,6 +83,7 @@ The returned `sessioninfo.postvalue` is the CSRF token; see [CSRF tokens and
 `post`](#tag-session) above. The `email` and `uid` fields are present only
 when a user is signed in.
 
+* scope none
 * response sessioninfo sessioninfo: Session information, omitted for cross-origin requests
 
 
@@ -90,33 +94,33 @@ when a user is signed in.
 Update a small set of per-user, per-session UI preferences and return the same
 session information as [`GET /session`](#get-session). This endpoint
 backs the HotCRP Javascript client’s “remember my view” behavior; the
-preferences it manages are cosmetic (folding state, which columns are shown in
-paper and user lists, score-sort order) and have no effect on submissions,
-reviews, or permissions. Unlike `GET /session`, it requires an authenticated,
-same-origin request with a valid `post` CSRF token.
+preferences it manages are cosmetic (which columns are shown in paper and user
+lists, score-sort order) and have no effect on submissions, reviews, or
+permissions. It does not require a signed-in user, but unlike `GET /session`
+it requires a valid `post` CSRF token.
 
 The preferences to change are encoded in the `v` parameter as a
-whitespace-separated list of assignments. Each assignment has the form
-`name[.key][=value]`:
+whitespace-separated list of assignments:
 
-* `name` selects the preference. Recognized names include `foldpaper`,
-  `foldpscollab`, `foldhomeactivity` (folding toggles), `pldisplay`,
-  `pfdisplay`, `uldisplay` (which columns/fields are shown in the paper list,
-  paper form, and user list), and `scoresort` / `ulscoresort` (score sort
-  order).
-* `.key` is an optional sub-selector. For the `*display` preferences it names
-  the column or field being shown or hidden; for `foldpaper` it names an
-  individual foldable region.
-* `=value` is an optional integer. `0` (or an omitted value) means “unfold” or
-  “show”; a nonzero value means “fold” or “hide”.
+* `pldisplay.COLUMN[=value]`, `pfdisplay.COLUMN[=value]`, and
+  `uldisplay.COLUMN[=value]` show or hide a column in the search paper list,
+  the review preferences paper list, and the user list, respectively. A
+  `value` of `0` (or an omitted value) shows the column; a nonzero integer
+  hides it.
+* `scoresort=SORT` sets the score sort order for the search paper list. `SORT` is
+  `counts`, `average`, `median`, `variance`, `maxmin`, or `my`.
+* `ulscoresort=SORT` (or `uldisplay.scoresort=SORT`) sets the score sort
+  order for the user list. `SORT` is `variance` or `maxmin`; any other value
+  restores the default, `average`.
 
-For example, `v=pldisplay.authors=0 foldhomeactivity=1` reveals the authors
-column in the paper list and folds the home-page activity region.
+For example, `v=pldisplay.authors=0 pldisplay.abstract=1` shows the authors
+column in the paper list and hides the abstract column.
 
 Parsing is best-effort: every recognized assignment is applied, and any
 component that is not understood is silently ignored. A successful request
 returns `ok` of `true` whether or not every component was recognized.
 
+* scope other:write
 * param v string: Whitespace-separated list of preference assignments
 * response sessioninfo sessioninfo: Updated session information
 
@@ -134,15 +138,12 @@ Supply the user’s `password`. On success the response has `ok` of `true`; if t
 password is wrong, the response is an error (`ok` is `false`) whose
 `message_list` describes the problem.
 
-The `reason` parameter is a short tag describing why reauthentication is being
-requested (HotCRP uses values such as `manageemail`); it can influence how long
-the resulting confirmation remains valid. `confirm=1` requests an explicit
-success message in `message_list` on success. The `email` and `totpcode`
-parameters support alternate verification flows (such as time-based one-time
-passwords) where those are configured.
+`confirm=1` requests an explicit success message in `message_list` on success.
+The `email` and `totpcode` parameters support alternate verification flows (such
+as time-based one-time passwords) where those are configured.
 
+* scope none
 * param ?confirm boolean: If true, include a success message on success
-* param ?=reason string: Short tag describing why reauthentication is requested
 * param ?=email email: Email of the account being confirmed
 * param ?=password string: Account password
 * param ?=totpcode string: Time-based one-time password code, if applicable
@@ -180,6 +181,7 @@ were supplied, `smsg` is `false`. To append to an existing stash, supply its
 identifier in the `smsg` request parameter (a 10–64 character alphanumeric
 string); otherwise the server generates a fresh identifier.
 
+* scope none
 * param =message_list string: JSON-encoded array of `{status, message}` objects
 * param ?=smsg string: Existing stash identifier to append to
 * response smsg string|boolean: Stash identifier, or `false` if nothing was stashed
@@ -216,6 +218,8 @@ the accepted `redirect_uris`, the supported `grant_types`
 `4xx` status and a body of the form `{"error": "invalid_request"}` (other
 values include `invalid_redirect_uri` and `invalid_client_metadata`).
 
+* scope none
+
 
 # post /oauthtoken
 
@@ -228,8 +232,8 @@ provider for a registered client application; it is not a general HotCRP API
 call and does not use HotCRP’s usual `{"ok": ...}` response envelope.
 
 The request is form-encoded. Send `grant_type=authorization_code` with the
-`code` returned from the authorization step (plus `redirect_uri` and, for [PKCE]
-(https://datatracker.ietf.org/doc/html/rfc7636) clients, `code_verifier`), or
+`code` returned from the authorization step (plus `redirect_uri` and, for
+[PKCE](https://datatracker.ietf.org/doc/html/rfc7636) clients, `code_verifier`), or
 `grant_type=refresh_token` with a `refresh_token`. The client authenticates
 either with HTTP Basic authentication (`Authorization: Basic`) or by sending
 `client_id` and `client_secret` as body parameters. An optional `scope`
@@ -240,8 +244,11 @@ On success the response is a standard OAuth token object containing
 `scope`, and—when the `openid` scope was granted—an `id_token` JWT. On failure
 the response carries an HTTP `4xx` status and a body of the form `{"error":
 "invalid_grant"}` (other values include `invalid_request`, `invalid_client`,
-`invalid_scope`, and `unsupported_grant_type`).
+`invalid_scope`, and `unsupported_grant_type`). A client that authenticated
+with a secret also gets an `error_description` naming the check that failed;
+a public client, whose `client_id` is all anyone needs to ask, does not.
 
+* scope none
 * param ?=grant_type string: `authorization_code` or `refresh_token`
 * param ?=code string: Authorization code (for `authorization_code` grants)
 * param ?=redirect_uri string: Redirect URI matching the authorization request
@@ -250,6 +257,30 @@ the response carries an HTTP `4xx` status and a body of the form `{"error":
 * param ?=client_id string: Client identifier
 * param ?=client_secret string: Client secret
 * param ?=scope string: Space-separated requested scopes
+
+
+# post /oauthrevoke
+
+> OAuth 2.0 token revocation endpoint
+
+Revoke a token, following [RFC
+7009](https://datatracker.ietf.org/doc/html/rfc7009). Like [`POST
+/oauthtoken`](#post-oauthtoken), this is a standards-based endpoint that does
+not use HotCRP’s usual `{"ok": ...}` response envelope; the client
+authenticates the same way, and may revoke only its own tokens. Revoking a
+refresh token also revokes the access tokens it produced.
+
+As required by the RFC, a token this client cannot revoke — unknown, already
+revoked, or issued to someone else — gets a success response, so the endpoint
+cannot test whether a token exists. Failures carry a `4xx` status and a body
+like `{"error": "invalid_client"}` (also `invalid_request`,
+`unsupported_token_type`), sometimes with an `error_description`.
+
+* scope none
+* param ?=token string: The access or refresh token to revoke
+* param ?=token_type_hint string: `access_token` or `refresh_token`
+* param ?=client_id string: Client identifier
+* param ?=client_secret string: Client secret
 
 
 # post /jserror
@@ -264,6 +295,7 @@ even when the report is ignored.
 Reports are filtered: errors that appear to originate in browser extensions, or
 that come from known crawlers, are accepted but not logged.
 
+* scope none
 * param =error string: Error message
 * param ?=url string: URL where the error occurred
 * param ?=lineno integer: Line number
@@ -289,4 +321,5 @@ discarded. A well-formed request returns `{"ok": true}`. A malformed body
 returns a `400` error; if the report cannot be persisted (the log is missing,
 unwritable, or over quota) the response is a `5xx` error.
 
+* scope none
 * response ok boolean: True if the report was accepted

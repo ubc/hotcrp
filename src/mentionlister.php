@@ -3,7 +3,7 @@
 // Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class MentionLister {
-    /** @var array<string,list<Contact|Author>> */
+    /** @var array<string,list<MentionPhrase>> */
     private $lists = [];
     /** @var list<int> */
     private $rcids = [];
@@ -43,17 +43,10 @@ class MentionLister {
 
         if ((!$prow || !$prow->has_author($user))
             && $user->can_view_pc()) {
-            if (!$prow
-                || $reason === self::FOR_PARSE
-                || !$user->conf->check_track_view_sensitivity()) {
-                $pclist = $user->conf->enabled_pc_members();
-            } else {
-                $pclist = [];
-                foreach ($user->conf->pc_members() as $u) {
-                    if (!$u->is_dormant()
-                        && $u->can_pc_view_paper_track($prow))
-                        $pclist[] = $u;
-                }
+            $pclist = [];
+            foreach ($this->get_pc($prow, $user, $reason) as $pc) {
+                if (!$pc->is_dormant())
+                    $pclist[] = new MentionPhrase($pc, MentionPhrase::TF_NAMED | MentionPhrase::TF_PC);
             }
             if (!empty($pclist)) {
                 $this->lists["pc"] = $pclist;
@@ -67,7 +60,7 @@ class MentionLister {
         $alist = [];
         foreach ($prow->contact_list() as $au) {
             if ($au->contactId !== $user->contactId)
-                $alist[] = $au;
+                $alist[] = new MentionPhrase($au, MentionPhrase::TF_NAMED | MentionPhrase::TF_AUTHOR);
         }
         if (!empty($alist)) {
             $this->lists["authors"] = $alist;
@@ -91,12 +84,18 @@ class MentionLister {
                 $au = Author::make_last("Reviewer " . unparse_latin_ordinal($rrow->reviewOrdinal));
                 $au->contactId = $rrow->contactId;
                 $au->status = Author::STATUS_ANONYMOUS_REVIEWER;
-                $rlist[] = $au;
+                $rlist[] = new MentionPhrase($au, MentionPhrase::TF_REVIEWER);
+            } else if ($rrow->reviewType === REVIEW_META
+                       && $user->can_view_review_assignment($prow, $rrow)) {
+                $au = Author::make_last("Metareviewer");
+                $au->contactId = $rrow->contactId;
+                $au->status = Author::STATUS_ANONYMOUS_REVIEWER;
+                $rlist[] = new MentionPhrase($au, MentionPhrase::TF_REVIEWER);
             }
             if (($cvis >= CommentInfo::CTVIS_REVIEWER || $rrow->reviewType >= REVIEW_PC)
                 && $user->can_view_review_identity($prow, $rrow)
                 && !$rrow->reviewer()->is_dormant()) {
-                $rlist[] = $rrow->reviewer();
+                $rlist[] = new MentionPhrase($rrow->reviewer(), MentionPhrase::TF_NAMED | MentionPhrase::TF_REVIEWER);
                 $this->rcids[] = $rrow->contactId;
             }
         }
@@ -108,15 +107,29 @@ class MentionLister {
     /** @param PaperInfo $prow
      * @param Contact $user */
     private function add_shepherd($prow, $user) {
+        $can_view = $user->can_view_shepherd($prow);
+        if (!$can_view
+            && !$user->can_view_decision($prow)) {
+            $any = false;
+            foreach ($prow->viewable_comment_skeletons($user) as $crow) {
+                if (($crow->commentType & CommentInfo::CT_BYSHEPHERD) !== 0) {
+                    $any = true;
+                    break;
+                }
+            }
+            if (!$any) {
+                return;
+            }
+        }
         $au = Author::make_last("Shepherd");
         $au->contactId = $prow->shepherdContactId;
         $au->status = Author::STATUS_ANONYMOUS_REVIEWER;
-        $this->lists["reviewers"][] = $au;
-        if (!in_array($prow->shepherdContactId, $this->rcids, true)
-            && $user->can_view_shepherd($prow)
+        $this->lists["reviewers"][] = new MentionPhrase($au, MentionPhrase::TF_SHEPHERD);
+        if ($can_view
+            && !in_array($prow->shepherdContactId, $this->rcids, true)
             && ($shepherd = $user->conf->user_by_id($prow->shepherdContactId, USER_SLICE))
             && !$shepherd->is_dormant()) {
-            $this->lists["reviewers"][] = $shepherd;
+            $this->lists["reviewers"][] = new MentionPhrase($shepherd, MentionPhrase::TF_NAMED | MentionPhrase::TF_SHEPHERD);
             $this->rcids[] = $prow->shepherdContactId;
         }
     }
@@ -130,19 +143,69 @@ class MentionLister {
                 && $user->can_view_comment_identity($prow, $crow)
                 && ($commenter = $crow->commenter())
                 && !$commenter->is_dormant()) {
-                $this->lists["reviewers"][] = $commenter;
+                $this->lists["reviewers"][] = new MentionPhrase($commenter, MentionPhrase::TF_NAMED | MentionPhrase::TF_COMMENTER);
                 $this->rcids[] = $crow->contactId;
             }
         }
     }
 
+    /** @param ?PaperInfo $prow
+     * @param Contact $user
+     * @param 0|1 $reason
+     * @return array<Contact> */
+    private function get_pc($prow, $user, $reason) {
+        $conf = $user->conf;
+        if (!$prow
+            || $reason === self::FOR_PARSE
+            || !$conf->check_track_view_sensitivity()
+            || !$user->can_view_user_tags()) {
+            return $conf->viewable_pc_members($user);
+        }
+        // enumerate track permissions that allow viewing this paper,
+        // but leave off permissions this user can't see (e.g. `+~~chair_tag`)
+        $relevant_perm = [];
+        $unmatched = true;
+        foreach ($conf->track_list() as $tr) {
+            if ($tr->is_default ? $unmatched : $prow->has_tag($tr->ltag)) {
+                $unmatched = false;
+                $p = $tr->perm[Track::VIEW];
+                if ($p === null) {
+                    return $conf->viewable_pc_members($user);
+                } else if ($p === "+none") {
+                    continue;
+                }
+                $ch = $p[0];
+                if (($ch !== "+" && $ch !== "-")
+                    || $user->can_view_tag_somewhere(substr($p, 1))) {
+                    $relevant_perm[] = $p;
+                }
+            }
+        }
+        // return PC members who match at least one of the permissions,
+        // or are chairs
+        // XXX managerContactId, track admins?
+        $allowed = [];
+        foreach ($conf->viewable_pc_members($user) as $pc) {
+            foreach ($relevant_perm as $perm) {
+                if ($pc->has_permission($perm)) {
+                    $allowed[] = $pc;
+                    continue 2;
+                }
+            }
+            if ($pc->privChair) {
+                $allowed[] = $pc;
+            }
+        }
+        return $allowed;
+    }
 
-    /** @return array<string,list<Author|Contact>> */
+
+    /** @return array<string,list<MentionPhrase>> */
     function lists() {
         return $this->lists;
     }
 
-    /** @return list<list<Author|Contact>> */
+    /** @return list<list<MentionPhrase>> */
     function list_values() {
         return array_values($this->lists);
     }
@@ -150,13 +213,21 @@ class MentionLister {
     /** @param Qrequest $qreq
      * @param ?PaperInfo $prow */
     static function mentioncompletion_api(Contact $user, $qreq, $prow) {
+        // a user who can't comment gets no paper-specific names, except an
+        // author, who may still write a response
+        if ($prow
+            && $user->new_comment_flags($prow) === 0
+            && !$prow->has_author($user)) {
+            $prow = null;
+        }
         $mlister = new MentionLister($user, $prow, CommentInfo::CTVIS_AUTHOR, self::FOR_COMPLETION);
         $comp = $aunames = [];
         foreach ($mlister->lists() as $key => $mlist) {
             $isau = $key === "authors";
             $ispc = $key === "pc";
             $skey = $ispc ? "sm1" : "s";
-            foreach ($mlist as $au) {
+            foreach ($mlist as $mxm) {
+                $au = $mxm->user;
                 $n = Text::name($au->firstName, $au->lastName, $au->email, NAME_P);
                 $x = [$skey => $n];
                 if ($isau) {

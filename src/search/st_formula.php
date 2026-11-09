@@ -20,18 +20,22 @@ class Formula_SearchTerm extends SearchTerm {
      * @return ?Formula */
     static private function read_formula($word, $sword, $srch, $is_graph) {
         $nf = null;
-        if (preg_match('/\A[^(){}\[\]]+\z/', $word)) {
-            $nf = $srch->conf->find_named_formula($word);
+        if (preg_match('/\A[^(){}\[\]]++\z/', $word)) {
+            $nf = $srch->conf->find_named_formula($word, $srch->user);
         }
+        // the formula parses within the search's string context: its errors
+        // expand from this word, and its parse is charged to the search
+        $config = (new FormulaConfig)->set_use_viewer_permissions($srch->use_viewer_permissions())
+            ->set_string_context($sword->string_context->child($sword->kwpos1, $sword->pos2));
         if ($nf) {
-            $formula = $nf->realize($srch->user);
+            $formula = $nf->realize($srch->user, $config);
         } else {
-            $formula = Formula::make($srch->user, $word, $is_graph ? Formula::ALLOW_INDEXED : 0);
+            if ($is_graph) {
+                $config->set_allow_indexed(true);
+            }
+            $formula = Formula::make($srch->user, $word, $config);
         }
-        $srch->message_set()->append_list(MessageSet::list_with($formula->message_list(), [
-            "top_context" => $srch->q,
-            "top_pos_offset" => $sword->pos1
-        ]));
+        $srch->message_set()->append_list($formula->message_list());
         return $formula->ok() ? $formula : null;
     }
     static function parse($word, SearchWord $sword, PaperSearch $srch) {
@@ -52,6 +56,12 @@ class Formula_SearchTerm extends SearchTerm {
     function sqlexpr(SearchQueryInfo $sqi) {
         $this->formula->add_query_options($sqi->query_options);
         return "true";
+    }
+    function need_pretest() {
+        return true;
+    }
+    function pretest(PaperInfo $row, $xinfo) {
+        return null;
     }
     function test(PaperInfo $row, $xinfo) {
         if ($xinfo && $xinfo instanceof ReviewInfo) {

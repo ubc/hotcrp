@@ -1,6 +1,237 @@
 HotCRP NEWS
 ===========
 
+## Version 3.5 – 27.Oct.2026
+
+* Upgrade notes
+
+    * Most sites should set `$Opt["paperSite"]` explicitly (it was previously
+      optional).
+        * Links in email no longer use the URL of the request that caused the
+          email. They use `$Opt["paperSite"]`, then `$Opt["defaultPaperSite"]`,
+          then a new Site URL setting (Settings > Basics) derived from
+          administrator site access. Without a site URL, HotCRP will not send
+          password reset or account creation email, and other email will contain
+          unexpanded `{{URL}}` keywords.
+        * Sites with a contact database or with `$Opt["chairHidePasswords"]`
+          MUST set `$Opt["paperSite"]` or `$Opt["defaultPaperSite"]`.
+        * On other sites, the Site URL setting is filled in the first time an
+          administrator visits the site after upgrading. Administrators should
+          check that the URL shown in Settings > Basics is correct.
+    * LDAP and htauth usernames are newly restricted to ASCII characters only.
+      LDAP users with non-ASCII usernames will be unable to sign in.
+    * The `preferred_email` user property is only obeyed on LDAP and htauth
+      sites.
+    * New sites that use a contact database do not automatically assign
+      administrator privilege to the first account to sign in. Use `php
+      batch/saveusers.php` to assign administrator privilege to an account.
+
+* Security updates
+
+    This release fixes a number of vulnerabilities, including many reported via
+    the Anthropic OSS Program and Milad Nasr – thanks!
+
+    * Fix a vulnerability, critical for deployments using a contact database,
+      that could misdeliver password reset mails to attacker-chosen mailboxes
+      (GitHub Security Advisory GHSA-8hpm-q65w-xpfv).
+    * Fix a high-severity issue with LDAP sign-in and medium-severity issues
+      with OAuth sign-in (GHSA-hqfx-q434-6rq2).
+    * Fix many medium-severity information exposure bugs (GHSA-ghw2-58rh-vw4w,
+      GHSA-v2fv-53cr-7w9v, GHSA-9cff-2f8h-5hj3).
+    * Fix a high-severity issue with the upload API that could allow
+      inappropriate replacement of previously-uploaded documents
+      (GHSA-6r22-552m-7pv5).
+    * Enforce API token scopes more consistently (medium severity;
+      GHSA-357p-6mjj-f8jr).
+    * Harden code previously vulnerable to denial-of-service attacks
+      (medium severity; GHSA-84xx-cv82-jqv8).
+    * Fix missing permission checks (GHSA-7xrm-6p9c-4wmj).
+    * Fix stored and reflected XSS issues (GHSA-xfq9-h3px-hv62 - high severity,
+      GHSA-h778-cp46-448g - low severity, thanks to Mingi Jung for the report).
+    * Fix information exposure bugs associated with formula graphs.
+
+* Accounts
+
+    * Introduce unlisted PC members, who can be assigned PC reviews but whose
+      names aren’t shared with authors or the public.
+    * Introduce bot accounts, which are associated with programmatic access.
+    * Limit passwords to 72 bytes.
+
+* Appearance
+
+    * Support dark mode. The site obeys the user’s dark-mode preference by
+      default; Settings > Preferences can override it.
+    * Introduce a popup dialog for offline reviewing.
+    * Make icons scalable.
+
+* Accessibility
+
+    * Audit many pages for WCAG compliance.
+
+* Submission form
+
+    * User-defined submission field names cannot consist only of lowercase
+      letters, digits, underscores, and colons. This rule is intended to
+      reliably prevent collisions with other JSON export fields.
+      (Non-compliant field names in existing installations are grandfathered
+      in.)
+    * Text fields gain word limit support.
+    * Fields can have their own edit deadlines. An edit condition that
+      mentions time, such as `before:2026-11-01` or `before:resubmit+3d`,
+      replaces the submission round’s deadline for that field. Withdrawn,
+      frozen, and rejected submissions still can’t be edited.
+    * Authors can’t edit an accepted submission until they can see its
+      decision.
+
+* Tags
+
+    * Tags can now end in `?` or `!`.
+    * Recover ability to change a tag’s value on the paper page.
+
+* Search
+
+    * Add `before:TIME` and `after:TIME` search terms. They accept dates and
+      the deadline names `register`, `submit`, `resubmit`, and `final`, with
+      optional offsets (`after:submit+2d`).
+    * The new `view:` search keyword sets a column’s view options without
+      changing that column’s visibility.
+    * “Named searches” are now called “saved searches” on the search page.
+    * Speed up parsing and running very long searches.
+    * Remove the undocumented `perm:` search term.
+
+* Comments
+
+    * Improve comment editor: always display the comment thread; warn if
+      mentioning users who can’t see the current thread.
+    * Warn when reviewers look like they’re saving a comment intended for the
+      authors, but the authors can’t see it because of the comment’s
+      visibility.
+    * Authors can’t comment on rejected submissions.
+
+* Formulas and formula graphs
+
+    * Formulas support `percentile(e, 90)` and `p90(e)`.
+    * Formula `var` and `stddev` functions compute population statistics as
+      claimed.
+    * Graphs support pan, zoom, and autoresize.
+
+* OAuth
+
+    * Support OAuth Client ID Metadata Documents.
+    * Fix usability of redirections through the `/authorize` endpoint.
+    * Harden OAuth for best practices (RFC 9700).
+    * OAuth sign-in requires a positive `email_verified` claim. A provider
+      that verifies email but omits the claim must be configured with
+      `"allow_unverified_email": true`; see `devel/manual/oauth.md`.
+
+* API
+
+    * JSON export of submissions uses a different naming convention for
+      user-specified submission fields. Rather than a generated
+      lower_snake_case identifier (which was not guaranteed unique),
+      submission JSON uses literal submission field names.
+    * Saving a submission through the API refuses to write if changes to
+      unwritable fields are attempted. Supply `ignore_unwritable_fields=1` to
+      ignore unwritable fields instead.
+    * The `POST /paper`, `/review`, and `/comment` endpoints learn
+      `dry_run=if_error` (and `dry_run=if_warning`), which say to attempt a
+      change, but to make that change a dry-run if there are errors (and/or
+      warnings).
+    * Rate-limited API requests now return a `Retry-After` header.
+    * Introduce `settings:{read/write/admin}`, `preference:{read/write/admin}`,
+      and `reaction:{read/write/admin}` scopes.
+    * Report scope errors more thoroughly.
+    * A single request can upload at most 100 documents, and a paper can have at
+      most 1000 authors and 32 KiB worth of collaborators.
+    * The `POST /assigntags` response now matches the shape of `POST /assign`.
+
+* Other changes
+
+    * Removing a user from the PC also removes them as administrator of any
+      submissions they managed.
+    * The `batch/savepapers.php` script gains `--trust-document-metadata`,
+      which subsumes the old `--skip-document-verify`,
+      `--skip-document-content`, and `--ignore-content-file` flags.
+    * The `batch/search.php` script’s default search collection is `default`,
+      which is usually broader than `s`. Supply `-t s` to get submitted papers
+      only.
+    * Document downloads are logged regardless of the requested byte range.
+      Downloads through reviewer links are attributed to the reviewer, and
+      downloads by anonymous review-token holders aren’t logged.
+    * A user’s last-activity time is updated at most once every two hours.
+    * `{{PASSWORDLINK}}` mail keywords only expand if surrounded by
+      whitespace or on their own line.
+    * Add `batch/db.php`, which runs SQL against a conference database.
+      `lib/runsql.sh` is deprecated.
+    * Transient database errors return 503 errors, not 404.
+    * A new `$Opt["s3Clients"]` setting can support fallback buckets, and S3
+      secrets can be set in external files (rather than a PHP `options.php`
+      file).
+
+
+## Version 3.4 – 5.Aug.2026
+
+* Security updates
+
+    * This release fixes a group of security vulnerabilities found by an
+      internal audit, and other vulnerabilities reported via GitHub.
+    * Fixed a high-severity vulnerability where reviewers could gain author
+      access to submissions. GitHub Security Advisory GHSA-v8jx-vq6p-jq52.
+    * Fixed a range of medium-to-low-severity information exposures via
+      searches, error messages, and APIs. Thanks to Nebula Security for one
+      report. GitHub Security Advisories GHSA-pwrf-v6wh-9qc5 and
+      GHSA-4v58-pj7j-xc8j.
+    * Fixed timing channels remotely exploitable by authors. Thanks to Taehyun
+      Kang, Sangyun Kim, Youngmin Kim, and Byoungyoung Lee at Seoul National
+      University for the report. GitHub Security Advisory GHSA-fr3q-pp37-9wcg.
+    * Improve sanitization of @mentions in comments.
+
+* Settings
+
+    * Text submission fields gain word limits (advanced settings only).
+    * Author certification: Withdrawing a submission deletes all its author
+      certifications. This plugs a hole where withdrawing and reviving a
+      submission could evade max-author limits.
+    * Fix JSON export/import of format settings.
+    * Remove separate `sub_update` deadline (which only direct database access
+      could turn on before). If you want to allow submitting a paper but not
+      editing its fields, mark the fields as read-only.
+
+* Reviews
+
+    * Improve handling of review-acceptor links.
+
+* Tags
+
+    * Improve UI around allotment votes: don’t allow overvoting, show vote
+      counts more often, use checkboxes if the allotment is 1.
+
+* API
+
+    * Support `GET /review`, `GET /reviews`, `DELETE /review`, `POST /review`,
+      `POST /reviews`, `DELETE /comment`, `GET /comments`, and `POST /comments`.
+      `POST` endpoints support JSON, ZIP, and form requests; `POST /review`
+      endpoints support textual review form uploads; `POST /comment` gains
+      `dry_run` support.
+    * The `hotcrapi` batch script understands `review` and `comment`.
+    * Removed obsolete `GET /fieldtext` and `GET /fieldhtml` APIs; use `GET
+      /search` instead.
+
+* Other changes
+
+    * Bump minimum PHP version to 8.1.
+    * Correct deadline display.
+    * Improve site robustness around deadlines by rate-limiting `banal` runs and
+      preventing redundant runs.
+    * Review history: Fix recovery of draft reviews after decline; new reviews
+      never reuse IDs from deleted reviews.
+    * Site creation supports `%` wildcards in `--grant-host`.
+    * Graphs support `numdots` style.
+    * New batch scripts for maintenance, including `account.php`,
+      `apitoken.php`, and `checkformat.php`.
+    * Fix action log for non-chair users.
+
+
 ## Version 3.3.1 – 14.Jun.2026
 
 * Bug fix: Correct crash in forgot-password redirection
@@ -13,7 +244,8 @@ HotCRP NEWS
     * Patched serious search vulnerability that could expose commenter
       identities. In prior versions, searching for a comment by commenter
       identity worked even if the comment should be anonymous. Thanks to Nebula
-      Security for the report. GitHub Security Advisory GHSA-vh3x-xwj4-jvqx.
+      Security for the report. GitHub Security Advisory GHSA-x3g6-4c5h-7p29;
+      CVE-2026-55493.
 
 * Authorization
 
@@ -81,11 +313,11 @@ HotCRP NEWS
 
 * Security updates
 
-    * High vulnerability patched in document API. In version 3.2, all documents
-      were delivered with inline Content-Disposition. This opened a vector for
-      cross-site scripting: an attacker could upload an HTML document which, if
-      opened, ran in the user’s browser with their HotCRP credentials. Thanks to
-      Nils Bars for the report (MPI-SP). GitHub Security Advisory
+    * High-severity vulnerability patched in document API. In version 3.2, all
+      documents were delivered with inline Content-Disposition. This opened a
+      vector for cross-site scripting: an attacker could upload an HTML document
+      which, if opened, ran in the user’s browser with their HotCRP credentials.
+      Thanks to Nils Bars for the report (MPI-SP). GitHub Security Advisory
       GHSA-p88p-2f2p-2476; CVE-2026-25156.
     * Recover automatic checking for security notices. To opt out, set
       `$Opt["updatesSite"] = false`.

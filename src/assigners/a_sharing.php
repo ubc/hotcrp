@@ -68,11 +68,12 @@ class Sharing_AssignmentParser extends UserlessAssignmentParser {
         Dbl::free($result);
     }
     function allow_paper(PaperInfo $prow, AssignmentState $state) {
-        if ($state->user->can_manage($prow)
-            || $prow->has_author($state->user)) {
-            return true;
+        if (($fr = $state->user->perm_scope_allows(TokenScope::S_SUB_ADMIN, $prow)
+                   ?? $state->user->perm_allow_edit_paper($prow))) {
+            $state->paper_error($fr);
+            return false;
         }
-        return new AssignmentError("<0>Permission error");
+        return true;
     }
     function apply(PaperInfo $prow, Contact $contact, $req, AssignmentState $state) {
         $ia = 0;
@@ -90,7 +91,7 @@ class Sharing_AssignmentParser extends UserlessAssignmentParser {
                 if (($x = SettingParser::parse_duration($req["expires_in"])) === null) {
                     return new AssignmentError("<0>Parameter error on ‘expires_in’");
                 }
-                $ia = $x >= 0 ? Conf::$now + (int) round($x) : 0;
+                $ia = $x > 0 ? Conf::$now + (int) round($x) : 0;
                 $has_ia = true;
             }
         }

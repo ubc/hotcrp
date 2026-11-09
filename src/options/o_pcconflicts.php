@@ -19,7 +19,7 @@ class PCConflicts_PaperOption extends PaperOption {
         // (test_exists() always returns true), so that admins can set
         // conflicts. The presence/exists_if configuration affects *visibility*
         // instead.
-        if (empty($this->conf->pc_members())) {
+        if (empty($this->conf->listed_pc_members())) {
             $this->visible_if = "NONE";
         } else {
             $this->visible_if = $this->exists_condition();
@@ -46,6 +46,7 @@ class PCConflicts_PaperOption extends PaperOption {
         }
         if ($this->_visible_term === null) {
             $s = new PaperSearch($this->conf->root_user(), $this->visible_if);
+            $s->set_use_viewer_permissions(true);
             $this->_visible_term = $s->full_term();
         }
         return $this->_visible_term->test($prow, null);
@@ -56,7 +57,7 @@ class PCConflicts_PaperOption extends PaperOption {
         $ov->set_value_data(array_keys($vm), array_values($vm));
     }
     function value_export_json(PaperValue $ov, PaperExport $pex) {
-        $pcm = $this->conf->pc_members();
+        $pcm = $this->conf->viewable_pc_members($pex->viewer);
         $confset = $this->conf->conflict_set();
         $can_view_authors = $pex->viewer->can_view_authors($ov->prow);
         $pcc = [];
@@ -81,22 +82,16 @@ class PCConflicts_PaperOption extends PaperOption {
         return (object) $pcc;
     }
     function value_check(PaperValue $ov, Contact $user) {
-        if ($this->test_visible($ov->prow)) {
-            if ($this->warn_missing) {
-                $this->_warn_missing_conflicts($ov, $user);
-            }
-        } else if ($user->act_author_view($ov->prow)) {
-            $this->_warn_changes($ov);
-        }
-    }
-    private function _warn_missing_conflicts(PaperValue $ov, Contact $user) {
-        if ($ov->prow->outcome_sign > 0 && $user->can_view_decision($ov->prow)) {
+        if (!$this->test_visible($ov->prow)
+            || !$this->warn_missing
+            || !$user->can_view_pc()
+            || ($ov->prow->outcome_sign > 0 && $user->can_view_decision($ov->prow))) {
             return;
         }
         $vm = self::value_map($ov);
         $pcs = [];
         $this->conf->ensure_cached_user_collaborators();
-        foreach ($this->conf->pc_members() as $p) {
+        foreach ($this->conf->listed_pc_members() as $p) {
             if (($vm[$p->contactId] ?? 0) === 0 /* not MAXUNCONFLICTED */
                 && $ov->prow->potential_conflict($p)) {
                 $pcs[] = Ht::link($p->name_h(NAME_P), "#pcconf:{$p->contactId}");
@@ -107,17 +102,6 @@ class PCConflicts_PaperOption extends PaperOption {
                 $this->conf->_("<5>You may have missed conflicts of interest with {:list}. Please verify that all conflicts are correctly marked.", $pcs),
                 $this->conf->_("<5>Hover over “possible conflict” labels for more information.")
             ]));
-        }
-    }
-    private function _warn_changes(PaperValue $ov) {
-        $vm = self::value_map($ov);
-        $old_vm = self::paper_value_map($ov->prow);
-        ksort($vm);
-        ksort($old_vm);
-        if ($vm !== $old_vm) {
-            /** @phan-suppress-next-line PhanTypeMismatchArgument */
-            $ov->set_value_data(array_keys($old_vm), array_values($old_vm));
-            $ov->error("<0>Changes ignored");
         }
     }
     function value_save(PaperValue $ov, PaperStatus $ps) {
@@ -133,7 +117,11 @@ class PCConflicts_PaperOption extends PaperOption {
     }
     function parse_qreq(PaperInfo $prow, Qrequest $qreq) {
         $vm = self::paper_value_map($prow);
-        foreach ($prow->conf->pc_members() as $cid => $pc) {
+        if (($u = $qreq->user()) && !$u->can_view_pc()) {
+            /** @phan-suppress-next-line PhanTypeMismatchArgument */
+            return PaperValue::make_multi($prow, $this, array_keys($vm), array_values($vm));
+        }
+        foreach ($prow->conf->listed_pc_members() as $cid => $pc) {
             if (isset($qreq["has_pcconf:{$cid}"]) || isset($qreq["pcconf:{$cid}"])) {
                 $ct = $qreq["pcconf:{$cid}"] ?? "0";
                 if (ctype_digit($ct) && $ct >= 0 && $ct <= 127) {
@@ -172,10 +160,8 @@ class PCConflicts_PaperOption extends PaperOption {
                 || !(is_bool($v) || is_int($v) || is_string($v))) {
                 return PaperValue::make_estop($prow, $this, "<0>Validation error");
             }
-            $ct = $confset->parse_json($v);
-            if ($ct === false) {
-                $pv->warning("<0>Invalid conflict type ‘{$v}’");
-                $ct = Conflict::CT_DEFAULT;
+            if (($ct = $confset->parse_json($v)) === false) {
+                return PaperValue::make_estop($prow, $this, "<0>Invalid conflict type ‘{$v}’");
             }
             $emails[] = $email;
             $values[] = $ct;
@@ -183,9 +169,13 @@ class PCConflicts_PaperOption extends PaperOption {
         }
 
         // apply conflicts
+        $roles = $user->viewable_roles_mask() & Contact::ROLE_ANYPC;
         $vm = self::paper_value_map($prow);
-        foreach ($vm as &$v) {
-            $v &= ~Conflict::FM_PC;
+        foreach ($vm as $uid => &$v) {
+            if (($u = $prow->conf->pc_member_by_id($uid))
+                && ($u->roles & $roles) !== 0) {
+                $v &= ~Conflict::FM_PC;
+            }
         }
         unset($v);
 
@@ -194,10 +184,14 @@ class PCConflicts_PaperOption extends PaperOption {
             if ($u && !$u->isPC && $u->primaryContactId > 0) {
                 $u = $prow->conf->pc_member_by_primary_id($u->primaryContactId);
             }
-            if ($u && $u->isPC) {
+            if ($u && ($u->roles & $roles) !== 0) {
                 $this->update_value_map($vm, $u->contactId, $values[$i]);
             } else {
                 $pv->warning("<0>Email address ‘{$emails[$i]}’ does not match a PC member");
+                if ($pv->message_count() > 49) {
+                    $pv->estop("<0>Too many issues, giving up");
+                    return $pv;
+                }
             }
         }
 
@@ -207,13 +201,13 @@ class PCConflicts_PaperOption extends PaperOption {
     }
     function print_web_edit(PaperTable $pt, $ov, $reqov) {
         $admin = $pt->user->is_admin($ov->prow);
-        if (!$this->test_visible($ov->prow)
+        if ((!$this->test_visible($ov->prow) || !$pt->user->can_view_pc())
             && !$pt->settings_mode) {
             return;
         }
 
         $this->conf->ensure_cached_user_collaborators();
-        $pcm = $this->conf->pc_members();
+        $pcm = $this->conf->listed_pc_members();
         if (empty($pcm)
             && !$pt->settings_mode) {
             return;
@@ -277,7 +271,7 @@ class PCConflicts_PaperOption extends PaperOption {
                 Conflict::is_conflicted($pct) ? " pcconf-conflicted" : "";
             if ($potconf) {
                 $potconftts[] = "<div id=\"d-pcconf:{$id}\" class=\"bubble\" role=\"tooltip\" hidden><div class=\"bubcontent\">" . $potconf->tooltip_html($ov->prow) . "</div></div>";
-                echo ' want-tooltip" aria-describedby="d-pcconf:', $id;
+                echo ' need-tooltip-within" aria-describedby="d-pcconf:', $id;
             }
             echo '">';
 
@@ -342,7 +336,7 @@ class PCConflicts_PaperOption extends PaperOption {
         // XXX potential conflicts?
         $user = $fr->user ?? Contact::make($this->conf);
         $can_view_authors = $user->can_view_authors($ov->prow);
-        $pcm = $this->conf->pc_members();
+        $pcm = $this->conf->viewable_pc_members($user);
         $confset = $this->selectors ? $this->conf->conflict_set() : null;
         $names = [];
         foreach ($ov->prow->conflict_type_list() as $cflt) {

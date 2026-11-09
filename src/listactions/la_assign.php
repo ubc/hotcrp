@@ -33,8 +33,7 @@ class Assign_ListAction extends ListAction {
             if ($t !== "s" && $t !== "accepted") {
                 $t = "all";
             }
-            $q = join("+", $ssel->selection());
-            $qreq->redirect_hoturl("autoassign", ["q" => $q, "t" => $t]);
+            $qreq->redirect_hoturl("autoassign", ["q" => $ssel->unparse_search(), "t" => $t]);
         }
 
         $mpc = (string) $qreq->markpc;
@@ -65,7 +64,6 @@ class Assign_ListAction extends ListAction {
         $assignset->enable_papers($ssel->selection());
         $assignset->parse($text);
         $assignset->execute();
-        $assignset->feedback_msg(AssignmentSet::FEEDBACK_ASSIGN);
-        return null;
+        return JsonResult::make_message_list($assignset->feedback_message_list(AssignmentSet::FEEDBACK_ASSIGN));
     }
 }

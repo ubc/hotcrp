@@ -4,14 +4,14 @@
         "title": "Program abbreviation",
         "type": "simplestring", "size": 20, "autogrow": true,
         "parser_class": "Basics_SettingParser",
-        "tags": "id identity"
+        "tags": "identity"
     },
     {
         "name": "conference_name", "storage": "opt.longName",
         "title": "Program name", "placeholder": "(same as abbreviation)",
         "type": "simplestring", "size": 70,
         "parser_class": "Basics_SettingParser",
-        "tags": "id identity"
+        "tags": "identity"
     },
 
     {
@@ -228,33 +228,42 @@
         "name": "conference_url", "storage": "opt.conferenceSite",
         "title": "Program URL",
         "type": "url", "required": false, "size": 70, "placeholder": "N/A",
-        "tags": "id identity"
+        "tags": "identity"
+    },
+    {
+        "name": "site_url", "storage": "opt.observedPaperSite",
+        "title": "Site URL",
+        "type": "url", "required": false, "size": 70,
+        "parser_class": "SiteURL_SettingParser",
+        "tags": "identity"
     },
     {
         "name": "site_contact_email", "storage": "opt.contactEmail",
         "title": "Email of site contact",
         "type": "email", "required": false, "size": 40,
         "parser_class": "SiteContact_SettingParser", "parse_order": 1,
-        "tags": "mail id identity"
+        "tags": "mail identity"
     },
     {
         "name": "site_contact_name", "storage": "opt.contactName",
         "title": "Name of site contact",
         "type": "simplestring", "size": 50,
         "parser_class": "SiteContact_SettingParser", "placeholder": "(none)",
-        "tags": "mail id identity"
+        "tags": "mail identity"
     },
     {
         "name": "email_default_cc", "storage": "opt.emailCc",
         "title": "Default Cc for mail tool",
         "type": "emailheader", "size": 80, "placeholder": "(none)",
-        "tags": "mail id identity"
+        "parser_class": "SiteContact_SettingParser",
+        "tags": "mail identity"
     },
     {
         "name": "email_default_reply_to", "storage": "opt.emailReplyTo",
         "title": "Default Reply-To for mail tool",
         "type": "emailheader", "size": 80, "placeholder": "(none)",
-        "tags": "mail id identity"
+        "parser_class": "SiteContact_SettingParser",
+        "tags": "mail identity"
     },
     {
         "name": "options", "storage": "dat.options", "internal": true,
@@ -494,7 +503,7 @@
     },
     {
         "name_pattern": "submission/$",
-        "type": "object", "subtype": "sclass",
+        "type": "object", "subtype": "submission_class",
         "title": "Submission class", "title_pattern": "${sv submission/$/title}",
         "parser_class": "Sround_SettingParser"
     },
@@ -829,7 +838,8 @@
     {
         "name": "review_default_round", "storage": "rev_roundtag",
         "title": "Default round for new reviews",
-        "type": "tag", "required": false, "parser_class": "Review_SettingParser",
+        "type": "tag", "required": false, "default_value": "unnamed",
+        "parser_class": "Review_SettingParser",
         "parse_order": 1,
         "tags": "review"
     },
@@ -1047,8 +1057,11 @@
         "parser_class": "Banal_SettingParser"
     },
     {
-        "name_pattern": "format/$/id", "type": "int"
+        "name_pattern": "format/$/doctype",
+        "title": "/Document type",
+        "type": "simplestring", "id_member": true
     },
+    {   "name_pattern": "format/$/id", "alias_pattern": "format/$/doctype"   },
     {
         "name_pattern": "format/$/active",
         "title": "Format checker",
@@ -1057,47 +1070,56 @@
     {
         "name_pattern": "format/$/bodyfontsize",
         "title": "PDF format checker minimum body font size",
-        "type": "string", "size": 5, "placeholder": "any"
+        "type": "string", "subtype": "prefer_numeric", "size": 5, "placeholder": "any",
+        "parser_class": "Banal_SettingParser"
     },
     {
         "name_pattern": "format/$/bodylineheight",
         "title": "PDF format checker minimum body line height",
-        "type": "string", "size": 5, "placeholder": "any"
+        "type": "string", "subtype": "prefer_numeric", "size": 5, "placeholder": "any",
+        "parser_class": "Banal_SettingParser"
     },
     {
         "name_pattern": "format/$/columns",
         "title": "PDF format checker column count",
-        "type": "string", "size": 5, "placeholder": "any"
+        "type": "string", "subtype": "prefer_numeric", "size": 5, "placeholder": "any",
+        "parser_class": "Banal_SettingParser"
     },
     {
         "name_pattern": "format/$/pagelimit",
         "title": "PDF format checker page limit",
-        "type": "string", "size": 5, "placeholder": "any"
+        "type": "string", "subtype": "prefer_numeric", "size": 5, "placeholder": "any",
+        "parser_class": "Banal_SettingParser"
     },
     {
         "name_pattern": "format/$/papersize",
         "title": "PDF format checker application size",
-        "type": "string", "size": 18, "placeholder": "any"
+        "type": "string", "size": 18, "placeholder": "any",
+        "parser_class": "Banal_SettingParser"
     },
     {
         "name_pattern": "format/$/textblock",
         "title": "PDF format checker text block size",
-        "type": "string", "size": 18, "placeholder": "any"
+        "type": "string", "size": 18, "placeholder": "any",
+        "parser_class": "Banal_SettingParser", "parse_order": 1
     },
     {
         "name_pattern": "format/$/unlimitedref",
         "title": "PDF format checker unlimited references",
-        "type": "checkbox"
+        "type": "checkbox",
+        "parser_class": "Banal_SettingParser", "parse_order": 1
     },
     {
         "name_pattern": "format/$/appendix",
         "title": "Allow appendix sections",
-        "type": "checkbox"
+        "type": "checkbox",
+        "parser_class": "Banal_SettingParser"
     },
     {
         "name_pattern": "format/$/wordlimit",
         "title": "PDF format checker word limit",
-        "type": "string", "size": 8, "placeholder": "any"
+        "type": "string", "subtype": "prefer_numeric", "size": 8, "placeholder": "any",
+        "parser_class": "Banal_SettingParser"
     },
 
     {
@@ -1148,14 +1170,14 @@
     {
         "name": "tag_readonly", "storage": "tag_chair",
         "title": "Read-only tags",
-        "type": "taglist", "subtype": "allow_wildcard", "size": 50, "autogrow": true,
+        "type": "taglist", "subtype": "allow_wildcard", "size": 50, "wrap": true, "spellcheck": false,
         "parser_class": "Tags_SettingParser", "initial_value": "accept pcpaper reject",
         "tags": "tags"
     },
     {
         "name": "tag_hidden",
         "title": "Hidden tags",
-        "type": "taglist", "subtype": "allow_wildcard", "size": 50, "autogrow": true,
+        "type": "taglist", "subtype": "allow_wildcard", "size": 50, "wrap": true, "spellcheck": false,
         "parser_class": "Tags_SettingParser",
         "tags": "tags visibility"
     },
@@ -1173,7 +1195,10 @@
         "title": "Tag style", "title_pattern": "‘${sv tag_style/$/style}’",
         "parser_class": "TagStyle_SettingParser"
     },
-    {   "name_pattern": "tag_style/$/id", "internal": true   },
+    {
+        "name_pattern": "tag_style/$/id", "type": "string",
+        "internal": true, "json": true, "id_member": true
+    },
     {
         "name_pattern": "tag_style/$/style",
         "title": "/Style", "type": "simplestring", "required": true,
@@ -1183,7 +1208,7 @@
         "name_pattern": "tag_style/$/tags",
         "title": "/Tag list",
         "type": "taglist", "subtype": "allow_wildcard_chair", "size": 40,
-        "autogrow": true, "spellcheck": false
+        "wrap": true, "spellcheck": false
     },
 
     {   "name": "tag_badge", "internal": true, "type": "string"   },
@@ -1198,7 +1223,10 @@
         "parser_class": "TagStyle_SettingParser",
         "tags": "tags"
     },
-    {   "name_pattern": "badge/$/id", "internal": true   },
+    {
+        "name_pattern": "badge/$/id", "type": "string",
+        "internal": true, "json": true, "id_member": true
+    },
     {
         "name_pattern": "badge/$/style",
         "title": "/Style", "type": "simplestring", "required": true,
@@ -1207,13 +1235,13 @@
     {
         "name_pattern": "badge/$/tags",
         "title": "/Tag list",
-        "type": "taglist", "subtype": "allow_wildcard_chair", "size": 40, "autogrow": true
+        "type": "taglist", "subtype": "allow_wildcard_chair", "size": 40, "wrap": true, "spellcheck": false
     },
 
     {
         "name": "tag_rank",
         "title": "Ranking tags",
-        "type": "taglist", "parser_class": "Tags_SettingParser", "size": 50, "autogrow": true,
+        "type": "taglist", "parser_class": "Tags_SettingParser", "size": 50, "wrap": true, "spellcheck": false,
         "tags": "tags"
     },
     {
@@ -1225,7 +1253,7 @@
     {
         "name": "tag_admin_open", "storage": "tag_sitewide",
         "title": "Open-administration tags",
-        "type": "taglist", "subtype": "allow_wildcard", "size": 50, "autogrow": true,
+        "type": "taglist", "subtype": "allow_wildcard", "size": 50, "wrap": true, "spellcheck": false,
         "parser_class": "Tags_SettingParser",
         "tags": "tags visibility"
     },
@@ -1233,21 +1261,21 @@
     {
         "name": "tag_pc_open", "storage": "tag_conflict_free",
         "title": "Open tags",
-        "type": "taglist", "subtype": "allow_wildcard", "size": 50, "autogrow": true,
+        "type": "taglist", "subtype": "allow_wildcard", "size": 50, "wrap": true, "spellcheck": false,
         "parser_class": "Tags_SettingParser",
         "tags": "tags visibility"
     },
     {
         "name": "tag_vote_allotment", "storage": "tag_vote",
         "title": "Allotment voting tags",
-        "type": "taglist", "subtype": "allotment", "size": 50, "autogrow": true,
+        "type": "taglist", "subtype": "allotment", "size": 50, "wrap": true, "spellcheck": false,
         "parser_class": "Tags_SettingParser",
         "tags": "tags"
     },
     {
         "name": "tag_vote_approval", "storage": "tag_approval",
         "title": "Approval voting tags",
-        "type": "taglist", "size": 50, "autogrow": true,
+        "type": "taglist", "size": 50, "wrap": true, "spellcheck": false,
         "parser_class": "Tags_SettingParser",
         "tags": "tags"
     },
@@ -1264,7 +1292,10 @@
         "title_pattern": "Automatic tag ‘#${sv automatic_tag/$/tag}’",
         "parser_class": "AutomaticTag_SettingParser"
     },
-    {   "name_pattern": "automatic_tag/$/id", "internal": true   },
+    {
+        "name_pattern": "automatic_tag/$/id", "type": "string",
+        "internal": true, "json": true, "id_member": true
+    },
     {
         "name_pattern": "automatic_tag/$/tag", "storage": "member.tag",
         "title": "Automatic tag name",
@@ -1273,7 +1304,7 @@
     {
         "name_pattern": "automatic_tag/$/search", "storage": "member.q",
         "title": "/Search",
-        "type": "string", "subtype": "search", "size": 50, "placeholder": "Search", "autogrow": true, "spellcheck": false,
+        "type": "string", "subtype": "search", "size": 50, "placeholder": "Search", "wrap": true, "spellcheck": false,
         "parser_class": "AutomaticTag_SettingParser"
     },
     {   "name_pattern": "automatic_tag/$/query", "alias_pattern": "automatic_tag/$/search"   },
@@ -1341,7 +1372,10 @@
         "title_pattern": "${sv track/$/title}",
         "parser_class": "Track_SettingParser"
     },
-    {   "name_pattern": "track/$/id", "internal": true, "type": "string"   },
+    {
+        "name_pattern": "track/$/id", "type": "string",
+        "internal": true, "json": true, "id_member": true
+    },
     {
         "name_pattern": "track/$/tag",
         "title": "Track tag",

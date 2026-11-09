@@ -239,6 +239,10 @@ class AuthorCertification_PaperOption extends PaperOption {
         }
     }
 
+    function reset_on_withdraw() {
+        return true;
+    }
+
     /** @param PaperValue $ov
      * @return bool */
     static function is_complete($ov) {
@@ -264,7 +268,8 @@ class AuthorCertification_PaperOption extends PaperOption {
             $e = new AuthorCertification_Entry($u->email);
             $e->uid = $v;
             $e->user = $u;
-            if (($j = json_decode_object($ov->data_by_index($i)))) {
+            $j = json_decode($ov->data_by_index($i) ?? "");
+            if (is_object($j)) {
                 if (isset($j->value)) {
                     $e->value = $j->value;
                 }
@@ -346,7 +351,7 @@ class AuthorCertification_PaperOption extends PaperOption {
         return $this->conf->_("<5>Each author may certify up to {max_submissions} {submissions}. To certify this {submission}, first decertify or withdraw another one (<a href=\"{url}\">view list</a>).",
             new FmtArg("action", $action, 0),
             new FmtArg("max_submissions", $this->max_submissions, 0),
-            new FmtArg("url", $this->conf->hoturl_raw("search", ["t" => "act", "q" => $this->search_keyword() . ":" . $email]), 0));
+            new FmtArg("url", $this->conf->hoturl("search", ["t" => "act", "q" => $this->search_keyword() . ":" . $email]), 0));
     }
 
     private function _value_check_max_submissions(PaperValue $ov) {
@@ -369,7 +374,7 @@ class AuthorCertification_PaperOption extends PaperOption {
 
     /** @return AuthorCertification_EntryList */
     static private function author_option_entries(PaperInfo $prow) {
-        $auov = $prow->force_option(PaperOption::AUTHORSID);
+        $auov = $prow->option(PaperOption::AUTHORSID);
         $aulist = Authors_PaperOption::author_list($auov);
         return ACEntryList::make_author_list($prow->conf, $aulist);
     }
@@ -464,7 +469,7 @@ class AuthorCertification_PaperOption extends PaperOption {
         $want_complete = self::entries_complete($ov->prow, $entries);
         $have_complete = self::is_complete($ov);
         // check for illegal change to authors
-        $auov = $ov->prow->force_option(PaperOption::AUTHORSID);
+        $auov = $ov->prow->option(PaperOption::AUTHORSID);
         $base_auov = $ov->prow->base_option(PaperOption::AUTHORSID);
         if (!$auov->equals($base_auov)) {
             $prevent_add = !$have_complete
@@ -535,7 +540,7 @@ class AuthorCertification_PaperOption extends PaperOption {
         foreach ($entries as $ne) {
             if ($ne->user
                 && $ne->value
-                && !$base_entries->find_by_id($ne->uid)
+                && !$xentries->find_by_id($ne->uid)
                 && self::user_can_change($user, $prow, $ne->user->email)
                 && $this->resolve_max_submissions($ne->user, $entries, $msgs)) {
                 $xentries->append($ne);
@@ -609,13 +614,14 @@ class AuthorCertification_PaperOption extends PaperOption {
                 $msgs[] = MessageItem::error_at($this->formid, "<0>Invalid author email ‘{$x}’");
                 continue;
             }
+            // provenance information (admin/at/by) requires admin privilege
             $e = ACEntry::make_email_by(
-                $ej->email, $ej->value ?? true, $ej->admin ?? $admin, $user
+                $ej->email, $ej->value ?? true, $admin && ($ej->admin ?? true), $user
             );
-            if (isset($ej->at) && is_int($ej->at)) {
+            if ($admin && isset($ej->at) && is_int($ej->at)) {
                 $e->at = $ej->at;
             }
-            if (isset($ej->by) && is_int($ej->by)) {
+            if ($admin && isset($ej->by) && is_int($ej->by)) {
                 $e->by = $ej->by;
             }
             $entries->append($e);
@@ -678,8 +684,8 @@ class AuthorCertification_PaperOption extends PaperOption {
             $ready[2][] = $this->web_edit_one($pt, $oe->user, $oe, $reqentries, $n);
         }
 
-        $pt->print_editable_option_papt($this, null, ["for" => false, "id" => $this->readable_formid()]);
-        echo '<fieldset class="papev fieldset-covert" name="', $this->formid, '">';
+        $pt->print_editable_option_papt($this, null, ["for" => false, "fieldset" => true, "id" => $this->readable_formid()]);
+        echo '<div class="papev">';
         if (!empty($ready[1])) {
             $mb = empty($ready[0]) && empty($ready[2]) ? " mb-0" : "";
             echo "<ul class=\"x{$mb}\">", join("", $ready[1]), "</ul>";
@@ -697,7 +703,7 @@ class AuthorCertification_PaperOption extends PaperOption {
             echo '<h4 class="mb-0 font-italic">No authors yet</h4>',
                 Ht::checkbox("", 1, false, ["hidden" => true, "disabled" => true]);
         }
-        echo "</fieldset></div>\n\n";
+        echo "</div></fieldset>\n\n";
     }
 
     function print_web_edit_hidden(PaperTable $pt, $ov) {

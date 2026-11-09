@@ -11,6 +11,7 @@ class Admin_SearchTerm extends SearchTerm {
     private $flags;
     const F_ALLOW = 1;
     const F_TRACKMGR = 2;
+    const F_EXPLICIT = 4;
 
     /** @param bool|list<Contact> $match
      * @param int $flags */
@@ -22,6 +23,11 @@ class Admin_SearchTerm extends SearchTerm {
     }
     static function parse($word, SearchWord $sword, PaperSearch $srch) {
         $flags = ($sword->kwdef->is_allow ?? false) ? self::F_ALLOW : 0;
+        [$sword, $explicit] = $sword->try_pop_suffix(":explicit");
+        if ($explicit) {
+            $flags |= self::F_EXPLICIT;
+            $word = $sword->word;
+        }
         if (!$sword->quoted && $flags === 0) {
             $lword = strtolower($word);
             if ($lword === "" || $lword === "any" || $lword === "yes") {
@@ -34,33 +40,38 @@ class Admin_SearchTerm extends SearchTerm {
             return new False_SearchTerm;
         }
         // searches only PC members; needs update if non-PC can be admins
-        $match = $srch->user_search(ContactSearch::F_PC | ContactSearch::F_USER, $sword);
+        $match = $srch->user_search(ContactSearch::F_PC | ContactSearch::F_EXPLICIT_NONPC | ContactSearch::F_USER | ContactSearch::F_REQUIRED, $sword);
         if ($match->is_empty()) {
             return new False_SearchTerm;
         }
-        foreach ($match->users() as $u) {
-            if ($u->is_track_manager())
-                $flags |= self::F_TRACKMGR;
+        if (($flags & self::F_EXPLICIT) === 0) {
+            foreach ($match->users() as $u) {
+                if ($u->is_track_manager())
+                    $flags |= self::F_TRACKMGR;
+            }
         }
         return new Admin_SearchTerm($srch->user, $match->users(), $flags);
     }
     function sqlexpr(SearchQueryInfo $sqi) {
-        if ($this->match === true) {
-            return "Paper.managerContactId!=0";
-        } else if ($this->match === false) {
+        if ($this->match === false) {
             // Non-viewable manager looks like no manager
-            return $this->user->privChair ? "Paper.managerContactId=0" : "true";
+            return $this->user->privChair ? "Paper.managerContactId=0" :  "true";
+        } else if (!$this->user->can_view_manager(null)) {
+            // All managers non-viewable
+            return "false";
+        } else if ($this->match === true) {
+            return "Paper.managerContactId!=0";
         }
         $where = [];
         if ($this->flags & self::F_TRACKMGR) {
-            $tsm = new TagSearchMatcher($this->user);
+            $tsm = new TagSearchMatcher($this->user->conf->root_user());
             foreach ($this->match as $u) {
                 if (($mttl = $u->managed_track_tags()) === null) {
                     return "true";
                 }
                 $tsm->add_tag_list($mttl);
             }
-            $where[] = $tsm->exists_sqlexpr("Paper");
+            $where[] = $tsm->exists_sqlexpr("Paper") ?? "false";
         }
         $uids = array_map(function ($p) { return $p->contactId; }, $this->match);
         $where[] = "Paper.managerContactId" . CountMatcher::sqlexpr_using($uids);
@@ -72,10 +83,12 @@ class Admin_SearchTerm extends SearchTerm {
         } else if (is_bool($this->match)) {
             return $this->match === ($row->managerContactId != 0);
         }
+        $allow = ($this->flags & self::F_ALLOW) !== 0;
+        $explicit = ($this->flags & self::F_EXPLICIT) !== 0;
         foreach ($this->match as $u) {
-            if ($this->flags & self::F_ALLOW
-                ? $u->can_manage($row)
-                : $u->is_primary_administrator($row))
+            if ($explicit
+                ? $row->managerContactId === $u->contactId
+                : ($allow ? $u->allow_admin($row) : $u->is_primary_administrator($row)))
                 return true;
         }
         return false;

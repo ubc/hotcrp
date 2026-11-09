@@ -157,6 +157,11 @@ final class PaperValue implements JsonSerializable {
         return $a[1] <=> $b[1];
     }
 
+    /** @return bool */
+    function present() {
+        return $this->option->value_present($this);
+    }
+
     /** @param PaperValue $x
      * @return bool */
     function equals($x) {
@@ -211,9 +216,10 @@ final class PaperValue implements JsonSerializable {
         return $this->document_set()->as_list();
     }
     /** @param int $index
+     * @param bool $full
      * @return ?DocumentInfo */
-    function document($index) {
-        return $this->document_set()->document_by_index($index);
+    function document($index, $full = false) {
+        return $this->document_set($full)->document_by_index($index);
     }
     /** @param int $index
      * @return string|false */
@@ -300,6 +306,10 @@ final class PaperValue implements JsonSerializable {
     /** @return list<MessageItem> */
     function message_list() {
         return $this->_ms ? $this->_ms->message_list() : [];
+    }
+    /** @return int */
+    function message_count() {
+        return $this->_ms ? $this->_ms->message_count() : 0;
     }
     /** @return void */
     function clear_messages() {

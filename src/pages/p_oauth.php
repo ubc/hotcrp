@@ -3,90 +3,9 @@
 // Copyright (c) 2022-2026 Eddie Kohler; see LICENSE.
 
 namespace HotCRP;
-use Conf, Contact, MessageItem, Navigation, NavigationState, Qrequest, Redirection;
-use LoginHelper, TokenInfo, UserSecurityEvent, UserStatus;
-
-class OAuthProvider {
-    /** @var string */
-    public $name;
-    /** @var ?string */
-    public $title;
-    /** @var ?string */
-    public $scope;
-    /** @var string */
-    public $client_id;
-    /** @var string */
-    public $client_secret;
-    /** @var ?string */
-    public $issuer;
-    /** @var string */
-    public $auth_uri;
-    /** @var string */
-    public $redirect_uri;
-    /** @var string */
-    public $token_uri;
-    /** @var ?string */
-    public $token_function;
-    /** @var ?bool */
-    public $roles;
-    /** @var ?object */
-    public $group_roles;
-    /** @var ?bool */
-    public $reset_roles;
-
-    /** @var ?string */
-    public $nonce;
-    public $require;
-
-    function __construct($name) {
-        $this->name = $name;
-    }
-
-    /** @return string */
-    function title() {
-        return $this->title ?? $this->name;
-    }
-
-    /** @param Conf $conf
-     * @param ?string $name
-     * @return ?OAuthProvider */
-    static function find($conf, $name) {
-        $authinfo = $conf->oauth_providers();
-        if (empty($authinfo)) {
-            return null;
-        }
-        if ($name === null) {
-            $name = (array_keys($authinfo))[0];
-        }
-        if (!($authdata = $authinfo[$name] ?? null)) {
-            return null;
-        }
-        $instance = new OAuthProvider($name);
-        $instance->title = $authdata->title ?? null;
-        $instance->issuer = $authdata->issuer ?? null;
-        $instance->scope = $authdata->scope ?? null;
-        $instance->client_id = $authdata->client_id ?? null;
-        $instance->client_secret = $authdata->client_secret ?? null;
-        $instance->auth_uri = $authdata->auth_uri ?? null;
-        $instance->token_uri = $authdata->token_uri ?? null;
-        $instance->redirect_uri = $authdata->redirect_uri
-            ?? $conf->hoturl_raw("oauth", null, Conf::HOTURL_ABSOLUTE);
-        $instance->token_function = $authdata->token_function ?? null;
-        $instance->require = $authdata->require ?? null;
-        $instance->roles = $authdata->roles ?? false;
-        $instance->group_roles = $authdata->group_roles ?? $authdata->group_mappings /* XXX */ ?? null;
-        $instance->reset_roles = $authdata->reset_roles ?? $authdata->remove_groups /* XXX */ ?? false;
-        foreach (["title", "issuer", "scope"] as $k) {
-            if ($instance->$k !== null && !is_string($instance->$k))
-                return null;
-        }
-        foreach (["client_id", "client_secret", "auth_uri", "token_uri", "redirect_uri"] as $k) {
-            if (!is_string($instance->$k))
-                return null;
-        }
-        return $instance;
-    }
-}
+use Conf, Contact, MessageItem, Navigation, NavigationState, Qrequest;
+use Redirection, LoginHelper, TokenInfo, UpdateSession, UserSecurityEvent, UserStatus;
+use Session_API;
 
 class OAuth_Page {
     /** @var Conf */
@@ -98,6 +17,8 @@ class OAuth_Page {
     /** @var ?string */
     public $site_uri;
     /** @var ?string */
+    public $smsg;
+    /** @var ?string */
     public $email;
     /** @var ?string */
     public $success_redirect;
@@ -105,6 +26,12 @@ class OAuth_Page {
     public $failure_redirect;
     /** @var bool */
     public $success = false;
+
+    /** Testing hook: if set, called instead of an actual token request.
+     * @var ?callable(OAuthProvider,array<string,string>):(array{int,string}) */
+    static public $fetch_function;
+
+    const SIGNIN_LIFETIME = 900;
 
     function __construct(Contact $viewer, Qrequest $qreq) {
         $this->conf = $viewer->conf;
@@ -127,14 +54,29 @@ class OAuth_Page {
         $reauth = friendly_boolean($this->qreq->reauth)
             && $this->viewer->has_email();
 
+        $random_bytes = random_bytes(12 + 6 + ($authi->pkce ? 32 : 0));
+        $nonce_bytes = substr($random_bytes, 0, 12);
+        $smsg = base48_encode(substr($random_bytes, 12, 6));
+        $pkce_bytes = substr($random_bytes, 12 + 6);
+
         $tokdata = [
             "authtype" => $authi->name,
             "session" => $this->qreq->qsid(),
-            "site_uri" => $this->conf->opt("paperSite"),
-            "nonce" => base48_encode(random_bytes(12))
+            "site_uri" => $this->conf->baseurl(),
+            "nonce" => base48_encode($nonce_bytes),
+            "smsg" => $smsg
         ];
         if ($reauth) {
             $tokdata["reauth"] = $this->viewer->email;
+            // Fix the freshness window here rather than reading it back off
+            // the return leg: the request that starts a reauthentication must
+            // not be able to widen it. `AuthenticationChecker` asks for 3600
+            // at most.
+            $ma = ctype_digit($this->qreq->max_age ?? "") ? intval($this->qreq->max_age) : 0;
+            $tokdata["max_age"] = min($ma, 3600);
+        } else if (ctype_digit($this->qreq->max_age ?? "")) {
+            // a sign-in that must be fresh (e.g. for `prompt=login`)
+            $tokdata["max_age"] = min(intval($this->qreq->max_age), 3600);
         }
         if (friendly_boolean($this->qreq->quiet)) {
             $tokdata["quiet"] = true;
@@ -145,18 +87,28 @@ class OAuth_Page {
         if (($r = $this->qreq->failure_redirect ?? $this->qreq->redirect) !== null) {
             $tokdata["failure_redirect"] = $r;
         }
+        if ($authi->pkce) {
+            // the verifier stays here; only its hash goes to the provider
+            $tokdata["code_verifier"] = base64url_encode($pkce_bytes);
+        }
 
         $tok = new TokenInfo($this->conf, TokenInfo::OAUTHSIGNIN);
         $tok->set_contactdb(!!$this->conf->contactdb())
-            ->set_expires_in(600)
+            ->set_expires_in(self::SIGNIN_LIFETIME)
             ->set_token_pattern("hcoa[20]")
             ->assign_data($tokdata)
             ->insert();
         if (!$tok->stored()) {
             return MessageItem::error("<0>Authentication attempt failed");
         }
+        // nonce cookie will be consumed by the OAuth-handling instance
         $this->qreq->set_cookie_opt("hotcrp-oauth-nonce-" . $tokdata["nonce"], "1", [
-            "expires" => Conf::$now + 600, "path" => "/", "httponly" => true
+            "expires" => Conf::$now + self::SIGNIN_LIFETIME, "httponly" => true,
+            "path" => self::redirect_uri_path($authi)
+        ]);
+        // smsg cookie will be consumed by our instance
+        $this->qreq->set_cookie_opt("hotcrp-smsg-" . $smsg, "1", [
+            "expires" => Conf::$now + self::SIGNIN_LIFETIME + 60, "httponly" => true
         ]);
         $params = "client_id=" . urlencode($authi->client_id)
             . "&response_type=code"
@@ -164,15 +116,41 @@ class OAuth_Page {
             . "&redirect_uri=" . rawurlencode($authi->redirect_uri)
             . "&state=" . $tok->salt
             . "&nonce=" . $tokdata["nonce"];
+        if (isset($tokdata["code_verifier"])) {
+            $params .= "&code_challenge=" . base64url_encode(hash("sha256", $tokdata["code_verifier"], true))
+                . "&code_challenge_method=S256";
+        }
         if ($reauth) {
-            $params .= "&login_hint=" . rawurlencode($this->viewer->email);
-        } else if (isset($this->qreq->email) && validate_email($this->qreq->email)) {
-            $params .= "&login_hint=" . rawurlencode($this->qreq->email);
+            // `prompt=login` asks the provider to authenticate the user again;
+            // `max_age` makes it say when it did, in `auth_time`, which is what
+            // `instance_reauth` can actually check
+            $params .= "&prompt=login&max_age=" . ($tokdata["max_age"] ?? 0)
+                . "&login_hint=" . rawurlencode($this->viewer->email);
+        } else {
+            if (isset($this->qreq->email) && validate_email($this->qreq->email)) {
+                $params .= "&login_hint=" . rawurlencode($this->qreq->email);
+            }
+            if (isset($tokdata["max_age"])) {
+                $params .= ($tokdata["max_age"] === 0 ? "&prompt=login" : "")
+                    . "&max_age=" . $tokdata["max_age"];
+            }
         }
-        if (ctype_digit($this->qreq->max_age ?? "")) {
-            $params .= "&max_age=" . $this->qreq->max_age;
-        }
+        $params .= "&claims=" . rawurlencode('{"id_token":{"auth_time":{"essential":true}}}');
         throw new Redirection(hoturl_add_raw($authi->auth_uri, $params));
+    }
+
+    /** Path scope for the nonce cookie: the directory holding the
+     * `redirect_uri`, which is where the provider will return. That need not
+     * be this site—one site's `redirect_uri` may name another on the same
+     * host—and a cookie scoped to the starting site would not be sent back.
+     * The return leg deletes the cookie using its own `base_path`, which is
+     * this same directory, since `oauth` sits directly under a site's root.
+     * @param OAuthProvider $authi
+     * @return string */
+    static private function redirect_uri_path($authi) {
+        $path = parse_url($authi->redirect_uri, PHP_URL_PATH);
+        $slash = is_string($path) ? strrpos($path, "/") : false;
+        return $slash === false ? "/" : substr($path, 0, $slash + 1);
     }
 
     /** @return MessageItem|list<MessageItem> */
@@ -186,13 +164,27 @@ class OAuth_Page {
             return MessageItem::error("<0>Authentication request not found or expired");
         } else if (!$tok->is_active()) {
             return MessageItem::error("<0>Authentication request expired");
-        } else if ($tok->timeUsed) {
-            return MessageItem::error("<0>Authentication request reused");
         } else if ($tok->capabilityType !== TokenInfo::OAUTHSIGNIN
                    || !$tok->data()) {
             return MessageItem::error("<0>Invalid authentication request ‘{$state}’, internal error");
+        } else if (!$tok->consume()) {
+            // claimed atomically: two callbacks arriving together must not both
+            // proceed, which a `timeUsed` test cannot prevent
+            return MessageItem::error("<0>Authentication request reused");
         }
 
+        try {
+            return $this->response_for($tok, $state);
+        } finally {
+            // however this ended, the request is spent
+            $tok->delete();
+        }
+    }
+
+    /** @param TokenInfo $tok
+     * @param string $state
+     * @return null|MessageItem|list<MessageItem> */
+    private function response_for($tok, $state) {
         // set redirection information from token
         $this->site_uri = $tok->data("site_uri") ?? $this->site_uri;
         if (!str_ends_with($this->site_uri, "/")) {
@@ -201,6 +193,7 @@ class OAuth_Page {
         $redirect = $tok->data("redirect") /* XXX obsolete */;
         $this->success_redirect = $tok->data("success_redirect") ?? $redirect;
         $this->failure_redirect = $tok->data("failure_redirect") ?? $redirect;
+        $this->smsg = $tok->data("smsg");
 
         if (($nonce = $tok->data("nonce")) !== null) {
             $noncematch = isset($_COOKIE["hotcrp-oauth-nonce-{$nonce}"]);
@@ -217,41 +210,53 @@ class OAuth_Page {
             return MessageItem::error("<0>Authentication failed");
         } else if (($authi = OAuthProvider::find($this->conf, $tok->data("authtype")))) {
             return $this->instance_response($authi, $tok);
-        } else {
-            return MessageItem::error("<0>OAuth authentication internal error");
         }
+        return MessageItem::error("<0>OAuth authentication internal error");
     }
 
     /** @param OAuthProvider $authi
      * @param TokenInfo $tok
      * @return MessageItem|list<MessageItem> */
-    private function instance_response($authi, $tok) {
-        // make authentication request
-        $tok->delete();
+    /** Post `$param` to `$authi`'s token endpoint.
+     * @param OAuthProvider $authi
+     * @param array<string,string> $param
+     * @return array{int,string} status (0 if the request failed) and body */
+    private function token_request($authi, $param) {
+        if (self::$fetch_function) {
+            return (self::$fetch_function)($authi, $param);
+        }
         $curlh = curl_init();
         curl_setopt($curlh, CURLOPT_URL, $authi->token_uri);
         curl_setopt($curlh, CURLOPT_POST, true);
         curl_setopt($curlh, CURLOPT_HTTPHEADER, ["Content-Type: application/x-www-form-urlencoded"]);
         curl_setopt($curlh, CURLOPT_TIMEOUT, 15);
-        curl_setopt($curlh, CURLOPT_POSTFIELDS, http_build_query([
+        curl_setopt($curlh, CURLOPT_POSTFIELDS, http_build_query($param, "", "&"));
+        curl_setopt($curlh, CURLOPT_RETURNTRANSFER, true);
+        $txt = curl_exec($curlh);
+        $status = curl_errno($curlh) ? 0 : curl_getinfo($curlh, CURLINFO_RESPONSE_CODE);
+        return [$status, is_string($txt) ? $txt : ""];
+    }
+
+    private function instance_response($authi, $tok) {
+        // make authentication request
+        $post = [
             "code" => $this->qreq->code,
             "client_id" => $authi->client_id,
             "client_secret" => $authi->client_secret,
             "redirect_uri" => $authi->redirect_uri,
             "grant_type" => "authorization_code"
-        ], "", "&"));
-        curl_setopt($curlh, CURLOPT_RETURNTRANSFER, true);
-        $txt = curl_exec($curlh);
-        $errno = curl_errno($curlh);
-        $status = curl_getinfo($curlh, CURLINFO_RESPONSE_CODE);
-        $curlh = null;
+        ];
+        if (($cv = $tok->data("code_verifier")) !== null) {
+            $post["code_verifier"] = $cv;
+        }
+        list($status, $txt) = $this->token_request($authi, $post);
 
         // check response
         $response = $txt ? json_decode($txt) : null;
         if (!$response
             || !is_object($response)
             || !is_string($response->id_token ?? null)) {
-            if ($errno !== 0 || $status < 200 || $status > 299) {
+            if ($status < 200 || $status > 299) {
                 return MessageItem::error("<0>{$authi->title()} authentication returned an error");
             } else {
                 return MessageItem::error("<0>{$authi->title()} authentication returned an incorrectly formatted response");
@@ -273,13 +278,29 @@ class OAuth_Page {
         }
 
         // check returned email
-        if (!isset($jid->email) || !is_string($jid->email)) {
+        // This claim becomes an account key, so normalize it as
+        // `LoginHelper::user_lookup` does; `Contact::store` requires a trimmed
+        // email, and one longer than the `email` column cannot be stored as
+        // itself. External logins deliberately skip `validate_email`.
+        if (isset($jid->email) && is_string($jid->email)) {
+            $jid->email = simplify_whitespace($jid->email);
+        }
+        if (!isset($jid->email)
+            || !is_string($jid->email)
+            || $jid->email === ""
+            || strlen($jid->email) > 120
+            || strpos($jid->email, " ") !== false) {
             return [
                 MessageItem::error("<0>The {$authi->title()} authenticator didn’t provide your email"),
                 MessageItem::inform("<0>HotCRP requires your email to sign you in.")
             ];
         }
-        if (($jid->email_verified ?? null) === false) {
+        // The email names the account, so it must be verified: the provider
+        // must say so, unless it is configured as trusted regardless.
+        $ev = $jid->email_verified ?? null;
+        if ($ev !== true
+            && $ev !== "true"
+            && !$authi->allow_unverified_email) {
             return [
                 MessageItem::error("<0>The {$authi->title()} authenticator hasn’t verified your email"),
                 MessageItem::inform("<0>HotCRP requires a verified email to sign you in.")
@@ -290,9 +311,8 @@ class OAuth_Page {
         // handle reauthentication requests
         if ($tok->data("reauth")) {
             return $this->instance_reauth($authi, $tok, $jid);
-        } else {
-            return $this->instance_signin($authi, $tok, $jid);
         }
+        return $this->instance_signin($authi, $tok, $jid);
     }
 
     /** @param OAuthProvider $authi
@@ -305,13 +325,32 @@ class OAuth_Page {
             ->set_subtype($authi->name)
             ->set_reason(UserSecurityEvent::REASON_REAUTH);
         if (strcasecmp($this->email, $reauth) !== 0) {
-            $use->set_success(false)->store($this->qreq->qsession());
+            $use->set_success(false)->store($this->qreq);
             return [
                 MessageItem::error("<0>The {$authi->title()} authenticator verified the wrong email"),
                 MessageItem::inform("<0>You must provide reauthentication for {$reauth}.")
             ];
         }
-        $use->store($this->qreq->qsession());
+        // A confirmation is best when the provider says it authenticated the
+        // user just now, in `auth_time`. A provider that relied on its own
+        // session instead vouches for the account right now.
+        $max_age = $tok->data("max_age") ?? 0;
+        $auth_time = $jid->auth_time ?? null;
+        if (is_int($auth_time)
+            && $auth_time >= Conf::$now - max($max_age, 300)) {
+            $use->timestamp = min($auth_time, Conf::$now);
+        } else if (($u = $this->conf->user_by_email($reauth)
+                         ?? $this->conf->cdb_user_by_email($reauth))
+                   && $u->can_use_password()) {
+            $use->set_success(false)->store($this->qreq);
+            return [
+                MessageItem::error("<0>The {$authi->title()} authenticator did not confirm a recent sign-in"),
+                MessageItem::inform("<0>Confirm your account with your password instead.")
+            ];
+        } else {
+            $use->set_roundtrip_only(true);
+        }
+        $use->store($this->qreq);
         $this->success = true;
         return $tok->data("quiet") ? [] : [MessageItem::success("<0>Authentication confirmed")];
     }
@@ -322,7 +361,7 @@ class OAuth_Page {
     private function parse_role_changes(&$roles, $rc, $remove) {
         $rcx = is_string($rc) ? preg_split('/[\s,;]+/', $rc) : $rc;
         foreach ($rcx as $rcn) {
-            if ($rcn === "") {
+            if (!is_string($rcn) || $rcn === "") {
                 continue;
             }
             if (preg_match('/\A(?:\+|-|–|—|−)/s', $rcn, $m)) {
@@ -425,7 +464,7 @@ class OAuth_Page {
             UserSecurityEvent::make($jid->email, UserSecurityEvent::TYPE_OAUTH)
                 ->set_subtype($authi->name)
                 ->set_success(false)
-                ->store($this->qreq->qsession());
+                ->store($this->qreq);
             return null;
         }
 
@@ -437,10 +476,19 @@ class OAuth_Page {
         }
 
         $qs = $this->qreq->qsession();
-        UserSecurityEvent::session_user_add($qs, $user->email);
-        UserSecurityEvent::make($user->email, UserSecurityEvent::TYPE_OAUTH)
-            ->set_subtype($authi->name)
-            ->store($qs);
+        $qs->open_new_sid();  // prevent session fixation
+        $xuser = $user->contactId ? $user : $user->cdb_user() ?? $user;
+        $xuser->mark_login();
+        $ui = UserSecurityEvent::session_user_add($qs, $user->email);
+        UpdateSession::apply_theme($qs, $ui, $xuser->theme());
+        $use = UserSecurityEvent::make($user->email, UserSecurityEvent::TYPE_OAUTH)
+            ->set_subtype($authi->name);
+        if (is_int($jid->auth_time ?? null)) {
+            $use->timestamp = min($jid->auth_time, Conf::$now);
+        } else {
+            $use->set_roundtrip_only(true);
+        }
+        $use->store($this->qreq);
         $this->success = true;
         return $tok->data("quiet") ? [] : [MessageItem::success("<0>Signed in")];
     }
@@ -461,10 +509,17 @@ class OAuth_Page {
             $rnav = NavigationState::make_base($uri);
             $uri = $rnav->resolve_within($r, $this->site_uri) ?? $uri;
         }
+        // direct the saved messages to the relevant conference
+        if ($this->smsg !== null) {
+            Session_API::store_smsg($this->qreq, $this->smsg, ...$this->conf->claim_saved_messages());
+        } else {
+            $this->conf->saved_messages_commit($this->qreq);
+        }
         throw new Redirection($uri);
     }
 
     static function go(Contact $user, Qrequest $qreq) {
+        $user->conf->emit_credential_page_headers();
         $oap = new OAuth_Page($user, $qreq);
         $redirect = false;
         if (isset($qreq->state)) {

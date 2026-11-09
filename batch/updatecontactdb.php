@@ -66,7 +66,7 @@ class UpdateContactdb_Batch {
 
     function __construct(Conf $conf, $arg) {
         $this->conf = $conf;
-        $this->conftid = $conf->opt["confid"] ?? "<conf>";
+        $this->conftid = $conf->confid ? : "<conf>";
         $this->papers = isset($arg["papers"]);
         $this->users = isset($arg["users"]);
         $this->collaborators = isset($arg["collaborators"]);
@@ -108,22 +108,17 @@ class UpdateContactdb_Batch {
             $qf[] = "longName=?";
             $qv[] = $this->conf->long_name;
         }
-        if ($this->conf->opt("paperSite") !== $this->confrow->url) {
+        if ($this->conf->baseurl() !== $this->confrow->url) {
             $qf[] = "url=?";
-            $qv[] = $this->conf->opt("paperSite");
+            $qv[] = $this->conf->baseurl();
         }
         if ($this->conf->opt("conferenceSite") !== $this->confrow->conferenceSite) {
             $qf[] = "conferenceSite=?";
             $qv[] = $this->conf->opt("conferenceSite");
         }
-        $email = $this->conf->opt_override["emailReplyTo"] ?? $this->conf->opt("emailReplyTo");
-        if ($email && $email !== $this->confrow->requester_email) {
-            $qf[] = "requester_email=?";
-            $qv[] = $email;
-        }
         $max_sub = 0;
         foreach ($this->conf->submission_round_list() as $sr) {
-            $max_sub = max($max_sub, $sr->register, $sr->update, $sr->submit);
+            $max_sub = max($max_sub, $sr->register, $sr->submit);
         }
         if ($max_sub && $max_sub != $this->confrow->submission_deadline_at) {
             $qf[] = "submission_deadline_at=?";

@@ -15,6 +15,7 @@ class UserActions extends MessageSet {
     function __construct(Contact $viewer) {
         $this->conf = $viewer->conf;
         $this->viewer = $viewer;
+        $this->set_message_formatter($this->conf);
     }
 
     /** @param string $kind
@@ -128,6 +129,7 @@ class UserActions extends MessageSet {
      * @param int $rremove
      * @param string $key */
     private function change_roles($users, $radd, $rremove, $key) {
+        $pc_removals = [];
         $this->conf->pause_log();
         foreach ($users as $u) {
             $old_roles = $u->roles;
@@ -138,8 +140,18 @@ class UserActions extends MessageSet {
             $this->conf->log_for($this->viewer, $u, "Account edited: roles [{$d}]");
             $this->unames[$key][] = $u->name(NAME_E);
             $u->update_cdb_roles();
+            if (($old_roles & Contact::ROLE_PCLIKE) !== 0
+                && ($u->roles & Contact::ROLE_PCLIKE) === 0) {
+                $pc_removals[] = $u->email;
+            }
         }
         $this->conf->resume_log();
+        if (!empty($pc_removals) && $this->conf->has_any_manager()) {
+            $q = join(" OR ", array_map(function ($e) { return "admin:{$e}:explicit"; }, $pc_removals));
+            $aset = new AssignmentSet($this->conf->root_user());
+            $aset->parse("paper,action\n{$q},clearadministrator\n");
+            $aset->execute();
+        }
     }
 
     /** @param list<int> $ids */
@@ -150,13 +162,30 @@ class UserActions extends MessageSet {
             return;
         }
         $users = $this->load_users("select *, 0 _slice from ContactInfo where contactId?a and (roles&?)=0",
-            [$ids, Contact::ROLE_PCLIKE]);
+            [$ids, Contact::ROLE_PC]);
         if (empty($users)) {
             return;
         }
-        $this->conf->qe("update ContactInfo set roles=roles|? where contactId?a and (roles&?)=0",
-            Contact::ROLE_PC, array_keys($users), Contact::ROLE_PCLIKE);
-        $this->change_roles($users, Contact::ROLE_PC, 0, "add_pc");
+        $this->conf->qe("update ContactInfo set roles=(roles&~?)|? where contactId?a and (roles&?)=0",
+            Contact::ROLE_UNLISTEDPC, Contact::ROLE_PC, array_keys($users), Contact::ROLE_PC);
+        $this->change_roles($users, Contact::ROLE_PC, Contact::ROLE_UNLISTEDPC, "add_pc");
+    }
+
+    /** @param list<int> $ids */
+    function add_unlistedpc($ids) {
+        $this->unames["add_unlistedpc"] = [];
+        if (!$this->viewer->privChair) {
+            $this->error_at(null, "<0>Permission error");
+            return;
+        }
+        $users = $this->load_users("select *, 0 _slice from ContactInfo where contactId?a and (roles&?)=0 and contactId!=?",
+            [$ids, Contact::ROLE_UNLISTEDPC | Contact::ROLE_CHAIR, $this->viewer->contactId]);
+        if (empty($users)) {
+            return;
+        }
+        $this->conf->qe("update ContactInfo set roles=(roles&~?)|? where contactId?a and (roles&?)=0",
+            Contact::ROLE_PC, Contact::ROLE_UNLISTEDPC, array_keys($users), Contact::ROLE_UNLISTEDPC | Contact::ROLE_CHAIR);
+        $this->change_roles($users, Contact::ROLE_UNLISTEDPC, Contact::ROLE_PC, "add_unlistedpc");
     }
 
     /** @param list<int> $ids */
@@ -167,13 +196,13 @@ class UserActions extends MessageSet {
             return;
         }
         $users = $this->load_users("select *, 0 _slice from ContactInfo where contactId?a and (roles&?)!=0 and contactId!=?",
-            [$ids, Contact::ROLE_PC, $this->viewer->contactId]);
+            [$ids, Contact::ROLE_ANYPC, $this->viewer->contactId]);
         if (empty($users)) {
             return;
         }
         $this->conf->qe("update ContactInfo set roles=roles&~? where contactId?a and (roles&?)!=0",
-            Contact::ROLE_PC | Contact::ROLE_CHAIR, array_keys($users), Contact::ROLE_PC);
-        $this->change_roles($users, 0, Contact::ROLE_PC | Contact::ROLE_CHAIR, "remove_pc");
+            Contact::ROLE_ANYPC | Contact::ROLE_CHAIR, array_keys($users), Contact::ROLE_ANYPC);
+        $this->change_roles($users, 0, Contact::ROLE_ANYPC | Contact::ROLE_CHAIR, "remove_pc");
     }
 
     const DELETE_FORCE = 1;
@@ -278,7 +307,7 @@ class UserActions extends MessageSet {
         $result = $this->conf->qe("select * from PaperReview where contactId=?",
             $user->contactId);
         while (($rrow = ReviewInfo::fetch($result, $prows, $this->conf))) {
-            $rrow->delete($this->viewer, ["no_autosearch" => true]);
+            $rrow->delete($this->viewer, ["no_autosearch" => true, "no_rights" => true]);
         }
         Dbl::free($result);
 
@@ -286,7 +315,7 @@ class UserActions extends MessageSet {
         $result = $this->conf->qe("select * from PaperComment where contactId=? and (commentType&?)=0",
             $user->contactId, CommentInfo::CT_RESPONSE);
         while (($crow = CommentInfo::fetch($result, $prows, $this->conf))) {
-            $crow->delete($this->viewer, ["no_autosearch" => true]);
+            $crow->delete($this->viewer);
         }
         Dbl::free($result);
 

@@ -60,8 +60,10 @@ class TokenInfo {
      * @readonly */
     public $lookupKey;
 
-    /** @var ?string */
-    public $email;
+    /** Not in the Capability table; occasionally joined
+     * @var ?string */
+    protected $email;
+
     /** @var ?Contact|false */
     private $_user = false;
     /** @var ?string */
@@ -78,6 +80,8 @@ class TokenInfo {
     private $_changes;
 
     const SALT_PREFIX = "hc";
+    const SALT_MIN_LENGTH = 12;
+    const SALT_MAX_LENGTH = 255;
 
     const RESETPASSWORD = 1;
     const CHANGEEMAIL = 2;
@@ -137,6 +141,7 @@ class TokenInfo {
      * @return $this
      * @suppress PhanAccessReadOnlyProperty */
     final function set_user_from(Contact $user, $is_cdb) {
+        assert(!$this->contactId);
         if ($this->is_cdb === null) {
             $this->is_cdb = $is_cdb ?? $user->is_cdb_user();
         }
@@ -144,7 +149,9 @@ class TokenInfo {
             $user->ensure_account_here();
         }
         $uid = $this->is_cdb ? $user->contactDbId : $user->contactId;
-        assert(!$this->contactId && $uid > 0);
+        if ($uid <= 0) {
+            throw new Exception("TokenInfo::set_user_from: Failed to create user");
+        }
         $this->contactId = $uid;
         $this->email = $user->email;
         $this->_user = $user;
@@ -157,6 +164,14 @@ class TokenInfo {
     final function set_paper(?PaperInfo $prow) {
         assert(!$this->stored());
         $this->paperId = $prow ? $prow->paperId : 0;
+        return $this;
+    }
+
+    /** @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    final function set_pid(int $pid) {
+        assert(!$this->stored() && $pid >= -2);
+        $this->paperId = $pid;
         return $this;
     }
 
@@ -322,7 +337,10 @@ class TokenInfo {
      * @return ?TokenInfo */
     static function find_from($token, Conf $conf, $is_cdb) {
         $db = $is_cdb ? $conf->contactdb() : $conf->dblink;
-        if ($token === null || strlen($token) < 5 || !$db) {
+        if ($token === null
+            || strlen($token) < self::SALT_MIN_LENGTH
+            || strlen($token) > self::SALT_MAX_LENGTH
+            || !$db) {
             return null;
         }
         $extra = $is_cdb ? ", (select email from ContactInfo where contactDbId=Capability.contactId) email" : "";
@@ -371,12 +389,47 @@ class TokenInfo {
     }
 
 
+    /** Return the time at which this token stops being active, or 0 if it
+     * never does. `timeInvalid` is normally the earlier time; `timeExpires`
+     * is when the token’s row is removed.
+     * @return int */
+    final function inactive_at() {
+        if ($this->timeInvalid > 0 && $this->timeExpires > 0) {
+            return min($this->timeInvalid, $this->timeExpires);
+        }
+        return $this->timeInvalid > 0 ? $this->timeInvalid : $this->timeExpires;
+    }
+
+    const ABBREVIATION_PREFIX = 0;
+    const ABBREVIATION_ELLIPSIS = 1;
+    /** Abbreviated token salt, used for correlation across logs.
+     * @param int $type
+     * @return string */
+    final function abbreviation($type = 0) {
+        $s = substr($this->salt, 0, 12);
+        if ($type === self::ABBREVIATION_ELLIPSIS
+            && strlen($this->salt) > 12) {
+            $s .= "…";
+        }
+        return $s;
+    }
+
     /** @param ?int $capabilityType
      * @return bool */
     final function is_active($capabilityType = null) {
         return ($capabilityType === null || $this->capabilityType === $capabilityType)
             && ($this->timeExpires === 0 || $this->timeExpires > Conf::$now)
             && ($this->timeInvalid === 0 || $this->timeInvalid > Conf::$now);
+    }
+
+    /** @return ?string */
+    final function email() {
+        if ($this->email !== null) {
+            return $this->email;
+        } else if (($u = $this->user())) {
+            return $u->email;
+        }
+        return null;
     }
 
     /** @return ?Contact */
@@ -468,6 +521,10 @@ class TokenInfo {
             if ($need_salt) {
                 $this->salt = $this->instantiate_token();
             }
+            if (strlen($this->salt) < self::SALT_MIN_LENGTH
+                || strlen($this->salt) > self::SALT_MAX_LENGTH) {
+                break;
+            }
             $qv[0] = $this->salt;
             $qv[1] = Conf::$now;
             $result = Dbl::qe($this->dblink(), "insert into Capability (salt, timeCreated, capabilityType, contactId, paperId, timeUsed, useCount, timeInvalid, timeExpires, data, dataOverflow{$qf}) values ?v", [$qv]);
@@ -494,7 +551,10 @@ class TokenInfo {
     /** @param ?string $key
      * @return mixed */
     final function data($key = null) {
-        $this->_jdata = $this->_jdata ?? json_decode_object($this->data);
+        if ($this->_jdata === null) {
+            $j = $this->data ? json_decode($this->data) : null;
+            $this->_jdata = is_object($j) ? $j : null;
+        }
         return $key ? $this->_jdata->$key ?? null : $this->_jdata;
     }
 
@@ -517,7 +577,10 @@ class TokenInfo {
     /** @param ?string $key
      * @return mixed */
     final function input($key = null) {
-        $this->_jinputData = $this->_jinputData ?? json_decode_object($this->inputData);
+        if ($this->_jinputData === null) {
+            $j = $this->inputData ? json_decode($this->inputData) : null;
+            $this->_jinputData = is_object($j) ? $j : null;
+        }
         return $key ? $this->_jinputData->$key ?? null : $this->_jinputData;
     }
 
@@ -537,6 +600,26 @@ class TokenInfo {
         return $this;
     }
 
+    /** Atomically consume the single use this token is good for.
+     *
+     * Returns true for the first caller and false for every later one, even
+     * when the callers overlap: this is one conditional UPDATE, so the
+     * database picks the winner. Reading a flag and then writing it back
+     * cannot do that — two requests redeeming the same authorization code
+     * would both find it unconsumed and both succeed — and a second redemption
+     * is exactly the signal that the code reached someone it should not have.
+     * @return bool
+     * @suppress PhanAccessReadOnlyProperty */
+    final function consume() {
+        assert(!!$this->salt);
+        $result = Dbl::qe($this->dblink(), "update Capability set useCount=useCount+1 where salt=? and useCount=0", $this->salt);
+        if ($result->affected_rows <= 0) {
+            return false;
+        }
+        $this->useCount = 1;
+        return true;
+    }
+
     /** @param ?string $data
      * @return $this */
     final function change_data($data, $value = null) {
@@ -551,7 +634,7 @@ class TokenInfo {
      * @suppress PhanAccessReadOnlyProperty */
     final function assign_data($data) {
         if ($data !== null && !is_string($data)) {
-            $data = json_encode_db($data);
+            $data = json_encode_db($data, JSON_INVALID_UTF8_SUBSTITUTE);
         }
         /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
         $this->data = $data;

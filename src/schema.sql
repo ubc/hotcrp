@@ -55,14 +55,18 @@ DROP TABLE IF EXISTS `ContactCounter`;
 CREATE TABLE `ContactCounter` (
   `contactId` int NOT NULL,
   `apiCount` bigint NOT NULL DEFAULT 0,
-  `apiLimit` bigint NOT NULL DEFAULT 0,
-  `apiRefreshMtime` bigint NOT NULL DEFAULT 0,
-  `apiRefreshWindow` int NOT NULL DEFAULT 0,
-  `apiRefreshAmount` int NOT NULL DEFAULT 0,
-  `apiLimit2` bigint NOT NULL DEFAULT 0,
-  `apiRefreshMtime2` bigint NOT NULL DEFAULT 0,
-  `apiRefreshWindow2` int NOT NULL DEFAULT 0,
-  `apiRefreshAmount2` int NOT NULL DEFAULT 0,
+  `apiBase` bigint NOT NULL DEFAULT 0,
+  `apiBaseMtime` bigint NOT NULL DEFAULT 0,
+  `apiRefreshWindow` int DEFAULT NULL,
+  `apiRefreshAmount` int DEFAULT NULL,
+  `apiBase2` bigint NOT NULL DEFAULT 0,
+  `apiBaseMtime2` bigint NOT NULL DEFAULT 0,
+  `apiRefreshWindow2` int DEFAULT NULL,
+  `apiRefreshAmount2` int DEFAULT NULL,
+  `sensitiveSearchCount` bigint NOT NULL DEFAULT 0,
+  `sensitiveSearchFallbackCount` bigint NOT NULL DEFAULT 0,
+  `sensitiveSearchBase` bigint NOT NULL DEFAULT 0,
+  `sensitiveSearchBaseMtime` bigint NOT NULL DEFAULT 0,
   PRIMARY KEY (`contactId`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
@@ -278,7 +282,7 @@ CREATE TABLE `Paper` (
   `timeSubmittedReviewable` bigint NOT NULL DEFAULT 0,
   `timeAcceptNotified` bigint NOT NULL DEFAULT 0,
   `paperStorageId` int NOT NULL DEFAULT 0,
-  # `sha1` copied from PaperStorage to reduce joins
+  -- `sha1` copied from PaperStorage to reduce joins
   `sha1` varbinary(64) NOT NULL DEFAULT '',
   `finalPaperStorageId` int NOT NULL DEFAULT 0,
   `blind` tinyint NOT NULL DEFAULT 1,
@@ -286,8 +290,8 @@ CREATE TABLE `Paper` (
   `leadContactId` int NOT NULL DEFAULT 0,
   `shepherdContactId` int NOT NULL DEFAULT 0,
   `managerContactId` int NOT NULL DEFAULT 0,
-  `capVersion` int NOT NULL DEFAULT 0, # XXX obsolete
-  # next 3 fields copied from PaperStorage to reduce joins
+  `capVersion` int NOT NULL DEFAULT 0, -- XXX obsolete
+  -- next 3 fields copied from PaperStorage to reduce joins
   `size` bigint NOT NULL DEFAULT -1,
   `mimetype` varbinary(80) NOT NULL DEFAULT '',
   `timestamp` bigint NOT NULL DEFAULT 0,
@@ -381,7 +385,7 @@ CREATE TABLE `PaperReview` (
   `reviewBlind` tinyint NOT NULL,
   `reviewTime` bigint NOT NULL DEFAULT 0,
   `reviewModified` bigint NOT NULL DEFAULT 0,
-  `reviewSubmitted` bigint DEFAULT NULL,
+  `reviewSubmitted` bigint NOT NULL DEFAULT 0,
   `reviewAuthorSeen` bigint NOT NULL DEFAULT 0,
   `timeDisplayed` bigint NOT NULL DEFAULT 0,
   `timeApprovalRequested` bigint NOT NULL DEFAULT 0,
@@ -531,7 +535,7 @@ CREATE TABLE `PaperStorage` (
 DROP TABLE IF EXISTS `PaperTag`;
 CREATE TABLE `PaperTag` (
   `paperId` int NOT NULL,
-  `tag` varchar(80) NOT NULL,		# case-insensitive; see TAG_MAXLEN in init.php
+  `tag` varchar(80) NOT NULL,		-- case-insensitive; see TAG_MAXLEN in init.php
   `tagIndex` float NOT NULL DEFAULT 0,
   PRIMARY KEY (`paperId`,`tag`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -544,7 +548,7 @@ CREATE TABLE `PaperTag` (
 
 DROP TABLE IF EXISTS `PaperTagAnno`;
 CREATE TABLE `PaperTagAnno` (
-  `tag` varchar(80) NOT NULL,   # case-insensitive; see TAG_MAXLEN in init.php
+  `tag` varchar(80) NOT NULL,   -- case-insensitive; see TAG_MAXLEN in init.php
   `annoId` int NOT NULL,
   `tagIndex` float NOT NULL DEFAULT 0,
   `heading` varbinary(8192) DEFAULT NULL,
@@ -658,11 +662,27 @@ CREATE TABLE `TopicInterest` (
 
 
 
+--
+-- Table structure for table `WorkItem`
+--
+
+DROP TABLE IF EXISTS `WorkItem`;
+CREATE TABLE `WorkItem` (
+  `workType` varbinary(80) NOT NULL,
+  `workSubtype` varbinary(80) NOT NULL,
+  `work` longblob NOT NULL,
+  `touchedAt` bigint NOT NULL,
+  `dequeuedAt` bigint NOT NULL,
+  PRIMARY KEY (`workType`,`workSubtype`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+
+
 
 -- Initial settings
 -- (each setting must be on its own line for createdb.php/createdb.sh)
 insert into Settings (name, value, data) values
-  ('allowPaperOption', 324, null),   -- schema version
+  ('allowPaperOption', 334, null),   -- schema version
   ('setupPhase', 1, null),           -- initial user is chair
   ('no_papersub', 1, null),          -- no submissions yet
   ('sub_pcconf', 1, null),           -- collect PC conflicts, not collaborators

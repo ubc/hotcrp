@@ -9,13 +9,13 @@ class UploadAPI_Tester {
     /** @var Contact
      * @readonly */
     public $user;
-    /** @var S3Client
+    /** @var ?S3Client
      * @readonly */
     public $s3c;
+    /** @var int */
+    private $verbose = 0;
     /** @var ?string */
     private $old_docstore;
-    /** @var ?array{?string,?string,?string,?string} */
-    private $old_s3_opt;
     /** @var string */
     public $tmpdir;
 
@@ -55,19 +55,28 @@ In thee!
     function __construct(Conf $conf) {
         $this->conf = $conf;
         $this->user = $conf->root_user();
-        $this->s3c = S3_Tester::make_s3_client($conf, "UploadAPI");
-    }
-
-    function test_initialize_docstore() {
+        $this->s3c = S3_Tester::make_live($conf, "UploadAPI");
         $this->tmpdir = tempdir();
         $this->old_docstore = $this->conf->opt("docstore");
         $this->conf->set_opt("docstore", "{$this->tmpdir}%h%x");
+    }
+
+    function set_verbose($v) {
+        $this->verbose = $v;
+        if ($v > 1 && $this->s3c) {
+            $this->s3c->set_verbose(true);
+        }
+    }
+
+    function initialize() {
         if ($this->s3c) {
-            $this->old_s3_opt = S3_Tester::install_s3_options($this->conf, $this->s3c);
+            S3_Tester::install($this->conf, $this->s3c);
             $this->s3c->delete_many([
                 "doc/32f/sha2-32f67cf69678d2ac17ab979b926e18cb830b96cbdb46866362bd083c619c4d6c.txt",
                 "doc/054/sha2-054bfbd046e415952829e66856a1c7d6240d97ea2c08de3069d1578052b9b7a7.txt"
             ]);
+            // don't count the requests made by this setup
+            $this->s3c->reset_counts();
         }
         $this->conf->refresh_settings();
         xassert(!!$this->conf->docstore());
@@ -126,6 +135,401 @@ In thee!
         $expected_hash = "sha2-32f67cf69678d2ac17ab979b926e18cb830b96cbdb46866362bd083c619c4d6c";
         xassert_eqq($j->hash, $expected_hash);
         xassert(file_exists("{$this->tmpdir}{$expected_hash}.txt"));
+    }
+
+    /** Return a one-request upload of $content, merging $args into the request.
+     * @param string $content
+     * @param array<string,mixed> $args
+     * @return Qrequest */
+    private function make_upload_qreq($content, $args) {
+        return (new Qrequest("POST", $args + [
+                "start" => 1,
+                "size" => strlen($content),
+                "filename" => "where.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0,
+                "finish" => 1
+            ]))->approve_token()
+            ->set_file_content("blob", $content);
+    }
+
+    /** Readiness must not wait for S3.
+     *
+     * When a client uploads faster than parts reach S3, another request holds
+     * the S3 lock for the rest of the upload. The docstore copy does not depend
+     * on that, so the upload becomes usable as soon as it is assembled --
+     * `finish` reports the hash, `ready` is set, and the token converts into a
+     * document with the right content, all while the S3 side is still pending.
+     *
+     * Getting this wrong is silent: DocumentInfo::make_capability() returns
+     * null for an unready token, PaperOption::parse_qreq() then returns null,
+     * and PaperStatus treats the field as absent -- so the save succeeds with
+     * the document quietly missing. */
+    function test_ready_does_not_wait_for_s3() {
+        if (!$this->s3c) {
+            if (Xassert::verbosity() > 0) {
+                Xassert::will_print();
+                fwrite(STDERR, "  - UploadAPI: S3 not tested; set testS3Client and add \"UploadAPI\" to testS3Testers\n");
+            }
+            return;
+        }
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "size" => strlen(self::TEXT),
+                "filename" => "locked.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 0, 100));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $token = $j->token;
+
+        // Stand in for the request that is still pushing parts. flock() treats
+        // separate open file descriptions independently, so a second fopen() in
+        // this same process is denied exactly as another process would be.
+        $lockf = fopen($this->conf->docstore_tempdir() . $token . "-lock", "c");
+        xassert(!!$lockf);
+        xassert(flock($lockf, LOCK_EX | LOCK_NB));
+
+        $qreq = (new Qrequest("POST", [
+                "token" => $token,
+                "offset" => 100,
+                "finish" => 1
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 100));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), self::TEXT));
+        xassert_eqq($j->crc32 ?? null, sprintf("%08x", crc32(self::TEXT)));
+
+        // usable now, with S3 still outstanding
+        $tok = TokenInfo::find($token, $this->conf);
+        xassert_eqq($tok->data("ready"), true);
+        xassert_lt($tok->data("status"), 5);
+        $doc = DocumentInfo::make_capability($this->conf, $token);
+        xassert(!!$doc);
+        xassert_eqq($doc->content(), self::TEXT);
+
+        flock($lockf, LOCK_UN);
+        fclose($lockf);
+    }
+
+    /** During an incremental deployment a request running the previous code
+     * holds a lock recorded in the capability, which flock() cannot see. New
+     * code must not transfer parts alongside it -- two writers would PUT the
+     * same part number and record different ETags, failing
+     * CompleteMultipartUpload. The docstore side proceeds regardless. */
+    function test_defers_to_old_style_lock() {
+        if (!$this->s3c) {
+            return;
+        }
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "size" => strlen(self::TEXT),
+                "filename" => "oldlock.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 0, 100));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $token = $j->token;
+
+        // Re-fetch before each poke: TokenInfo::update() writes the whole data
+        // blob, so a stale object would roll back what the API just wrote.
+        $set_lock = function ($t) use ($token) {
+            TokenInfo::find($token, $this->conf)->change_data("s3_lock", $t)->update();
+        };
+        $set_lock(time());
+
+        $qreq = (new Qrequest("POST", [
+                "token" => $token, "offset" => 100, "finish" => 1
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 100));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+
+        // docstore done, S3 left alone
+        $tok = TokenInfo::find($token, $this->conf);
+        xassert_eqq($tok->data("ready"), true);
+        xassert_lt($tok->data("status"), 4);
+        xassert(!!DocumentInfo::make_capability($this->conf, $token));
+
+        // a stale lock is ignored, so a crashed old holder cannot strand S3
+        $set_lock(time() - Upload_API::OLD_LOCK_TIMEOUT - 60);
+        $j = call_api("=upload", $user,
+                      (new Qrequest("POST", ["token" => $token]))->approve_token(), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq(TokenInfo::find($token, $this->conf)->data("status"), 5);
+    }
+
+    function test_upload_doctype_by_name() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $saved_options = $this->conf->setting_data("options");
+        $this->conf->save_refresh_setting("options", 1, json_encode([
+            ["id" => 1, "name" => "Calories", "type" => "numeric", "order" => 1],
+            ["id" => 2, "name" => "Attachments", "type" => "attachments", "order" => 2]
+        ]));
+
+        try {
+            // `dt` accepts a document type name as well as a number
+            foreach ([["-1", DTYPE_FINAL],
+                      ["2", 2],
+                      ["final", DTYPE_FINAL],
+                      ["paper", DTYPE_SUBMISSION],
+                      ["submission", DTYPE_SUBMISSION],
+                      ["comment", DTYPE_COMMENT],
+                      ["Attachments", 2],
+                      ["attachments", 2]] as list($dt, $dtype)) {
+                $qreq = $this->make_upload_qreq(self::TEXT, ["dt" => $dt]);
+                $j = call_api("=upload", $user, $qreq, null);
+                xassert_eqq($j->ok, true, "dt={$dt}");
+                xassert_eqq($j->dt, $dtype, "dt={$dt}");
+            }
+
+            // fields that hold no document, and unknown names, are errors
+            foreach (["Calories", "-1000", "butterfly", "1000"] as $dt) {
+                $qreq = $this->make_upload_qreq(self::TEXT, ["dt" => $dt]);
+                $jr = call_api_result("=upload", $user, $qreq, null);
+                xassert_eqq($jr->status, 400, "dt={$dt}");
+                xassert_eqq($jr->message_item(0)->field ?? null, "dt", "dt={$dt}");
+            }
+        } finally {
+            if ($saved_options === null) {
+                $this->conf->save_refresh_setting("options", null);
+            } else {
+                $this->conf->save_refresh_setting("options", 1, $saved_options);
+            }
+        }
+    }
+
+    function test_upload_doctype_paper_and_temp() {
+        $user = $this->conf->checked_user_by_email("chair@_.com");
+        $saved_options = $this->conf->setting_data("options");
+        $this->conf->save_refresh_setting("options", 1, json_encode([
+            ["id" => 1, "name" => "Calories", "type" => "numeric", "order" => 1],
+            ["id" => 2, "name" => "Attachments", "type" => "attachments", "order" => 2],
+            ["id" => 3, "name" => "Logo", "type" => "document", "order" => 3, "nonpaper" => true]
+        ]));
+
+        try {
+            // `p` is recorded on the upload and scopes the `dt` lookup
+            $qreq = $this->make_upload_qreq(self::TEXT, ["p" => 1, "dt" => "Attachments"]);
+            $j = call_api("=upload", $user, $qreq, null);
+            xassert_eqq($j->ok, true);
+            $d = TokenInfo::find($j->token, $this->conf)->data();
+            xassert_eqq($d->pid, 1);
+            xassert_eqq($d->dtype, 2);
+            xassert_eqq($d->temp, false);
+
+            // a nonpaper field is found without `p`, and resolves `pid` to -2...
+            $qreq = $this->make_upload_qreq(self::TEXT, ["dt" => "Logo"]);
+            $j = call_api("=upload", $user, $qreq, null);
+            xassert_eqq($j->ok, true);
+            xassert_eqq($j->dt, 3);
+            $d = TokenInfo::find($j->token, $this->conf)->data();
+            xassert_eqq($d->pid, -2);
+
+            // ...while a paper field without `p` resolves `pid` to -1
+            $qreq = $this->make_upload_qreq(self::TEXT, ["dt" => "Attachments"]);
+            $j = call_api("=upload", $user, $qreq, null);
+            xassert_eqq($j->ok, true);
+            $d = TokenInfo::find($j->token, $this->conf)->data();
+            xassert_eqq($d->pid, 0);
+
+            // ...but not with one
+            $qreq = $this->make_upload_qreq(self::TEXT, ["p" => 1, "dt" => "Logo"]);
+            $jr = call_api_result("=upload", $user, $qreq, null);
+            xassert_eqq($jr->status, 400);
+            xassert_eqq($jr->message_item(0)->field ?? null, "dt");
+
+            // `p=0`, `p=-1`, and `p=new` mean the paper namespace with no paper
+            foreach (["0", "-1", "new"] as $pval) {
+                $qreq = $this->make_upload_qreq(self::TEXT, ["p" => $pval, "dt" => "Attachments"]);
+                $j = call_api("=upload", $user, $qreq, null);
+                xassert_eqq($j->ok, true, "p={$pval}");
+                xassert_eqq($j->dt, 2, "p={$pval}");
+                $d = TokenInfo::find($j->token, $this->conf)->data();
+                xassert_eqq($d->pid, 0, "p={$pval}");
+                xassert_eqq($d->temp, false, "p={$pval}");
+
+                $qreq = $this->make_upload_qreq(self::TEXT, ["p" => $pval, "dt" => "Logo"]);
+                $jr = call_api_result("=upload", $user, $qreq, null);
+                xassert_eqq($jr->status, 400, "p={$pval}");
+            }
+
+            // `p=-2` means the nonpaper namespace
+            $qreq = $this->make_upload_qreq(self::TEXT, ["p" => -2, "dt" => "Logo"]);
+            $j = call_api("=upload", $user, $qreq, null);
+            xassert_eqq($j->ok, true);
+            xassert_eqq($j->dt, 3);
+
+            $qreq = $this->make_upload_qreq(self::TEXT, ["p" => -2, "dt" => "Attachments"]);
+            $jr = call_api_result("=upload", $user, $qreq, null);
+            xassert_eqq($jr->status, 400);
+
+            // an unusable `p` is an error, not a silent no-paper upload
+            $qreq = $this->make_upload_qreq(self::TEXT, ["p" => 99999, "dt" => "Attachments"]);
+            $jr = call_api_result("=upload", $user, $qreq, null);
+            xassert_eqq($jr->status, 404);
+            $qreq = $this->make_upload_qreq(self::TEXT, ["p" => "butterfly"]);
+            $jr = call_api_result("=upload", $user, $qreq, null);
+            xassert($jr->status >= 400);
+
+            // `temp` defaults to true without `dt`, false with `dt`
+            $qreq = $this->make_upload_qreq(self::TEXT, []);
+            $j = call_api("=upload", $user, $qreq, null);
+            xassert_eqq($j->ok, true);
+            $d = TokenInfo::find($j->token, $this->conf)->data();
+            xassert_eqq($d->dtype, null);
+            xassert_eqq($d->temp, true);
+
+            // ...and an explicit `temp` wins either way
+            $qreq = $this->make_upload_qreq(self::TEXT, ["dt" => "final", "temp" => 1]);
+            $j = call_api("=upload", $user, $qreq, null);
+            xassert_eqq($j->ok, true);
+            $d = TokenInfo::find($j->token, $this->conf)->data();
+            xassert_eqq($d->dtype, DTYPE_FINAL);
+            xassert_eqq($d->temp, true);
+
+            $qreq = $this->make_upload_qreq(self::TEXT, ["temp" => 0]);
+            $j = call_api("=upload", $user, $qreq, null);
+            xassert_eqq($j->ok, true);
+            $d = TokenInfo::find($j->token, $this->conf)->data();
+            xassert_eqq($d->dtype, null);
+            xassert_eqq($d->temp, false);
+        } finally {
+            if ($saved_options === null) {
+                $this->conf->save_refresh_setting("options", null);
+            } else {
+                $this->conf->save_refresh_setting("options", 1, $saved_options);
+            }
+        }
+    }
+
+    /** Parse `hotcrapi.php upload` arguments.
+     * @param string ...$argv
+     * @return Upload_CLIBatch */
+    private function make_cli_upload(...$argv) {
+        $hcli = Hotcrapi_Batch::make_args(["hotcrapi.php", "--config", "none", "test"]);
+        $arg = $hcli->getopt->parse(["hotcrapi.php", "--config", "none", "upload", ...$argv]);
+        return Upload_CLIBatch::make_arg($hcli, $arg);
+    }
+
+    /** Upload $ucb's file through the API, as `Upload_CLIBatch::_execute` would.
+     * @return object */
+    private function call_cli_upload(Contact $user, Upload_CLIBatch $ucb) {
+        $args = [];
+        parse_str($ucb->start_query(), $args);
+        $args["offset"] = 0;
+        $args["finish"] = 1;
+        $qreq = (new Qrequest("POST", $args))->approve_token()
+            ->set_file_content("blob", stream_get_contents($ucb->stream));
+        return call_api("=upload", $user, $qreq, null);
+    }
+
+    function test_cli_upload_filename() {
+        $user = $this->conf->checked_user_by_email("chair@_.com");
+        $path = "{$this->tmpdir}wildnights.txt";
+        file_put_contents($path, self::TEXT);
+
+        // by default the exposed filename is the input file's basename
+        $j = $this->call_cli_upload($user, $this->make_cli_upload($path));
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->filename, "wildnights.txt");
+        $doc = DocumentInfo::make_capability($this->conf, $j->token);
+        xassert(!!$doc);
+        xassert_eqq($doc->filename, "wildnights.txt");
+
+        // `--filename` overrides it, all the way to the document
+        $j = $this->call_cli_upload($user, $this->make_cli_upload("-f", "other name.md", $path));
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->filename, "other name.md");
+        $doc = DocumentInfo::make_capability($this->conf, $j->token);
+        xassert(!!$doc);
+        xassert_eqq($doc->filename, "other name.md");
+
+        // a `--filename` with a directory is reduced to its last component
+        $j = $this->call_cli_upload($user, $this->make_cli_upload("--filename=dir/other.md", $path));
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->filename, "dir/other.md");
+        $doc = DocumentInfo::make_capability($this->conf, $j->token);
+        xassert(!!$doc);
+        xassert_eqq($doc->filename, "dir_other.md");
+
+        // `--no-filename` sends none, and the document gets the server default
+        $j = $this->call_cli_upload($user, $this->make_cli_upload("--no-filename", $path));
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->filename, "_upload_");
+        $doc = DocumentInfo::make_capability($this->conf, $j->token);
+        xassert(!!$doc);
+        xassert_eqq($doc->filename, "_upload_");
+
+        unlink($path);
+    }
+
+    /** Start and finish an upload, returning its token.
+     * @param array<string,mixed> $args
+     * @return string */
+    private function upload_token(Contact $user, $args) {
+        $qreq = $this->make_upload_qreq(self::TEXT, $args);
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        return $j->token;
+    }
+
+    /** @param int $paperId
+     * @return ?DocumentInfo */
+    private function request_document($token, $paperId) {
+        $qreq = new Qrequest("POST", ["sf_2:upload" => $token]);
+        return DocumentInfo::make_request($qreq, "sf_2", $paperId, 2, $this->conf);
+    }
+
+    function test_upload_token_paper_binding() {
+        $user = $this->conf->checked_user_by_email("chair@_.com");
+        $saved_options = $this->conf->setting_data("options");
+        $this->conf->save_refresh_setting("options", 1, json_encode([
+            ["id" => 2, "name" => "Attachments", "type" => "attachments", "order" => 2],
+            ["id" => 3, "name" => "Logo", "type" => "document", "order" => 3, "nonpaper" => true]
+        ]));
+
+        try {
+            // an upload with no paper is unbound: it attaches to any paper
+            $token = $this->upload_token($user, ["dt" => "Attachments"]);
+            $doc = $this->request_document($token, 0);
+            xassert(!!$doc);
+            xassert_eqq($doc->paperId, 0);
+            $doc = $this->request_document($token, 5);
+            xassert(!!$doc);
+            xassert_eqq($doc->paperId, 5);
+
+            // an upload for a paper attaches only to that paper
+            $token = $this->upload_token($user, ["p" => 1, "dt" => "Attachments"]);
+            $doc = $this->request_document($token, 1);
+            xassert(!!$doc);
+            xassert_eqq($doc->paperId, 1);
+            xassert_eqq($this->request_document($token, 2), null);
+            xassert_eqq($this->request_document($token, 0), null);
+
+            // a nonpaper upload attaches to no paper at all
+            $token = $this->upload_token($user, ["p" => -2, "dt" => "Logo"]);
+            xassert_eqq($this->request_document($token, 1), null);
+            xassert_eqq($this->request_document($token, 0), null);
+        } finally {
+            if ($saved_options === null) {
+                $this->conf->save_refresh_setting("options", null);
+            } else {
+                $this->conf->save_refresh_setting("options", 1, $saved_options);
+            }
+        }
     }
 
     function test_overlapping_upload() {
@@ -256,16 +660,22 @@ In thee!
     }
 
     function test_big_upload() {
-        $s = self::TEXT;
-        while (strlen($s) < 20971520) {
-            $s = $s . $s;
+        // content is TEXT doubled until it reaches 20MiB (40MB); chunks are
+        // generated as needed, so the whole string is never in memory
+        $tlen = strlen(self::TEXT);
+        $n = 1;
+        while ($tlen * $n < 20971520) {
+            $n *= 2;
         }
+        $size = $tlen * $n;
+        $chunksz = 1000000;
+        $period = str_repeat(self::TEXT, intdiv($chunksz, $tlen) + 2);
 
         $user = $this->conf->checked_user_by_email("marina@poema.ru");
         $qreq = (new Qrequest("POST", [
                 "start" => 1,
                 "temp" => 0,
-                "size" => strlen($s),
+                "size" => $size,
                 "filename" => "where.txt",
                 "mimetype" => "text/plain",
             ]))->approve_token();
@@ -276,19 +686,18 @@ In thee!
         $token = $j->token;
 
         $offset = 0;
-        $n = 1000000;
-        while ($offset < strlen($s)) {
+        while ($offset < $size) {
             $qreq = (new Qrequest("POST", [
                     "token" => $token,
                     "offset" => $offset,
                     "filename" => "where.txt"
                 ]))->approve_token()
-                ->set_file_content("blob", substr($s, $offset, $n));
+                ->set_file_content("blob", substr($period, $offset % $tlen, min($chunksz, $size - $offset)));
             $j = call_api("=upload", $user, $qreq, null);
             xassert_eqq($j->ok, true);
             xassert_eqq($j->token, $token);
-            xassert_eqq($j->ranges, [0, min($offset + $n, strlen($s))]);
-            $offset += $n;
+            xassert_eqq($j->ranges, [0, min($offset + $chunksz, $size)]);
+            $offset += $chunksz;
         }
 
         $qreq = (new Qrequest("POST", [
@@ -298,18 +707,982 @@ In thee!
         $j = call_api("=upload", $user, $qreq, null);
         xassert_eqq($j->ok, true);
         xassert_eqq($j->token, $token);
-        xassert_eqq($j->ranges, [0, strlen($s)]);
+        xassert_eqq($j->ranges, [0, $size]);
         $expected_hash = "sha2-054bfbd046e415952829e66856a1c7d6240d97ea2c08de3069d1578052b9b7a7";
         xassert_eqq($j->hash, $expected_hash);
         xassert(file_exists("{$this->tmpdir}{$expected_hash}.txt"));
     }
 
-    function test_cleanup_docstore() {
+    function test_s3_requests() {
+        if (!$this->s3c) {
+            if (Xassert::verbosity() > 0) {
+                Xassert::will_print();
+                fwrite(STDERR, "  - UploadAPI: S3 not tested; set testS3Client and add \"UploadAPI\" to testS3Testers\n");
+            }
+            return;
+        }
+        // the code under test must use this very client, or we counted nothing
+        xassert($this->conf->s3_client() === $this->s3c);
+        xassert_gt($this->s3c->request_count, 0);
+        xassert_eqq($this->s3c->incomplete_count, 0);
+        if ($this->verbose > 0) {
+            Xassert::will_print();
+            fwrite(STDERR, "  - UploadAPI: {$this->s3c->request_count} S3 requests, "
+                . "{$this->s3c->success_count} succeeded, {$this->s3c->fail_count} failed, "
+                . "{$this->s3c->incomplete_count} incomplete, "
+                . "{$this->s3c->retry_count} retries\n");
+        }
+    }
+
+    /** @param string $token
+     * @return list<string> */
+    private function upload_files($token) {
+        return glob($this->conf->docstore_tempdir() . $token . "*") ? : [];
+    }
+
+    /** @param string $filename
+     * @return string */
+    private function start_partial_upload(Contact $user, $filename) {
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "size" => strlen(self::TEXT),
+                "filename" => $filename,
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 0, 100));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        return $j->token;
+    }
+
+    /** The upload is torn down: its files are gone and its token is left
+     * invalid and expired for the token GC.
+     * @param string $token */
+    private function xassert_reclaimed($token) {
+        $tok = TokenInfo::find($token, $this->conf);
+        xassert(!!$tok);
+        xassert_eqq($tok->data("canceled"), true);
+        xassert(!$tok->is_active());
+        xassert_lt($tok->timeExpires, Conf::$now);
+        xassert_eqq($this->upload_files($token), []);
+    }
+
+    /** @param string $token
+     * @return Qrequest */
+    private function finish_upload_qreq($token) {
+        return (new Qrequest("POST", [
+                "token" => $token,
+                "offset" => 100,
+                "finish" => 1
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 100));
+    }
+
+    function test_cancel() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $token = $this->start_partial_upload($user, "canceled.txt");
+        xassert(!empty($this->upload_files($token)));
+
+        $qreq = (new Qrequest("POST", ["token" => $token, "cancel" => 1]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->token, $token);
+
+        $this->xassert_reclaimed($token);
+
+        // the token GC leaves no files behind
+        Upload_API::cleanup(TokenInfo::find($token, $this->conf));
+        xassert_eqq($this->upload_files($token), []);
+
+        // the upload cannot be resumed
+        $jr = call_api_result("=upload", $user, $this->finish_upload_qreq($token), null);
+        xassert_eqq($jr->status, 404);
+
+        // cancel is idempotent: the surviving token answers the same way
+        $qreq = (new Qrequest("POST", ["token" => $token, "cancel" => 1]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->token, $token);
+    }
+
+    /** Cancel must not delete an upload out from under a request that is
+     * transferring it: that request holds the lock, and deleting the S3
+     * multipart while it is mid-`multipart_create` strands one that nothing
+     * can find again. Instead cancel marks the upload and leaves the teardown
+     * to the lock holder, or to the token GC. */
+    function test_cancel_while_transferring() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $token = $this->start_partial_upload($user, "lockedcancel.txt");
+
+        // Stand in for the request that is still pushing parts; see
+        // test_ready_does_not_wait_for_s3 on why a second fopen() works.
+        $lockf = fopen($this->conf->docstore_tempdir() . $token . "-lock", "c");
+        xassert(!!$lockf);
+        xassert(flock($lockf, LOCK_EX | LOCK_NB));
+
+        $qreq = (new Qrequest("POST", ["token" => $token, "cancel" => 1]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+
+        // the token survives, marked and expired, so the transfer still finds it
+        $tok = TokenInfo::find($token, $this->conf);
+        xassert(!!$tok);
+        xassert_eqq($tok->data("canceled"), true);
+        xassert(!$tok->is_active());
+        xassert_lt($tok->timeExpires, Conf::$now);
+        xassert(!empty($this->upload_files($token)));
+
+        // and no further request can touch it
+        $jr = call_api_result("=upload", $user, $this->finish_upload_qreq($token), null);
+        xassert_eqq($jr->status, 404);
+
+        flock($lockf, LOCK_UN);
+        fclose($lockf);
+
+        // the token GC finishes the teardown
+        Upload_API::cleanup($tok);
+        xassert_eqq($this->upload_files($token), []);
+    }
+
+    /** A request already inside `transfer` must notice a concurrent cancel and
+     * tear the upload down rather than completing it. */
+    function test_cancel_stops_transfer() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $token = $this->start_partial_upload($user, "racedcancel.txt");
+
+        // Mark the upload the way a concurrent cancel would, but leave the
+        // token active, so this request gets past `exec` into `transfer`.
+        $tok = TokenInfo::find($token, $this->conf);
+        $tok->change_data("canceled", true)->update();
+
+        $jr = call_api_result("=upload", $user, $this->finish_upload_qreq($token), null);
+        xassert_eqq($jr->status, 400);
+        xassert_str_contains($jr->message_item(0)->message ?? "", "canceled");
+        $this->xassert_reclaimed($token);
+    }
+
+    /** A chunk request must notice a concurrent cancel too, rather than write
+     * more data into an upload that is being torn down. */
+    function test_cancel_stops_chunk() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $token = $this->start_partial_upload($user, "racedchunk.txt");
+
+        $tok = TokenInfo::find($token, $this->conf);
+        $tok->change_data("canceled", true)->update();
+
+        $qreq = (new Qrequest("POST", [
+                "token" => $token,
+                "offset" => 100
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 100, 50));
+        $jr = call_api_result("=upload", $user, $qreq, null);
+        xassert_eqq($jr->status, 400);
+        xassert_str_contains($jr->message_item(0)->message ?? "", "canceled");
+        $this->xassert_reclaimed($token);
+    }
+
+    /** @param string $token
+     * @param int $offset
+     * @param string $content
+     * @return Qrequest */
+    private function chunk_qreq($token, $offset, $content) {
+        return (new Qrequest("POST", [
+                "token" => $token,
+                "offset" => $offset
+            ]))->approve_token()
+            ->set_file_content("blob", $content);
+    }
+
+    /** Re-uploading a region must agree with what is already there. */
+    function test_overlap_mismatch() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $token = $this->start_partial_upload($user, "mismatch.txt");
+        // start_partial_upload sent TEXT[0,100)
+
+        // TEXT[50,150) with byte 60 corrupted
+        $bad = substr(self::TEXT, 50, 100);
+        $bad[10] = $bad[10] === "X" ? "Y" : "X";
+        $jr = call_api_result("=upload", $user, $this->chunk_qreq($token, 50, $bad), null);
+        xassert_eqq($jr->status, 400);
+        xassert_eqq(count($jr->content["message_list"] ?? []), 1);
+        xassert_str_contains($jr->message_item(0)->message ?? "", "mismatch");
+
+        // the upload is canceled, and says why on a later request
+        $this->xassert_reclaimed($token);
+        $tok = TokenInfo::find($token, $this->conf);
+        xassert_str_contains($tok->data("cancel_message") ?? "", "mismatch");
+    }
+
+    /** One chunk may span existing data, a gap, and more existing data. */
+    function test_overlap_spans_gap() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "size" => strlen(self::TEXT),
+                "filename" => "spansgap.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 0, 50));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 50]);
+        $token = $j->token;
+
+        // leave [50,100) missing
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, 100, substr(self::TEXT, 100, 50)), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 50, 100, 150]);
+
+        // [25,125): existing, then gap, then existing
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, 25, substr(self::TEXT, 25, 100)), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 150]);
+
+        // and the file still hashes correctly end to end
+        $qreq = (new Qrequest("POST", [
+                "token" => $token,
+                "offset" => 150,
+                "finish" => 1
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 150));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), self::TEXT));
+    }
+
+    /** A mismatch in the *second* overlapping region, after a write, must
+     * still be caught. */
+    function test_overlap_mismatch_after_gap() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "size" => strlen(self::TEXT),
+                "filename" => "mismatch2.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 0, 50));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $token = $j->token;
+
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, 100, substr(self::TEXT, 100, 50)), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 50, 100, 150]);
+
+        // [25,125), corrupted only at 110 -- inside the second existing range
+        $bad = substr(self::TEXT, 25, 100);
+        $bad[85] = $bad[85] === "X" ? "Y" : "X";
+        $jr = call_api_result("=upload", $user, $this->chunk_qreq($token, 25, $bad), null);
+        xassert_eqq($jr->status, 400);
+        xassert_str_contains($jr->message_item(0)->message ?? "", "mismatch");
+        $this->xassert_reclaimed($token);
+    }
+
+    /** An overlap that crosses a segment boundary must verify against the
+     * right file at the right position: segment 0 is [0,5MB), segment 1 is
+     * [5MB,13MB), and the loop re-seeks per segment. */
+    function test_overlap_crosses_segment_boundary() {
+        $s = self::TEXT;
+        while (strlen($s) < 6 << 20) {
+            $s = $s . $s;
+        }
+        $s = substr($s, 0, 6 << 20);
+        $seg = 5 << 20;
+
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "size" => strlen($s),
+                "filename" => "segcross.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", substr($s, 0, $seg + (1 << 19)));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, $seg + (1 << 19)]);
+        $token = $j->token;
+
+        // re-send a window straddling the boundary: all of it already present
+        $lo = $seg - (1 << 18);
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, $lo, substr($s, $lo, 1 << 19)), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, $seg + (1 << 19)]);
+
+        // same window, corrupted just past the boundary
+        $bad = substr($s, $lo, 1 << 19);
+        $bad[(1 << 18) + 17] = $bad[(1 << 18) + 17] === "X" ? "Y" : "X";
+        $jr = call_api_result("=upload", $user, $this->chunk_qreq($token, $lo, $bad), null);
+        xassert_eqq($jr->status, 400);
+        xassert_str_contains($jr->message_item(0)->message ?? "", "mismatch");
+        $this->xassert_reclaimed($token);
+    }
+
+    /** Three disjoint ranges, then one chunk covering all of them: `$ri` must
+     * advance twice, and every branch must make forward progress. */
+    function test_overlap_spans_two_gaps() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "size" => strlen(self::TEXT),
+                "filename" => "twogaps.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 0, 40));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $token = $j->token;
+
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, 80, substr(self::TEXT, 80, 40)), null);
+        xassert_eqq($j->ok, true);
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, 160, substr(self::TEXT, 160, 40)), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 40, 80, 120, 160, 200]);
+
+        // [20,180) crosses range/gap/range/gap/range
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, 20, substr(self::TEXT, 20, 160)), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 200]);
+
+        $qreq = (new Qrequest("POST", [
+                "token" => $token,
+                "offset" => 200,
+                "finish" => 1
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 200));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), self::TEXT));
+    }
+
+    /** Run an upload request that does not wait for the upload lock.
+     * @return JsonResult */
+    private function exec_nowait(Contact $user, Qrequest $qreq) {
+        $up = new Upload_API($this->conf);
+        $up->lock_timeout = 0;
+        return $up->exec($user, $qreq, null);
+    }
+
+    /** The number of gaps is limited, so `ranges` fits in the token’s data. */
+    function test_fragmented_upload() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $content = str_repeat(self::TEXT, 2);
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "filename" => "fragmented.txt",
+                "mimetype" => "text/plain"
+            ]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 0]);
+        $token = $j->token;
+
+        for ($i = 1; $i !== Upload_API::MAX_RANGES; ++$i) {
+            $j = call_api("=upload", $user, $this->chunk_qreq($token, 2 * $i, $content[2 * $i]), null);
+            xassert_eqq($j->ok, true);
+        }
+        xassert_eqq(count($j->ranges), 2 * Upload_API::MAX_RANGES);
+        $ranges = $j->ranges;
+
+        // another fragment is refused and not recorded
+        $jr = call_api_result("=upload", $user, $this->chunk_qreq($token, 2 * $i, $content[2 * $i]), null);
+        xassert_eqq($jr->status, 400);
+        xassert_str_contains($jr->message_item(0)->message ?? "", "fragmented");
+        xassert_eqq($jr->content["ranges"], $ranges);
+        xassert_eqq(TokenInfo::find($token, $this->conf)->data("ranges"), $ranges);
+
+        // filling the gaps is not, and the file hashes correctly
+        $qreq = (new Qrequest("POST", [
+                "token" => $token,
+                "offset" => 0,
+                "finish" => 1
+            ]))->approve_token()
+            ->set_file_content("blob", $content);
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, strlen($content)]);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), $content));
+    }
+
+    /** A chunk must not extend an upload past a size fixed after the upload
+     * started. */
+    function test_chunk_past_fixed_size() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "filename" => "latesize.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 0, 100));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert(!isset($j->size));
+        $token = $j->token;
+        $segf = $this->conf->docstore_tempdir() . $token;
+
+        $qreq = (new Qrequest("POST", ["token" => $token, "size" => 150]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->size, 150);
+
+        $jr = call_api_result("=upload", $user, $this->chunk_qreq($token, 100, substr(self::TEXT, 100, 100)), null);
+        xassert_eqq($jr->status, 400);
+        xassert_str_contains($jr->message_item(0)->message ?? "", "past claimed upload size");
+        clearstatcache();
+        xassert_eqq(filesize($segf), 100);
+
+        $qreq = $this->chunk_qreq($token, 100, substr(self::TEXT, 100, 50))->set_req("finish", "1");
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), substr(self::TEXT, 0, 150)));
+    }
+
+    /** A size fixed after the upload started must cover the data already
+     * received and respect the maximum. */
+    function test_late_size_covers_uploaded_data() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "filename" => "latesize2.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 0, 100));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $token = $j->token;
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, 150, substr(self::TEXT, 150, 50)), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 100, 150, 200]);
+        xassert(!isset($j->size));
+
+        foreach ([175, Upload_API::MAX_SIZE + 1] as $size) {
+            $qreq = (new Qrequest("POST", ["token" => $token, "size" => $size]))->approve_token();
+            $jr = call_api_result("=upload", $user, $qreq, null);
+            xassert_eqq($jr->status, 400);
+            xassert_eqq($jr->message_item(0)->field ?? null, "size");
+            xassert(!isset($jr->content["size"]));
+            xassert(!isset($jr->content["hash"]));
+            xassert_eqq(TokenInfo::find($token, $this->conf)->data("size"), null);
+        }
+
+        $qreq = (new Qrequest("POST", ["token" => $token, "size" => 200]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->size, 200);
+
+        $qreq = $this->chunk_qreq($token, 100, substr(self::TEXT, 100, 50))->set_req("finish", "1");
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), substr(self::TEXT, 0, 200)));
+    }
+
+    /** The hash advances over the data recorded contiguously from offset
+     * 0, read back from the segment files after each request. */
+    function test_hash_advances_in_transfer() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "filename" => "advance.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 0, 100));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $token = $j->token;
+        xassert_eqq(TokenInfo::find($token, $this->conf)->data("hashpos"), 100);
+
+        // a chunk beyond a hole is recorded but not hashed
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, 200, substr(self::TEXT, 200, 100)), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 100, 200, 300]);
+        xassert_eqq(TokenInfo::find($token, $this->conf)->data("hashpos"), 100);
+
+        // filling the hole hashes it and the chunk beyond
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, 100, substr(self::TEXT, 100, 100)), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 300]);
+        xassert(!isset($j->hash));
+        xassert_eqq(TokenInfo::find($token, $this->conf)->data("hashpos"), 300);
+
+        $qreq = (new Qrequest("POST", ["token" => $token, "size" => 300, "finish" => 1]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), substr(self::TEXT, 0, 300)));
+        xassert_eqq($this->upload_files($token), []);
+    }
+
+    /** Writing a chunk does not hash it; the transfer step that follows
+     * the reply does. */
+    function test_hash_runs_in_transfer() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $token = $this->start_partial_upload($user, "tailhash.txt");
+        xassert_eqq(TokenInfo::find($token, $this->conf)->data("hashpos"), 100);
+
+        // the request path alone records the chunk but does not hash it
+        $up = new Upload_API($this->conf);
+        $up->no_transfer = true;
+        $jr = $up->exec($user, $this->chunk_qreq($token, 100, substr(self::TEXT, 100, 100)), null);
+        xassert_eqq($jr->status, 200);
+        xassert_eqq($jr->content["ranges"], [0, 200]);
+        $tokd = TokenInfo::find($token, $this->conf)->data();
+        xassert_eqq($tokd->ranges, [0, 200]);
+        xassert_eqq($tokd->hashpos, 100);
+
+        // the next request’s transfer step hashes the recorded data
+        $qreq = (new Qrequest("POST", ["token" => $token]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert(!isset($j->hash));
+        xassert_eqq(TokenInfo::find($token, $this->conf)->data("hashpos"), 200);
+
+        $j = call_api("=upload", $user, $this->finish_upload_qreq($token), null);
+        xassert_eqq($j->ok, true);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), self::TEXT));
+    }
+
+    /** The saved hash state covers exactly the bytes read, so hashing
+     * resumes correctly after a segment file could not be read in full. */
+    function test_hash_short_read_leaves_state() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $seg0 = str_repeat(self::TEXT, intdiv(5 << 20, strlen(self::TEXT)) + 1);
+        $seg0 = substr($seg0, 0, 5 << 20);
+        $seg1 = substr(self::TEXT, 0, 200);
+        $content = $seg0 . $seg1;
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "filename" => "shortread.txt",
+                "mimetype" => "text/plain"
+            ]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $token = $j->token;
+        foreach ([[0, $seg0], [5 << 20, $seg1]] as $chunk) {
+            $up = new Upload_API($this->conf);
+            $up->no_transfer = true;
+            $jr = $up->exec($user, $this->chunk_qreq($token, $chunk[0], $chunk[1]), null);
+            xassert_eqq($jr->status, 200);
+        }
+        $tokd = TokenInfo::find($token, $this->conf)->data();
+        xassert_eqq($tokd->ranges, [0, strlen($content)]);
+        xassert_eqq($tokd->hashpos, 0);
+
+        // the second segment file is cut short: the hash covers exactly the
+        // bytes that could be read
+        $segf1 = $this->conf->docstore_tempdir() . $token . "-1";
+        file_put_contents($segf1, substr($seg1, 0, 100));
+        $qreq = (new Qrequest("POST", ["token" => $token]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq(TokenInfo::find($token, $this->conf)->data("hashpos"), (5 << 20) + 100);
+
+        // once the file is whole again, hashing resumes
+        file_put_contents($segf1, $seg1);
+        $qreq = (new Qrequest("POST", ["token" => $token, "size" => strlen($content), "finish" => 1]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), $content));
+    }
+
+    /** Finishing an upload whose content is already stored keeps the
+     * stored file, and replaces it only if it is damaged. */
+    function test_existing_docstore_file_kept() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $j = call_api("=upload", $user, $this->make_upload_qreq(self::TEXT, ["temp" => 0]), null);
+        xassert_eqq($j->ok, true);
+        $finalfn = TokenInfo::find($j->token, $this->conf)->data("content_file");
+        xassert_eqq(file_get_contents($finalfn), self::TEXT);
+        touch($finalfn, Conf::$now - 1000);
+        clearstatcache();
+        $ino = fileinode($finalfn);
+        $mtime = filemtime($finalfn);
+
+        // the same content again: the stored file is untouched
+        $j = call_api("=upload", $user, $this->make_upload_qreq(self::TEXT, ["temp" => 0]), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq(TokenInfo::find($j->token, $this->conf)->data("content_file"), $finalfn);
+        clearstatcache();
+        xassert_eqq(fileinode($finalfn), $ino);
+        xassert_eqq(filemtime($finalfn), $mtime);
+        xassert_eqq($this->upload_files($j->token), []);
+
+        // a damaged stored file of the right size is replaced
+        file_put_contents($finalfn, strrev(self::TEXT));
+        $j = call_api("=upload", $user, $this->make_upload_qreq(self::TEXT, ["temp" => 0]), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq(TokenInfo::find($j->token, $this->conf)->data("content_file"), $finalfn);
+        xassert_eqq(file_get_contents($finalfn), self::TEXT);
+        xassert_eqq($this->upload_files($j->token), []);
+
+        // so is a truncated one
+        file_put_contents($finalfn, substr(self::TEXT, 0, 50));
+        $j = call_api("=upload", $user, $this->make_upload_qreq(self::TEXT, ["temp" => 0]), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq(file_get_contents($finalfn), self::TEXT);
+        xassert_eqq($this->upload_files($j->token), []);
+    }
+
+    /** An upload begun before the xxh64 digest was recorded still finishes
+     * and still keeps a matching stored file. */
+    function test_old_token_without_xxh64() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $j = call_api("=upload", $user, $this->make_upload_qreq(self::TEXT, ["temp" => 0]), null);
+        xassert_eqq($j->ok, true);
+        $finalfn = TokenInfo::find($j->token, $this->conf)->data("content_file");
+        clearstatcache();
+        $ino = fileinode($finalfn);
+
+        $token = $this->start_partial_upload($user, "oldtoken.txt");
+        $tok = TokenInfo::find($token, $this->conf);
+        xassert($tok->data("xxh64ctx") !== null);
+        $tok->change_data("xxh64ctx", null)->update();
+
+        $j = call_api("=upload", $user, $this->finish_upload_qreq($token), null);
+        xassert_eqq($j->ok, true);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), self::TEXT));
+        $tokd = TokenInfo::find($token, $this->conf)->data();
+        xassert(!isset($tokd->xxh64));
+        xassert_eqq($tokd->content_file, $finalfn);
+        clearstatcache();
+        xassert_eqq(fileinode($finalfn), $ino);
+        xassert_eqq(file_get_contents($finalfn), self::TEXT);
+        xassert_eqq($this->upload_files($token), []);
+    }
+
+    /** Replacing a damaged docstore file also replaces the S3 object,
+     * even though S3 reports one of the right size. */
+    function test_replaced_docstore_file_replaces_s3() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        S3_Tester::install($this->conf, S3_Tester::make_offline());
+        $this->conf->refresh_settings();
+        // S3 claims to hold every object at the upload’s size
+        Offline_S3Result::$responder = function ($method, $skey) {
+            return $method === "HEAD"
+                ? [200, ["content-length" => (string) strlen(UploadAPI_Tester::TEXT)], ""]
+                : null;
+        };
+        $methods = function () {
+            return array_map(function ($r) { return $r[0]; }, Offline_S3Result::$requests);
+        };
+
+        Offline_S3Result::$requests = [];
+        $j = call_api("=upload", $user, $this->make_upload_qreq(self::TEXT, ["temp" => 0]), null);
+        xassert_eqq($j->ok, true);
+        $tokd = TokenInfo::find($j->token, $this->conf)->data();
+        xassert_eqq($tokd->status, 5);
+        xassert(!isset($tokd->replaced));
+        xassert_eqq($methods(), ["HEAD"]);
+        $finalfn = $tokd->content_file;
+
+        // an intact docstore file: S3 is trusted
+        Offline_S3Result::$requests = [];
+        $j = call_api("=upload", $user, $this->make_upload_qreq(self::TEXT, ["temp" => 0]), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($methods(), ["HEAD"]);
+
+        // a damaged docstore file: the S3 object is written again
+        file_put_contents($finalfn, strrev(self::TEXT));
+        Offline_S3Result::$requests = [];
+        $j = call_api("=upload", $user, $this->make_upload_qreq(self::TEXT, ["temp" => 0]), null);
+        xassert_eqq($j->ok, true);
+        $tokd = TokenInfo::find($j->token, $this->conf)->data();
+        xassert_eqq($tokd->status, 5);
+        xassert_eqq($tokd->replaced ?? null, true);
+        xassert_eqq(file_get_contents($finalfn), self::TEXT);
+        xassert_eqq($methods(), ["PUT"]);
+        xassert_eqq(Offline_S3Result::$requests[0][1], DocumentInfo::s3_key_for($tokd->hash, $tokd->mimetype));
+        xassert_eqq($this->upload_files($j->token), []);
+
+        Offline_S3Result::$responder = null;
+        if ($this->s3c) {
+            S3_Tester::install($this->conf, $this->s3c);
+        } else {
+            S3_Tester::install($this->conf);
+        }
+        $this->conf->refresh_settings();
+    }
+
+    /** Hashing and assembly read exactly `size` bytes, whatever the
+     * segment files contain past the recorded data. */
+    function test_assembly_bounded_by_size() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "filename" => "bounded.txt",
+                "mimetype" => "text/plain",
+                "offset" => 100
+            ]))->approve_token()
+            ->set_file_content("blob", substr(self::TEXT, 100, 100));
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $token = $j->token;
+        // both chunks are hashed once they are contiguous from offset 0
+        $j = call_api("=upload", $user, $this->chunk_qreq($token, 0, substr(self::TEXT, 0, 100)), null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, 200]);
+        xassert(!isset($j->hash));
+        xassert_eqq(TokenInfo::find($token, $this->conf)->data("hashpos"), 200);
+
+        $segf = $this->conf->docstore_tempdir() . $token;
+        file_put_contents($segf, str_repeat("JUNK", 100), FILE_APPEND);
+
+        $qreq = (new Qrequest("POST", ["token" => $token, "size" => 200, "finish" => 1]))->approve_token();
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($j->hash ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), substr(self::TEXT, 0, 200)));
+        $finalfn = TokenInfo::find($token, $this->conf)->data("content_file");
+        xassert_eqq(file_get_contents($finalfn), substr(self::TEXT, 0, 200));
+        xassert_eqq($this->upload_files($token), []);
+    }
+
+    /** A token that is not shaped like an upload token is refused before
+     * the request locks on it. */
+    function test_malformed_token() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        foreach (["hcue_" . str_repeat("a", 32),
+                  "hcup" . str_repeat("a", 33),
+                  "hcup", "hcupab-cd", "HCUPabcd"] as $token) {
+            $qreq = (new Qrequest("POST", ["token" => $token]))->approve_token();
+            $jr = call_api_result("=upload", $user, $qreq, null);
+            xassert_eqq($jr->status, 404);
+        }
+    }
+
+    /** While another connection holds the upload lock, requests on the
+     * upload are refused and completion is left to the holder. */
+    function test_token_lock_excludes() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $qreq = (new Qrequest("POST", [
+                "start" => 1,
+                "temp" => 0,
+                "filename" => "locked.txt",
+                "mimetype" => "text/plain",
+                "offset" => 0
+            ]))->approve_token()
+            ->set_file_content("blob", self::TEXT);
+        $j = call_api("=upload", $user, $qreq, null);
+        xassert_eqq($j->ok, true);
+        xassert_eqq($j->ranges, [0, strlen(self::TEXT)]);
+        xassert(!isset($j->hash));
+        $token = $j->token;
+        // all data present and the size known, so the next request would
+        // complete the upload
+        TokenInfo::find($token, $this->conf)->change_data("size", strlen(self::TEXT))->update();
+
+        $db2 = $this->conf->dbparams->connect();
+        xassert(!!$db2);
+        xassert_eqq(Dbl::fetch_ivalue($db2, "select get_lock(?,0)", $token), 1);
+
+        $jr = $this->exec_nowait($user, $this->chunk_qreq($token, 0, str_repeat("X", 10)));
+        xassert_eqq($jr->status, 409);
+        xassert_eqq(file_get_contents($this->conf->docstore_tempdir() . $token), self::TEXT);
+
+        $jr = $this->exec_nowait($user, (new Qrequest("POST", ["token" => $token]))->approve_token());
+        xassert_eqq($jr->status, 409);
+        xassert_eqq($jr->content["token"] ?? null, $token);
+        xassert_eqq(TokenInfo::find($token, $this->conf)->data("status"), 0);
+
+        xassert_eqq(Dbl::fetch_ivalue($db2, "select release_lock(?)", $token), 1);
+        $db2->close();
+        $jr = $this->exec_nowait($user, (new Qrequest("POST", ["token" => $token]))->approve_token());
+        xassert_eqq($jr->status, 200);
+        $ha = new HashAnalysis($this->conf->content_hash_algorithm());
+        xassert_eqq($jr->content["hash"] ?? null,
+                    $ha->prefix() . hash($this->conf->content_hash_algorithm(), self::TEXT));
+    }
+
+    /** The token GC skips an expired upload whose lock is busy, but keeps
+     * its token so a later sweep can delete its files. */
+    function test_cleanup_defers_locked_upload() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $token = $this->start_partial_upload($user, "lockedgc.txt");
+        TokenInfo::find($token, $this->conf)->set_expires_at(Conf::$now - 1)->update();
+        $clean_tokens = new ReflectionMethod($this->conf, "clean_tokens");
+
+        $db2 = $this->conf->dbparams->connect();
+        xassert(!!$db2);
+        xassert_eqq(Dbl::fetch_ivalue($db2, "select get_lock(?,0)", $token), 1);
+        $clean_tokens->invoke($this->conf);
+        $tok = TokenInfo::find($token, $this->conf);
+        xassert(!!$tok);
+        xassert_gt($tok->timeExpires, Conf::$now);
+        xassert(!empty($this->upload_files($token)));
+        xassert_eqq(Dbl::fetch_ivalue($db2, "select release_lock(?)", $token), 1);
+        $db2->close();
+
+        $tok->set_expires_at(Conf::$now - 1)->update();
+        $clean_tokens->invoke($this->conf);
+        xassert(!TokenInfo::find($token, $this->conf));
+        xassert_eqq($this->upload_files($token), []);
+    }
+
+    /** Cancellation waits for the upload lock too. */
+    function test_cancel_waits_for_writer() {
+        $user = $this->conf->checked_user_by_email("marina@poema.ru");
+        $token = $this->start_partial_upload($user, "lockedcancel.txt");
+
+        $db2 = $this->conf->dbparams->connect();
+        xassert(!!$db2);
+        xassert_eqq(Dbl::fetch_ivalue($db2, "select get_lock(?,0)", $token), 1);
+
+        $qreq = (new Qrequest("POST", ["token" => $token, "cancel" => 1]))->approve_token();
+        $jr = $this->exec_nowait($user, $qreq);
+        xassert_eqq($jr->status, 409);
+        xassert(!empty($this->upload_files($token)));
+        xassert(TokenInfo::find($token, $this->conf)->is_active());
+
+        xassert_eqq(Dbl::fetch_ivalue($db2, "select release_lock(?)", $token), 1);
+        $db2->close();
+        $qreq = (new Qrequest("POST", ["token" => $token, "cancel" => 1]))->approve_token();
+        $jr = $this->exec_nowait($user, $qreq);
+        xassert_eqq($jr->status, 200);
+        $this->xassert_reclaimed($token);
+    }
+
+    function test_cleanup_releases_s3_state() {
+        // until the multipart upload completes (status 4), cleanup aborts
+        // it; after, it deletes the assembled temporary object
+        S3_Tester::install($this->conf, S3_Tester::make_offline());
+        $this->conf->refresh_settings();
+        $got = [];
+        foreach ([1, 2, 3, 4, 5] as $status) {
+            $tok = (new TokenInfo($this->conf, TokenInfo::UPLOAD))
+                ->set_salt("hcupcleanup{$status}")
+                ->assign_data(["status" => $status, "s3_uploadid" => "UPID{$status}", "temp" => false]);
+            $tok->insert();
+            xassert($tok->stored());
+            Offline_S3Result::$requests = [];
+            Upload_API::cleanup($tok);
+            $got[$status] = array_map(function ($r) { return "{$r[0]} {$r[1]}"; }, Offline_S3Result::$requests);
+            $tok->delete();
+        }
+        $key = function ($status) {
+            return "upload/hcupcleanup{$status}" . ($this->conf->confid ? "-{$this->conf->confid}" : "");
+        };
+        foreach ([1, 2, 3] as $status) {
+            xassert_eqq($got[$status], ["DELETE " . $key($status) . "?uploadId=UPID{$status}"]);
+        }
+        foreach ([4, 5] as $status) {
+            xassert_eqq($got[$status], ["DELETE " . $key($status)]);
+        }
+
+        if ($this->s3c) {
+            S3_Tester::install($this->conf, $this->s3c);
+        } else {
+            S3_Tester::install($this->conf);
+        }
+        $this->conf->refresh_settings();
+    }
+
+    function test_cancel_s3_teardown_deferred_offline() {
+        // when the site processes work offline, upload teardown queues the
+        // S3 abort/delete rather than doing it inline
+        S3_Tester::install($this->conf, S3_Tester::make_offline());
+        $this->conf->set_opt("s3ProcessWork", true);
+        $this->conf->qe("delete from WorkItem");
+        $this->conf->refresh_settings();
+
+        $tok = (new TokenInfo($this->conf, TokenInfo::UPLOAD))
+            ->set_salt("hcupdeferred")
+            ->assign_data(["status" => 2, "s3_uploadid" => "UPIDdeferred", "temp" => false]);
+        $tok->insert();
+        xassert($tok->stored());
+        Offline_S3Result::$requests = [];
+
+        Upload_API::cleanup($tok);
+
+        // nothing went to S3 inline; a work item carries the abort
+        xassert_eqq(Offline_S3Result::$requests, []);
+        $result = $this->conf->qe("select * from WorkItem where workType=?", "s3cancel");
+        $wi = WorkItem::fetch($result, $this->conf->dblink);
+        $result->close();
+        xassert(!!$wi);
+        $w = $wi->current();
+        $suffix = $this->conf->confid ? "-{$this->conf->confid}" : "";
+        $expected_key = "upload/hcupdeferred{$suffix}?uploadId=UPIDdeferred";
+        xassert_eqq($w->key ?? null, $expected_key);
+
+        // draining the queue issues the DELETE
+        $pw = new ProcessWork_Batch($this->conf, ["quiet" => true]);
+        xassert_eqq($pw->run(), 0);
+        $reqs = Offline_S3Result::$requests;
+        xassert_eqq(count($reqs), 1);
+        xassert_eqq($reqs[0][0], "DELETE");
+        xassert_eqq($reqs[0][1], $expected_key);
+
+        $this->conf->qe("delete from WorkItem");
+        $this->conf->set_opt("s3ProcessWork", null);
+        Offline_S3Result::$responder = null;
+        if ($this->s3c) {
+            S3_Tester::install($this->conf, $this->s3c);
+        } else {
+            S3_Tester::install($this->conf);
+        }
+        $this->conf->refresh_settings();
+    }
+
+    function finalize() {
         rm_rf_tempdir($this->tmpdir);
         $this->conf->set_opt("docstore", $this->old_docstore);
         if ($this->s3c) {
-            S3_Tester::install_s3_options($this->conf, $this->old_s3_opt);
+            S3_Tester::install($this->conf);
         }
         $this->conf->refresh_settings();
+    }
+
+    function test_form_upload_errors_reported() {
+        $qreq = TestQreq::user_get($this->user, [], new MemoryQsession("uploaderrs", []))
+            ->set_annex("upload_errors", [MessageItem::error("<0>Uploaded file too large")]);
+        $old_main = Qrequest::$main_request;
+        Qrequest::set_main_request($qreq);
+        $this->conf->claim_saved_messages();
+        $this->conf->saved_messages_begin();
+        ob_start();
+        try {
+            $this->conf->print_body_entry($qreq, "Upload", "upload", ["save_messages" => true]);
+        } finally {
+            ob_end_clean();
+            $this->conf->_header_printed = false;
+            Qrequest::$main_request = $old_main;
+        }
+        $text = json_encode($this->conf->claim_saved_messages());
+        xassert_str_contains($text, "Uploaded file too large");
     }
 }

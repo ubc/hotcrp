@@ -35,7 +35,7 @@ class Log_Page {
         $x = [];
         foreach ($this->conf->options()->form_fields() as $opt) {
             if ($opt->is_document())
-                $x[] = $opt->json_key();
+                $x[] = preg_quote($opt->json_key(), "/");
         }
         $this->document_regexp = join("|", $x);
         $this->unix_timestamp = $qreq->time === "u";
@@ -43,12 +43,12 @@ class Log_Page {
     }
 
 
-    private function parse_papers(LogEntryGenerator $leg) {
+    private function parse_papers() {
         $query = $this->qreq->p ?? "";
         if (trim($query) === "") {
             return;
         }
-        $search = new PaperSearch($this->viewer, ["t" => "all", "q" => $query]);
+        $search = new PaperSearch($this->viewer, ["t" => "all", "q" => $query, "tsoft" => true]);
         $search->set_allow_deleted(true);
         $pids = $search->paper_ids();
         if ($search->has_problem()) {
@@ -58,10 +58,7 @@ class Log_Page {
         } else if (empty($pids)) {
             $this->ms->warning_at("p", "<0>No papers match that search");
         }
-        if (!empty($pids)) {
-            $this->include_pids = array_flip($pids);
-        }
-        $leg->set_paper_ids($pids);
+        $this->include_pids = array_flip($pids);
     }
 
     private function add_user_clause(LogEntryGenerator $leg) {
@@ -72,7 +69,7 @@ class Log_Page {
         $ids = [];
         $accts = new SearchParser($query);
         while (($word = $accts->shift_balanced_parens()) !== "") {
-            $flags = ContactSearch::F_TAG | ContactSearch::F_USER | ContactSearch::F_ALLOW_DELETED;
+            $flags = ContactSearch::F_TAG | ContactSearch::F_USER | ContactSearch::F_ALLOW_DELETED | ContactSearch::F_USERID;
             if (substr($word, 0, 1) === "\"") {
                 $flags |= ContactSearch::F_QUOTED;
                 $word = preg_replace('/(?:\A"|"\z)/', "", $word);
@@ -118,7 +115,7 @@ class Log_Page {
     /** @param int $count
      * @return LogEntryGenerator */
     private function make_generator($count) {
-        $leg = new LogEntryGenerator($this->conf, $count);
+        $leg = new LogEntryGenerator($this->viewer, $count);
 
         $this->exclude_pids = $this->viewer->hidden_papers ? : [];
         if ($this->viewer->privChair && $this->conf->has_any_manager()) {
@@ -130,15 +127,15 @@ class Log_Page {
         }
 
         if (!$this->viewer->privChair) {
-            $good_pids = [];
-            foreach ($this->viewer->paper_set($this->conf->check_any_admin_tracks($this->viewer) ? [] : ["myManaged" => true]) as $prow) {
-                if ($this->viewer->allow_admin($prow)) {
-                    $good_pids[$prow->paperId] = true;
-                }
-            }
-            $leg->set_filter(new LogEntryFilter($this->viewer, $good_pids, true, $this->include_pids));
+            $rowset = $this->viewer->paper_set($this->conf->check_any_admin_tracks($this->viewer) ? [] : ["myManaged" => true]);
+            $rowset->apply_filter([$this->viewer, "allow_admin"]);
+            $filter = LogEntryFilter::make_nonchair($this->viewer, $rowset, $this->include_pids);
+            $leg->set_filter($filter);
         } else if (!$this->qreq->forceShow && !empty($this->exclude_pids)) {
             $leg->set_filter(new LogEntryFilter($this->viewer, $this->exclude_pids, false, $this->include_pids));
+        }
+        if ($this->include_pids !== null) {
+            $leg->set_paper_ids(array_keys($this->include_pids));
         }
 
         return $leg;
@@ -215,7 +212,7 @@ class Log_Page {
         }
 
         echo $this->conf->hotform("log", null, ["method" => "get", "id" => "f-search", "class" => "mx-auto clearfix"]);
-        if ($this->qreq->forceShow) {
+        if (friendly_boolean($this->qreq->forceShow)) {
             echo Ht::hidden("forceShow", 1);
         }
         echo '<div class="d-inline-block" style="padding-right:2rem">',
@@ -251,14 +248,14 @@ class Log_Page {
                 if ($this->qreq[$x])
                     $urlp[$x] = $this->qreq[$x];
             }
-            $leg->set_log_url_base($this->conf->hoturl_raw("log", $urlp));
+            $leg->set_log_url_base($this->conf->hoturl("log", $urlp));
             echo "<table class=\"lognav\"><tr><td><div class=\"lognavdr\">";
             if ($page > 1) {
                 echo $leg->page_link_html(1, "<strong>Newest</strong>"), " &nbsp;|&nbsp;&nbsp;";
             }
             echo "</div></td><td><div class=\"lognavxr\">";
             if ($page > 1) {
-                echo $leg->page_link_html($page - 1, "<strong>" . Icons::ui_linkarrow(3) . "Newer</strong>");
+                echo $leg->page_link_html($page - 1, "&lt; <strong class=\"ul\">Newer</strong>", "noul");
             }
             echo "</div></td><td><div class=\"lognavdr\">";
             if ($page - $this->nlinks > 1) {
@@ -276,7 +273,7 @@ class Log_Page {
             }
             echo "</div></td><td><div class=\"lognavx\">";
             if ($leg->has_page($page + 1)) {
-                echo $leg->page_link_html($page + 1, "<strong>Older" . Icons::ui_linkarrow(1) . "</strong>");
+                echo $leg->page_link_html($page + 1, "<strong class=\"ul\">Older</strong> &gt;", "noul");
             }
             echo "</div></td><td><div class=\"lognavd\">";
             if ($leg->has_page($page + $this->nlinks + 1)) {
@@ -311,7 +308,7 @@ class Log_Page {
         }
         $roles = 0;
         if (isset($user->roles) && ($user->roles & Contact::ROLE_PCLIKE)) {
-            $roles = $user->viewable_pc_roles($this->viewer);
+            $roles = $user->roles & $this->viewer->viewable_roles_mask();
         }
         if (!($roles & Contact::ROLE_PCLIKE)) {
             $t .= ' &lt;' . htmlspecialchars($user->email) . '&gt;';
@@ -386,7 +383,6 @@ class Log_Page {
     function print_page($leg, $page) {
         $conf = $this->conf;
         $this->qreq->print_header("Log", "actionlog");
-        file_put_contents("/tmp/x.txt", "");
 
         $leg->load_row_range($leg->page_index($page),
                              $leg->page_index($page + $this->nlinks + 1) + 1);
@@ -409,7 +405,7 @@ class Log_Page {
                 if ($page > 1 && $leg->page_delta() > 0) {
                     $req["offset"] = $leg->page_delta();
                 }
-                if ($this->qreq->forceShow) { // XXX never true
+                if (friendly_boolean($this->qreq->forceShow)) { // XXX never true
                     $conf->feedback_msg(MessageItem::marked_note("<5>Showing all entries (" . $conf->selflink("unprivileged view", $this->qreq, $req + ["forceShow" => null]) . ")"));
                 } else {
                     $conf->feedback_msg(MessageItem::marked_note("<5>Not showing entries for " . $conf->hotlink("conflicted administered applications", "search", ["q" => join(" ", array_keys($this->exclude_pids))])));
@@ -476,7 +472,7 @@ class Log_Page {
         //     $t .= "[None]";
 
         // action
-        $act = $leg->cleaned_action($row);
+        $act = $row->cleaned_action();
         $at = "";
         if (strpos($act, "eview ") !== false
             && preg_match('/\A(.* |)([Rr]eview )(\d+)( .*|)\z/', $act, $m)) {
@@ -495,17 +491,20 @@ class Log_Page {
             $at = $m[1] . " " . $conf->hotlink("mail #{$m[2]}", "mail", ["mailid" => $m[2]]);
             $act = $m[3];
         } else if (substr($act, 0, 3) === "Tag"
-                   && preg_match('/\ATag:? ((?:[-+]\#[^\s\#]*(?:\#[-+\d.]+|)(?: |\z))+)(.*)\z/s', $act, $m)) {
+                   && preg_match('/\ATag:?+((?: [-+]\#[^\s\#]++(?:\#[-+\d.]++)?+)++)/s', $act, $m)) {
             $at = "Tag";
-            $act = $m[2];
-            foreach (explode(" ", rtrim($m[1])) as $word) {
-                if (($hash = strpos($word, "#", 2)) === false) {
-                    $hash = strlen($word);
+            $act = substr($act, strlen($m[0]));
+            foreach (explode(" ", $m[1]) as $ta) {
+                if ($ta === "") {
+                    continue;
                 }
-                $tagstr = substr($word, 1, $hash - 1);
-                $at .= " " . $word[0]
+                if (($hash = strpos($ta, "#", 2)) === false) {
+                    $hash = strlen($ta);
+                }
+                $tagstr = substr($ta, 1, $hash - 1);
+                $at .= " " . $ta[0]
                     . $conf->hotlink(htmlspecialchars($tagstr), "search", ["q" => $tagstr])
-                    . substr($word, $hash);
+                    . substr($ta, $hash);
             }
         } else if ($row->paperId > 0
                    && str_starts_with($act, "Paper ")
@@ -515,12 +514,14 @@ class Log_Page {
             $act = substr($act, $colon);
             while (preg_match("/\\A(.*? )({$this->document_regexp})((?:,| |\\z).*)\\z/", $act, $m)) {
                 $at .= htmlspecialchars($m[1])
-                    . $conf->hotlink($m[2], "doc", ["p" => $row->paperId, "dt" => $m[2], "at" => $row->timestamp]);
+                    . $conf->hotlink(htmlspecialchars($m[2]), "doc", [
+                        "p" => $row->paperId, "dt" => $m[2], "at" => $row->timestamp
+                    ]);
                 $act = $m[3];
             }
         }
         $at .= htmlspecialchars($act);
-        if (($pids = $leg->paper_ids($row))) {
+        if (($pids = $row->paper_ids())) {
             if (count($pids) === 1)
                 $at .= ' (' . $conf->hotlink("application " . $pids[0], "paper", ["p" => $pids[0]], ["class" => "track"]) . ')';
             else {
@@ -574,10 +575,10 @@ class Log_Page {
         }
 
         // create entry generator
-        $leg = $lp->make_generator($qreq->download ? 10000 : $count);
         if ($qreq->p !== "") {
-            $lp->parse_papers($leg);
+            $lp->parse_papers();
         }
+        $leg = $lp->make_generator($qreq->download ? 10000 : $count);
         if ($qreq->u !== "") {
             $lp->add_user_clause($leg);
         }

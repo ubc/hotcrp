@@ -350,7 +350,9 @@ abstract class ReviewField implements JsonSerializable {
 
     /** @return ?SearchTerm */
     private function exists_term() {
-        $st = (new PaperSearch($this->conf->root_user(), $this->exists_if ?? ""))->full_term();
+        $s = new PaperSearch($this->conf->root_user(), $this->exists_if ?? "");
+        $s->set_use_viewer_permissions(true);
+        $st = $s->full_term();
         return $st instanceof True_SearchTerm ? null : $st;
     }
 
@@ -424,6 +426,12 @@ abstract class ReviewField implements JsonSerializable {
     }
 
     /** @param int|float|string $fval
+     * @return ?string */
+    function value_class($fval) {
+        return null;
+    }
+
+    /** @param int|float|string $fval
      * @return string */
     function unparse_search($fval) {
         return "";
@@ -453,38 +461,72 @@ abstract class ReviewField implements JsonSerializable {
     /** @param ?string $id
      * @param ?string $label_for
      * @param ReviewValues $rvalues
-     * @param ?array{name_html?:string,label_class?:string,fieldset?:bool} $args */
+     * @param ?array{name_html?:string,label_class?:string,fieldset?:bool,role?:string,hide_required?:bool} $args */
     protected function print_web_edit_open($id, $label_for, $rvalues, $args = null) {
         $fieldset = $args["fieldset"] ?? false;
+        $hide_required = $args["hide_required"] ?? !!$label_for;
         if ($fieldset) {
-            echo '<fieldset class="rf s-rf" data-rf="', $this->uid(), '"><legend>';
+            echo '<fieldset class="s-rf" data-rf="', $this->uid(),
+                "\" aria-describedby=\"rf-{$this->short_id}:d\"";
+            if (($args["role"] ?? null) === "radiogroup") {
+                echo " role=\"radiogroup\"";
+                if ($this->required) {
+                    echo " aria-required=\"true\"";
+                    $hide_required = true;
+                }
+            }
+            if ($rvalues->has_error_under($this->short_id, ":")) {
+                echo " aria-invalid=\"true\"";
+            }
+            echo "><legend>";
             assert(!$label_for);
             $label_tag = "span";
         } else {
-            echo '<div class="rf s-rf" data-rf="', $this->uid(), '">';
+            echo '<div class="s-rf" data-rf="', $this->uid(), '">';
             $label_tag = "label";
         }
-        echo '<h3 class="', $rvalues->control_class($this->short_id, "s-rf-head");
+        echo '<h3 class="', $rvalues->control_class($this->short_id, "s-rf-title");
         if ($id !== null) {
             echo '" id="', $id;
         }
         echo "\"><{$label_tag} class=\"",
-            Ht::add_tokens("field-title", $this->required ? "field-required" : null, $args["label_class"] ?? null);
+            Ht::add_tokens("field-title", $args["label_class"] ?? null);
         if ($label_for) {
             echo '" for="', $label_for;
         }
-        echo '">', $args["name_html"] ?? $this->name_html, "</{$label_tag}>";
+        echo '">', $args["name_html"] ?? $this->name_html;
+        if ($this->required) {
+            echo ' <span class="required-mark need-tooltip" data-tooltip="Field required"',
+                $hide_required ? ' aria-hidden="true"' : ' aria-label="(required)"',
+                '>*</span>';
+        }
+        echo "</{$label_tag}>";
         if (($rd = self::visibility_description($this->view_score)) !== "") {
             echo "<div class=\"field-visibility\">({$rd})</div>";
         }
-        echo '</h3>';
+        echo "</h3>";
         if ($fieldset) {
             echo "</legend>";
         }
-        echo $rvalues->feedback_html_at($this->short_id);
+        echo '<div id="rf-', $this->short_id, ':d">',
+            $rvalues->feedback_html_at($this->short_id);
         if ($this->description) {
             echo "<div class=\"field-d\">{$this->description}</div>";
         }
+        echo '</div>';
+    }
+
+    /** @param ReviewValues $rvalues
+     * @return array<string,mixed> */
+    protected function rf_aria($rvalues) {
+        $js = ["aria-describedby" => "rf-{$this->short_id}:d"];
+        if ($this->required) {
+            $js["aria-required"] = "true";
+        }
+        if ($rvalues->has_error_under($this->short_id, ":")) {
+            $js["aria-invalid"] = "true";
+        }
+        return $js;
     }
 
     /** @param int|string $fval
@@ -640,9 +682,8 @@ abstract class Discrete_ReviewField extends ReviewField {
         }
         if ($sclass === "sv") {
             return "sv sv{$x}";
-        } else {
-            return "sv sv-{$sclass}{$x}";
         }
+        return "sv sv-{$sclass}{$x}";
     }
 
     function export_json($style) {
@@ -1101,21 +1142,25 @@ class Score_ReviewField extends DiscreteValues_ReviewField {
             return $this->required ? null : 0;
         } else if (($i = array_search($j, $this->symbols, true)) !== false) {
             return $i + 1;
-        } else {
-            return false;
+        } else if (is_string($j)) {
+            // JSON may quote a numeric symbol, and `unparse_verbose_json`
+            // spells the empty choice; `parse` knows both
+            return $this->parse($j);
         }
+        return false;
     }
 
     /** @param ?int $fval
      * @return string */
     private function unparse_choice($fval) {
-        if ($fval === 0) {
+        if ($fval === null) {
+            return null;
+        } else if ($fval === 0) {
             return "none";
         } else if (($fval ?? 0) > 0 && isset($this->symbols[$fval - 1])) {
             return (string) $this->symbols[$fval - 1];
-        } else {
-            return "undefined";
         }
+        return "undefined";
     }
 
     /** @param int $choiceval
@@ -1144,7 +1189,7 @@ class Score_ReviewField extends DiscreteValues_ReviewField {
 
     private function print_web_edit_radio($fval, $reqval, $rvalues) {
         $n = count($this->values);
-        $this->print_web_edit_open($this->short_id, null, $rvalues, ["fieldset" => true]);
+        $this->print_web_edit_open($this->short_id, null, $rvalues, ["fieldset" => true, "role" => "radiogroup"]);
         echo '<div class="revev">';
         $step = $this->flip ? -1 : 1;
         for ($i = $this->flip ? $n - 1 : 0; $i >= 0 && $i < $n; $i += $step) {
@@ -1158,7 +1203,7 @@ class Score_ReviewField extends DiscreteValues_ReviewField {
 
     private function print_web_edit_dropdown($fval, $reqval, $rvalues) {
         $n = count($this->values);
-        $this->print_web_edit_open($this->short_id, null, $rvalues);
+        $this->print_web_edit_open(null, $this->short_id, $rvalues);
         echo '<div class="revev">';
         $opt = [];
         if ($fval === null) {
@@ -1174,8 +1219,9 @@ class Score_ReviewField extends DiscreteValues_ReviewField {
             $opt["none"] = "N/A";
         }
         echo Ht::select($this->short_id, $opt, $this->unparse_choice($reqval), [
+            "id" => $this->short_id,
             "data-default-value" => $this->unparse_choice($fval)
-        ]);
+        ] + $this->rf_aria($rvalues));
         echo '</div></div>';
     }
 
@@ -1405,14 +1451,15 @@ class Text_ReviewField extends ReviewField {
             "id" => $this->short_id,
             "class" => "w-text need-autogrow need-suggest suggest-emoji",
             "rows" => $this->display_space, "cols" => 60, "spellcheck" => true
-        ];
+        ] + $this->rf_aria($rvalues);
         if ($reqstr !== null && $fval !== $reqstr) {
             $opt["data-default-value"] = (string) $fval;
         }
         if ($fi) {
             $opt["data-format"] = $fi->format;
         }
-        echo Ht::textarea($this->short_id, $reqstr ?? $fval ?? "", $opt), '</div></div>';
+        echo Ht::textarea($this->short_id, $reqstr ?? $fval ?? "", $opt),
+            '</div></div>';
     }
 
     function unparse_text_field(&$t, $fval, $args) {
@@ -1454,8 +1501,8 @@ class Text_ReviewField extends ReviewField {
     }
 
     function parse_search(SearchWord $sword, ReviewSearchMatcher $rsm, PaperSearch $srch) {
-        list($word, $quoted) = SearchWord::maybe_unquote($sword->cword);
-        $preg = Text::star_text_pregexes($word, $quoted);
+        list($word, ) = SearchWord::maybe_unquote($sword->cword);
+        $preg = Text::star_text_pregexes($word);
         return new Text_ReviewFieldSearch($this, $rsm->rfop, $preg);
     }
 }

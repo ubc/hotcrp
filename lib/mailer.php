@@ -8,27 +8,33 @@ class Mailer {
     const CONTEXT_EMAIL = 2;
 
     const CENSOR_NONE = 0;
+    const CENSOR_PREVIEW = 1;
+    /** @deprecated */
     const CENSOR_DISPLAY = 1;
     const CENSOR_ALL = 2;
 
     public static $email_fields = ["to" => "To", "cc" => "Cc", "bcc" => "Bcc", "reply-to" => "Reply-To"];
     public static $template_fields = ["to", "cc", "bcc", "reply-to", "subject", "body"];
 
-    /** @var Conf */
+    /** @var Conf
+     * @readonly */
     public $conf;
-    /** @var ?Contact */
-    public $sending_user;
+    /** @var Contact
+     * @readonly */
+    public $permsender;
     /** @var ?Contact */
     public $recipient;
+    /** @var ContactPermissions */
+    protected $permuser;
     /** @var string */
     protected $eol;
 
     /** @var int */
-    protected $width;
+    protected $width = 72;
     /** @var bool */
     protected $flowed = false;
     /** @var int */
-    protected $censor;
+    protected $censor = self::CENSOR_NONE;
     /** @var ?string */
     protected $reason;
     /** @var ?string */
@@ -40,7 +46,7 @@ class Mailer {
     /** @var ?string */
     public $capability_token;
     /** @var bool */
-    protected $sensitive;
+    protected $sensitive = false;
 
     /** @var ?MailPreparation */
     protected $preparation;
@@ -53,29 +59,30 @@ class Mailer {
 
     /** @var array<string,true> */
     private $_unexpanded = [];
-    /** @var list<string> */
-    protected $_errors_reported = [];
+    /** @var bool */
+    private $_ws_ok = true;
+    /** @var int */
+    private $_expand_depth = 0;
     /** @var ?MessageSet */
     private $_ms;
     /** @var bool */
     private $_was_urlparam;
 
-    /** @param ?Contact $recipient
-     * @param array{width?:int,censor?:0|1|2,reason?:string,change?:string,adminupdate?:bool,notes?:string,capability_token?:string,sensitive?:bool} $settings */
-    function __construct(Conf $conf, $recipient = null, $settings = []) {
-        $this->conf = $conf;
-        $this->eol = $conf->opt("postfixEOL") ?? "\r\n";
+    function __construct(Contact $permsender) {
+        $this->conf = $permsender->conf;
+        if ($permsender->privChair) {
+            $this->permsender = $this->conf->root_user();
+        } else {
+            $this->permsender = $permsender;
+        }
+        $this->eol = $this->conf->opt("postfixEOL") ?? "\r\n";
         $this->flowed = !!$this->conf->opt("mailFormatFlowed");
-        $this->reset($recipient, $settings);
     }
 
     /** @param ?Contact $recipient
      * @param array{width?:int,censor?:0|1|2,reason?:string,change?:string,adminupdate?:bool,notes?:string,capability_token?:string,sensitive?:bool} $settings */
     function reset($recipient = null, $settings = []) {
         $this->recipient = $recipient;
-        if (array_key_exists("sending_user", $settings ?? [])) {
-            $this->sending_user = $settings["sending_user"];
-        }
         $this->width = $settings["width"] ?? 72;
         if ($this->width <= 0) {
             $this->width = 10000000;
@@ -95,9 +102,8 @@ class Mailer {
      * @return string */
     function expand_user($contact, $out) {
         $r = Author::make_keyed($contact);
-        if (is_object($contact)
-            && ($contact->preferredEmail ?? "") != "") {
-            $r->email = $contact->preferredEmail;
+        if ($contact instanceof Contact) {
+            $r->email = $contact->delivery_email();
         }
 
         $flags = $this->context === self::CONTEXT_EMAIL ? NAME_MAILQUOTE : 0;
@@ -110,7 +116,7 @@ class Mailer {
 
         if ($out === "EMAIL") {
             return $flags & NAME_B ? "<{$email}>" : $email;
-        } else if ($out === "CONTACT") {
+        } else if ($out === "CONTACT" || $out === "USER" || $out == "") {
             return Text::name($r->firstName, $r->lastName, $email, $flags | NAME_E);
         } else if ($out === "NAME") {
             if ($this->context !== self::CONTEXT_EMAIL) {
@@ -164,8 +170,11 @@ class Mailer {
     }
 
     static function kw_url($args, $isbool, $m) {
-        if (!$args) {
-            return $m->conf->opt("paperSite");
+        // without a site URL, leave the keyword unexpanded
+        if ($m->conf->safe_baseurl() === null) {
+            return null;
+        } else if (!$args) {
+            return $m->conf->safe_baseurl();
         }
         $a = preg_split('/\s*,\s*/', $args);
         foreach ($a as &$t) {
@@ -185,7 +194,7 @@ class Mailer {
             }
         }
         parse_str($a[1], $param);
-        return $m->conf->hoturl_raw($a[0], $param, Conf::HOTURL_ABSOLUTE | Conf::HOTURL_NO_DEFAULTS);
+        return $m->conf->hoturl($a[0], $param, Conf::HOTURL_SAFE_ABSOLUTE | Conf::HOTURL_NO_DEFAULTS | Conf::HOTURL_PLACEHOLDERS);
     }
 
     static function kw_php($args, $isbool, $m) {
@@ -245,7 +254,10 @@ class Mailer {
             $loginparts = "email=" . urlencode($this->recipient->email);
         }
         if ($uf->name === "LOGINURL") {
-            return $this->conf->opt("paperSite") . "/signin/" . ($loginparts ? "?{$loginparts}" : "");
+            if (($site = $this->conf->safe_baseurl()) === null) {
+                return null;
+            }
+            return $site . "/signin/" . ($loginparts ? "?{$loginparts}" : "");
         } else if ($uf->name === "LOGINURLPARTS") {
             return $loginparts;
         }
@@ -262,12 +274,20 @@ class Mailer {
     }
 
     function kw_passwordlink($args, $isbool, $uf) {
-        if (!$this->recipient) {
-            return $this->conf->login_type() ? false : null;
-        } else if ($this->censor === self::CENSOR_ALL) {
+        if ($this->conf->login_type()) {
+            return false;
+        } else if ($this->context !== self::CONTEXT_BODY) {
+            return null; // a password link belongs only in the message body
+        } else if (!$this->recipient || $this->censor === self::CENSOR_ALL) {
             return null;
         }
         $this->sensitive = true;
+        if ($this->conf->safe_baseurl() === null) {
+            if ($this->preparation) {
+                $this->preparation->append_item(MessageItem::error("<0>This site can’t send password links until its site URL is set"));
+            }
+            return false;
+        }
         if (!$this->censor && !$this->preparation->reset_capability) {
             $capinfo = new TokenInfo($this->conf, TokenInfo::RESETPASSWORD);
             if (($cdbu = $this->recipient->cdb_user())) {
@@ -280,7 +300,7 @@ class Mailer {
             $this->preparation->reset_capability = $capinfo->salt;
         }
         $token = $this->censor ? "HIDDEN" : $this->preparation->reset_capability;
-        return $this->conf->hoturl_raw("resetpassword", null, Conf::HOTURL_ABSOLUTE | Conf::HOTURL_NO_DEFAULTS) . "/" . urlencode($token);
+        return $this->conf->hoturl("resetpassword", ["__PATH__" => $token], Conf::HOTURL_SAFE_ABSOLUTE | Conf::HOTURL_NO_DEFAULTS);
     }
 
     /** @param string $what
@@ -295,47 +315,68 @@ class Mailer {
             $args = "";
         }
 
-        $mks = $this->conf->mail_keywords($name);
-        foreach ($mks as $uf) {
-            $ok = $this->recipient || (isset($uf->global) && $uf->global);
+        // A `require_whitespace` keyword (e.g. a password link) may appear
+        // only on its own at top level, with whitespace or a line edge on both
+        // sides. That bars both splicing its value into surrounding text such
+        // as a sender’s URL (`_ws_ok` is false) and nesting it inside another
+        // keyword’s arguments (depth > 0), where its value would otherwise land
+        // in whatever string that keyword builds.
+        $ws_ok = $this->_ws_ok && $this->_expand_depth === 0;
+        ++$this->_expand_depth;
 
-            $xchecks = $uf->expand_if ?? [];
-            foreach (is_array($xchecks) ? $xchecks : [$xchecks] as $xf) {
-                if (is_string($xf)) {
-                    if ($xf[0] === "*") {
-                        $ok = $ok && call_user_func([$this, substr($xf, 1)], $uf, $name);
+        try {
+            $mks = $this->conf->mail_keywords($name);
+            foreach ($mks as $uf) {
+                $ok = $this->recipient || (isset($uf->global) && $uf->global);
+
+                $xchecks = $uf->expand_if ?? [];
+                foreach (is_array($xchecks) ? $xchecks : [$xchecks] as $xf) {
+                    if (is_string($xf)) {
+                        if ($xf[0] === "*") {
+                            $ok = $ok && call_user_func([$this, substr($xf, 1)], $uf, $name);
+                        } else {
+                            $ok = $ok && call_user_func($xf, $this, $uf, $name);
+                        }
                     } else {
-                        $ok = $ok && call_user_func($xf, $this, $uf, $name);
+                        $ok = $ok && !!$xf;
                     }
+                }
+
+                if (!$ok) {
+                    $x = null;
+                } else if (($uf->require_whitespace ?? false) && !$ws_ok) {
+                    $x = null;
+                } else if ($uf->function[0] === "*") {
+                    $x = call_user_func([$this, substr($uf->function, 1)], $args, $isbool, $uf);
                 } else {
-                    $ok = $ok && !!$xf;
+                    $x = call_user_func($uf->function, $args, $isbool, $this, $uf);
+                }
+
+                if ($x !== null) {
+                    if ($uf->urlparam ?? false) {
+                        $this->_was_urlparam = true;
+                    }
+                    return $isbool ? $x : (string) $x;
                 }
             }
 
-            if (!$ok) {
-                $x = null;
-            } else if ($uf->function[0] === "*") {
-                $x = call_user_func([$this, substr($uf->function, 1)], $args, $isbool, $uf);
-            } else {
-                $x = call_user_func($uf->function, $args, $isbool, $this, $uf);
+            if ($isbool) {
+                return $mks ? null : false;
             }
-
-            if ($x !== null) {
-                if ($uf->urlparam ?? false) {
-                    $this->_was_urlparam = true;
-                }
-                return $isbool ? $x : (string) $x;
-            }
+            $this->note_unexpanded($what);
+            return null;
+        } finally {
+            --$this->_expand_depth;
         }
+    }
 
-        if ($isbool) {
-            return $mks ? null : false;
-        }
+    /** Record that keyword `$what` was left unexpanded, warning once.
+     * @param string $what */
+    private function note_unexpanded($what) {
         if (!isset($this->_unexpanded[$what])) {
             $this->_unexpanded[$what] = true;
             $this->unexpanded_warning($what);
         }
-        return null;
     }
 
 
@@ -474,6 +515,7 @@ class Mailer {
             if (($state & 1) !== 0) {
                 $yes = false;
             } else {
+                $this->_ws_ok = true; // a condition keyword stands on its own
                 $yes = $this->expandvar(substr($x[1], 1, -1), true);
                 if ($yes !== null && !is_bool($yes)) {
                     $yes = (bool) $yes;
@@ -610,7 +652,10 @@ class Mailer {
                 continue;
             }
 
-            // expand keyword
+            // expand keyword; note whether it has whitespace or a line edge on
+            // both sides, which a `require_whitespace` keyword demands
+            $this->_ws_ok = ($p === 0 || ctype_space($line[$p - 1]))
+                && ($chk[1] === $len || ctype_space($line[$chk[1]]));
             $this->_was_urlparam = false;
             $expansion = $this->expandvar($chk[0], false);
             if ($expansion === null) {
@@ -689,7 +734,22 @@ class Mailer {
             $this->width = 10000000;
         }
         $this->field = $field;
+        $old_viewer = $this->conf->swap_viewer($this->permuser);
 
+        try {
+            return $this->_expand_text($text);
+        } finally {
+            $this->conf->swap_viewer($old_viewer);
+            $this->context = $old_context;
+            $this->width = $old_width;
+            $this->line_prefix = $old_line_prefix;
+            $this->field = $old_field;
+        }
+    }
+
+    /** @param string $text
+     * @return string */
+    private function _expand_text($text) {
         // expand out conditionals first to avoid confusion with wordwrapping
         $text = $this->_expand_conditionals(cleannl($text));
 
@@ -721,6 +781,7 @@ class Mailer {
             // full-line expansion
             if ($np === 0) {
                 $chk = $this->_check_keyword_at($line, $np, $len, $line, 0);
+                $this->_ws_ok = true; // a full-line keyword stands on its own
                 if ($chk !== null
                     && $chk[1] === $len
                     && ($r = $this->expandvar($chk[0], false)) !== null) {
@@ -742,9 +803,14 @@ class Mailer {
                     && $line[$chk[1]] === ":"
                     && $line[$chk[1] + 1] === " "
                     && preg_match('/\A[ \t*]*+\z/', substr($line, 0, $np), $m)) {
-                    $line = $m[0] . $this->expandvar($chk[0], false) . substr($line, $chk[1]);
-                    $brp = strlpos($line, "{{");
-                    $ptp = strlpos($line, "%");
+                    $this->_ws_ok = true; // bulleted, so the keyword stands on its own
+                    // the expansion is text, and an unexpanded keyword stays;
+                    // either way, scan for more keywords only after it
+                    $x = $m[0] . ($this->expandvar($chk[0], false)
+                                  ?? substr($line, $np, $chk[1] - $np));
+                    $line = $x . substr($line, $chk[1]);
+                    $brp = strlpos($line, "{{", strlen($x));
+                    $ptp = strlpos($line, "%", strlen($x));
                     $np = min($brp, $ptp);
                     $len = strlen($line);
                     $chk = $this->_check_keyword_at($line, $np, $len, $line, 0);
@@ -777,13 +843,8 @@ class Mailer {
 
         // lose newlines on header expansion
         if ($this->context !== self::CONTEXT_BODY) {
-            $text = rtrim(preg_replace('/[\r\n\f\x0B]+/', ' ', $text));
+            $text = rtrim(preg_replace('/[\r\n\f\x0B]++/', ' ', $text));
         }
-
-        $this->context = $old_context;
-        $this->width = $old_width;
-        $this->line_prefix = $old_line_prefix;
-        $this->field = $old_field;
         return $text;
     }
 
@@ -829,7 +890,7 @@ class Mailer {
                 $template[$lcfield] = $rest[$lcfield];
         }
 
-        // look up recipient; use preferredEmail if set
+        // look up recipient; mail goes to its `delivery_email()`
         if (!$this->recipient || !$this->recipient->email) {
             throw new Exception("No email in Mailer::send");
         }
@@ -844,19 +905,15 @@ class Mailer {
         $this->preparation = null;
 
         $mail["to"] = MailPreparation::recipient_address(($prep->recipients())[0]);
-        $subject = $mimetext->encode_header("Subject: ", $mail["subject"]);
+        $subject = $mimetext->encode_text_header("Subject", $mail["subject"]);
         $prep->subject = substr($subject, 9);
         $prep->body = $mail["body"];
 
         // parse headers
-        $fromHeader = $this->conf->opt("emailFromHeader");
-        if ($fromHeader === null) {
-            $fromHeader = $mimetext->encode_email_header("From", $this->conf->opt("emailFrom"));
-            $this->conf->set_opt("emailFromHeader", $fromHeader);
-        }
         $prep->headers = [];
-        if ($fromHeader) {
-            $prep->headers["from"] = $fromHeader . $this->eol;
+        if (($from = MimeText::expand_email_header_setting($this->conf, "emailFrom"))
+            && ($fromh = $mimetext->encode_email_header("From", $from))) {
+            $prep->headers["from"] = $fromh . $this->eol;
         }
         $prep->headers["subject"] = $subject . $this->eol;
         $prep->headers["to"] = "";
@@ -869,11 +926,6 @@ class Mailer {
             } else {
                 $mimetext->mi->field = $lcfield;
                 $prep->append_item($mimetext->mi);
-                $logmsg = "{$lcfield}: {$text}";
-                if (!in_array($logmsg, $this->_errors_reported, true)) {
-                    error_log("mailer error on {$logmsg}");
-                    $this->_errors_reported[] = $logmsg;
-                }
             }
         }
         $prep->headers["mime-version"] = "MIME-Version: 1.0" . $this->eol;
@@ -907,16 +959,6 @@ class Mailer {
     }
 
 
-    /** @return int */
-    function message_count() {
-        return $this->_ms ? $this->_ms->message_count() : 0;
-    }
-
-    /** @return iterable<MessageItem> */
-    function message_list() {
-        return $this->_ms ? $this->_ms->message_list() : [];
-    }
-
     /** @param MessageItem $mi
      * @return MessageItem */
     static function decorated_message($mi) {
@@ -926,23 +968,11 @@ class Mailer {
         return $mi;
     }
 
-    /** @return \Generator<MessageItem> */
-    function decorated_message_list() {
-        foreach ($this->message_list() as $mi) {
-            yield self::decorated_message($mi);
-        }
-    }
-
-    /** @return string */
-    function full_feedback_text() {
-        return $this->_ms ? $this->_ms->full_feedback_text() : "";
-    }
-
     /** @param string $message
      * @return MessageItem */
-    function warning($message) {
-        $this->_ms = $this->_ms ?? (new MessageSet)->set_ignore_duplicates(true);
-        return $this->_ms->warning_at($this->field, $message);
+    function warning($message, ...$args) {
+        $mi = MessageItem::warning_at($this->field, $message, ...$args);
+        return $this->preparation ? $this->preparation->append_item($mi) : $mi;
     }
 
     /** @param string $ref */
@@ -967,9 +997,17 @@ class Mailer {
         if (preg_match('/\A(?:RESET|)PASSWORDLINK/', $kw)) {
             if ($this->conf->login_type()) {
                 return "<0>‘{$xref}’ ignored, this site does not use password links";
+            } else if ($this->context !== self::CONTEXT_BODY) {
+                return "<0>‘{$xref}’ ignored, password links can only appear in the message body";
             } else if ($this->censor === self::CENSOR_ALL) {
                 return "<0>‘{$xref}’ ignored, password links cannot appear in mails with Cc or Bcc";
+            } else if ($this->recipient) {
+                return "<0>‘{$xref}’ ignored, a password link must stand on its own, not inside other text";
             }
+        }
+        if ((strpos($kw, "LINK") !== false || strpos($kw, "URL") !== false)
+            && $this->conf->safe_baseurl() === null) {
+            return "<0>Link keywords ignored, the site URL is not set";
         }
         return "<0>‘{$xref}’ keyword not found";
     }

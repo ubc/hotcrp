@@ -59,10 +59,8 @@ class Security_UserInfo {
         if ($pw !== $pw2) {
             $us->error_at("password", "<0>Passwords do not match");
             $us->error_at("upassword2");
-        } else if (strlen($pw) <= 5) {
-            $us->error_at("password", "<0>Password too short");
-        } else if (!Contact::valid_password($pw)) {
-            $us->error_at("password", "<0>Invalid new password");
+        } else if (($m = LoginHelper::new_password_problem($pw))) {
+            $us->error_at("password", $m);
         } else {
             $us->jval->new_password = $pw;
         }

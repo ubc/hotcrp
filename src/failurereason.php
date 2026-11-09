@@ -80,6 +80,26 @@ class FailureReason extends Exception
         return $this;
     }
 
+    /** Return the HTTP status code appropriate for this failure.
+     *
+     * Returns 404 when the resource definitely does not exist (e.g. invalid
+     * ID), or the failure deliberately declines to state whether it exists.
+     * Otherwise 403, or 401 when $user is given and not signed in (the client
+     * should authenticate).
+     * @param ?Contact $user
+     * @return int */
+    function response_code(?Contact $user = null) {
+        if (isset($this->_a["invalidId"])
+            || isset($this->_a["conflictingId"])
+            || isset($this->_a["invalidPath"])
+            || ($this->_a["notFound"] ?? false)) {
+            return 404;
+        } else if ($user && !$user->is_signed_in()) {
+            return 401;
+        }
+        return 403;
+    }
+
     /** @param array<string,mixed> $a
      * @return $this */
     function merge($a) {
@@ -138,25 +158,41 @@ class FailureReason extends Exception
             return $this->submission_deadline_info();
         }
 
+        if ($dn === "au_seerev") {
+            // not a timed deadline; a dedicated message keys on the name
+            return [null, 1, "au_seerev", -1, []];
+        }
+
         if ($dn === "response") {
             $rrd = $this->conf->response_round_by_id($this->_a["commentRound"]);
             return ["response_open", $rrd->open, "response_done", $rrd->done, []];
+        }
+
+        if ($dn === "final_done") {
+            $sr = $this->conf->submission_round_by_tag($this->_a["sclass"] ?? "")
+                ?? $this->conf->unnamed_submission_round();
+            return ["final_open", $sr->final_open, $dn, $sr->final_done, []];
         }
 
         if (str_starts_with($dn, "rev_")
             || str_starts_with($dn, "extrev_")
             || str_starts_with($dn, "pcrev_")) {
             $odn = "rev_open";
+            $start = $this->conf->setting("rev_open") ?? -1;
         } else {
             $odn = null;
+            $start = 1;
         }
-        $start = $odn !== null ? $this->conf->setting($odn) ?? -1 : 1;
 
-        if ($dn === "extrev_chairreq") {
-            $dn = $this->conf->review_deadline_name($this->_a["reviewRound"] ?? null, false, true);
+        // `extrev_chairreq` keeps its name, but ends with the external
+        // review deadline
+        if (str_starts_with($dn, "pcrev_hard")
+            || str_starts_with($dn, "extrev_")) {
+            $end = $this->conf->review_deadline($this->_a["reviewRound"] ?? null, str_starts_with($dn, "pcrev_"), true);
+        } else {
+            $end = $this->conf->setting($dn) ?? -1;
         }
-        $end = $this->conf->setting($dn) ?? -1;
-        return [$odn, $start, $dn, $end, []];
+        return [$odn, $start, $dn, $end ?: -1, []];
     }
 
     /** @return array{string,int,string,int,list<FmtArg>} */
@@ -166,8 +202,6 @@ class FailureReason extends Exception
             ?? $this->conf->unnamed_submission_round();
         if ($dn === "sub_reg") {
             $end = $sr->register;
-        } else if ($dn === "sub_update") {
-            $end = $sr->update;
         } else if ($dn === "sub_resub") {
             $end = $sr->resubmit;
         } else {
@@ -196,6 +230,9 @@ class FailureReason extends Exception
         if ($this->_a["expand"] ?? false) {
             $args[] = new FmtArg("expand", true);
         }
+        if ($this->_a["notFound"] ?? false) {
+            $args[] = new FmtArg("not_found", $this->_a["notFound"]);
+        }
 
         // collect primary messages
         if (isset($this->_a["invalidId"])) {
@@ -211,6 +248,18 @@ class FailureReason extends Exception
             $id = $this->_a["missingId"];
             $idname = $id === "paper" ? "{submission}" : $id;
             $ms[] = $this->conf->_("<0>Missing {$idname} ID");
+        }
+        if (isset($this->_a["conflictingId"])) {
+            $id = $this->_a["conflictingId"];
+            $idname = $id === "paper" ? "{submission}" : $id;
+            if (isset($this->_a["{$id}Id"]) && isset($this->_a["otherId"])) {
+                $ms[] = $this->conf->_("<0>This address contains conflicting {$idname} IDs ‘{}’ and ‘{}’", $this->_a["{$id}Id"], $this->_a["otherId"]);
+            } else {
+                $ms[] = $this->conf->_("<0>Conflicting {$idname} IDs");
+            }
+        }
+        if (isset($this->_a["invalidPath"])) {
+            $ms[] = $this->conf->_("<0>No such page ‘{}’", $this->_a["invalidPath"]);
         }
         if ($this->_a["invalidSclass"] ?? false) {
             $ms[] = $this->conf->_("<0>{Submission} class ‘{}’ not found", $this->_a["sclass"]);
@@ -245,7 +294,7 @@ class FailureReason extends Exception
             $ms[] = $this->conf->_("<0>Document ‘{}’ not found", $this->_a["documentNotFound"]);
         }
         if (isset($this->_a["signin"])) {
-            $url = $this->_a["signinUrl"] ?? $this->conf->hoturl_raw("signin");
+            $url = $this->_a["signinUrl"] ?? $this->conf->hoturl("signin");
             $ms[] = $this->conf->_i("signin_required",
                 new FmtArg("action", $this->_a["signin"]),
                 new FmtArg("url", $url, 0),
@@ -284,6 +333,12 @@ class FailureReason extends Exception
         if ($this->_a["reviewNotComplete"] ?? false) {
             $ms[] = $this->conf->_("<0>Your own review for #{} is not complete, so you can’t view other people’s reviews", $paperId);
         }
+        if ($this->_a["reviewNotAssigned"] ?? false) {
+            $ms[] = $this->conf->_("<0>You aren’t allowed to self-assign a review for {submission} #{}", $paperId);
+        }
+        if ($this->_a["wrongReviewRound"] ?? false) {
+            $ms[] = $this->conf->_("<0>Review round ‘{}’ is not open for assignment", $this->conf->round_name($this->_a["reviewRound"]) ? : "unnamed");
+        }
         if ($this->_a["responseNonexistent"] ?? false) {
             $ms[] = $this->conf->_("<0>Response not allowed on {submission} #{}", $paperId);
         }
@@ -292,9 +347,6 @@ class FailureReason extends Exception
         }
         if ($this->_a["reviewsOutstanding"] ?? false) {
             $ms[] = $this->conf->_("<0>You will get access to the reviews once you complete your assigned reviews. If you can’t complete your reviews, please inform the organizers.");
-        }
-        if ($this->_a["reviewNotAssigned"] ?? false) {
-            $ms[] = $this->conf->_("<0>You are not assigned to review {submission} #{}", $paperId);
         }
         if (isset($this->_a["deadline"])) {
             list($odn, $start, $edn, $end, $args) = $this->deadline_info();
@@ -317,7 +369,7 @@ class FailureReason extends Exception
                     new FmtArg("time", $time),
                     new FmtArg("pid", $paperId),
                     new FmtArg("deadline", $dl),
-                    new FmtArg("deadlineurl", $this->conf->hoturl_raw("deadlines"), 0),
+                    new FmtArg("deadlineurl", $this->conf->hoturl("deadlines"), 0),
                     ...$args);
         }
         if ($this->_a["override"] ?? false) {
@@ -416,10 +468,10 @@ class FailureReason extends Exception
                 $mx[] = $this->conf->_("<5><a class=\"nw\" href=\"{overrideurl}\">Override conflict</a>", new FmtArg("overrideurl", $this->conf->selfurl(Qrequest::$main_request, ["forceShow" => 1]), 0));
             }
             if ($this->_a["listViewable"] ?? false) {
-                $mx[] = $this->conf->_("<5><a href=\"{searchurl}\">List the {submissions} you can view</a>", new FmtArg("searchurl", $this->conf->hoturl_raw("search", ["q" => ""]), 0));
+                $mx[] = $this->conf->_("<5><a href=\"{searchurl}\">List the {submissions} you can view</a>", new FmtArg("searchurl", $this->conf->hoturl("search", ["q" => ""]), 0));
             }
             if ($this->_a["reviewsOutstanding"] ?? false) {
-                $mx[] = $this->conf->_("<5><a href=\"{searchurl}\">List assigned reviews</a>", new FmtArg("searchurl", $this->conf->hoturl_raw("search", ["q" => "", "t" => "r"]), 0));
+                $mx[] = $this->conf->_("<5><a href=\"{searchurl}\">List assigned reviews</a>", new FmtArg("searchurl", $this->conf->hoturl("search", ["q" => "", "t" => "r"]), 0));
             }
             if (count($mx) > 1) {
                 $mxl = [];

@@ -37,7 +37,10 @@ Generic values
 
 ## `class`
 
-* `.s-`: page structure; need to sanitize
+* The CleanHTML sanitizer blacklists classes matching `.ui*`, `.js-*`,
+  `.s-*`, `.need-*`, and `.pl*` except for `.pl-[0-9]`
+* `.s-` is intended for structural classes subject to broad Javascript
+  querySelectors (or `.closest` executed on cleaned HTML)
 
 
 ## `id`
@@ -48,7 +51,9 @@ Generic values
       and reviews
 * `id^=m-` defines the page type; it is only set on the `<body>` element
 * `id^=p-` is for page-level elements
-    * `#p-tracker` (optional)
+    * `#p-theme` (in header)
+    * `#p-banner` (optional: custom banners)
+        * `#p-tracker` (optional)
     * `#p-page`
         * `#p-header`
         * `#p-body`

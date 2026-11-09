@@ -9,7 +9,7 @@ class GetAllRevpref_ListAction extends ListAction {
 
     function run(Contact $user, Qrequest $qreq, SearchSelection $ssel) {
         // Reduce memory requirements by prefetching has_expertise and has_interest
-        list($has_expertise, $has_interest) = $user->conf->fetch_first_row("select exists (select * from PaperReviewPreference where expertise is not null) has_expertise, exists (select * from TopicInterest where interest!=0) has_interest from dual");
+        [$has_expertise, $has_interest] = $user->conf->fetch_first_row("select exists (select * from PaperReviewPreference where expertise is not null) has_expertise, exists (select * from TopicInterest where interest!=0) has_interest from dual");
 
         $headers = [
             "paper", "title",
@@ -26,10 +26,10 @@ class GetAllRevpref_ListAction extends ListAction {
         $csvg = $user->conf->make_csvg("allprefs")->set_header($headers);
         $pcm = $user->conf->pc_members();
         foreach ($ssel->paper_set($user, ["allReviewerPreference" => 1, "allConflictType" => 1, "topics" => 1]) as $prow) {
-            if (!$user->allow_admin($prow)) {
+            if (!$user->allow_view_preference($prow)) {
                 continue;
             }
-            $ctypes = $prow->conflict_types();
+            $ctypes = $user->can_view_conflicts($prow) ? $prow->conflict_types() : [];
             foreach ($pcm as $uid => $p) {
                 $pf = $prow->preference($p);
                 $ctype = $ctypes[$uid] ?? 0;

@@ -1,6 +1,6 @@
 <?php
 // usersecurityevent.php -- HotCRP representation of signins, etc.
-// Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class UserSecurityEvent {
     /** @var ?string */
@@ -11,12 +11,25 @@ class UserSecurityEvent {
     public $type;
     /** @var ?string */
     public $subtype;
-    /** @var 0|1 */
+    /** @var 0|1|2 */
     public $reason;
+    /** @var ?string */
+    public $client_id;
+    /** @var ?string */
+    public $redirect_uri;
+    /** @var ?string */
+    public $scope;
+    /** @var ?string */
+    public $dbname;
     /** @var bool */
     public $success;
     /** @var int */
     public $timestamp;
+    /** @var bool
+     * True if a provider vouched for this event's account without saying when
+     * it authenticated the user, so `timestamp` is just when the vouching
+     * happened. */
+    public $roundtrip_only = false;
 
     const TYPE_PASSWORD = 0;
     const TYPE_OAUTH = 1;
@@ -24,10 +37,28 @@ class UserSecurityEvent {
 
     const REASON_SIGNIN = 0;
     const REASON_REAUTH = 1;
+    /** An authorization this account granted an OAuth client. This is not an
+     * authentication and must never satisfy one: `AuthenticationChecker`
+     * matches the authentication reasons positively, so this reason is
+     * excluded by construction. */
+    const REASON_OAUTH_CONFIRM = 2;
+
+    /** Most OAuth confirmations kept in one session. */
+    const MAX_OAUTH_CONFIRMATIONS = 200;
+
+    /** How long an OAuth confirmation is worth keeping.
+     *
+     * Unlike `AuthenticationChecker::MAX_AGE_BOUND` this has no standard behind
+     * it: an authorization is a decision that stands, not an authentication
+     * whose freshness is being judged, and other providers keep grants until
+     * they are revoked. Collection happens only when something else is stored,
+     * so this is a target rather than a bound — what actually limits a
+     * confirmation's life is the session's, and `MAX_OAUTH_CONFIRMATIONS`. */
+    const OAUTH_CONFIRMATION_LIFETIME = 15552000; // 180 days
 
     /** @param string $email
      * @param 0|1|2 $type
-     * @param 0|1 $reason
+     * @param 0|1|2 $reason
      * @return UserSecurityEvent */
     static function make($email, $type = 0, $reason = 0) {
         $use = new UserSecurityEvent;
@@ -47,10 +78,34 @@ class UserSecurityEvent {
         return $this;
     }
 
-    /** @param 0|1 $reason
+    /** @param 0|1|2 $reason
      * @return $this */
     function set_reason($reason) {
         $this->reason = $reason;
+        return $this;
+    }
+
+    /** Record what this account authorized a client to do.
+     *
+     * `$client_id` identifies the client the user saw named; `$redirect_uri`
+     * is where its codes may be delivered, which matters because a metadata
+     * document client can change its redirect URIs under a stable id; and
+     * `$scope` is what was granted, without which a replay could widen it.
+     * `$dbname` is the conference the authorization was granted at, or null
+     * for a cdb client, whose grant is cross-conference by design. A normal
+     * client's token reaches one conference's submissions and reviews, so a
+     * consent given at one must not answer for another.
+     * @param string $client_id
+     * @param string $redirect_uri
+     * @param ?string $scope
+     * @param ?string $dbname
+     * @return $this */
+    function set_oauth_confirmation($client_id, $redirect_uri, $scope, $dbname) {
+        $this->reason = self::REASON_OAUTH_CONFIRM;
+        $this->client_id = $client_id;
+        $this->redirect_uri = $redirect_uri;
+        $this->scope = $scope;
+        $this->dbname = $dbname;
         return $this;
     }
 
@@ -68,6 +123,13 @@ class UserSecurityEvent {
         return $this;
     }
 
+    /** @param bool $x
+     * @return $this */
+    function set_roundtrip_only($x) {
+        $this->roundtrip_only = $x;
+        return $this;
+    }
+
     /** @param array $x
      * @return UserSecurityEvent */
     static function make_array($x) {
@@ -82,7 +144,12 @@ class UserSecurityEvent {
         $use->type = $x["t"] ?? 0;
         $use->subtype = $x["s"] ?? null;
         $use->reason = $x["r"] ?? 0;
+        $use->client_id = $x["ci"] ?? null;
+        $use->redirect_uri = $x["ru"] ?? null;
+        $use->scope = $x["sc"] ?? null;
+        $use->dbname = $x["db"] ?? null;
         $use->success = !($x["x"] ?? false);
+        $use->roundtrip_only = $x["rt"] ?? false;
         $use->timestamp = $x["a"];
         return $use;
     }
@@ -105,6 +172,21 @@ class UserSecurityEvent {
         if ($this->reason !== 0) {
             $x["r"] = $this->reason;
         }
+        if ($this->client_id !== null) {
+            $x["ci"] = $this->client_id;
+        }
+        if ($this->redirect_uri !== null) {
+            $x["ru"] = $this->redirect_uri;
+        }
+        if ($this->scope !== null) {
+            $x["sc"] = $this->scope;
+        }
+        if ($this->dbname !== null) {
+            $x["db"] = $this->dbname;
+        }
+        if ($this->roundtrip_only) {
+            $x["rt"] = true;
+        }
         if (!$this->success) {
             $x["x"] = true;
         }
@@ -122,10 +204,14 @@ class UserSecurityEvent {
     }
 
     /** @param string $email
+     * @param bool $reverse
      * @return Generator<UserSecurityEvent> */
-    static function session_list_by_email(Qsession $qs, $email) {
+    static function session_list_by_email(Qsession $qs, $email, $reverse = false) {
         $uindex = Contact::session_index_by_email($qs, $email);
-        foreach ($qs->get("usec") ?? [] as $x) {
+        $usec = $qs->get("usec") ?? [];
+        $n = count($usec);
+        for ($i = $reverse ? $n - 1 : 0; $i >= 0 && $i < $n; $i += $reverse ? -1 : 1) {
+            $x = $usec[$i];
             if (isset($x["e"])
                 ? strcasecmp($x["e"], $email) !== 0
                 : ($x["u"] ?? 0) !== $uindex) {
@@ -138,17 +224,17 @@ class UserSecurityEvent {
     /** @param string $email
      * @return ?UserSecurityEvent */
     static function session_latest_signin_by_email(Qsession $qs, $email) {
-        $signin = null;
-        foreach (self::session_list_by_email($qs, $email) as $use) {
+        foreach (self::session_list_by_email($qs, $email, true) as $use) {
             if ($use->reason === self::REASON_SIGNIN)
-                $signin = $use;
+                return $use;
         }
-        return $signin;
+        return null;
     }
 
 
-    function store(Qsession $qs) {
+    function store(Qrequest $qreq) {
         assert(isset($this->email));
+        $qs = $qreq->qsession();
         $uindex = Contact::session_index_by_email($qs, $this->email);
         assert(($this->uindex ?? -1) < 0 || $this->uindex === $uindex);
         $this->uindex = $uindex;
@@ -156,16 +242,22 @@ class UserSecurityEvent {
 
         $nusec = count($qs->get("usec") ?? []);
         $result = [];
+        $oauth_confirmation_indexes = [];
         foreach (self::session_list($qs) as $use) {
-            // skip old reauths
+            // skip old reauths (they always expire after MAX_AGE_BOUND)
             if ($use->reason === self::REASON_REAUTH
-                && $use->timestamp < Conf::$now - 86400) {
+                && $use->timestamp < Conf::$now - AuthenticationChecker::MAX_AGE_BOUND) {
                 continue;
             }
-            // if lots of results, drop old failures
-            if ($nusec >= 150
-                && !$use->success
-                && $use->timestamp < Conf::$now - 900) {
+            // collect stale confirmations; a caller must tolerate losing one
+            // at any time, so this is collection rather than enforcement
+            if ($use->reason === self::REASON_OAUTH_CONFIRM
+                && $use->timestamp < Conf::$now - self::OAUTH_CONFIRMATION_LIFETIME) {
+                continue;
+            }
+            // drop old failures; drop them quickly if lots of results
+            if (!$use->success
+                && $use->timestamp < Conf::$now - ($nusec >= 150 ? 900 : AuthenticationChecker::MAX_AGE_BOUND)) {
                 continue;
             }
             // update uindex
@@ -174,22 +266,88 @@ class UserSecurityEvent {
                 && strcasecmp($use->email, $this->email) === 0) {
                 $use->uindex = $this->uindex;
             }
-            // success clears out previous matches
+            // success clears previous matches
             if ($this->success
                 && ($this->uindex >= 0
                     ? $this->uindex === $use->uindex
                     : $use->email !== null && strcasecmp($this->email, $use->email) === 0)
+                && (!$this->roundtrip_only || $use->roundtrip_only)
                 && $this->type === $use->type
                 && $this->subtype === $use->subtype
-                && $this->reason === $use->reason) {
+                && $this->reason === $use->reason
+                && $this->client_id === $use->client_id
+                && $this->dbname === $use->dbname) {
                 continue;
+            }
+            // remember OAuth confirmation positions so we can trim
+            if ($use->reason === self::REASON_OAUTH_CONFIRM) {
+                $oauth_confirmation_indexes[] = count($result);
             }
             $result[] = $use->as_array();
         }
 
         // add self
+        if ($this->reason === self::REASON_OAUTH_CONFIRM) {
+            $oauth_confirmation_indexes[] = count($result);
+        }
         $result[] = $this->as_array();
-        $qs->set("usec", $result);
+
+        // keep at most MAX_OAUTH_CONFIRMATIONS, dropping the oldest ones
+        // (traverse backward to avoid having to account for shifts)
+        for ($ri = count($oauth_confirmation_indexes) - self::MAX_OAUTH_CONFIRMATIONS - 1;
+             $ri >= 0;
+             --$ri) {
+            array_splice($result, $oauth_confirmation_indexes[$ri], 1);
+        }
+
+        $qreq->set_gsession("usec", $result);
+    }
+
+
+    /** The authorization this account granted `$client_id`, or null.
+     *
+     * The match is exact on client, delivery destination, and scope. A consent
+     * is for what the user was shown: a client that now wants a different
+     * scope, or wants its codes delivered somewhere else, has to ask again.
+     * @param string $email
+     * @param string $client_id
+     * @param string $redirect_uri
+     * @param ?string $scope
+     * @param ?string $dbname
+     * @return ?UserSecurityEvent */
+    static function session_oauth_confirmation(Qsession $qs, $email, $client_id,
+                                               $redirect_uri, $scope, $dbname) {
+        foreach (self::session_list_by_email($qs, $email, true) as $use) {
+            if ($use->reason === self::REASON_OAUTH_CONFIRM
+                && $use->success
+                && $use->client_id === $client_id
+                && $use->redirect_uri === $redirect_uri
+                && $use->scope === $scope
+                && $use->dbname === $dbname) {
+                return $use;
+            }
+        }
+        return null;
+    }
+
+    /** Return true if some account in this session has consented to
+     * `$client_id` at `$redirect_uri`, for any scope.
+     * @param string $client_id
+     * @param string $redirect_uri
+     * @param ?string $dbname
+     * @return bool */
+    static function session_has_oauth_redirect(Qsession $qs, $client_id,
+                                               $redirect_uri, $dbname) {
+        foreach (self::session_list($qs) as $use) {
+            if ($use->reason === self::REASON_OAUTH_CONFIRM
+                && $use->success
+                && $use->client_id === $client_id
+                && $use->redirect_uri === $redirect_uri
+                && $use->dbname === $dbname) {
+                return true;
+            }
+        }
+        return false;
     }
 
 
@@ -244,6 +402,8 @@ class UserSecurityEvent {
         for ($ui = 0; $ui !== count($us); ++$ui) {
             if (strcasecmp($us[$ui], $email) === 0) {
                 $us[$ui] = "";
+                // the slot's next user mustn't inherit this user's theme
+                UpdateSession::apply_theme($qs, $ui, null);
                 break;
             }
         }

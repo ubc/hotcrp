@@ -90,6 +90,11 @@ class APISpec_Batch {
     private $cur_fielddefault;
     /** @var list<object> */
     private $cur_badge;
+    /** @var list<list<string>> OAuth scope alternatives declared by `* scope`
+     * lines: each element is one alternative, a list of scope names that a
+     * caller's token must hold together. An empty inner list means the
+     * operation needs a token but no particular scope (`* scope none`). */
+    private $cur_scope;
     /** @var list<string> */
     private $cur_fieldsch;
     /** @var array<string,string> response_schema name => field it follows (its
@@ -277,7 +282,7 @@ class APISpec_Batch {
                 $x["summary"] = simplify_whitespace(str_replace("\n> ", "", substr($mx[0], 2)));
                 $d = ltrim(substr($d, strlen($mx[0])));
             }
-            if (preg_match('/(?:\n|\A)(?=\*)(?:\* (?:param(?:eter)?(?:_schema)?|response(?:_schema)?|badge|body) [^\n]*+\n|  [^\n]*+\n|[ \t]*+\n)+\z/s', $d, $mx)) {
+            if (preg_match('/(?:\n|\A)(?=\*)(?:\* (?:param(?:eter)?(?:_schema)?|response(?:_schema)?|badge|body|scope) [^\n]*+\n|  [^\n]*+\n|[ \t]*+\n)+\z/s', $d, $mx)) {
                 $d = cleannl(substr($d, 0, -strlen($mx[0])));
                 $x["fields"] = ltrim($mx[0]);
             }
@@ -288,7 +293,62 @@ class APISpec_Batch {
             $xs[] = (object) $x;
             $lineno += 1 + substr_count($m[$i + 1], "\n");
         }
+        // Fold documentation sections into the leading (tag) heading. A
+        // documentation section is a non-operation `#` heading that follows the
+        // file's first heading (the tag) but precedes any operation. It is
+        // stored on the tag item as `sections` and rendered by the doc
+        // generator as a standalone subsection of the tag, separately listed in
+        // the menu and separately addressable — not as an operation of its own.
+        if (count($xs) > 1 && !self::is_operation_name($xs[0]->name)) {
+            $nsec = 0;
+            while ($nsec + 1 < count($xs)
+                   && !self::is_operation_name($xs[$nsec + 1]->name)) {
+                ++$nsec;
+            }
+            if ($nsec > 0) {
+                $xs[0]->sections = array_slice($xs, 1, $nsec);
+                array_splice($xs, 1, $nsec);
+            }
+        }
         return $xs;
+    }
+
+    /** True if a heading name denotes an API operation (e.g. `get /paper`)
+     * rather than a tag or a documentation section.
+     * @param string $name
+     * @return bool */
+    static private function is_operation_name($name) {
+        return (bool) preg_match('/\A(?:get|post|put|delete|patch|head|options)\s+\//i', $name);
+    }
+
+    /** Build the public `x-sections` list (name, summary, description) for a tag
+     * from its parsed documentation-section items.
+     * @param list<object> $sections
+     * @return list<object> */
+    static private function clean_sections($sections) {
+        $out = [];
+        foreach ($sections as $s) {
+            // A trailing `{#id}` annotation sets an explicit anchor id for the
+            // section (e.g. `# The submission object {#object-submission}`).
+            $name = $s->name;
+            $id = null;
+            if (preg_match('/\A(.*?)\s*\{#([^}\s]+)\}\z/', $name, $mm)) {
+                $name = rtrim($mm[1]);
+                $id = $mm[2];
+            }
+            $o = ["name" => $name];
+            if ($id !== null) {
+                $o["id"] = $id;
+            }
+            if (($s->summary ?? "") !== "") {
+                $o["summary"] = $s->summary;
+            }
+            if (($s->description ?? "") !== "") {
+                $o["description"] = $s->description;
+            }
+            $out[] = (object) $o;
+        }
+        return $out;
     }
 
     /** Warn about malformed heading nesting in a description: a first heading
@@ -341,6 +401,10 @@ class APISpec_Batch {
         if (isset($dj->description)
             && ($this->override_description || ($xj->description ?? "") === "")) {
             $xj->description = $dj->description;
+        }
+        if (isset($dj->sections)
+            && ($this->override_description || !isset($xj->{"x-sections"}))) {
+            $xj->{"x-sections"} = self::clean_sections($dj->sections);
         }
     }
 
@@ -463,6 +527,7 @@ class APISpec_Batch {
             $this->cur_bodyschema = [];
             $this->cur_bodyd = [];
             $this->cur_badge = [];
+            $this->cur_scope = [];
             if ($uf->paper ?? false) {
                 $this->add_field("p", self::F_REQUIRED);
             }
@@ -754,13 +819,132 @@ class APISpec_Batch {
         return null;
     }
 
+    /** Record one alternative from a `* scope NAME...` line. Every name on the
+     * line is required together; repeating the directive declares alternatives,
+     * any one of which suffices. `* scope none` declares that the operation
+     * needs a token but no particular scope.
+     * @param string $s */
+    private function add_scope_alternative($s) {
+        $names = [];
+        foreach (preg_split('/[\s,]+/', trim($s), -1, PREG_SPLIT_NO_EMPTY) as $w) {
+            if ($w === "none") {
+                continue;
+            }
+            if (TokenScope::parse_basic($w) === 0) {
+                fwrite(STDERR, $this->cur_prefix() . "unknown scope `{$w}`\n");
+                continue;
+            }
+            if (!in_array($w, $names, true)) {
+                $names[] = $w;
+            }
+        }
+        $this->cur_scope[] = $names;
+    }
+
+    /** Scope bits granted by holding every scope in `$names` at once. OpenID
+     * Connect scopes grant no API access, so they contribute nothing.
+     * @param list<string> $names
+     * @return int */
+    static private function scope_bits($names) {
+        $bits = 0;
+        foreach ($names as $w) {
+            $b = TokenScope::parse_basic($w);
+            if ($b === -1) {
+                return ~0;
+            } else if ($b > 0) {
+                $bits |= $b;
+            }
+        }
+        return $bits;
+    }
+
+    /** The scope an API function declares for endpoint-level enforcement in
+     * `Conf::call_api_on`, or null if it declares none. A `false` scope means
+     * the generic `other:` scope for the method.
+     * @param object $uf
+     * @return ?string */
+    private function uf_scope_name($uf) {
+        if (!isset($uf->scope)) {
+            return null;
+        } else if ($uf->scope === false) {
+            return $this->cur_lmethod === "get" ? "other:read" : "other:write";
+        } else if (is_string($uf->scope) && TokenScope::parse_basic($uf->scope) !== 0) {
+            return $uf->scope;
+        }
+        fwrite(STDERR, $this->cur_prefix() . "bad API function scope " . json_encode($uf->scope) . "\n");
+        return null;
+    }
+
+    /** Attach the operation's OAuth scope requirement as an OpenAPI `security`
+     * list. Each `* scope` alternative becomes an `oauth2` requirement; the
+     * non-OAuth alternatives from the base specification (bearer token, session
+     * cookie) follow, since HotCRP accepts those too, and an operation that
+     * needs no authentication also offers the empty requirement.
+     *
+     * The documented scope must imply whatever `Conf::call_api_on` enforces
+     * from the API function's own `scope` key; where the documentation declares
+     * nothing, that key supplies the answer. An operation with neither is left
+     * without a `security` list, so it inherits the specification default.
+     * @param object $x
+     * @param object $uf */
+    private function apply_security($x, $uf) {
+        $alts = $this->cur_scope;
+        $ufname = $this->uf_scope_name($uf);
+        if ($ufname !== null) {
+            if (empty($alts)) {
+                $alts = [[$ufname]];
+            } else {
+                $ufbits = self::scope_bits([$ufname]);
+                foreach ($alts as $names) {
+                    if ((self::scope_bits($names) & $ufbits) !== $ufbits) {
+                        fwrite(STDERR, $this->cur_prefix() . "documented scope `"
+                            . (empty($names) ? "none" : join(" ", $names))
+                            . "` does not imply enforced scope `{$ufname}`\n");
+                    }
+                }
+            }
+        }
+        if (empty($alts)) {
+            if (($uf->alias ?? null) === null) {
+                fwrite(STDERR, $this->cur_prefix() . "scope missing\n");
+            }
+            return;
+        }
+        $sec = [];
+        foreach ($alts as $names) {
+            $sec[] = (object) ["oauth2" => $names];
+        }
+        foreach ($this->basej->security ?? [] as $req) {
+            if (!isset($req->oauth2)) {
+                $sec[] = self::deep_clone($req);
+            }
+        }
+        if (($uf->auth ?? null) === false) {
+            // an empty requirement marks authentication optional (OpenAPI 3.1 §4.8.30)
+            $sec[] = (object) [];
+        }
+        $x->security = $sec;
+    }
+
     /** @param string $params
      * @param bool $response
      * @param string $landmark */
     private function parse_description_fields($params, $response, $landmark) {
         $pos = 0;
         $last_field = "";
-        while (preg_match('/\G\* (param(?:eter)?(?:_schema)?|response(?:_schema)?|badge|body)[ \t]++([?!+=@:]*+[^\s:]++)[ \t]*+(|[^\s:]++)[ \t]*+(:[^\n]*+(?:\n|\z)|\n)((?:(?:[ \t]*+\n)*+  [^\n]*+\n)*+)(?:[ \t]*+\n)*+/', $params, $m, 0, $pos)) {
+        while (true) {
+            // `* scope` is matched on its own: scope names contain `:`, which
+            // the field-name pattern excludes.
+            if (preg_match('/\G\* scope[ \t]++([^\n]*+)(?:\n|\z)(?:[ \t]*+\n)*+/', $params, $m, 0, $pos)) {
+                $pos += strlen($m[0]);
+                if (!$response) {
+                    $this->add_scope_alternative($m[1]);
+                }
+                continue;
+            }
+            if (!preg_match('/\G\* (param(?:eter)?(?:_schema)?|response(?:_schema)?|badge|body)[ \t]++([?!+=@:]*+[^\s:]++)[ \t]*+(|[^\s:]++)[ \t]*+(:[^\n]*+(?:\n|\z)|\n)((?:(?:[ \t]*+\n)*+  [^\n]*+\n)*+)(?:[ \t]*+\n)*+/', $params, $m, 0, $pos)) {
+                break;
+            }
             $pos += strlen($m[0]);
             if ($m[1] === "badge") {
                 if (!$response) {
@@ -1007,6 +1191,7 @@ class APISpec_Batch {
             $this->parse_field_info($uf->parameter_info);
         }
         $this->apply_badges($x);
+        $this->apply_security($x, $uf);
         $this->apply_md_field_order();
 
         // Unified document order across query params, form body fields, and
@@ -1893,11 +2078,29 @@ Usage: php batch/apispec.php")
         return [$conf, $arg];
     }
 
+    /** @param mixed $fn
+     * @return bool
+     * Mirrors the filename test in `expand_json_includes_callback`. */
+    static private function is_include_filename($fn) {
+        $l = is_string($fn) ? strlen($fn) : 0;
+        return $l !== 0
+            && $fn[0] !== "{"
+            && ($fn[0] !== "[" || ($fn[$l-1] !== "]" && !ctype_space($fn[$l-1])))
+            && !ctype_space($fn[0])
+            && strpos($fn, "::") === false;
+    }
+
     static private function add_expanded_includes($opt, &$cmd) {
         if (!$opt) {
             return;
         }
         foreach (is_array($opt) ? $opt : [$opt] as $fn) {
+            if (is_string($fn) && str_starts_with($fn, "@")) {
+                $fn = substr($fn, 1);
+            } else if (!self::is_include_filename($fn)) {
+                // inline JSON or a function reference: nothing to watch
+                continue;
+            }
             if (str_starts_with($fn, "?")) {
                 $fn = substr($fn, 1);
             }
@@ -1913,7 +2116,7 @@ Usage: php batch/apispec.php")
     static function run_args($argv) {
         list($conf, $arg) = self::parse_args($argv);
 
-        // handle non-watch
+        // handle non-watch (normal case)
         if (!isset($arg["w"])) {
             $apispec = new APISpec_Batch($conf, $arg);
             exit($apispec->run());

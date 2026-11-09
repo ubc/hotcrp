@@ -68,6 +68,7 @@ session-scheduling metadata: `session_title`, `time`, `location`, and
 Return the tags visible to the caller on submission `p`, as a
 [tag object](#tag-tags).
 
+* scope tag:read
 * badge featured
 * response_schema tag_response
 
@@ -91,12 +92,13 @@ anything (optimistic concurrency control). As with other modifying endpoints,
 supplying `search` re-runs that search after the change so a client can refresh
 a list in one round trip.
 
+* scope tag:write
 * badge featured
 * param ?=tags string: Complete new tag list; replaces all editable tags on the submission.
 * param ?=add_tags string: Tags to add, leaving others in place.
 * param ?=remove_tags string: Tags to remove, leaving others in place.
 * param ?=expected_tags string: If set, apply the change only if the submission’s current tags match this list.
-* param ?=search search_parameter_specification: A search to evaluate after the change; its results are added to the response.
+* param ?+search search_parameter_specification
 * response_schema tag_response
 * response_schema search_response.opt
 
@@ -111,14 +113,15 @@ the “current” submission, and each following tag (until the next number) is
 assigned to it. For example, `1 discuss 2 discuss reject` tags submission 1 with
 `discuss` and submission 2 with `discuss` and `reject`.
 
-The response’s `p` array carries refreshed [tag objects](#tag-tags) for the
+The response’s `papers` array carries refreshed [tag objects](#tag-tags) for the
 affected submissions. Supplying `search` adds that search’s results to the
 response as well.
 
+* scope tag:write
 * badge featured
 * param =tagassignment string: Submission IDs interleaved with the tags to assign to them.
-* param ?=search search_parameter_specification: A search to evaluate after the change; its results are added to the response.
-* response p [tag_response]: Refreshed tag objects for the affected submissions.
+* param ?+search search_parameter_specification
+* response papers [tag_response]: Refreshed tag objects for the affected submissions.
 * response_schema search_response.opt
 
 
@@ -133,6 +136,7 @@ names across all viewable submissions, not the tags of any one submission.
 `readonly_tagmap` and `sitewide_tagmap`, when present, are objects whose keys are
 the (lowercased) tags that are read-only or site-wide, respectively.
 
+* scope tag:read
 * response tags tag_list: All visible tag names.
 * response ?readonly_tagmap object: Map whose keys are the read-only tags.
 * response ?sitewide_tagmap object: Map whose keys are the site-wide tags (chairs only).
@@ -146,8 +150,9 @@ Return the **annotations** of a tag. Annotations divide an ordered (ranking or
 votes) tag into labeled groups—for example, section headings in a discussion
 order. `editable` reports whether the caller may change them.
 
+* scope tag:read
 * param tag tag: The tag whose annotations to return.
-* param ?search search_parameter_specification: A search to evaluate; its results are added to the response.
+* param ?search search_parameter_specification
 * response tag tag: The tag.
 * response editable boolean: Whether the caller may edit these annotations.
 * response anno [tag_annotation]: The tag’s annotations, in order.
@@ -174,9 +179,10 @@ Only the fields you supply are changed; omitted fields are left as they were.
 Requires permission to administer the tag. Returns the updated annotations, as
 for [`taganno` GET](#get-taganno).
 
+* scope tag:admin
 * param tag tag: The tag whose annotations to change.
 * param +anno [tag_annotation]: The new annotation list.
-* param ?search search_parameter_specification: A search to evaluate; its results are added to the response.
+* param ?+search search_parameter_specification
 * response tag tag: The tag.
 * response editable boolean: Whether the caller may edit these annotations.
 * response anno [tag_annotation]: The updated annotations, in order.
@@ -193,6 +199,7 @@ tags—for instance, how many votes remain in an allotment, or that an allotment
 has been exceeded. The response carries the submission’s `pid`; the messages
 themselves are in `message_list`.
 
+* scope tag:read
 * response pid pid: Submission ID.
 
 
@@ -205,5 +212,6 @@ tag. `vote_report` is an HTML fragment listing the voters (with vote counts, for
 allotment votes); it is empty when there are no votes. Requires permission to
 see per-user values of the tag.
 
+* scope tag:read
 * param tag tag: The voting (or approval) tag to report on.
 * response vote_report string: HTML summary of the voters, or an empty string.

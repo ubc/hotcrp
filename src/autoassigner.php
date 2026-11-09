@@ -194,17 +194,16 @@ abstract class Autoassigner extends MessageSet {
             $this->oschema->define($x);
         }
         $this->olist = new ViewOptionList;
-        if (($jc = json_decode_object($this->conf->opt("autoassignCosts")))) {
-            foreach ((array) $jc as $name => $value) {
-                $k = "{$name}_cost";
-                if (property_exists($this, $k)) {
-                    $this->$k = $value;
-                }
+        $jc = json_decode($this->conf->opt("autoassignCosts") ?? "");
+        foreach (is_object($jc) ? (array) $jc : [] as $name => $value) {
+            $k = "{$name}_cost";
+            if (property_exists($this, $k)) {
+                $this->$k = $value;
             }
         }
     }
 
-    /** @return list<string> */
+    /** @return list<string|object> */
     function option_schema() {
         return [];
     }
@@ -253,7 +252,7 @@ abstract class Autoassigner extends MessageSet {
     function tag_option($name, $flags = 0) {
         $tagger = new Tagger($this->user);
         $v = trim((string) $this->option($name));
-        $tag = $tagger->check($v, Tagger::NOVALUE | $flags);
+        $tag = $tagger->check_syntax($v, Tagger::NOVALUE | $flags);
         if ($tag === "") {
             return null;
         } else if ($tag !== false) {
@@ -293,6 +292,24 @@ abstract class Autoassigner extends MessageSet {
 
     /** @return void */
     abstract function configure();
+
+    /** @param bool $dry_run
+     * @return int
+     *
+     * Return the token scope this autoassigner exercises on each selected
+     * submission, as `TokenScope::S_*` bits that must all be held. A scoped
+     * token may run the autoassigner only if it grants this scope on every
+     * selected submission. `$dry_run` is true for dry-run and minimal-dry-run
+     * requests, whose output is reported before AssignmentSet checks it; the
+     * required scope is currently the same for dry and non-dry runs.
+     *
+     * Autoassigners load review assignments, preferences and scores and
+     * propose review assignments naming reviewers, so the default is
+     * `S_REV_READ | S_REV_ADMIN | S_PREF_READ`; subclasses that read or
+     * assign other things override this. Call after `configure()`. */
+    function token_scope($dry_run) {
+        return TokenScope::S_REV_READ | TokenScope::S_REV_ADMIN | TokenScope::S_PREF_READ;
+    }
 
 
     /** @return list<string> */
@@ -390,15 +407,15 @@ abstract class Autoassigner extends MessageSet {
         }
     }
 
-    /** @return list<string> */
+    /** @return list<object> */
     static function costs_schema() {
         return [
-            "assignment_cost#+",
-            "remove_assignment_cost#",
-            "paper_assignment_cost#+",
-            "preference_cost#+",
-            "expertise_x_cost#",
-            "expertise_y_cost#"
+            (object) ["name" => "assignment_cost", "type" => "int", "min" => 0, "max" => 1000000],
+            (object) ["name" => "remove_assignment_cost", "type" => "int", "min" => -1000000, "max" => 1000000],
+            (object) ["name" => "paper_assignment_cost", "type" => "int", "min" => 0, "max" => 1000000],
+            (object) ["name" => "preference_cost", "type" => "int", "min" => 0, "max" => 1000000],
+            (object) ["name" => "expertise_x_cost", "type" => "int", "min" => -1000000, "max" => 1000000],
+            (object) ["name" => "expertise_y_cost", "type" => "int", "min" => -1000000, "max" => 1000000]
         ];
     }
 
@@ -928,8 +945,7 @@ abstract class Autoassigner extends MessageSet {
 
         // then load preferences
         $nloaded = 0;
-        $result = $this->conf->paper_result($this->review_query_options());
-        while (($row = PaperInfo::fetch($result, null, $this->conf))) {
+        foreach ($this->conf->paper_stream($this->review_query_options()) as $row) {
             $this->load_paper_reviews($row);
             $this->load_paper_preferences_and_conflicts($row);
             ++$nloaded;
@@ -937,7 +953,6 @@ abstract class Autoassigner extends MessageSet {
                 $this->mark_progress(sprintf("Loading reviewer preferences (%d%% done)", (int) ($nloaded * 100 / count($this->paper_ids()) + 0.5)));
             }
         }
-        Dbl::free($result);
         gc_collect_cycles();
 
         if (!$this->has_pref_index) {

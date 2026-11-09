@@ -3,6 +3,9 @@
 // Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Attachments_PaperOption extends PaperOption {
+    // bound on attachments one request may list for a field
+    const MAX_PARSE_COUNT = 100;
+
     function __construct(Conf $conf, $args) {
         parent::__construct($conf, $args, "prefer-row");
     }
@@ -52,10 +55,16 @@ class Attachments_PaperOption extends PaperOption {
         foreach ($docs as $dj) {
             if (is_int($dj)) {
                 $dids[] = $dj;
-            } else if (($doc = $ps->upload_document($dj, $this))) {
+            } else if (($doc = $ps->upload_document($dj, $this->id))) {
                 $dids[] = $doc->paperStorageId;
             }
         }
+        self::set_value_dids($ov, $dids);
+    }
+
+    /** Set `$ov` to the documents `$dids`, in order.
+     * @param list<int> $dids */
+    static private function set_value_dids(PaperValue $ov, $dids) {
         if (empty($dids)) {
             $ov->set_value_data([], []);
         } else if (count($dids) == 1) {
@@ -72,13 +81,25 @@ class Attachments_PaperOption extends PaperOption {
         }
     }
 
-    /** @param string $prefix
+    /** Return the documents a form lists under `{$prefix}:N` given existing
+     * documents `$dlist`, or null if they come to more than `$max` (or
+     * clearly would, in which case no listed document is even looked up).
+     * @param string $prefix
      * @param int $documentType
      * @param list<int|object> $dlist
+     * @param int $max
      * @param MessageSet $ms
-     * @return list<int|object> */
+     * @return ?list<int|object> */
     static function parse_qreq_prefix(PaperInfo $prow, Qrequest $qreq,
-                                      $prefix, $documentType, $dlist, $ms) {
+                                      $prefix, $documentType, $dlist, $max, $ms) {
+        // give up before any per-key work if the form has more keys than it
+        // could need: it need only name each existing document once
+        // (perhaps to delete it) besides new ones
+        for ($ctr = 1; isset($qreq["{$prefix}:{$ctr}"]); ++$ctr) {
+            if ($ctr > $max + count($dlist)) {
+                return null;
+            }
+        }
         $dxlist = [];
         for ($ctr = 1; isset($qreq["{$prefix}:{$ctr}"]); ++$ctr) {
             $name = "{$prefix}:{$ctr}";
@@ -94,7 +115,7 @@ class Attachments_PaperOption extends PaperOption {
                     }
                 }
             }
-            if ($qreq["{$name}:delete"]) {
+            if (friendly_boolean($qreq["{$name}:delete"])) {
                 continue;
             }
             if (DocumentInfo::has_request_for($qreq, $name)) {
@@ -109,15 +130,29 @@ class Attachments_PaperOption extends PaperOption {
                 $dxlist[] = $thisdoc;
             }
         }
-        return array_merge($dlist, $dxlist);
+        $dlist = array_merge($dlist, $dxlist);
+        return count($dlist) <= $max ? $dlist : null;
+    }
+
+    /** @param int $max
+     * @return PaperValue */
+    private function make_too_many_estop(PaperInfo $prow, $max) {
+        return PaperValue::make_estop($prow, $this, $this->conf->_("<0>Too many attachments (at most {max})", new FmtArg("max", $max)));
     }
 
     function parse_qreq(PaperInfo $prow, Qrequest $qreq) {
+        $oldov = $prow->option($this);
         $ov = PaperValue::make($prow, $this, -1);
+        // reject overlong lists before the listed documents are stored
+        // (but let a submission that somehow has more keep that many)
+        $dids = $oldov ? $this->value_dids($oldov) : [];
+        $max = max(self::MAX_PARSE_COUNT, count($dids));
         $docs = self::parse_qreq_prefix($prow, $qreq, $this->formid, $this->id,
-                                        $this->value_dids($prow->force_option($this)),
-                                        $ov->message_set());
-        $ov->set_anno("documents", $docs);
+                                        $dids, $max, $ov->message_set());
+        if ($docs === null) {
+            return $this->make_too_many_estop($prow, $max);
+        }
+        $this->resolve_current_documents($prow, $ov, $docs);
         return $ov;
     }
     function parse_json_user(PaperInfo $prow, $j, Contact $user) {
@@ -127,8 +162,16 @@ class Attachments_PaperOption extends PaperOption {
             return null;
         }
         $ja = is_array($j) ? $j : [$j];
+        // reject overlong lists as `parse_qreq` does -- but, as with upload
+        // size limits, exempt a site administrator (say for a bulk import)
+        if (!$user->privChair) {
+            $oldov = $prow->option($this);
+            $max = max(self::MAX_PARSE_COUNT, $oldov ? count($this->value_dids($oldov)) : 0);
+            if (count($ja) > $max) {
+                return $this->make_too_many_estop($prow, $max);
+            }
+        }
         $ov = PaperValue::make($prow, $this, -1);
-        $ov->set_anno("documents", $ja);
         foreach ($ja as $docj) {
             if (is_object($docj) && isset($docj->error_html)) {
                 $ov->error("<5>" . $docj->error_html);
@@ -136,8 +179,36 @@ class Attachments_PaperOption extends PaperOption {
                 $ov->estop("<0>Format error");
             }
         }
+        if ($ov->has_error()) {
+            $ov->set_anno("documents", $ja);
+        } else {
+            $this->resolve_current_documents($prow, $ov, $ja);
+        }
         return $ov;
     }
+    /** Record `$docs` as `$ov`'s documents, replacing each that names one of
+     * the current documents with its ID. If all of them do, `$ov` gets its
+     * final value now, so that a list that repeats the current documents
+     * equals the current value.
+     * @param list<int|object> $docs */
+    private function resolve_current_documents(PaperInfo $prow, PaperValue $ov, $docs) {
+        $cur = $prow->force_option($this);
+        $importer = new DocumentImporter($prow, $this->id, 0, new MessageSet);
+        $all_dids = true;
+        foreach ($docs as &$dj) {
+            if (!is_int($dj)
+                && ($did = Document_PaperOption::current_docid($cur, $dj, $importer))) {
+                $dj = $did;
+            }
+            $all_dids = $all_dids && is_int($dj);
+        }
+        unset($dj);
+        $ov->set_anno("documents", $docs);
+        if ($all_dids) {
+            self::set_value_dids($ov, $docs);
+        }
+    }
+
     function print_web_edit(PaperTable $pt, $ov, $reqov) {
         // XXX does not consider $reqov
         $max_size = $this->max_size ?? $this->conf->upload_max_filesize(true);
@@ -153,21 +224,34 @@ class Attachments_PaperOption extends PaperOption {
             echo ' data-document-max-size="', (int) $this->max_size, '"';
         }
         echo '>';
+        // Need option title for accessibility
+        $otitle = $this->edit_title($ov->prow);
         foreach ($ov->document_set() as $i => $doc) {
             $ctr = $i + 1;
             $oname = "{$this->formid}:{$ctr}";
+            $dfn = $doc->member_filename();
+            $aria_dfn = $dfn . ($doc->size() > 0 ? " (" . unparse_byte_size($doc->size()) . ")" : "") . " ({$otitle})";
             echo '<div class="has-document" data-dt="', $this->id,
                 '" data-document-name="', $oname, '"><div class="document-file">',
                 Ht::hidden($oname, $doc->paperStorageId),
-                $doc->link_html(htmlspecialchars($doc->member_filename())),
+                $doc->link_html(htmlspecialchars($dfn), 0, null, ["aria-label" => $aria_dfn]),
                 '</div><div class="document-stamps">';
             if (($stamps = PaperTable::pdf_stamps_html($doc))) {
                 echo $stamps;
             }
-            echo '</div><div class="document-actions">', Ht::button("Delete", ["class" => "link ui js-remove-document"]), '</div></div>';
+            echo '</div><div class="document-actions">',
+                Ht::button("Delete", [
+                    "class" => "link ui js-remove-document",
+                    "aria-label" => "Delete {$aria_dfn}"
+                ]), '</div></div>';
         }
         echo '</div><div class="mt-2">',
-            Ht::button("Add attachment", ["class" => "ui js-add-attachment", "data-editable-attachments" => "{$this->formid}:attachments"]),
+            Ht::button("Add attachment", [
+                "class" => "ui js-add-attachment",
+                "data-editable-attachments" => "{$this->formid}:attachments",
+                "aria-label" => "Add attachment ({$otitle})",
+                "aria-describedby" => "sf-{$this->formid}:d"
+            ]),
             "</div></fieldset>\n\n";
     }
     function print_web_edit_hidden(PaperTable $pt, $ov) {

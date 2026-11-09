@@ -14,10 +14,11 @@ act on a search result.
 These shared search parameters are:
 
 - `q`—the search string.
-- `t`—the collection of submissions to search. `t=viewable`, the broadest,
-  checks every submission the caller can view; `t=s` is complete submissions. If
-  `t` is omitted, HotCRP picks a default from the caller’s roles and the site
-  configuration (typically `t=s` for PC members and chairs).
+- `t`—the search *scope*, which is the collection of submissions to search.
+  `t=viewable`, the broadest, checks every submission the caller can view; `t=s`
+  is complete submissions. If `t` is omitted, HotCRP picks a default from the
+  caller’s roles and the site configuration (typically `t=s` for PC members and
+  chairs).
 - `qt`—default fields to search for query terms that do not name a field, such as
   `ti` (title) or `au` (authors).
 - `sort`—the result sort order, such as `id` or `-title`.
@@ -122,20 +123,8 @@ This response might be returned for the search `10-12 THEN 5-8`:
 }
 ```
 
-## More
 
-The `search_params` response field is a URL-encoded string defining all
-relevant parameters for the search.
-
-Set the `hotlist` parameter to get a `hotlist` response field. A
-[hotlist](#tag-search) records this ordered result—its members and the search
-that produced it—so the HotCRP web client can remember the list across page
-loads and offer “previous”/“next” navigation between submissions. It is returned
-as an opaque JSON-encoded string (a serialized [`hotlist`](#tag-search) object);
-external integrations that just want the matching IDs should read `ids`
-instead.
-
-
+* scope submeta:read
 * badge featured
 * param q search_string: The search expression.
 * param t
@@ -157,8 +146,16 @@ instead.
 * param f string: Space-separated display field definitions.
 * param format search_field_format: Format for returned display fields.
 * param warn_missing boolean: Get warnings for missing submissions.
+* param ?forceShow
 * param hotlist boolean: Get a `hotlist` response field.
+* param default_tracker_visibility boolean: Get a `default_tracker_visibility` response field (track managers only).
 * response_schema search_response
+* response ?hotlist hotlist
+
+    * condition hotlist
+* response ?default_tracker_visibility string: Default visibility for a meeting tracker over the matching submissions: `all` for the whole PC, `+TAG` or `-TAG` for PC members with or without a tag, or `+none` for administrators only.
+
+    * condition default_tracker_visibility
 * response ?fields [object]
 
     * condition format
@@ -180,6 +177,7 @@ Return a list of all supported display fields. Display fields can be requested
 in the web UI (search for `show:FIELDNAME`) or in the API (supply `f=FIELDNAME`
 to the `/search` endpoint).
 
+* scope other:read
 * response fields [display_field]
 
 
@@ -202,6 +200,7 @@ JSON array, rather than a JSON object. Applications wanting predictable JSON
 responses should use other API endpoints. Nevertheless, `/searchaction` can be
 more convenient than other more standardized APIs.
 
+* scope submeta:read
 * badge featured
 * param action string: Name of action
 * param q search_string: The search expression.
@@ -220,6 +219,7 @@ more convenient than other more standardized APIs.
 * param reviewer
 
     * group Search modifiers
+* param ?forceShow
 
 
 # post /searchaction
@@ -231,6 +231,7 @@ defined by the `q` and `t` search parameters.
 
 The request format for POST requests is the same as for GET requests.
 
+* scope submeta:read
 * badge featured
 * param action string: Name of action
 * param q search_string: The search expression.
@@ -249,6 +250,7 @@ The request format for POST requests is the same as for GET requests.
 * param reviewer
 
     * group Search modifiers
+* param ?forceShow
 
 
 # get /searchactions
@@ -263,6 +265,7 @@ examples include “Download > Review forms (zip)” and “Tag > Add to order�
 `/searchactions` API endpoint retrieves the search actions that the current user
 can access programmatically via the `/searchaction` API.
 
+* scope other:read
 * badge featured
 * response actions [search_action]: List of available actions
 
@@ -282,6 +285,7 @@ caller currently sees (the site default plus any of their own session
 adjustments), `display_default` is the site default, and `display_difference`
 expresses the caller’s view as a difference from HotCRP’s built-in default.
 
+* scope other:read
 * param ?report =pl|pf: Which report’s options to return; `pl` (paper list,
   the default) or `pf` (review preferences).
 
@@ -302,6 +306,7 @@ Save the site default view options for a report. Chair only. Supply the new view
 string in `display`; the response reports the resulting options exactly as
 [`viewoptions` GET](#get-viewoptions) does.
 
+* scope other:admin
 * param ?report =pl|pf: Which report to configure; `pl` (the default) or `pf`.
 
     * default pl
@@ -326,6 +331,7 @@ searches), `dec` (decisions), or `round` (review rounds). Most entries are
 completion strings; a few are grouped objects that bundle several related
 suggestions.
 
+* scope other:read
 * param ?category string: Limit suggestions to one category (e.g. `sf`, `has`, `ss`, `dec`, `round`).
 * response searchcompletion [string|object]: Completion suggestions.
 
@@ -336,24 +342,42 @@ suggestions.
 
 Return the data behind a **formula graph** (HotCRP’s “Graphs” feature)—for
 instance a scatter plot of one formula against another over a set of
-submissions. `x` (required) and `y` are formula expressions for the axes, and
-`gtype` selects the graph type (such as `scatter`). The submissions to plot come
-from a search: supply `q` (and optionally `t`). Several series can be overlaid by
-numbering the searches `q1`, `q2`, … with optional labels `s1`, `s2`, ….
+submissions. Available to PC members only.
+
+`x` (required) and `y` are formula expressions for the axes. `gtype` selects
+the graph type: `scatter` (the default), `dot`, `ldot`, `cdf`, `multicdf`,
+`cumfreq`, `bar`, `fraction`, or `box`; several synonyms are also accepted,
+such as `ogive` for `cumfreq` and `count` for `bar`. The graph type may instead
+lead the `y` expression, as in `y=cdf` or `y=count ovemer`; if `gtype` is also
+given and disagrees, `gtype` wins and the response warns. For `multicdf`,
+`y` is the formula that splits the data into lines, as in
+`y=multicdf reviewer`.
+
+The submissions to plot come from a search: supply `q` (and optionally `t`).
+Several series can be overlaid by numbering the searches `q1`, `q2`, …, with
+optional labels `s1`, `s2`, … and per-series scopes `t1`, `t2`, … (which
+override `t`).
 
 The response carries the graph in HotCRP’s internal plotting format—the axis
-descriptions (`x`, `y`), a `data_format` code, and the `data` points—intended
-for the HotCRP graphing UI rather than for general consumption.
+descriptions (`x`, `y`), the resolved graph type `gtype`, a `data_format`
+string, and the `data` points—intended for the HotCRP graphing UI rather than
+for general consumption. If the graph cannot be drawn, the response has
+`ok: false` and `message_list` explains why.
 
+* scope submeta:read
 * param x string: Formula expression for the x-axis.
-* param ?y string: Formula expression for the y-axis.
-* param ?gtype string: Graph type, such as `scatter`.
+* param ?y string: Formula expression for the y-axis, optionally preceded by a graph type.
+* param ?gtype string: Graph type, such as `scatter` or `cdf`.
 * param ?xorder string: Ordering expression for the x-axis.
 * param ?q search_string: Search selecting the submissions to plot.
-* param ?t search_collection: Collection for `q`.
+* param ?t search_scope: Scope of search.
 * param ?s string: Label for the data series.
-* response type object: Description of the graph type.
-* response data_format integer: Code identifying the encoding of `data`.
-* response data: The plotted data points; the exact shape depends on the graph type and `data_format`.
+* response gtype string: Graph type as drawn: `scatter`, `dot`, `ldot`, `cdf`, `cumfreq`, `bar`, `fraction`, or `box`. (`multicdf` graphs report `cdf`.)
+* response data_format string: Encoding of `data`: `cdf`, `xyis`, or `style_xyi`.
+* response data: The plotted data points; the exact shape depends on `data_format`.
 * response x object: X-axis description (scale, ticks, labels).
 * response y object: Y-axis description (scale, ticks, labels).
+* response ?series object: Series-axis description, for graphs that split data into series.
+* response ?xorder object: Description of the `xorder` ordering.
+* response ?id_format string: Whether non-CDF data points identify submissions (`pid`) or reviews (`rid`).
+* response ?mark_object_type string: Kind of object a data point represents for “find on graph”: `paper`, `review`, or `user`.

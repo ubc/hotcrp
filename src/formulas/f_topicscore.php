@@ -3,11 +3,17 @@
 // Copyright (c) 2009-2026 Eddie Kohler; see LICENSE.
 
 class TopicScore_Fexpr extends Fexpr {
-    function __construct() {
+    /** @var int */
+    private $topic_idx = -1;
+    function __construct(FormulaCall $ff) {
         parent::__construct("topicscore");
+        $opt = $ff->conf->option_by_id(PaperOption::TOPICSID);
+        if (!$opt->always_visible()) {
+            $this->topic_idx = $ff->formula->register_info($opt);
+        }
     }
     static function make(FormulaCall $ff) {
-        return $ff->user->isPC ? new TopicScore_Fexpr : Fexpr::cnever();
+        return $ff->user->isPC ? new TopicScore_Fexpr($ff) : Fexpr::cnever();
     }
     function about() {
         return SearchTerm::ABOUT_SUB;
@@ -21,14 +27,25 @@ class TopicScore_Fexpr extends Fexpr {
     function compile(FormulaCompiler $state) {
         $state->queryOptions["topics"] = true;
         $prow = $state->_prow();
-        if ($state->index_type === Fexpr::IDX_MY) {
-            return $state->define_gvar("mytopicscore", "{$prow}->topic_interest_score(\$user)");
-        } else if ($state->user->can_view_pc()) {
-            return "{$prow}->topic_interest_score(" . $state->loop_cid(true) . ")";
-        } else {
-            return "(" . $state->loop_cid() . " == " . $state->user->contactId
-                . " ? {$prow}->topic_interest_score(" . $state->loop_cid() . ")"
-                . " : null)";
+        $uid = $state->current_uid();
+        $tscores = $state->define_gvar('$topic_scores', '[]');
+        $cond = [];
+        if ($this->topic_idx >= 0) {
+            $cond[] = "\$user->can_view_option(\$prow, \$formula->info[{$this->topic_idx}])";
         }
+        if (!$state->user->privChair
+            && $state->index_type !== Fexpr::IDX_MY) {
+            $vps = $state->prow_view_preference_state();
+            $cond[] = $uid;
+            $cond[] = "({$vps} >= ({$uid} === {$state->user->contactId} ? " . Contact::VIEWPREF_OWN . " : " . Contact::VIEWPREF_ALLOW_ALL . "))";
+        }
+        $r = "{$prow}->topic_interest_score({$uid})";
+        if (!empty($cond)) {
+            $r = "(" . join(" && ", $cond) . " ? {$r} : null)";
+        }
+        // `$uid` is null when the indexed reviewer's identity is hidden; the
+        // score is then null too
+        $state->lstmt[] = "if ({$uid} !== null && !array_key_exists({$uid}, {$tscores})) { {$tscores}[{$uid}] = {$r}; }";
+        return "({$uid} !== null ? {$tscores}[{$uid}] : null)";
     }
 }

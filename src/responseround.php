@@ -6,7 +6,7 @@ class ResponseRound {
     /** @var bool */
     public $unnamed = false;
     /** @var string */
-    public $name;
+    public $name;              // round name; "1" if unnamed
     /** @var int */
     public $id;
     /** @var bool */
@@ -53,6 +53,7 @@ class ResponseRound {
         }
         if ($this->_condition_term === null) {
             $s = new PaperSearch($prow->conf->root_user(), $this->condition);
+            $s->set_use_viewer_permissions(true);
             $this->_condition_term = $s->full_term();
         }
         return $this->_condition_term->test($prow, null);
@@ -101,12 +102,16 @@ class ResponseRound {
     }
 
     /** @return string */
+    function id_name() {
+        return $this->unnamed ? "response" : $this->name . "response";
+    }
+
+    /** @return string */
     function instructions(Conf $conf) {
         $wl = new FmtArg("wordlimit", $this->wordlimit);
         if ($this->instructions !== null) {
             return $conf->_x($this->instructions, $wl);
-        } else {
-            return $conf->_i("resp_instrux", $wl) ?? "";
         }
+        return $conf->_i("resp_instrux", $wl) ?? "";
     }
 }

@@ -1,14 +1,17 @@
 <?php
 // contactsearch.php -- HotCRP helper class for searching for users
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class ContactSearch {
     const F_QUOTED = 1;
     const F_PC = 2;
     const F_USER = 4;
     const F_TAG = 8;
-    const F_ALLOW_DELETED = 16;
-    const F_USERID = 32;
+    const F_ALLOW_DELETED = 0x10;
+    const F_USERID = 0x20;
+    const F_REQUIRED = 0x40;
+    const F_EXPLICIT_NONPC = 0x80;
+    const FM_PC = 0x82;
 
     /** @var Conf */
     public $conf;
@@ -17,7 +20,7 @@ class ContactSearch {
     /** @var string */
     public $text;
     /** @var Contact */
-    private $user;
+    private $viewer;
     /** @var ?array<int,Contact> */
     private $cset;
     /** @var list<int> */
@@ -25,20 +28,28 @@ class ContactSearch {
     /** @var bool */
     private $ok;
     /** @var bool */
+    private $is_roles = false;
+    /** @var bool */
     private $only_pc = false;
     /** @var ?list<Contact> */
     private $contacts = null;
-    /** @var false|string */
-    public $warn_html = false;
+    /** @var int */
+    private $viewable_roles;
+    /** @var ?list<MessageItem> */
+    private $ml;
 
     /** @param int $type
      * @param string $text
      * @param ?array<int,Contact> $cset */
-    function __construct($type, $text, Contact $user, $cset = null) {
-        $this->conf = $user->conf;
+    function __construct($type, $text, Contact $viewer, $cset = null) {
+        $this->conf = $viewer->conf;
         $this->type = $type;
+        if (!$viewer->privChair) {
+            $this->type &= ~self::F_EXPLICIT_NONPC;
+        }
         $this->text = $text;
-        $this->user = $user;
+        $this->viewer = $viewer;
+        $this->viewable_roles = $viewer->viewable_roles_mask();
         $this->cset = $cset;
         $ids = null;
         if (($this->type & self::F_QUOTED) === 0
@@ -48,7 +59,7 @@ class ContactSearch {
         if ($ids === null
             && ($this->type & self::F_TAG) !== 0
             && ($this->type & self::F_QUOTED) === 0
-            && $this->user->can_view_user_tags()) {
+            && $this->viewer->can_view_user_tags()) {
             $ids = $this->check_pc_tag();
         }
         if ($ids === null
@@ -57,70 +68,109 @@ class ContactSearch {
         }
         $this->ids = $ids ?? [];
         $this->ok = $ids !== null;
+        if ($this->ids === []
+            && ($this->type & self::F_REQUIRED) !== 0
+            && empty($this->ml)) {
+            if (($this->type & self::F_PC) !== 0) {
+                if (!$this->viewer->can_view_pc()) {
+                    $this->ml[] = MessageItem::warning("<0>You don’t have permission to search the PC");
+                } else {
+                    $this->ml[] = MessageItem::warning("<0>PC user ‘{$text}’ not found");
+                }
+            } else if ($this->viewer->is_manager()) {
+                $this->ml[] = MessageItem::warning("<0>User ‘{$text}’ not found");
+            }
+        }
     }
 
     /** @param string $text
      * @return ContactSearch */
-    static function make_pc($text, Contact $user) {
-        return new ContactSearch(self::F_PC | self::F_TAG | self::F_USER, $text, $user);
+    static function make_pc($text, Contact $viewer) {
+        return new ContactSearch(self::F_PC | self::F_TAG | self::F_USER, $text, $viewer);
     }
 
     /** @param string $text
      * @return ContactSearch */
-    static function make_special($text, Contact $user) {
-        return new ContactSearch(self::F_PC | self::F_TAG, $text, $user);
+    static function make_special($text, Contact $viewer) {
+        return new ContactSearch(self::F_PC | self::F_TAG, $text, $viewer);
     }
 
     /** @param string $text
      * @param array<int,Contact> $cset
      * @return ContactSearch */
-    static function make_cset($text, Contact $user, $cset) {
-        return new ContactSearch(self::F_USER, $text, $user, $cset);
+    static function make_cset($text, Contact $viewer, $cset) {
+        return new ContactSearch(self::F_USER, $text, $viewer, $cset);
     }
 
     /** @return ?list<int> */
     private function check_simple() {
-        if (strcasecmp($this->text, "me") == 0
-            && (($this->type & self::F_PC) === 0
-                || ($this->user->roles & Contact::ROLE_PCLIKE) !== 0)) {
-            return [$this->user->contactId];
+        if (strcasecmp($this->text, "me") === 0) {
+            if (($this->type & self::FM_PC) === self::F_PC
+                && ($this->viewer->roles & Contact::ROLE_PCLIKE) === 0) {
+                return [];
+            }
+            return [$this->viewer->contactId];
         }
-        if (($this->type & self::F_USERID) !== 0
-            && strspn($this->text, "0123456789 ,") === strlen($this->text)) {
-            preg_match_all('/\d+/', $this->text, $m);
-            $ids = [];
-            foreach ($m[0] as $d) {
-                $d = intval($d);
-                if ($d > 0
-                    && (($this->type & self::F_PC) !== 0 || $this->conf->pc_user_by_id($d))) {
-                    $ids[] = $d;
+        if (($this->type & (self::F_USERID | self::F_QUOTED)) === self::F_USERID // NB always !QUOTED here
+            && strspn($this->text, "0123456789 ,") === strlen($this->text)
+            && ($this->cset !== null || $this->viewable_roles !== 0)) {
+            preg_match_all('/\d++/', $this->text, $m);
+            $uids1 = $uids2 = [];
+            foreach ($m[0] as $s) {
+                if (($uid = stoi($s) ?? 0) > 0) {
+                    $this->cset !== null || $this->conf->prefetch_user_by_id($uid);
+                    $uids1[] = $uid;
                 }
             }
-            return $ids;
+            foreach ($uids1 as $uid) {
+                if ($this->cset !== null) {
+                    $u = $this->cset[$uid] ?? null;
+                } else if (($u = $this->conf->user_by_id($uid))
+                           && ($this->viewer->privChair
+                               ? ($this->type & self::FM_PC) === self::F_PC
+                                 && ($u->roles & Contact::ROLE_PCLIKE) === 0
+                               : ($u->roles & $this->viewable_roles) === 0)) {
+                    // Chairs can enumerate all users by ID (the condition
+                    // restricts PC-only searches); others, including track
+                    // managers, can only name viewable PC members.
+                    $u = null;
+                }
+                if ($u) {
+                    $uids2[] = $uid;
+                }
+            }
+            return $uids2;
         }
-        if ($this->user->can_view_pc()) {
+        if ($this->viewable_roles !== 0) {
+            $allow_disabled = true;
             if ($this->text === ""
                 || strcasecmp($this->text, "pc") === 0) {
-                return array_keys($this->conf->pc_members());
+                $roles = Contact::ROLE_ANYPC;
             } else if (($this->type & self::F_PC) !== 0
                        && strcasecmp($this->text, "enabled") === 0) {
-                return array_keys($this->conf->enabled_pc_members());
+                $roles = Contact::ROLE_ANYPC;
+                $allow_disabled = false;
             } else if (($this->type & self::F_PC) !== 0
                        && (strcasecmp($this->text, "any") === 0
                            || strcasecmp($this->text, "all") === 0
                            || $this->text === "*")) {
-                return array_keys($this->conf->pc_users());
-            } else if (strcasecmp($this->text, "chair") === 0
-                       || strcasecmp($this->text, "admin") === 0) {
-                $flags = Contact::ROLE_CHAIR;
-                if (strcasecmp($this->text, "admin") === 0) {
-                    $flags |= Contact::ROLE_ADMIN;
-                }
+                $roles = Contact::ROLE_PCLIKE;
+            } else if (strcasecmp($this->text, "chair") === 0) {
+                $roles = Contact::ROLE_CHAIR;
+            } else if (strcasecmp($this->text, "admin") === 0) {
+                $roles = Contact::ROLE_CHAIR | Contact::ROLE_ADMIN;
+            } else {
+                $roles = 0;
+            }
+            $roles &= $this->viewable_roles;
+            if ($roles !== 0) {
                 $cids = [];
-                foreach ($this->conf->pc_members() as $p) {
-                    if ($p->roles & $flags)
+                foreach ($this->conf->pc_users() as $p) {
+                    if (($p->roles & $roles) !== 0
+                        && ($allow_disabled || !$p->is_disabled()))
                         $cids[] = $p->contactId;
                 }
+                $this->is_roles = true;
                 return $cids;
             }
         }
@@ -154,20 +204,23 @@ class ContactSearch {
         }
 
         if ($this->conf->pc_tag_exists($x)
-            && $this->user->can_view_user_tag($x)) {
+            && $this->viewer->can_view_user_tag($x)) {
             $a = [];
             $want_tag = !$neg || !($this->type & self::F_PC);
-            foreach ($this->conf->pc_members() as $cid => $pc) {
+            foreach ($this->conf->viewable_pc_members($this->viewer) as $id => $pc) {
                 if ($pc->has_tag($x) === $want_tag)
-                    $a[] = $cid;
+                    $a[] = $id;
             }
             if (!$neg || !$want_tag) {
                 return $a;
-            } else {
-                return $this->select_ids("select contactId from ContactInfo where contactId?A", [$a]);
             }
+            return $this->select_ids("select contactId from ContactInfo where contactId?A", [$a]);
         } else if ($need) {
-            $this->warn_html = "No users are tagged ‘" . htmlspecialchars($this->text) . "’.";
+            if ($this->viewer->can_view_user_tags()) {
+                $this->ml[] = MessageItem::warning("<0>User tag ‘{$this->text}’ not found");
+            } else {
+                $this->ml[] = MessageItem::warning("<0>You don’t have permission to search user tags");
+            }
             return [];
         }
         return null;
@@ -175,15 +228,21 @@ class ContactSearch {
 
     /** @return list<int> */
     private function check_user() {
+        // ID-like strings never match here
+        if (($this->type & self::F_QUOTED) === 0
+            && strspn($this->text, "0123456789 ,") === strlen($this->text)) {
+            return null;
+        }
+
         if (strcasecmp($this->text, "anonymous") === 0
-            && !$this->cset
-            && !($this->type & self::F_PC)) {
+            && $this->cset === null
+            && ($this->type & self::F_PC) === 0) {
             $regex = Dbl::utf8ci($this->conf->dblink, "'^anonymous[0-9]*\$'");
-            return $this->select_ids("select contactId from ContactInfo where email regexp $regex", []);
+            return $this->select_ids("select contactId from ContactInfo where email regexp {$regex}", []);
         }
 
         // split name components
-        list($f, $l, $e) = Text::split_name($this->text, true);
+        [$f, $l, $e] = Text::split_name($this->text, true);
         if ($f !== "" && $l !== "") {
             $n = "{$f} {$l}";
         } else {
@@ -195,6 +254,7 @@ class ContactSearch {
 
         // generalize email
         $estar = $e && strpos($e, "*") !== false;
+        $efull = $e && strpos($e, "@") !== false && !$estar ? $e : null;
         if ($e && !$estar) {
             if (preg_match('/\A(.*)@(.*?)((?:[.](?:com|net|edu|org|us|uk|fr|be|jp|cn))?)\z/', $e, $m)) {
                 $e = ($m[1] === "" ? "*" : $m[1]) . "@*" . $m[2] . ($m[3] ? : "*");
@@ -204,11 +264,15 @@ class ContactSearch {
         }
 
         // contact database if not restricted to PC or cset
-        $result = null;
-        if ($this->cset) {
+        if ($this->cset !== null) {
             $cs = $this->cset;
-        } else if ($this->type & self::F_PC) {
-            $cs = $this->conf->pc_members();
+        } else if (($this->type & self::F_PC) !== 0) {
+            $cs = $this->conf->viewable_pc_members($this->viewer);
+            if (($this->type & self::F_EXPLICIT_NONPC) !== 0
+                && $efull !== null
+                && ($eu = $this->conf->user_by_email($efull))) {
+                $cs[$eu->contactId] = $eu;
+            }
         } else {
             $where = [];
             if ($n !== "") {
@@ -230,12 +294,14 @@ class ContactSearch {
                 if ($allow_deleted || !$row->is_deleted())
                     $cs[$row->contactId] = $row;
             }
+            Dbl::free($result);
         }
 
         // filter results
         $nreg = $ereg = null;
-        if ($n !== "") {
-            $nreg = Text::star_text_pregexes($n);
+        foreach (preg_split('/\s++/', $n, -1, PREG_SPLIT_NO_EMPTY) as $nsplit) {
+            $nreg = $nreg ?? TextPregexes::make_empty();
+            $nreg->merge_all(Text::star_text_pregexes($nsplit));
         }
         if ($e !== "" && $estar) {
             $ereg = '{\A' . str_replace('\*', '.*', preg_quote($e)) . '\z}i';
@@ -266,11 +332,21 @@ class ContactSearch {
             });
         }
 
-        Dbl::free($result);
         return $ids;
     }
 
     /** @return bool */
+    function is_roles() {
+        return $this->is_roles;
+    }
+
+    /** @return bool */
+    function resolved() {
+        return $this->ok;
+    }
+
+    /** @return bool
+     * @deprecated */
     function has_error() {
         return !$this->ok;
     }
@@ -278,6 +354,16 @@ class ContactSearch {
     /** @return bool */
     function is_empty() {
         return empty($this->ids);
+    }
+
+    /** @return bool */
+    function resolved_unique() {
+        return count($this->ids) === 1;
+    }
+
+    /** @return list<MessageItem> */
+    function message_list() {
+        return $this->ml ?? [];
     }
 
     /** @return list<int> */

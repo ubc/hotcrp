@@ -75,14 +75,15 @@ class Autoassign_Tester {
     }
 
     /** @return Autoassigner */
-    function autoassigner($aaname, $pcc, $pids, $param) {
+    function autoassigner($aaname, $pcc, $pids, $param, ?Contact $user = null) {
+        $user = $user ?? $this->user;
         $gj = $this->conf->autoassigner($aaname);
         if (str_starts_with($gj->function, "+")) {
             $class = substr($gj->function, 1);
             /** @phan-suppress-next-line PhanTypeExpectedObjectOrClassName */
-            $aa = new $class($this->user, $gj);
+            $aa = new $class($user, $gj);
         } else {
-            $aa = call_user_func($gj->function, $this->user, $gj);
+            $aa = call_user_func($gj->function, $user, $gj);
         }
         '@phan-var-force Autoassigner $aa';
         foreach ($param as $k => $v) {
@@ -457,5 +458,221 @@ class Autoassign_Tester {
             xassert_le($an[2][$this->cur_pcc[1]] ?? 0, 3);
             xassert_le($an[3][$this->cur_pcc[2]] ?? 0, 3);
         });
+    }
+
+    function test_unlisted_pc_is_assignable() {
+        // unlisted PC members are absent from `pc_members`, so every
+        // assignment path has to reach them through `full_pc_members`
+        $conf = $this->conf;
+        $email = "unlassign@_.com";
+        $conf->qe("delete from ContactInfo where email=?", $email);
+        $conf->invalidate_caches("users", "pc");
+
+        $us = new UserStatus($conf->root_user());
+        $acct = $us->save_user((object) ["email" => $email, "roles" => ["unlistedpc"]]);
+        xassert(!!$acct, $us->full_feedback_text());
+        $conf->invalidate_caches("users", "pc");
+        $uid = $acct->contactId;
+        xassert(isset($conf->pc_members()[$uid]));
+        xassert(!isset($conf->listed_pc_members()[$uid]));
+        xassert(!!$conf->pc_member_by_id($uid));
+
+        // the default candidate set includes them
+        $pids = range(1, 10);
+        $aa = $this->autoassigner("review", null, $pids, ["count" => 1]);
+        xassert_in_eqq($uid, $aa->user_ids());
+
+        // ...and an assignment restricted to just this user still produces one
+        $aa = $this->autoassigner("review", [$uid], $pids, ["count" => 1]);
+        $aa->run();
+        xassert($aa->has_assignment());
+        $atext = join("", $aa->assignments());
+        xassert_str_contains($atext, $email);
+        xassert_assign($this->user, $atext, true);
+        xassert_gt($conf->fetch_ivalue("select count(*) from PaperReview where contactId=?", $uid), 0);
+
+        // the `enabled` keyword — how the page spells “use entire PC” — reaches
+        // unlisted members too
+        $eids = ContactSearch::make_pc("enabled", $conf->root_user())->user_ids();
+        xassert_in_eqq($uid, $eids);
+        xassert_eqq(count($conf->pc_members()),
+                    count($conf->listed_pc_members()) + 1);
+
+        $conf->qe("delete from PaperReview where contactId=?", $uid);
+        $conf->qe("delete from ContactInfo where email=?", $email);
+        $conf->invalidate_caches("users", "pc");
+        $conf->update_automatic_tags();
+    }
+
+    function test_prefconflict_includes_unlisted_pc() {
+        $conf = $this->conf;
+        $email = "unlprefconf@_.com";
+        $conf->qe("delete from ContactInfo where email=?", $email);
+        $us = new UserStatus($conf->root_user());
+        $acct = $us->save_user((object) ["email" => $email, "roles" => ["unlistedpc"]]);
+        xassert(!!$acct, $us->full_feedback_text());
+        $conf->invalidate_caches("users", "pc");
+        $uid = $acct->contactId;
+        $conf->qe("insert into PaperReviewPreference set paperId=3, contactId=?, preference=-100", $uid);
+
+        $aa = $this->autoassigner("prefconflict", null, [3], []);
+        $aa->run();
+        xassert_str_contains(join("", $aa->assignments()), $email);
+
+        $conf->qe("delete from PaperReviewPreference where contactId=?", $uid);
+        $conf->qe("delete from ContactInfo where email=?", $email);
+        $conf->invalidate_caches("users", "pc");
+    }
+
+    /** “Enabled” PC members are those not disabled; PC members who have never
+     * signed in count. The autoassign page keeps an explicit `unlisted` choice. */
+    function test_enabled_pc_includes_placeholders_not_disabled() {
+        $conf = $this->conf;
+        $emails = ["aaplaceholder@_.com", "aadisabled@_.com"];
+        $conf->qe("delete from ContactInfo where email?a", $emails);
+        $us = new UserStatus($conf->root_user());
+        foreach ($emails as $email) {
+            xassert(!!$us->save_user((object) ["email" => $email, "roles" => ["pc"]]), $us->full_feedback_text());
+        }
+        $conf->qe("update ContactInfo set cflags=? where email=?", Contact::CF_PLACEHOLDER, $emails[0]);
+        $conf->qe("update ContactInfo set cflags=? where email=?", Contact::CF_UDISABLED, $emails[1]);
+        $conf->invalidate_caches("users", "pc");
+        $ph = $conf->checked_user_by_email($emails[0]);
+        $dis = $conf->checked_user_by_email($emails[1]);
+        xassert($ph->is_placeholder() && !$ph->is_disabled());
+        xassert($dis->is_disabled());
+
+        $eids = ContactSearch::make_pc("enabled", $conf->root_user())->user_ids();
+        xassert_in_eqq($ph->contactId, $eids);
+        xassert_not_in_eqq($dis->contactId, $eids);
+        xassert(isset($conf->enabled_pc_members()[$ph->contactId]));
+        xassert(!isset($conf->enabled_pc_members()[$dis->contactId]));
+
+        $page = function ($args) {
+            $qreq = TestQreq::get($args)->set_user($this->user);
+            new Autoassign_Page($this->user, $qreq);
+            return $qreq->pctyp;
+        };
+        xassert_eqq($page(["pctyp" => "unlisted"]), "unlisted");
+        // with only a placeholder, the default is still the entire PC
+        $conf->qe("delete from ContactInfo where email=?", $emails[1]);
+        $conf->invalidate_caches("users", "pc");
+        xassert_eqq($page([]), "all");
+
+        $conf->qe("delete from ContactInfo where email?a", $emails);
+        $conf->invalidate_caches("users", "pc");
+    }
+
+    function test_load_counts_viewable_assignments() {
+        // a paper administrator’s loads count only assignments they can
+        // view; otherwise load limits reveal hidden reviewers
+        $this->setup_clear();
+        $conf = $this->conf;
+        $admin = $rev = null;
+        foreach ($this->pcc as $uid) {
+            if (!$admin && isset($this->cflts[1][$uid]) && !isset($this->cflts[2][$uid])) {
+                $admin = $conf->user_by_id($uid);
+            } else if (!$rev && !isset($this->cflts[1][$uid]) && !isset($this->cflts[2][$uid])) {
+                $rev = $conf->user_by_id($uid);
+            }
+        }
+        xassert($admin && $rev);
+        xassert_assign($this->user, "paper,action,user\n1,primary,{$rev->email}\n2,administrator,{$admin->email}\n");
+        $admin = $conf->user_by_id($admin->contactId);
+
+        // the administrator can’t see the review on conflicted paper 1...
+        xassert(!$admin->can_view_review_identity($admin->checked_paper_by_id(1), null));
+        $aa = $this->autoassigner("review", [$rev->contactId], [2], ["count" => 1, "max_load" => 1], $admin);
+        $aa->run();
+        xassert($aa->has_assignment());
+        xassert_str_contains($aa->full_feedback_text(), "consider only the current assignments you can view");
+
+        // ...but a chair counts it, and isn’t warned
+        xassert($this->user->privChair);
+        $aa = $this->autoassigner("review", [$rev->contactId], [2], ["count" => 1, "max_load" => 1]);
+        $aa->run();
+        xassert(!$aa->has_assignment());
+        xassert_not_str_contains($aa->full_feedback_text(), "consider only the current assignments you can view");
+        $aa = $this->autoassigner("review", [$rev->contactId], [2], ["count" => 1, "max_load" => 2]);
+        $aa->run();
+        xassert($aa->has_assignment());
+
+        xassert_assign($this->user, "paper,action,user\n2,clearadministrator,{$admin->email}\n");
+        $this->setup_clear();
+    }
+
+    function test_api_requires_manager() {
+        // Regression: the autoassign API must require manager rights (parity
+        // with Autoassign_Page). An ordinary PC member must not run the
+        // autoassigner — its output discloses individual PC review preferences.
+        $conf = $this->conf;
+        $lixia = $conf->checked_user_by_email("lixia@cs.ucla.edu");
+        xassert($lixia->isPC && !$lixia->is_manager());
+        $jr = call_api_result("=autoassign", $lixia,
+            ["autoassigner" => "review", "q" => "", "t" => "s", "minimal_dry_run" => "1"]);
+        xassert_eqq($jr->status, 403);
+        xassert(!($jr->content["ok"] ?? false));
+        xassert_eqq(call_api_result("autoassigners", $lixia, [])->status, 403);
+        // a chair is still allowed
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        xassert_eqq(call_api_result("autoassigners", $chair, [])->status ?? 200, 200);
+    }
+
+    function test_cost_option_max_enforced() {
+        // A cost above the schema max is rejected (parse returns null, so the
+        // default is used); otherwise a pathological cost could stall MCMF.
+        $vot = null;
+        foreach (Autoassigner::costs_schema() as $sx) {
+            if ($sx->name === "assignment_cost") {
+                $vot = ViewOptionType::make($sx);
+                break;
+            }
+        }
+        xassert($vot !== null);
+        xassert_eqq($vot->parse("500"), 500);
+        xassert_eqq($vot->parse("1000000"), 1000000); // at the max, allowed
+        xassert_eqq($vot->parse("1000001"), null);     // above the max, rejected
+        xassert_eqq($vot->parse("2000000000"), null);  // a pathological cost
+        xassert_eqq($vot->parse("-1"), null);          // below the min
+    }
+
+    function test_assign_list_action_auto_redirect() {
+        // Search > Assign > Automatic assignments preserves the selection
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $qreq = TestQreq::post_page("search", ["p" => "1 2 3", "assignfn" => "auto", "t" => "s"])
+            ->set_user($chair);
+        $ssel = SearchSelection::make_papers($qreq, $chair);
+        $la = ListAction::lookup("assign", $chair, $qreq, $ssel);
+        xassert($la instanceof ListAction);
+        $url = null;
+        try {
+            $la->run($chair, $qreq, $ssel);
+        } catch (Redirection $r) {
+            $url = $r->url;
+        }
+        xassert_str_contains($url ?? "", "autoassign");
+        parse_str(parse_url($url, PHP_URL_QUERY) ?? "", $param);
+        $srch = new PaperSearch($chair, ["q" => $param["q"] ?? "", "t" => $param["t"] ?? ""]);
+        xassert_eqq($srch->paper_ids(), [1, 2, 3]);
+    }
+
+    function test_score_selector_options_are_text() {
+        // Ht::select takes text, so review field names are not HTML-escaped
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $oldname = $this->conf->checked_review_field("s01")->name;
+        $sv = SettingValues::make_request($chair, [
+            "has_rf" => 1, "rf/1/id" => "s01", "rf/1/name" => "Reviewer's <merit> & quality"
+        ]);
+        xassert($sv->execute());
+
+        $page = new Autoassign_Page($chair, TestQreq::get_page("autoassign", []));
+        $f = $this->conf->checked_review_field("s01");
+        $opts = $page->scoreselector_options();
+        xassert_eqq($opts["+" . $f->search_keyword()], "Reviewer's <merit> & quality " . $f->unparse_value($f->nvalues()));
+
+        $sv = SettingValues::make_request($chair, [
+            "has_rf" => 1, "rf/1/id" => "s01", "rf/1/name" => $oldname
+        ]);
+        xassert($sv->execute());
     }
 }

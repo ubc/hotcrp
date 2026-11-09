@@ -93,7 +93,7 @@ class TagStyle_SettingParser extends SettingParser {
     static function print(SettingValues $sv) {
         echo Ht::hidden("has_tag_style", 1),
             "<p>Submissions and PC members tagged with a style name, or with an associated tag, appear in that style in lists.</p>",
-            '<table class="demargin"><thead><tr><th></th><th class="settings-simplehead" style="min-width:8rem">Style name</th><th class="settings-simplehead">Tags</th><th></th></tr></thead><tbody class="settings-tag-style-table">';
+            '<table class="demargin settings-tag-styles"><thead><tr><th></th><th class="settings-simplehead" style="min-width:8rem">Style name</th><th class="settings-simplehead">Tags</th><th></th></tr></thead><tbody class="settings-tag-style-table">';
         $dt = $sv->conf->tags();
         foreach ($sv->oblist_keys("tag_style") as $ctr) {
             $style = $sv->oldv("tag_style/{$ctr}/style");
@@ -116,6 +116,12 @@ class TagStyle_SettingParser extends SettingParser {
         $bs = [];
         foreach ($sv->oblist_nondeleted_keys($si->name) as $ctr) {
             $br = $sv->newv("{$si->name}/{$ctr}");
+            if ($br->style === "") {
+                if (!$sv->has_error_at("{$si->name}/{$ctr}/style")) {
+                    $sv->error_at("{$si->name}/{$ctr}/style", "<0>Entry required");
+                }
+                continue;
+            }
             $ks = $sv->conf->tags()->known_style($br->style, $stylematch);
             $sn = $ks ? $ks->style : $br->style;
             $bs_count = count($bs);

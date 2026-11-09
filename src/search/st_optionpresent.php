@@ -1,6 +1,6 @@
 <?php
 // search/st_optionpresent.php -- HotCRP helper class for searching for papers
-// Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class OptionPresent_SearchTerm extends Option_SearchTerm {
     function __construct(Contact $user, PaperOption $o) {
@@ -14,12 +14,13 @@ class OptionPresent_SearchTerm extends Option_SearchTerm {
     }
     function is_sqlexpr_precise() {
         return $this->option->always_visible()
-            && $this->option->is_value_present_trivial();
+            && $this->option->is_value_present_trivial()
+            && (!$this->option->has_document()
+                || $this->user->can_view_all(true));
     }
     function test(PaperInfo $row, $xinfo) {
         return $this->user->can_view_option($row, $this->option)
-            && ($ov = $row->option($this->option))
-            && $this->option->value_present($ov);
+            && $row->option_present($this->option);
     }
     function script_expression(PaperInfo $row, $about) {
         if (($about & self::ABOUT_PAPER) === 0) {

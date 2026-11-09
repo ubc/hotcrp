@@ -3,6 +3,8 @@
 // Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class MeetingTracker {
+    const KIOSK_LIFETIME = 172800;
+
     /** @return MeetingTracker_ConfigSet */
     static function lookup(Conf $conf) {
         return MeetingTracker_ConfigSet::load($conf);
@@ -68,6 +70,8 @@ class MeetingTracker {
         // track="IDENTIFIER POSITION" or track="IDENTIFIER stop" or track=stop
         if (!$user->is_track_manager() || !$qreq->valid_post()) {
             return JsonResult::make_permission_error();
+        } else if (!$user->scope_allows(TokenScope::S_OTH_WRITE)) {
+            return JsonResult::make_scope_error($qreq, TokenScope::S_OTH_WRITE);
         }
 
         if ($qreq->track === "stop") {
@@ -90,7 +94,8 @@ class MeetingTracker {
 
         // apply change; may require multiple tries on concurrent update
         do {
-            $x = MeetingTracker_ConfigSet::load($user->conf)->apply_track_api($args, $xlist, $user, $qreq);
+            $x = MeetingTracker_ConfigSet::load($user->conf)
+                ->apply_track_api($args, $xlist, $user, $qreq);
         } while ($x === false);
         return $x === true ? null : $x;
     }
@@ -109,38 +114,44 @@ class MeetingTracker {
         }
         '@phan-var list<int> $pids';
 
-        $track_manager = $user->is_track_manager();
-        $show_pc_conflicts = $track_manager
-            || $user->conf->setting("sub_pcconfvis") != 1
-            || $user->tracker_kiosk_state > 0;
-
-        $col = "";
-        if ($show_pc_conflicts) {
-            $col = ", coalesce((select group_concat(contactId, ' ', conflictType) from PaperConflict where paperId=p.paperId), '') allConflictType";
-            $pcm = $user->conf->pc_members();
-        }
-        if ($user->contactId) {
-            $cid_join = "contactId=" . $user->contactId;
+        // a kiosk sees papers as its creator would
+        $viewer = $user->capability("@kiosk_user") ?? $user;
+        $conf = $user->conf;
+        if ($viewer->contactId) {
+            $cid_join = "contactId=" . $viewer->contactId;
         } else {
             $cid_join = "contactId=-2 and false";
         }
+        // include the columns permission checks need
+        $col = "";
+        if ($conf->submission_blindness() === Conf::BLIND_OPTIONAL) {
+            $col .= ", p.blind";
+        }
+        if ($viewer->isPC || $conf->rights_need_tags()) {
+            $col .= ", coalesce((select group_concat(' ', tag, '#', tagIndex separator '') from PaperTag where PaperTag.paperId=p.paperId), '') paperTags";
+        }
 
-        $result = $user->conf->qe_raw("select p.paperId, p.title, p.paperFormat, p.leadContactId, p.managerContactId, coalesce(" . PaperInfo::my_review_permissions_sql("r.") . ",'') myReviewPermissions, conf.conflictType{$col}
+        $result = $conf->qe_raw("select p.paperId, p.title, p.paperFormat, p.timeSubmitted, p.timeWithdrawn, p.outcome, p.leadContactId, p.managerContactId, coalesce(" . PaperInfo::my_review_permissions_sql("r.") . ",'') myReviewPermissions, conf.conflictType, coalesce((select group_concat(contactId, ' ', conflictType) from PaperConflict where paperId=p.paperId), '') allConflictType{$col}
             from Paper p
-            left join PaperReview r on (r.paperId=p.paperId and r.$cid_join and r.reviewType>0)
-            left join PaperConflict conf on (conf.paperId=p.paperId and conf.$cid_join)
+            left join PaperReview r on (r.paperId=p.paperId and r.{$cid_join} and r.reviewType>0)
+            left join PaperConflict conf on (conf.paperId=p.paperId and conf.{$cid_join})
             where p.paperId in (" . join(",", $pids) . ")
             group by p.paperId");
-        $prows = PaperInfoSet::make_result($result, $user);
+        $prows = PaperInfoSet::make_result($result, $viewer);
+        $pcm = $conf->viewable_pc_members($user);
 
         foreach ($tis as $ti_index => $ti) {
             foreach ($ti->pids ?? [] as $pid) {
                 $prow = $prows->get($pid);
                 $ti->papers[] = $p = (object) [];
-                if (($ti->allow_administer
-                     || $prow->conflictType <= CONFLICT_MAXUNCONFLICTED
-                     || !$trs[$ti_index]->hide_conflicts)
-                    && $user->tracker_kiosk_state != 1) {
+                if (!$prow || !$viewer->can_view_paper($prow)) {
+                    continue;
+                }
+                if ($user->tracker_kiosk_state !== 0
+                    ? $user->tracker_kiosk_state !== 1
+                    : $ti->allow_administer
+                      || $prow->conflictType <= CONFLICT_MAXUNCONFLICTED
+                      || !$trs[$ti_index]->hide_conflicts) {
                     $p->pid = $prow->paperId;
                     if ($prow->title === "") {
                         $p->title = "[No title]";
@@ -165,7 +176,8 @@ class MeetingTracker {
                         $p->is_lead = true;
                     }
                 }
-                if ($show_pc_conflicts) {
+                if ($user->tracker_kiosk_state !== 0
+                    || $viewer->can_view_conflicts($prow)) {
                     $pcc = [];
                     $more = false;
                     foreach ($prow->conflict_types() as $uid => $ctype) {
@@ -233,6 +245,32 @@ class MeetingTracker {
     static function apply_kiosk_capability(Contact $user, $uf) {
         $user->set_capability("@kiosk", $uf->match_data[1]);
         $user->set_default_cap_param($uf->name, true);
+    }
+
+    /** @param string $key
+     * @return bool
+     *
+     * Put `$user` in kiosk mode if `$key` names a live kiosk. A kiosk acts
+     * as a weaker version of the track manager who minted it, so it dies if
+     * the creator can no longer manage tracks. */
+    static function apply_kiosk(Contact $user, $key) {
+        $conf = $user->conf;
+        $kiosks = (array) ($conf->setting_json("__tracker_kiosk") ? : []);
+        $kj = $kiosks[$key] ?? null;
+        if (!$kj
+            || $kj->update_at < Conf::$now - self::KIOSK_LIFETIME
+            || !($creator = $conf->user_by_id($kj->by ?? 0))
+            || $creator->is_disabled()
+            || !$creator->is_track_manager()) {
+            return false;
+        }
+        if ($kj->update_at < Conf::$now - 3600) {
+            $kj->update_at = Conf::$now;
+            $conf->save_setting("__tracker_kiosk", 1, $kiosks);
+        }
+        $user->tracker_kiosk_state = $kj->show_papers ? 2 : 1;
+        $user->set_capability("@kiosk_user", $creator);
+        return true;
     }
 }
 
@@ -359,6 +397,14 @@ class MeetingTracker_Config implements JsonSerializable {
         $ti->position_at = $this->position_at;
         $ti->url = $this->url;
         $ti->calculated_at = Conf::$now;
+        // KNOWN LEAK (inherent to the tracker mechanism): the tracked paper-id
+        // list travels in `listinfo`/`pids` to every viewer who passes
+        // `can_view_tracker()` (i.e. holds S_OTH_READ), without a per-paper
+        // S_SUB_READ/can_view_paper check — the client needs the list to render
+        // the tracker. Only the viewer's own conflicts are removed
+        // (`hide_conflicts` below). Per-paper metadata beyond the ids (title,
+        // pc_conflicts) IS gated by `can_view_paper()` in `trinfo_papers()`.
+        // Conflicts-only kiosks get no list at all.
         if (!$ti->allow_administer && $this->hide_conflicts && $user->contactId > 0) {
             $ids = [];
             $cts = $user->conflict_types();
@@ -369,12 +415,18 @@ class MeetingTracker_Config implements JsonSerializable {
         } else {
             $ids = $this->ids;
         }
-        $ti->listinfo = json_encode_browser([
-            "listid" => $this->listid,
-            "ids" => SessionList::encode_ids($ids),
-            "description" => $this->description,
-            "url" => $this->url
-        ]);
+        if ($user->tracker_kiosk_state === 1) {
+            // conflicts-only kiosks learn nothing that identifies papers
+            $ti->listid = "";
+            $ti->url = "";
+        } else {
+            $ti->listinfo = json_encode_db([
+                "listid" => $this->listid,
+                "ids" => SessionList::encode_ids($ids),
+                "description" => $this->description,
+                "url" => $this->url
+            ]);
+        }
         if ($this->position !== false) {
             $ti->paper_offset = $this->position === 0 ? 0 : 1;
             $ti->pids = array_slice($this->ids, $this->position - $ti->paper_offset, 3 + $ti->paper_offset);
@@ -785,7 +837,7 @@ class MeetingTracker_BrowserInfo implements JsonSerializable {
     public $url;
     /** @var int|float */
     public $calculated_at;
-    /** @var string */
+    /** @var ?string */
     public $listinfo;
     /** @var bool */
     public $allow_administer;
@@ -867,9 +919,17 @@ class MeetingTracker_Permissionizer {
         }
         $this->track_tag_combinations = [];
         if ($this->conf->track_tags()) {
-            $result = $this->conf->qe("select distinct (select group_concat(tag) from PaperTag where paperId=Paper.paperId and tag?a) tags from Paper where paperId?a", $this->conf->track_tags(), $this->pids);
+            $pidset = (new PaperIDSet)->add_list($this->pids);
+            $precise = $pidset->is_sql_predicate_precise();
+            $result = $this->conf->qe("select paperId, (select group_concat(tag) from PaperTag where paperId=Paper.paperId and tag?a) tags from Paper where " . $pidset->sql_predicate("paperId"), $this->conf->track_tags());
+            $seen = [];
             while (($row = $result->fetch_row())) {
-                $this->track_tag_combinations[] = $row[0] ?? "";
+                $tags = $row[1] ?? "";
+                if (($precise || $pidset->contains((int) $row[0]))
+                    && !isset($seen[$tags])) {
+                    $seen[$tags] = true;
+                    $this->track_tag_combinations[] = $tags;
+                }
             }
             $result->close();
         } else if ($this->conf->has_tracks()) {
@@ -949,22 +1009,21 @@ class MeetingTracker_Permissionizer {
             return true;
         } else if (empty($admin_perm)) {
             return false;
-        } else {
-            foreach ($admin_perm as $perm) {
-                if (is_string($perm)) {
-                    $ok = $user->has_permission($perm);
-                } else {
-                    $ok = false;
-                    foreach ($perm as $p) {
-                        $ok = $ok || $user->has_permission($p);
-                    }
-                }
-                if (!$ok) {
-                    return false;
+        }
+        foreach ($admin_perm as $perm) {
+            if (is_string($perm)) {
+                $ok = $user->has_permission($perm);
+            } else {
+                $ok = false;
+                foreach ($perm as $p) {
+                    $ok = $ok || $user->has_permission($p);
                 }
             }
-            return true;
+            if (!$ok) {
+                return false;
+            }
         }
+        return true;
     }
 
     /** @return string */
@@ -980,6 +1039,6 @@ class MeetingTracker_Permissionizer {
                 }
             }
         }
-        return "";
+        return "all";
     }
 }

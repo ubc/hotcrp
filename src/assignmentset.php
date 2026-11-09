@@ -181,7 +181,7 @@ class AssignmentItemSet {
     public $items = [];
 }
 
-class AssignmentState extends MessageSet {
+final class AssignmentState extends MessageSet {
     /** @var array<int,AssignmentItemSet> */
     private $st = [];
     /** @var int */
@@ -208,6 +208,12 @@ class AssignmentState extends MessageSet {
     public $confirm_potential_conflicts = false;
     /** @var AssignerContacts */
     private $cmap;
+    /** @var Contact */
+    private $not_found_user;
+    /** @var Contact */
+    private $ambiguous_user;
+    /** @var Contact */
+    private $invalid_user;
     /** @var ?array<int,Contact> */
     private $reviewer_users = null;
     /** @var ?string */
@@ -224,17 +230,41 @@ class AssignmentState extends MessageSet {
     private $placeholder_prow;
     /** @var bool */
     public $paper_exact_match = false;
+    /** @var bool */
+    public $user_explicit = false;
     /** @var list<MessageItem> */
     private $nonexact_msgs = [];
     /** @var bool */
     public $has_user_error = false;
+    /** @var int */
+    private $cumulative_message_count = 0;  // includes duplicates
+    /** @var int */
+    private $cost = 0;
+    /** @var ?int */
+    private $max_cost;
+
+    // Costs of expensive operations, in units of in-memory items examined.
+    // A paper search costs its running time, with a minimum.
+    const COST_QUERY = 100;
+    const COST_SEARCH_MIN = 500;
+    const COST_SEARCH_PER_MS = 100;
+
+    /** @var array */
     private $callables = [];
+    /** @var array<string,mixed> */
+    private $stash = [];
 
     function __construct(Contact $user) {
         $this->conf = $user->conf;
+        $this->set_message_formatter($this->conf);
         $this->user = $this->reviewer = $user;
         $this->cmap = new AssignerContacts($this->conf, $this->user);
         $this->overrides = $user->overrides();
+        // These special users have contactId 0, but distinct contactXid
+        // and pointer identities
+        $this->not_found_user = Contact::make($this->conf);
+        $this->ambiguous_user = Contact::make($this->conf);
+        $this->invalid_user = Contact::make($this->conf);
     }
 
     /** @param ?string $filename */
@@ -322,6 +352,30 @@ class AssignmentState extends MessageSet {
         $st->items[$k] = new AssignmentItem($x, true);
     }
 
+    /** @param ?int $max_cost
+     * @return $this */
+    function set_max_cost($max_cost) {
+        $this->max_cost = $max_cost;
+        return $this;
+    }
+    /** @return ?int */
+    function max_cost() {
+        return $this->max_cost;
+    }
+    /** @return int */
+    function cost() {
+        return $this->cost;
+    }
+    /** Charge `$n` units of work to the budget.
+     * @param int $n
+     * @throws AssignmentBudgetException if the budget is exhausted */
+    function charge($n = 1) {
+        $this->cost += $n;
+        if ($this->max_cost !== null && $this->cost > $this->max_cost) {
+            throw new AssignmentBudgetException;
+        }
+    }
+
     /** @return list<int> */
     private function pid_keys($q) {
         '@phan-var-force Assignable $q';
@@ -339,7 +393,9 @@ class AssignmentState extends MessageSet {
         foreach ($this->pid_keys($q) as $pid) {
             $st = $this->pidstate($pid);
             $k = $this->extract_key($q, $pid);
-            foreach ($k ? [$st->items[$k] ?? null] : $st->items as $item) {
+            $items = $k ? [$st->items[$k] ?? null] : $st->items;
+            $this->charge(count($items));
+            foreach ($items as $item) {
                 if ($item
                     && (!$item->deleted() || $include_deleted)
                     && $item->type() === $q->type()
@@ -415,6 +471,7 @@ class AssignmentState extends MessageSet {
      * @return AssignmentItem
      * @suppress PhanAccessReadOnlyProperty */
     function add($x) {
+        $this->charge();
         $k = $this->extract_key($x);
         assert(!!$k);
         $st = $this->pidstate($x->pid);
@@ -472,9 +529,7 @@ class AssignmentState extends MessageSet {
             }));
         }
         if (!empty($pids)) {
-            foreach ($this->user->paper_set(["paperId" => $pids]) as $prow) {
-                $this->prows[$prow->paperId] = $prow;
-            }
+            $this->fetch_paper_set(["paperId" => $pids]);
         }
         $this->pid_attempts = [0];
         foreach ($pids as $pid) {
@@ -484,10 +539,35 @@ class AssignmentState extends MessageSet {
     }
     function fetch_all_prows() {
         assert(empty($this->prows) && empty($this->pid_attempts));
-        foreach ($this->user->paper_set([]) as $prow) {
-            $this->prows[$prow->paperId] = $prow;
-        }
+        $this->fetch_paper_set([]);
         $this->pid_attempts = [-1];
+    }
+    /** @param array<string,mixed> $args
+     * @return list<PaperInfo> */
+    function load_prows($args) {
+        assert(!empty($this->pid_attempts));
+        $prows = [];
+        if ($this->pid_attempts !== [-1]) {
+            $overrides = $this->user->add_overrides(Contact::OVERRIDE_SCOPE);
+            foreach ($this->user->paper_set($args) as $prow) {
+                if (!isset($this->prows[$prow->paperId])
+                    && $this->user->can_view_paper($prow))
+                    $prows[] = $this->prows[$prow->paperId] = $prow;
+            }
+            $this->user->set_overrides($overrides);
+        }
+        return $prows;
+    }
+    /** Papers the user couldn't view even with a wider token scope are
+     * treated as missing, so errors don't reveal whether they exist.
+     * @param array{paperId?:list<int>|PaperIDSet} $args */
+    private function fetch_paper_set($args) {
+        $overrides = $this->user->add_overrides(Contact::OVERRIDE_SCOPE);
+        foreach ($this->user->paper_set($args) as $prow) {
+            if ($this->user->can_view_paper($prow))
+                $this->prows[$prow->paperId] = $prow;
+        }
+        $this->user->set_overrides($overrides);
     }
     /** @return PaperInfo */
     function placeholder_prow() {
@@ -497,9 +577,13 @@ class AssignmentState extends MessageSet {
         return $this->placeholder_prow;
     }
 
-    /** @return Contact */
+    /** @param int $cid
+     * @return Contact */
     function user_by_id($cid) {
-        return $this->cmap->user_by_id($cid);
+        $nq = $this->cmap->nqueries;
+        $u = $this->cmap->user_by_id($cid);
+        $this->charge(1 + self::COST_QUERY * ($this->cmap->nqueries - $nq));
+        return $u;
     }
     /** @param list<int> $cids
      * @return list<Contact> */
@@ -508,39 +592,47 @@ class AssignmentState extends MessageSet {
     }
     /** @return ?Contact */
     function user_by_email($email, $create = false, $req = null) {
-        return $this->cmap->user_by_email($email, $create, $req);
+        $nq = $this->cmap->nqueries;
+        $u = $this->cmap->user_by_email($email, $create, $req);
+        $this->charge(1 + self::COST_QUERY * ($this->cmap->nqueries - $nq));
+        return $u;
     }
     /** @return Contact */
     function none_user() {
         return $this->cmap->none_user();
     }
+    /** @return Contact */
+    function not_found_user() {
+        return $this->not_found_user;
+    }
+    /** @return Contact */
+    function ambiguous_user() {
+        return $this->ambiguous_user;
+    }
+    /** @return Contact */
+    function invalid_user() {
+        return $this->invalid_user;
+    }
     /** @return array<int,Contact> */
-    function pc_users() {
-        return $this->cmap->pc_users();
+    function pc_members() {
+        return $this->cmap->pc_members();
     }
     /** @return array<int,Contact> */
     function reviewer_users() {
         if ($this->reviewer_users === null) {
+            $this->charge(self::COST_QUERY);
             $this->reviewer_users = $this->cmap->reviewer_users($this->paper_ids());
         }
         return $this->reviewer_users;
     }
 
-    /** @param null|int|string $landmark
-     * @param string $msg
-     * @param -5|-4|-3|-2|-1|0|1|2|3 $status
-     * @return MessageItem
-     * @deprecated */
-    function msg_near($landmark, $msg, $status) {
-        $l = $this->landmark_near($landmark);
-        if (($mi = $this->back_message())
-            && $mi->landmark === $l
-            && $mi->message === $msg) {
-            $this->change_item_status($mi, $status);
-        } else {
-            $mi = $this->append_item(new MessageItem($status, null, $msg));
-            $mi->landmark = $l;
-        }
+    /** @return int */
+    function cumulative_message_count() {
+        return $this->cumulative_message_count;
+    }
+    function splice_item($pos, $mi) {
+        $mi = parent::splice_item($pos, $mi);
+        ++$this->cumulative_message_count;
         return $mi;
     }
     /** @param MessageItem $mi
@@ -548,10 +640,15 @@ class AssignmentState extends MessageSet {
      * @return MessageItem */
     function append_item_near($mi, $landmark = null) {
         $mi = $mi->with_landmark($this->landmark_near($landmark));
+        if ($mi->need_fmt()) {
+            $mi->fmt($this->conf->fmt());
+        }
         if (($bmi = $this->back_message())
             && $bmi->landmark === $mi->landmark
-            && $bmi->message === $mi->message) {
+            && $bmi->message === $mi->message
+            && $bmi->args === $mi->args) {
             $this->change_item_status($bmi, $mi->status);
+            ++$this->cumulative_message_count;
             return $bmi;
         }
         return $this->append_item($mi);
@@ -577,13 +674,21 @@ class AssignmentState extends MessageSet {
         $this->has_user_error = true;
         $this->error($msg);
     }
-    /** @param string $msg
+    /** @param string|MessageItem|FailureReason $msg
      * @return void */
-    function paper_error($msg) {
-        if ($this->paper_exact_match) {
-            $this->append_item_here(MessageItem::error($msg));
+    function paper_error($msg, ...$args) {
+        if ($msg instanceof FailureReason) {
+            foreach ($msg->message_list() as $mi) {
+                $this->paper_error($mi);
+            }
         } else {
-            $this->nonexact_msgs[] = $this->append_item_here(MessageItem::warning($msg));
+            $mi = $msg instanceof MessageItem ? $msg : MessageItem::error($msg, ...$args);
+            if ($this->paper_exact_match) {
+                $this->append_item_here($mi);
+            } else {
+                $mi->status = min(1, $mi->status);
+                $this->nonexact_msgs[] = $this->append_item_here($mi);
+            }
         }
     }
     function mark_matching_errors() {
@@ -596,6 +701,28 @@ class AssignmentState extends MessageSet {
         parent::clear_messages();
         $this->nonexact_msgs = [];
         $this->has_user_error = false;
+        return $this;
+    }
+    /** @return object{n:int,nem:list<MessageItem>} */
+    function message_snapshot() {
+        return (object) [
+            "n" => $this->message_count(),
+            "nem" => $this->nonexact_msgs
+        ];
+    }
+    function restore_message_snapshot($snapshot) {
+        $this->clear_messages_since($snapshot->n);
+        $this->nonexact_msgs = $snapshot->nem;
+    }
+
+    /** @param string $name
+     * @return bool */
+    function mark_stash($name) {
+        if (array_key_exists($name, $this->stash)) {
+            return false;
+        }
+        $this->stash[$name] = true;
+        return true;
     }
 
     /** @template T
@@ -627,6 +754,8 @@ class AssignerContacts {
     private $by_lemail = [];
     /** @var bool */
     private $has_pc = false;
+    /** @var int */
+    public $nqueries = 0;
 
     function __construct(Conf $conf, Contact $viewer) {
         $this->conf = $conf;
@@ -688,6 +817,7 @@ class AssignerContacts {
         if (($u = $this->by_id[$cid] ?? null)) {
             return $u;
         }
+        ++$this->nqueries;
         $result = $this->conf->qe("select " . $this->user_query_fields() . " from ContactInfo where contactId=?", $cid);
         $u = Contact::fetch($result, $this->conf)
             ?? Contact::make_keyed($this->conf, ["email" => "unknown contact {$cid}", "contactId" => $cid]);
@@ -709,6 +839,7 @@ class AssignerContacts {
         if (($c = $this->by_lemail[$lemail] ?? null)) {
             return $c;
         }
+        ++$this->nqueries;
         $result = $this->conf->qe("select " . $this->user_query_fields() . " from ContactInfo where email=?", $lemail);
         $c = Contact::fetch($result, $this->conf);
         Dbl::free($result);
@@ -716,6 +847,7 @@ class AssignerContacts {
             $is_anonymous = Contact::is_anonymous_email($email);
             assert(validate_email($email) || $is_anonymous);
             if (($cdb = $this->conf->contactdb()) && validate_email($email)) {
+                ++$this->nqueries;
                 $result = Dbl::qe($cdb, "select " . $this->contactdb_user_query_fields() . " from ContactInfo where email=?", $lemail);
                 $c = Contact::fetch($result, $this->conf);
                 Dbl::free($result);
@@ -740,13 +872,14 @@ class AssignerContacts {
         return $c ? $this->store($c) : null;
     }
     /** @return array<int,Contact> */
-    function pc_users() {
+    function pc_members() {
         $this->ensure_pc();
-        return $this->conf->pc_members();
+        return $this->conf->viewable_pc_members($this->viewer);
     }
     /** @return array<int,Contact> */
     function reviewer_users($pids) {
-        $rset = $this->pc_users();
+        $rset = $this->pc_members();
+        ++$this->nqueries;
         $result = $this->conf->qe("select " . $this->user_query_fields() . " from ContactInfo join PaperReview using (contactId) where (roles&" . Contact::ROLE_PC . ")=0 and paperId?a and reviewType>0 group by ContactInfo.contactId", $pids);
         while ($result && ($c = Contact::fetch($result, $this->conf))) {
             $rset[$c->contactId] = $this->store($c);
@@ -808,6 +941,9 @@ class AssignmentError extends Exception {
     }
 }
 
+class AssignmentBudgetException extends Exception {
+}
+
 abstract class AssignmentParser {
     /** @var string $type */
     public $type;
@@ -815,32 +951,34 @@ abstract class AssignmentParser {
     function __construct($type) {
         $this->type = $type;
     }
-    // Return a descriptor of the set of papers relevant for this action.
-    // `"req"`, the default, means call `apply` for each requested paper.
-    // `"none"` means call `apply` exactly once with a placeholder paper.
-    // `"reqpost"` means each requested paper, then once with a placeholder.
-    /** @param CsvRow $req
+
+    /** Return a descriptor of the set of papers relevant for this action.
+     * `"req"`, the default, means call `apply` for each requested paper.
+     * `"none"` means call `apply` exactly once with a placeholder paper.
+     * `"reqpost"` means each requested paper, then once with a placeholder.
+     * @param CsvRow $req
      * @return 'req'|'none'|'reqpost' */
     function paper_universe($req, AssignmentState $state) {
         return "req";
     }
-    // Optionally expand the set of interesting papers. Returns a search
-    // expression, such as "ALL", or false.
-    //
-    // `expand_papers` is called for *all* actions before any actions are
-    // processed further.
-    /** @param CsvRow $req
+
+    /** Optionally expand the set of interesting papers. Returns a search
+     * expression, such as "ALL", or false.
+     *
+     * `expand_papers` is called for *all* actions before any actions are
+     * processed further.
+     * @param CsvRow $req
      * @return string */
     function expand_papers($req, AssignmentState $state) {
         return (string) $req["paper"];
     }
 
-    // Initialize parser for a request.
-    // The request passed to `set_req` is used for subsequent `user_universe`,
-    // `paper_filter`, `expand_*user`, `allow_user`, `allow_paper`, and `apply`
-    // calls. Returns false if `$req` is erroneous and should not be parsed
-    // further.
-    /** @param CsvRow $req
+    /** Initialize parser for a request.
+     * The request passed to `set_req` is used for subsequent `user_universe`,
+     * `paper_filter`, `expand_*user`, `allow_user`, `allow_paper`, and `apply`
+     * calls. Returns false if `$req` is erroneous and should not be parsed
+     * further.
+     * @param CsvRow $req
      * @return bool */
     function set_req($req, AssignmentState $state) {
         return true;
@@ -850,75 +988,81 @@ abstract class AssignmentParser {
     function load_state(AssignmentState $state) {
     }
 
-    // Return `true` iff this user may perform this action class on this paper.
-    // To indicate an error, return an `AssignmentError` or simply `false`
-    // (which means the user cannot administer the submission).
-    // Called before the action is fully parsed, so it may be appropriate to
-    // return `true` here and perform the full permission check later.
-    /** @return bool|AssignmentError */
+    /** Return `true` iff this user may perform this action class on this paper.
+     * To indicate an error, optionally report it via `$state->paper_error`,
+     * then return `false`. (The generic message is that the user cannot
+     * administer the submission.) Called before the action is fully parsed, so
+     * it may be appropriate to return `true` here and perform a full
+     * permission check later.
+     * @return bool */
     abstract function allow_paper(PaperInfo $prow, AssignmentState $state);
 
-    // Return a descriptor of the set of users relevant for this action.
-    // Returns `"none"`, `"pc"`, `"reviewers"`, `"pc+reviewers"`, or `"any"`.
-    /** @param CsvRow $req
-     * @return 'none'|'pc'|'reviewers'|'pc+reviewers'|'any' */
+    const UU_ANY = 0;           // any user might be relevant
+    const UU_NONE = 1;          // users are not relevant here
+    const UU_PC = 2;            // PC members
+    const UU_REVIEWERS = 4;     // reviewers
+    const UU_PC_REVIEWERS = 6;  // PC members or external reviewers
+
+    /** Return a descriptor of the set of users relevant for this action.
+     * @param CsvRow $req
+     * @return 0|1|2|4|6 */
     function user_universe($req, AssignmentState $state) {
-        return "pc";
+        return self::UU_PC;
     }
 
-    // Return a conservative approximation of the papers relevant for this
-    // action, or `null` if such an approximation is difficult to compute.
-    // The approximation is an array whose keys are paper IDs; a truthy value
-    // for pid X means the action applies to paper X.
-    //
-    // The assignment logic calls `paper_filter` when an action is applied to
-    // an unusually large number of papers, such as removing all reviews by a
-    // specific user.
-    /** @param CsvRow $req
+    /** Return a conservative approximation of the papers relevant for this
+     * action, or `null` if such an approximation is difficult to compute.
+     * The approximation is an array whose keys are paper IDs; a truthy value
+     * for pid X means the action might apply to paper X.
+     *
+     * The assignment logic calls `paper_filter` when an action is applied to
+     * an unusually large number of papers, such as removing all reviews by a
+     * specific user.
+     * @param CsvRow $req
      * @return ?array */
     function paper_filter($contact, $req, AssignmentState $state) {
         return null;
     }
 
-    // Return the list of users corresponding to user `"any"` for this request,
-    // or null if `"any"` is an invalid user.
-    /** @param CsvRow $req
+    /** Return the list of users corresponding to user `"any"` for this request,
+     * or null if `"any"` is an invalid user.
+     * @param CsvRow $req
      * @return ?array<Contact> */
     function expand_any_user(PaperInfo $prow, $req, AssignmentState $state) {
         return null;
     }
 
-    // Return the list of users relevant for this request, whose user is not
-    // specified, or false if an explicit user is required.
-    /** @param CsvRow $req
+    /** Return the list of users relevant for this request, whose user is not
+     * specified, or false if an explicit user is required.
+     * @param CsvRow $req
      * @return ?array<Contact> */
     function expand_missing_user(PaperInfo $prow, $req, AssignmentState $state) {
         return null;
     }
 
-    // Return the list of users corresponding to `$user`, which is an anonymous
-    // user (either `anonymous\d*` or `anonymous-new`), or null if a
-    // non-anonymous user is required.
-    /** @param CsvRow $req
+    /** Return the list of users corresponding to `$user`, which is an anonymous
+     * user (either `anonymous\d*` or `anonymous-new`), or null if a
+     * non-anonymous user is required.
+     * @param CsvRow $req
      * @return ?array<Contact> */
     function expand_anonymous_user(PaperInfo $prow, $req, $user, AssignmentState $state) {
         return null;
     }
 
-    // Return true iff this action may be applied to paper `$prow` and user
-    // `$contact`. Note that `$contact` might not be a true database user;
-    // for instance, it might have `contactId == 0` (for user `"none"`)
-    // or it might have a negative `contactId` (for a user that doesn’t yet
-    // exist in the database).
-    /** @param CsvRow $req
-     * @return bool|AssignmentError */
+    /** Return true iff this action may be applied to paper `$prow` and user
+     * `$contact`. Note that `$contact` might not be a true database user;
+     * for instance, it might have `contactId == 0` (for user `"none"`)
+     * or it might have a negative `contactId` (for a user that doesn’t yet
+     * exist in the database).
+     * @param CsvRow $req
+     * @return bool */
     abstract function allow_user(PaperInfo $prow, Contact $contact, $req, AssignmentState $state);
 
-    // Apply this action to `$state` for paper `$prow` and user `$contact`.
-    // Return `true` iff the action succeeds. To indicate an error, call
-    // `$state->error($ftext)` and return `false`, or, equivalently, return
-    // an `AssignmentError`.
-    /** @param CsvRow $req
+    /** Apply this action to `$state` for paper `$prow` and user `$contact`.
+     * Return `true` iff the action succeeds. To indicate an error, call
+     * `$state->error($ftext)` and return `false`, or, equivalently, return
+     * an `AssignmentError`.
+     * @param CsvRow $req
      * @return bool|AssignmentError */
     abstract function apply(PaperInfo $prow, Contact $contact, $req, AssignmentState $state);
 }
@@ -929,7 +1073,7 @@ abstract class UserlessAssignmentParser extends AssignmentParser {
         parent::__construct($type);
     }
     function user_universe($req, AssignmentState $state) {
-        return "none";
+        return self::UU_NONE;
     }
     function allow_user(PaperInfo $prow, Contact $contact, $req, AssignmentState $state) {
         return true;
@@ -942,8 +1086,6 @@ class Assigner {
     public $item;
     /** @var int */
     public $pid;
-    /** @var ?int */
-    public $cid;
     /** @var ?Contact */
     public $contact;
     /** @var ?int */
@@ -951,14 +1093,21 @@ class Assigner {
     function __construct(AssignmentItem $item, AssignmentState $state) {
         $this->item = $item;
         $this->pid = $item["pid"];
-        $this->cid = $item["cid"] ? : $item["_cid"];
-        if ($this->cid) {
-            $this->contact = $state->user_by_id($this->cid);
+        if (($cid = $item["cid"] ? : $item["_cid"])) {
+            $this->contact = $state->user_by_id($cid);
         }
+    }
+    /** @return int */
+    function cid() {
+        return $this->contact ? $this->contact->contactId : 0;
     }
     /** @return string */
     function type() {
         return $this->item->type();
+    }
+    /** @return bool */
+    function is_system() {
+        return false;
     }
     /** @return int */
     function about() {
@@ -1012,6 +1161,8 @@ class ReviewAssigner_Data {
     public $oldtype;
     /** @var ?int */
     public $newtype;
+    /** @var ?bool */
+    public $ghost;
     /** @var bool */
     public $creator = true;
     /** @var ?string */
@@ -1079,6 +1230,7 @@ class ReviewAssigner_Data {
             $rmatch = false;
         }
 
+        $this->ghost = friendly_boolean($req["ghost"] ?? null);
         if ($this->oldtype === null && $rtype > 0 && $rmatch) {
             $this->oldtype = $rtype;
         }
@@ -1129,6 +1281,8 @@ class AssignmentSet {
     private $progressf = [];
     /** @var list<Assigner> */
     private $assigners = [];
+    /** @var list<Assigner> */
+    private $system_assigners = [];
     /** @var array<int,int> */
     private $assigners_pidhead = [];
     /** @var int */
@@ -1137,6 +1291,12 @@ class AssignmentSet {
     private $astate;
     /** @var array<string,PaperSearch> */
     private $searches = [];
+    /** @var int */
+    private $user_universe;
+    /** @var ?Contact */
+    private $poison_user;
+    /** @var bool */
+    private $ambiguous_user_complaint = false;
     /** @var ?string */
     private $unparse_search;
     /** @var array<string,bool> */
@@ -1148,6 +1308,9 @@ class AssignmentSet {
     private $_cleanup_notify_tracker = [];
     private $qe_stager;
 
+    // Work budget for requests from non-managers, in AssignmentState cost units
+    const MAX_COST_PC = 100000;
+
     const PROGPHASE_PARSE = 1;
     const PROGPHASE_PREAPPLY = 2;
     const PROGPHASE_REALIZE = 3;
@@ -1155,15 +1318,30 @@ class AssignmentSet {
     const PROGPHASE_UNPARSE = 5;
     const PROGPHASE_SAVE = 6;
 
-    function __construct(Contact $user, $overrides = null) {
+    function __construct(Contact $user) {
         $this->conf = $user->conf;
         $this->user = $user;
         $this->astate = new AssignmentState($user);
-        if ($overrides !== null) {
-            // XXX backwards compat
-            error_log(debug_string_backtrace());
-            $this->set_overrides($overrides);
+        if (!$user->is_manager()) {
+            $this->astate->set_max_cost(self::MAX_COST_PC);
         }
+    }
+
+    /** @param ?int $max_cost
+     * @return $this */
+    function set_max_cost($max_cost) {
+        $this->astate->set_max_cost($max_cost);
+        return $this;
+    }
+
+    /** @return ?int */
+    function max_cost() {
+        return $this->astate->max_cost();
+    }
+
+    /** @return int */
+    function cost() {
+        return $this->astate->cost();
     }
 
     /** @param callable(AssignmentSet) $progressf
@@ -1199,18 +1377,12 @@ class AssignmentSet {
     /** @param int $overrides
      * @return $this */
     function set_overrides($overrides) {
-        if ($overrides === null) { // XXX backward compat
-            $overrides = $this->user->overrides();
-        } else if ($overrides === true) { // XXX backward compat
-            $overrides = $this->user->overrides() | Contact::OVERRIDE_CONFLICT;
+        if ($overrides === null || $overrides === true) { // XXX backward comapt
+            error_log(debug_string_backtrace());
+            $overrides = $this->user->overrides() | ($overrides ? Contact::OVERRIDE_CONFLICT : 0);
         }
         $this->astate->overrides = (int) $overrides;
         return $this;
-    }
-    /** @return $this
-     * @deprecated */
-    function override_conflicts() {
-        return $this->set_overrides($this->user->overrides() | Contact::OVERRIDE_CONFLICT);
     }
     /** @param bool $override
      * @return $this */
@@ -1238,7 +1410,7 @@ class AssignmentSet {
     /** @param string|list<string> $action
      * @return $this */
     function enable_actions($action) {
-        assert(empty($this->assigners));
+        assert(empty($this->assigners) && empty($this->system_assigners));
         if ($this->enabled_actions === null) {
             $this->enabled_actions = [];
         }
@@ -1252,7 +1424,7 @@ class AssignmentSet {
     /** @param int|PaperInfo|list<int|PaperInfo> $paper
      * @return $this */
     function enable_papers($paper) {
-        assert(empty($this->assigners));
+        assert(empty($this->assigners) && empty($this->system_assigners));
         $this->enabled_pids = $this->enabled_pids ?? [];
         foreach (is_array($paper) ? $paper : [$paper] as $p) {
             if ($p instanceof PaperInfo) {
@@ -1313,15 +1485,6 @@ class AssignmentSet {
     function has_error() {
         return $this->astate->has_error();
     }
-    /** @param null|int|string $landmark
-     * @param string $msg
-     * @param -5|-4|-3|-2|-1|0|1|2|3 $status
-     * @return MessageItem
-     * @deprecated
-     * @suppress PhanDeprecatedFunction */
-    function msg_near($landmark, $msg, $status) {
-        return $this->astate->msg_near($landmark, $msg, $status);
-    }
     /** @param MessageItem $mi
      * @param null|int|string|AssignmentItem $landmark
      * @return MessageItem */
@@ -1338,34 +1501,18 @@ class AssignmentSet {
     function warning($msg) {
         $this->astate->warning($msg);
     }
-    /** @param MessageItem $mi
-     * @return void
-     * @deprecated */
-    function prepend_item($mi) {
-        $this->astate->prepend_item($mi);
-    }
-    /** @param string $msg
-     * @param -5|-4|-3|-2|-1|0|1|2|3 $status
-     * @return $this
-     * @deprecated */
-    function prepend_msg($msg, $status) {
-        $this->astate->prepend_item(new MessageItem($status, null, $msg));
-        return $this;
-    }
     /** @return string */
     function full_feedback_text() {
         return $this->astate->full_feedback_text();
-    }
-    /** @deprecated */
-    function report_errors() {
-        $this->feedback_msg(self::FEEDBACK_ASSIGN);
     }
     const FEEDBACK_ASSIGN = 0;
     const FEEDBACK_CHANGE = 1;
     const FEEDBACK_PROPOSE = 2;
     const FEEDBACK_CHANGE_IGNORE = 3;
-    /** @param int $type */
-    function feedback_msg($type) {
+    /** @param int $type
+     * @param int $max_messages
+     * @return list<MessageItem> */
+    function feedback_message_list($type, $max_messages = 1000) {
         $fml = [];
         if ($this->executed > 0) {
             if ($type === self::FEEDBACK_CHANGE) {
@@ -1388,9 +1535,13 @@ class AssignmentSet {
             $fml[] = MessageItem::warning_note("<0>No changes");
         }
         if ($this->astate->has_message()) {
-            $fml[] = $this->message_list(1000);
+            array_push($fml, ...$this->message_list($max_messages));
         }
-        $this->conf->feedback_msg(...$fml);
+        return $fml;
+    }
+    /** @param int $type */
+    function feedback_msg($type) {
+        $this->conf->feedback_msg(...$this->feedback_message_list($type, 1000));
     }
     /** @return JsonResult */
     function json_result() {
@@ -1401,148 +1552,6 @@ class AssignmentSet {
             return new JsonResult(["ok" => true, "message_list" => $this->message_list(3000)]);
         }
         return new JsonResult(["ok" => true]);
-    }
-
-    private static function req_user_text($req) {
-        return Text::name($req["firstName"] ?? "", $req["lastName"] ?? "", $req["email"] ?? "", NAME_E);
-    }
-
-    private static function apply_user_parts($req, $a) {
-        foreach (["firstName", "lastName", "email"] as $i => $k) {
-            if (!$req[$k] && ($a[$i] ?? null)) {
-                $req[$k] = $a[$i];
-            }
-        }
-    }
-
-    /** @return null|string|list<Contact> */
-    private function lookup_users($req, AssignmentParser $aparser) {
-        // check user universe
-        $users = $aparser->user_universe($req, $this->astate);
-        if ($users === "none") {
-            return [$this->astate->none_user()];
-        }
-
-        // check for `userid`/`uid`
-        if (($req["uid"] ?? "") !== "") {
-            if (ctype_digit($req["uid"])
-                && ($u = $this->astate->user_by_id($req["uid"]))) {
-                return [$u];
-            } else {
-                $this->error("<0>User ID ‘" . $req["uid"] . "’ not found");
-                return null;
-            }
-        }
-
-        // move all usable identification data to email, firstName, lastName
-        if (isset($req["name"])) {
-            self::apply_user_parts($req, Text::split_name($req["name"]));
-        }
-        if (isset($req["user"])) {
-            if (strpos($req["user"], " ") === false
-                && strpos($req["user"], "@") !== false
-                && !$req["email"]) {
-                $req["email"] = $req["user"];
-            } else {
-                self::apply_user_parts($req, Text::split_name($req["user"], true));
-            }
-        }
-
-        // extract email, first, last
-        $first = $req["firstName"];
-        $last = $req["lastName"];
-        $email = trim((string) $req["email"]);
-        $lemail = strtolower($email);
-        $special = "";
-        if ($lemail) {
-            $special = $lemail;
-        } else if (!$first && $last && strpos(trim($last), " ") === false) {
-            $special = trim(strtolower($last));
-        }
-
-        // check special: missing, "none", "any", "pc", "me", PC tag, "external"
-        if ($special === "any" || $special === "all") {
-            return "any";
-        } else if ($special === "missing" || (!$first && !$last && !$lemail)) {
-            return "missing";
-        } else if ($special === "none") {
-            return [$this->astate->none_user()];
-        } else if ($special !== ""
-                   && preg_match('/\A(?:(anonymous\d*)|new-?anonymous|anonymous-?new)\z/', $special, $m)) {
-            return isset($m[1]) && $m[1] ? $m[1] : "anonymous-new";
-        }
-        if ($special && !$first && (!$lemail || !$last)) {
-            $ret = ContactSearch::make_special($special, $this->astate->user);
-            if (!$ret->has_error()) {
-                return $ret->users();
-            }
-        }
-        if (($special === "ext" || $special === "external")
-            && $users === "reviewers") {
-            $ret = [];
-            foreach ($this->astate->reviewer_users() as $u) {
-                if (!$u->is_pc_member())
-                    $ret[] = $u;
-            }
-            return $ret;
-        }
-
-        // check for precise email match on existing contact (common case)
-        if ($lemail && ($u = $this->astate->user_by_email($email, false))) {
-            return [$u];
-        }
-
-        // check PC list
-        if ($users === "pc") {
-            $cset = $this->astate->pc_users();
-            $cset_text = "PC member";
-        } else if ($users === "reviewers") {
-            $cset = $this->astate->reviewer_users();
-            $cset_text = "reviewer";
-        } else if ($users === "pc+reviewers") {
-            $cset = $this->astate->pc_users() + $this->astate->reviewer_users();
-            $cset_text = "PC/reviewer";
-        } else {
-            $cset = null;
-            $cset_text = "user";
-        }
-
-        if ($cset) {
-            $text = "";
-            if ($first && $last) {
-                $text = "{$last}, {$first}";
-            } else if ($first || $last) {
-                $text = $first . $last;
-            }
-            if ($email) {
-                $text = $text ? "{$text} <{$email}>" : "<{$email}>";
-            }
-            $ret = ContactSearch::make_cset($text, $this->astate->user, $cset);
-            if (count($ret->user_ids()) === 1) {
-                return $ret->users();
-            } else if (count($ret->user_ids()) > 1) {
-                $this->error("<0>‘" . self::req_user_text($req) . "’ matches more than one {$cset_text}");
-                $this->astate->append_item_here(MessageItem::inform("<0>Use a full email address to disambiguate."));
-                return null;
-            } else {
-                $this->error("<0>" . ucfirst($cset_text) . " ‘" . self::req_user_text($req) . "’ not found");
-                return null;
-            }
-        } else if ($email
-                   && validate_email($email)
-                   && ($u = $this->astate->user_by_email($email, true, $req))) {
-            // create contact
-            return [$u];
-        } else {
-            if (!$email) {
-                $this->error("<0>Email address required");
-            } else if (!validate_email($email)) {
-                $this->error("<0>Email address ‘{$email}’ invalid");
-            } else {
-                $this->error("<0>Could not create user");
-            }
-            return null;
-        }
     }
 
     /** @param list<string> $req
@@ -1576,6 +1585,11 @@ class AssignmentSet {
             } else {
                 $csv->set_header(["paper", "user"]);
             }
+        }
+
+        if ($csv->header_truncated()) {
+            $this->append_item_near(MessageItem::error("<0>Too many fields in assignment"));
+            return false;
         }
 
         foreach ([["action", "assignment", "type"],
@@ -1684,9 +1698,17 @@ class AssignmentSet {
         } else {
             $search = $this->searches[$pfield] ?? null;
             if ($search === null) {
-                $search = $this->searches[$pfield] = new PaperSearch($this->user, ["q" => $pfield, "t" => $this->search_type, "reviewer" => $this->astate->reviewer]);
+                $t0 = hrtime(true);
+                $search = $this->searches[$pfield] = new PaperSearch($this->user, [
+                    "q" => $pfield, "t" => $this->search_type, "reviewer" => $this->astate->reviewer
+                ]);
+                $pids = $search->sorted_paper_ids();
+                $ms = (hrtime(true) - $t0) / 1000000;
+                $this->astate->charge(max(AssignmentState::COST_SEARCH_MIN,
+                                          (int) ($ms * AssignmentState::COST_SEARCH_PER_MS)));
+            } else {
+                $pids = $search->sorted_paper_ids();
             }
-            $pids = $search->sorted_paper_ids();
             if ($report_error && $search->has_problem()) {
                 foreach ($search->message_list() as $mi) {
                     $this->astate->append_item($mi->with_landmark($this->astate->landmark()));
@@ -1720,31 +1742,156 @@ class AssignmentSet {
 
     /** @return ?AssignmentParser */
     private function collect_parser($req) {
-        if (($action = $req["action"]) === null) {
+        $action = $req["action"] ?? null;
+        if ($action === null) {
             $action = $this->astate->defaults["action"];
+            if ($action === "<missing>") {
+                return null;
+            }
+            $req["action"] = $action;
         }
         return $this->assignment_parser(strtolower(trim($action)));
     }
 
-    /** @return ?list<Contact> */
-    private function expand_special_user($user, AssignmentParser $aparser, PaperInfo $prow, $req) {
-        if ($user === "any") {
-            $us = $aparser->expand_any_user($prow, $req, $this->astate);
-        } else if ($user === "missing") {
-            $us = $aparser->expand_missing_user($prow, $req, $this->astate);
-            if ($us === null) {
-                $this->astate->error("<0>User required");
-                return null;
+    /** @param CsvRow $req
+     * @param int $nameflags
+     * @return string */
+    private static function req_user_text($req, $nameflags = NAME_E) {
+        return Text::name($req["firstName"] ?? "", $req["lastName"] ?? "", $req["email"] ?? "", $nameflags);
+    }
+
+    /** @param CsvRow $req */
+    private static function apply_user_parts($req, $a) {
+        foreach (["firstName", "lastName", "email"] as $i => $k) {
+            if (!$req[$k] && ($a[$i] ?? null)) {
+                $req[$k] = $a[$i];
             }
-        } else if (substr_compare($user, "anonymous", 0, 9) === 0) {
-            $us = $aparser->expand_anonymous_user($prow, $req, $user, $this->astate);
-        } else {
-            $us = null;
         }
-        if ($us === null) {
-            $this->astate->error("<0>User ‘{$user}’ not allowed here");
+    }
+
+    /** @param CsvRow $req
+     * @return null|string|list<Contact> */
+    private function pre_resolve_users($req, AssignmentParser $aparser) {
+        $viewer = $this->astate->user;
+
+        // check user universe
+        $this->user_universe = $aparser->user_universe($req, $this->astate);
+        if ($this->user_universe === AssignmentParser::UU_NONE) {
+            return [$this->astate->none_user()];
         }
-        return $us;
+
+        // check user ID
+        if (isset($req["uid"])) {
+            $req["uid"] = trim($req["uid"]);
+        }
+        if (($req["uid"] ?? "") !== "") {
+            if (($uid = stoi($req["uid"]) ?? -1) < 0) {
+                $this->error("<0>Invalid user ID");
+                return "error";
+            } else if ($uid === 0) {
+                return [$this->astate->none_user()];
+            } else {
+                return "retry";
+            }
+        }
+
+        // move all usable identification data to email, firstName, lastName
+        if (isset($req["name"])) {
+            self::apply_user_parts($req, Text::split_name($req["name"]));
+        }
+        if (isset($req["user"])) {
+            if (strpos($req["user"], " ") === false
+                && strpos($req["user"], "@") !== false
+                && !$req["email"]) {
+                $req["email"] = $req["user"];
+            } else {
+                self::apply_user_parts($req, Text::split_name($req["user"], true));
+            }
+        }
+        if (isset($req["email"])) {
+            $req["email"] = trim($req["email"]);
+        }
+
+        // extract email, first, last
+        $first = $req["firstName"];
+        $last = $req["lastName"];
+        $email = (string) $req["email"];
+        $lemail = strtolower($email);
+        $special = "";
+        if ($lemail) {
+            $special = $lemail;
+        } else if (!$first && $last && strpos(trim($last), " ") === false) {
+            $special = trim(strtolower($last));
+        }
+
+        // check special: missing, "none", "any", "pc", "me", PC tag
+        if ($special === "any" || $special === "all") {
+            return "any";
+        } else if ($special === "none") {
+            return [$this->astate->none_user()];
+        } else if ($special === "missing" || (!$first && !$last && !$lemail)) {
+            return "missing";
+        } else if ($special === "ext" || $special === "external") {
+            return "external";
+        } else if ($special !== ""
+                   && preg_match('/\A(?:(anonymous\d*)|new-?anonymous|anonymous-?new)\z/', $special, $m)) {
+            return isset($m[1]) && $m[1] ? $m[1] : "anonymous-new";
+        }
+        if ($special && !$first && (!$lemail || !$last)) {
+            $ret = ContactSearch::make_special($special, $viewer);
+            if ($ret->resolved()) {
+                return $ret->users();
+            }
+        }
+
+        // check for precise email match on existing contact (common)
+        if ($lemail
+            && ($u = $this->astate->user_by_email($email, false))) {
+            return [$u];
+        }
+
+        // check for unique PC match
+        if ($this->user_universe === AssignmentParser::UU_PC) {
+            $this->astate->charge(count($this->astate->pc_members()));
+            $ret = ContactSearch::make_cset(self::req_user_text($req, NAME_E|NAME_L),
+                                            $this->user,
+                                            $this->astate->pc_members());
+            if ($ret->resolved_unique()) {
+                return $ret->users();
+            } else if ($ret->is_empty()) {
+                return [$this->astate->not_found_user()];
+            }
+            return [$this->astate->ambiguous_user()];
+        }
+
+        // check for missing or invalid email
+        if ($this->user_universe < AssignmentParser::UU_PC) {
+            if ($email === "") {
+                $this->error("<0>Email address required");
+                return "error";
+            } else if (!validate_email($email)) {
+                // do not report an error yet
+                return [$this->astate->invalid_user()];
+            }
+        }
+
+        return "retry";
+    }
+
+    /** @param list<int> $pids
+     * @return bool */
+    private function allow_paper_filter($pids) {
+        // Filtering a paper set can expose information about papers, so only
+        // allow it if the current user can administer every paper in the set
+        if ($this->user->allow_admin_all()) {
+            return true;
+        }
+        foreach ($pids as $pid) {
+            if (!($prow = $this->astate->prow($pid))
+                || !$this->user->allow_admin($prow))
+                return false;
+        }
+        return true;
     }
 
     /** @param CsvRow $req
@@ -1760,7 +1907,7 @@ class AssignmentSet {
             return;
         } else if ($this->enabled_actions !== null
                    && !isset($this->enabled_actions[$aparser->type])) {
-            $this->error("<0>Action ‘{$aparser->type}’ not allowed");
+            $this->error("<0>Action ‘" . $req["action"] . "’ not allowed");
             return;
         }
 
@@ -1786,9 +1933,9 @@ class AssignmentSet {
         // load state
         $aparser->load_state($this->astate);
 
-        // clean user parts
-        $contacts = $this->lookup_users($req, $aparser);
-        if ($contacts === null) {
+        // resolve users; sometimes that can help filter papers
+        $contacts = $this->pre_resolve_users($req, $aparser);
+        if ($contacts === "error") {
             return;
         }
 
@@ -1797,7 +1944,8 @@ class AssignmentSet {
             && is_array($contacts)
             && count($contacts) == 1
             && $contacts[0]->contactId > 0
-            && ($pf = $aparser->paper_filter($contacts[0], $req, $this->astate)) !== null) {
+            && ($pf = $aparser->paper_filter($contacts[0], $req, $this->astate)) !== null
+            && $this->allow_paper_filter($pids)) {
             $npids = [];
             foreach ($pids as $p) {
                 if ($pf[$p] ?? null)
@@ -1808,10 +1956,11 @@ class AssignmentSet {
 
         // check conflicts and perform assignment
         $any_success = false;
+        $this->poison_user = null;
         foreach ($pids as $p) {
             $prow = $this->astate->prow($p);
             if (!$prow) {
-                $this->error("<5>" . $this->user->no_paper_whynot($p)->unparse_html());
+                $this->astate->paper_error($this->user->no_paper_whynot($p));
                 continue;
             }
             $ret = $this->apply_paper($prow, $contacts, $aparser, $req);
@@ -1834,43 +1983,200 @@ class AssignmentSet {
         }
     }
 
-    /** @param list<Contact>|string $contacts
+    /** @return array<int,Contact> */
+    private function query_reviewers(PaperInfo $prow) {
+        $cset = [];
+        Review_AssignmentParser::load_review_state($this->astate);
+        foreach ($this->astate->query(new Review_Assignable($prow->paperId, null)) as $item) {
+            if (($u = $this->astate->user_by_id($item->cid)))
+                $cset[$u->contactId] = $u;
+        }
+        return $cset;
+    }
+
+    /** @param CsvRow $req
+     * @return null|string|list<Contact> */
+    private function resolve_users($udef, $req, AssignmentParser $parser, PaperInfo $prow) {
+        if ($udef === "retry") {
+            // construct the requested universe, if any
+            $cset = null;
+            if (($this->user_universe & AssignmentParser::UU_PC) !== 0) {
+                $cset = $this->astate->pc_members();
+            }
+            if (($this->user_universe & AssignmentParser::UU_REVIEWERS) !== 0) {
+                $cset = ($cset ?? []) + $this->query_reviewers($prow);
+            }
+            if ($cset !== null) {
+                $this->astate->charge(count($cset));
+            }
+
+            // search in universe (UID search included)
+            $uid = $req["uid"] ?? "";
+            if ($uid !== "") {
+                $csrch = new ContactSearch(ContactSearch::F_USERID, $uid, $this->astate->user, $cset);
+            } else if ($cset !== null) {
+                $text = self::req_user_text($req, NAME_E | NAME_L);
+                $csrch = new ContactSearch(ContactSearch::F_USER, $text, $this->astate->user, $cset);
+            } else {
+                $csrch = null;
+            }
+            if ($csrch !== null) {
+                if ($csrch->resolved_unique()) {
+                    return $csrch->users();
+                } else if ($csrch->is_empty()) {
+                    return [$this->astate->not_found_user()];
+                }
+                return [$this->astate->ambiguous_user()];
+            }
+
+            // otherwise require an unambiguous user
+            $email = $req["email"] ?? "";
+            if (($u = $this->astate->user_by_email($email, true, $req))) {
+                return [$u];
+            }
+            return [$this->astate->invalid_user()];
+        }
+
+        $us = null;
+        if ($udef === "external") {
+            if (($this->user_universe & AssignmentParser::UU_REVIEWERS) !== 0) {
+                $this->astate->user_explicit = false;
+                $us = [];
+                foreach ($this->query_reviewers($prow) as $reviewer) {
+                    if (!$reviewer->isPC)
+                        $us[] = $reviewer;
+                }
+            }
+        } else if ($udef === "any") {
+            $this->astate->user_explicit = false;
+            $us = $parser->expand_any_user($prow, $req, $this->astate);
+        } else if ($udef === "missing") {
+            $this->astate->user_explicit = false;
+            $us = $parser->expand_missing_user($prow, $req, $this->astate);
+            if ($us === null) {
+                $this->astate->paper_error("<0>User required");
+                return null;
+            }
+        } else if (str_starts_with($udef, "anonymous")) {
+            $us = $parser->expand_anonymous_user($prow, $req, $udef, $this->astate);
+        }
+        if ($us === null) {
+            $this->astate->paper_error("<0>User ‘{$udef}’ not allowed here");
+        }
+        return $us;
+    }
+
+    private function generic_allow_user_error(PaperInfo $prow, Contact $auser, AssignmentParser $aparser, $req) {
+        if ($this->user_universe === AssignmentParser::UU_PC) {
+            $what = $lcwhat = "PC member";
+        } else if ($this->user_universe === AssignmentParser::UU_REVIEWERS) {
+            $what = "Reviewer";
+            $lcwhat = "reviewer";
+        } else {
+            $what = "User";
+            $lcwhat = "user";
+        }
+        if ($auser === $this->poison_user) {
+            // suppress duplicate error message
+            return;
+        }
+        $utext = ($req["uid"] ?? "") !== "" ? "#" . trim($req["uid"]) : "‘" . self::req_user_text($req) . "’";
+        if ($auser === $this->astate->none_user()) {
+            $this->astate->paper_error("<0>User ‘none’ not allowed here");
+        } else if ($auser === $this->astate->not_found_user()) {
+            if ($this->user_universe === AssignmentParser::UU_PC
+                && !$this->astate->user->can_view_pc()) {
+                $this->astate->paper_error("<0>You don’t have permission to view the PC");
+            } else {
+                $this->astate->paper_error("<0>{$what} {$utext} not found");
+            }
+        } else if ($auser === $this->astate->ambiguous_user()) {
+            $this->astate->paper_error("<0>{$utext} matches more than one {$lcwhat}");
+            if (!$this->ambiguous_user_complaint) {
+                $this->ambiguous_user_complaint = true;
+                $this->astate->append_item_here(MessageItem::inform("<0>Use a full email address to disambiguate."));
+            }
+        } else if ($auser === $this->astate->invalid_user()) {
+            $this->astate->paper_error("<0>Email address ‘" . $req["email"] . "’ invalid");
+        } else {
+            $uname = $auser->name(NAME_E);
+            if ($prow->has_conflict($auser)
+                && $this->astate->user->can_view_conflicts($prow)) {
+                $problem = "has a conflict with";
+            } else {
+                $problem = "cannot be assigned to";
+            }
+            $this->astate->paper_error("<0>{$uname} {$problem} #{$prow->paperId}");
+            return; // do not set poison_user
+        }
+        $this->poison_user = $this->poison_user ?? $auser;
+    }
+
+    /** @param null|string|list<Contact> $contacts
      * @param CsvRow $req
      * @return 0|1|-1 */
     private function apply_paper(PaperInfo $prow, $contacts, AssignmentParser $aparser, $req) {
+        // check if we can affect the paper
+        $mcount = $this->astate->cumulative_message_count();
         $allow = $aparser->allow_paper($prow, $this->astate);
         if ($allow !== true) {
-            $allow = $allow ? : new AssignmentError($prow->failure_reason(["administer" => true]));
-            $this->astate->paper_error($allow->getMessage());
+            if ($allow instanceof AssignmentError) { // XXX backward compat
+                $this->astate->paper_error($allow->getMessage());
+            }
+            if ($this->astate->cumulative_message_count() === $mcount) {
+                $this->astate->paper_error($prow->failure_reason(["administer" => true]));
+            }
             return 0;
         }
 
+        // report if user lookup failed only after we can affect the paper
+        if ($contacts === null) {
+            return -1;
+        }
+
         // expand “all” and “missing”
-        $pusers = $contacts;
-        if (!is_array($pusers)) {
-            $pusers = $this->expand_special_user($pusers, $aparser, $prow, $req);
-            if ($pusers === null) {
-                return -1;
-            }
+        $this->astate->user_explicit = true;
+        if (is_array($contacts)) {
+            $pusers = $contacts;
+        } else {
+            $pusers = $this->resolve_users($contacts, $req, $aparser, $prow);
+        }
+        if ($pusers === null) {
+            return -1;
         }
 
         $ret = 0;
-        foreach ($pusers as $contact) {
-            $err = $aparser->allow_user($prow, $contact, $req, $this->astate);
-            if ($err !== true) {
-                if (!$err && !$contact->contactId) {
-                    $this->astate->error("<0>User ‘none’ not allowed here");
-                    return -1;
-                } else if (!$err) {
-                    $uname = $contact->name(NAME_E);
-                    $problem = $prow->has_conflict($contact) ? "has a conflict with" : "cannot be assigned to";
-                    $err = new AssignmentError("<0>{$uname} {$problem} #{$prow->paperId}");
+        foreach ($pusers as $auser) {
+            $this->astate->charge();
+            $mcount = $this->astate->cumulative_message_count();
+            $msgsnap = $this->astate->message_snapshot();
+            $allow = $aparser->allow_user($prow, $auser, $req, $this->astate);
+            if ($allow !== true
+                && !$this->astate->user_explicit
+                && $auser->contactId !== $this->user->contactXid
+                && !$this->user->can_manage($prow)) {
+                // another implicit user (from `any` or `external`) that the
+                // user can't affect is skipped, not reported
+                $this->astate->restore_message_snapshot($msgsnap);
+                continue;
+            }
+            if ($allow !== true) {
+                if ($allow instanceof AssignmentError) { // XXX backward compat
+                    $this->astate->paper_error($allow->getMessage());
                 }
-                $this->astate->paper_error($err->getMessage());
+                if ($this->astate->cumulative_message_count() === $mcount) {
+                    $this->generic_allow_user_error($prow, $auser, $aparser, $req);
+                    // maybe exit early
+                    if ($this->poison_user
+                        && is_array($contacts)
+                        && $contacts[0] === $this->poison_user) {
+                        return -1;
+                    }
+                }
                 continue;
             }
 
-            $err = $aparser->apply($prow, $contact, $req, $this->astate);
+            $err = $aparser->apply($prow, $auser, $req, $this->astate);
             if ($err === true) {
                 $ret = 1;
             } else if ($err) {
@@ -1890,7 +2196,7 @@ class AssignmentSet {
      * @param ?array<string,mixed> $defaults
      * @return $this */
     function parse($text, $filename = null, $defaults = null) {
-        assert(empty($this->assigners));
+        assert(empty($this->assigners) && empty($this->system_assigners));
         if ($text instanceof CsvParser) {
             $csv = $text;
             assert($filename === null || $text->filename() === $filename);
@@ -1906,7 +2212,7 @@ class AssignmentSet {
     /** @param ?array<string,mixed> $defaults
      * @return $this */
     function parse_csv(CsvParser $csv, $defaults = null) {
-        assert(empty($this->assigners));
+        assert(empty($this->assigners) && empty($this->system_assigners));
         $this->astate->set_filename($csv->filename());
         $this->astate->defaults = $defaults ?? [];
 
@@ -1917,10 +2223,22 @@ class AssignmentSet {
         $has_landmark = $csv->has_column("landmark");
         $old_overrides = $this->user->set_overrides($this->astate->overrides);
 
-        // parse file up to 2000 lines at a time
+        // parse file up to 5000 lines at a time
         $this->progress_phase = self::PROGPHASE_PARSE;
-        while ($this->parse_batch($csv, $has_landmark)) {
-            /* do nothing */
+        try {
+            while ($this->parse_batch($csv, $has_landmark)) {
+                /* do nothing */
+            }
+            $exhausted = false;
+        } catch (AssignmentBudgetException) {
+            $this->astate->error("<0>Assignment too long or complex, giving up");
+            $exhausted = true;
+        }
+        // later phases process only items the budget already covered
+        $this->astate->set_max_cost(null);
+        if ($exhausted) {
+            $this->user->set_overrides($old_overrides);
+            return $this;
         }
 
         // call preapply functions and compute diff
@@ -1939,6 +2257,10 @@ class AssignmentSet {
                 $this->astate->set_landmark($item->landmark);
                 $a = $item->realize($this->astate);
                 if (!$a) {
+                    continue;
+                }
+                if ($a->is_system()) {
+                    $this->system_assigners[] = $a;
                     continue;
                 }
                 if ($a->pid > 0) {
@@ -1972,7 +2294,10 @@ class AssignmentSet {
 
     /** @return bool */
     private function parse_batch(CsvParser $csv, $has_landmark) {
-        set_time_limit(30);
+        // a capped request is bounded by its budget, not by batches
+        if ($this->request_count === 0 || $this->astate->max_cost() === null) {
+            set_time_limit(30);
+        }
         $rowlimit = 5000;
         $progresscadence = 1000;
 
@@ -1980,6 +2305,7 @@ class AssignmentSet {
         $reqs = $pids = $progress = [];
         $nrows = 0;
         while ($nrows < $rowlimit && ($req = $csv->next_row())) {
+            $this->astate->charge();
             if ($has_landmark) {
                 $reqs[] = $req["landmark"] ?? $csv->lineno();
             } else {
@@ -2047,6 +2373,9 @@ class AssignmentSet {
     function assigned_about() {
         $about = 0;
         foreach ($this->assigners as $assigner) {
+            $about |= $assigner->about();
+        }
+        foreach ($this->system_assigners as $assigner) {
             $about |= $assigner->about();
         }
         return $about;
@@ -2192,12 +2521,29 @@ class AssignmentSet {
         return $this->astate->prow($pid);
     }
 
+    private function _pre_execute_assigner(Assigner $assigner, &$locks, &$pids) {
+        if (($u = $assigner->contact)
+            && $u->contactId < 0
+            && !$u->store($u->is_anonymous_user() ? Contact::SAVE_ANY_EMAIL : 0, $this->user)) {
+            if (!$assigner->is_system()) {
+                $this->append_item_near(MessageItem::error("<0>Could not create account for user {$u->email}"), $assigner->item);
+            } else {
+                $this->append_item_near(MessageItem::error(""));
+            }
+            return;
+        }
+        $assigner->add_locks($this, $locks);
+        if ($assigner->pid > 0) {
+            $pids[$assigner->pid] = true;
+        }
+    }
+
     /** @return bool */
     function execute() {
         assert($this->executed === 0);
         if ($this->has_error()) {
             return false;
-        } else if (empty($this->assigners)) {
+        } else if (empty($this->assigners) && empty($this->system_assigners)) {
             return true;
         }
 
@@ -2210,14 +2556,14 @@ class AssignmentSet {
         $this->conf->pause_log();
         $pids = [];
         foreach ($this->assigners as $assigner) {
-            if (($u = $assigner->contact) && $u->contactId < 0) {
-                $u->store($u->is_anonymous_user() ? Contact::SAVE_ANY_EMAIL : 0, $this->user);
-                $assigner->cid = $u->contactId;
-            }
-            $assigner->add_locks($this, $locks);
-            if ($assigner->pid > 0) {
-                $pids[$assigner->pid] = true;
-            }
+            $this->_pre_execute_assigner($assigner, $locks, $pids);
+        }
+        foreach ($this->system_assigners as $assigner) {
+            $this->_pre_execute_assigner($assigner, $locks, $pids);
+        }
+        if ($this->has_error()) {
+            $this->conf->resume_log();
+            return false;
         }
 
         // execute assignments
@@ -2239,6 +2585,9 @@ class AssignmentSet {
                 $this->notify_progress();
             }
         }
+        foreach ($this->system_assigners as $assigner) {
+            $assigner->execute($this);
+        }
         if ($this->progress_value % $progresscadence !== 0) {
             $this->notify_progress();
         }
@@ -2250,6 +2599,9 @@ class AssignmentSet {
 
         // clean up
         foreach ($this->assigners as $assigner) {
+            $assigner->cleanup($this);
+        }
+        foreach ($this->system_assigners as $assigner) {
             $assigner->cleanup($this);
         }
         foreach ($this->_cleanup_callbacks as $cb) {

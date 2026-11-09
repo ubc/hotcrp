@@ -31,12 +31,15 @@ class Author_SearchTerm extends SearchTerm {
                 $word = null;
                 $count = "=0";
             } else if ($word !== "") {
-                $cids = $srch->matching_special_uids($word, false, false);
+                $usrch = $srch->user_search(0, SearchWord::make_simple($word));
+                if ($usrch->resolved()) {
+                    $cids = $usrch->user_ids();
+                }
             }
         }
         $aust = new Author_SearchTerm($srch->user, $count, $cids);
-        if (!$cids && $word !== "") {
-            $aust->regex = Text::star_text_pregexes($word, $sword->quoted);
+        if ($cids === null && $word !== null && $word !== "") {
+            $aust->regex = Text::star_text_pregexes($word);
             $aust->set_float("fhl:au", $aust->regex);
         }
         if ($sword->kwexplicit && ($sword->kwdef->listed ?? false)) {

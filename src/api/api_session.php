@@ -25,11 +25,7 @@ class Session_API {
         // update its CSRF token. It also may be called by unauthenticated
         // users (`auth: false`), which enables CORS. We do not want to
         // expose user information or the CSRF token to other origins!
-        $sfs = $qreq->raw_header("HTTP_SEC_FETCH_SITE");
-        if ($sfs === null) {
-            $sfs = $qreq->raw_header("HTTP_ORIGIN") === null ? "same-origin" : "cross-site";
-        }
-        if ($sfs !== "same-origin" && $sfs !== "none") {
+        if (!$qreq->same_origin()) {
             return ["ok" => true];
         }
 
@@ -45,60 +41,39 @@ class Session_API {
         // independent, so partial application is correct, and lenient parsing
         // keeps clients and servers of different versions interoperable.
         $qreq->open_session();
-        $view = [];
-        preg_match_all('/(?:\A|\s)(foldpaper|foldpscollab|foldhomeactivity|(?:pl|pf|ul)display|(?:|ul)scoresort)(|\.[^=]*)(=\S*|)(?=\s|\z)/', $v, $ms, PREG_SET_ORDER);
+        $view = $uldisplay = [];
+        preg_match_all('/(?:\A|\s)((?:pl|pf|ul)display|(?:|ul)scoresort)(|\.[^=\s]*+)(=\S*|)(?=\s|\z)/', $v, $ms, PREG_SET_ORDER);
         foreach ($ms as $m) {
             $unfold = intval(substr($m[3], 1) ? : "0") === 0;
-            if ($m[1] === "foldpaper" && $m[2] !== "") {
-                $x = $qreq->csession($m[1]) ?? [];
-                if (is_string($x)) {
-                    $x = explode(" ", $x);
-                }
-                $x = array_diff($x, [substr($m[2], 1)]);
-                if ($unfold) {
-                    $x[] = substr($m[2], 1);
-                }
-                $v = join(" ", $x);
-                if ($v === "") {
-                    $qreq->unset_csession("foldpaper");
-                } else if (substr_count($v, " ") === count($x) - 1) {
-                    $qreq->set_csession("foldpaper", $v);
-                } else {
-                    $qreq->set_csession("foldpaper", $x);
-                }
-                // XXX backwards compat
-                $qreq->unset_csession("foldpapera");
-                $qreq->unset_csession("foldpaperb");
-                $qreq->unset_csession("foldpaperp");
-                $qreq->unset_csession("foldpapert");
-            } else if ($m[1] === "scoresort" && $m[2] === "" && $m[3] !== "") {
+            if ($m[1] === "scoresort" && $m[2] === "" && $m[3] !== "") {
                 $ss = ScoreInfo::parse_score_sort(substr($m[3], 1));
                 if ($ss !== null) {
                     $view["pl"][] = "sort:[score {$ss}]";
                 }
             } else if ($m[1] === "ulscoresort" && $m[2] === "" && $m[3] !== "") {
                 $want = ScoreInfo::parse_score_sort(substr($m[3], 1));
-                if ($want === "variance" || $want === "maxmin") {
-                    $qreq->set_csession("ulscoresort", $want);
-                } else if ($want === "average") {
-                    $qreq->unset_csession("ulscoresort");
-                }
+                $uldisplay["scoresort"] = $want;
             } else if (($m[1] === "pldisplay" || $m[1] === "pfdisplay")
                        && $m[2] !== "") {
                 $view[substr($m[1], 0, 2)][] = ($unfold ? "show:" : "hide:") . substr($m[2], 1);
             } else if ($m[1] === "uldisplay"
-                       && preg_match('/\A\.[-a-zA-Z0-9_:]+\z/', $m[2])) {
-                self::change_uldisplay($qreq, [substr($m[2], 1) => $unfold]);
-            } else if (substr($m[1], 0, 4) === "fold" && $m[2] === "") {
-                if ($unfold) {
-                    $qreq->set_csession($m[1], 0);
-                } else {
-                    $qreq->unset_csession($m[1]);
-                }
+                       && preg_match('/\A\.[-a-zA-Z0-9_:]+\z/', $m[2])
+                       && ($m[2] !== ".scoresort" || strlen($m[3]) > 1)) {
+                $v = $m[2] === ".scoresort" ? substr($m[3], 1) : $unfold;
+                $uldisplay[substr($m[2], 1)] = $v;
             }
         }
         foreach ($view as $report => $viewlist) {
+            // apply author options first, so an explicit Authors state
+            // overrides the authors they imply
+            usort($viewlist, function ($a, $b) {
+                return (int) !preg_match('/:(?:anonau|aufull)\z/', $a)
+                    <=> (int) !preg_match('/:(?:anonau|aufull)\z/', $b);
+            });
             self::parse_view($qreq, $report, join(" ", $viewlist));
+        }
+        if (!empty($uldisplay)) {
+            self::change_uldisplay($qreq, $uldisplay);
         }
         return true;
     }
@@ -106,7 +81,11 @@ class Session_API {
     /** @param Qrequest $qreq
      * @return array{ok:bool,sessioninfo:array} */
     static function setsession(Contact $user, $qreq) {
-        // NB This is for POSTs and requires authentication.
+        // NB This is for POSTs; CSRF token required. Since empty users are
+        // allowed, the endpoint is auth: false: we check the token explicitly.
+        if (!$qreq->valid_token()) {
+            return $user->conf->invalid_token_error($qreq);
+        }
         assert($user === $qreq->user());
         $qreq->open_session();
         self::change_session($qreq, $qreq->v);
@@ -118,14 +97,14 @@ class Session_API {
     static function parse_view(Qrequest $qreq, $report, $view) {
         $search = new PaperSearch($qreq->user(), "NONE");
         $pl = new PaperList($report, $search, ["sort" => true], $qreq);
-        $pl->apply_view_report_default(PaperList::VIEWORIGIN_REPORT);
+        $pl->apply_view_report_default(ViewCommand::ORIGIN_REPORT);
         $pl->apply_view_session($qreq);
         if ($view instanceof Qrequest) {
             $pl->apply_view_qreq($view);
         } else {
-            $pl->parse_view($view, PaperList::VIEWORIGIN_MAX);
+            $pl->parse_view($view, ViewCommand::ORIGIN_MAX);
         }
-        $vd = $pl->unparse_view(PaperList::VIEWORIGIN_REPORT, false);
+        $vd = $pl->unparse_view(ViewCommand::ORIGIN_REPORT, false);
         if (!empty($vd)) {
             $qreq->set_csession("{$report}display", join(" ", $vd));
         } else {
@@ -133,39 +112,73 @@ class Session_API {
         }
     }
 
-    /** @param array<string,bool> $settings */
+    /** @param mixed $str
+     * @return ?string */
+    static function clean_ulscoresort($str) {
+        return $str === "variance" || $str === "maxmin" ? $str : null;
+    }
+
+    /** @param string $key
+     * @param list<string> $curl
+     * @param int $pos
+     * @return int|false */
+    static function uldisplay_search($key, $curl, $pos = 0) {
+        $len = strlen($key);
+        $n = count($curl);
+        while ($pos !== $n) {
+            $x = $curl[$pos];
+            if (str_starts_with($x, $key)
+                && (strlen($x) === $len || $x[$len] === "=")) {
+                return $pos;
+            }
+            ++$pos;
+        }
+        return false;
+    }
+
+    /** @param array<string,null|bool|string> $settings */
     static private function change_uldisplay(Qrequest $qreq, $settings) {
-        $curl = explode(" ", trim(ContactList::uldisplay($qreq)));
+        $uld = [];
+        foreach (preg_split('/\s++/', ContactList::uldisplay($qreq), -1, PREG_SPLIT_NO_EMPTY) as $s) {
+            if (($eq = strpos($s, "=")) !== false) {
+                $uld[substr($s, 0, $eq)] = substr($s, $eq);
+            } else {
+                $uld[$s] = "";
+            }
+        }
         foreach ($settings as $name => $setting) {
             if (($f = $qreq->conf()->review_field($name))) {
-                $terms = [$f->short_id];
+                $keys = [$f->short_id];
                 if ($f->main_storage !== null && $f->main_storage !== $f->short_id) {
-                    $terms[] = $f->main_storage;
+                    $keys[] = $f->main_storage;
                 }
             } else {
-                $terms = [$name];
+                $keys = [$name];
             }
-            foreach ($terms as $i => $term) {
-                $p = array_search($term, $curl, true);
-                if ($i === 0 && $setting && $p === false) {
-                    $curl[] = $term;
-                }
-                while (($i !== 0 || !$setting) && $p !== false) {
-                    array_splice($curl, $p, 1);
-                    $p = array_search($term, $curl, true);
-                }
+            foreach ($keys as $key) {
+                unset($uld[$key]);
+            }
+            if ($name === "scoresort") {
+                $setting = self::clean_ulscoresort($setting);
+            }
+            if ($setting) {
+                $uld[$keys[0]] = is_string($setting) ? "={$setting}" : "";
             }
         }
 
+        ksort($uld);
+        $wantl = [];
+        foreach ($uld as $k => $v) {
+            $wantl[] = $k . $v;
+        }
         $defaultl = explode(" ", trim(ContactList::uldisplay($qreq, true)));
         sort($defaultl);
-        sort($curl);
-        if ($curl === $defaultl) {
+        if ($wantl === $defaultl) {
             $qreq->unset_csession("uldisplay");
-        } else if ($curl === [] || $curl === [""]) {
+        } else if ($wantl === [] || $wantl === [""]) {
             $qreq->set_csession("uldisplay", " ");
         } else {
-            $qreq->set_csession("uldisplay", " " . join(" ", $curl) . " ");
+            $qreq->set_csession("uldisplay", " " . join(" ", $wantl) . " ");
         }
     }
 
@@ -194,6 +207,22 @@ class Session_API {
         return $j;
     }
 
+    /** @param string $s
+     * @return ?string */
+    static function clean_ftext($s) {
+        // the only formats allowed are <0>, <1>, and clean <5>
+        $fmt = Ftext::format($s);
+        if ($fmt === null) {
+            return "<0>{$s}";
+        } else if ($fmt === 0 || $fmt === 1) {
+            return $s;
+        } else if ($fmt === 5
+                   && ($h = CleanHtml::basic_clean(substr($s, 3))) !== null) {
+            return "<5>{$h}";
+        }
+        return null;
+    }
+
     static function stashmessages(Contact $user, Qrequest $qreq) {
         if (isset($qreq->smsg)
             && (strlen($qreq->smsg) < 10 || strlen($qreq->smsg) > 64 || !ctype_alnum($qreq->smsg))) {
@@ -202,7 +231,7 @@ class Session_API {
         if (!isset($qreq->message_list)) {
             return JsonResult::make_missing_error("message_list");
         }
-        $mlj = json_decode($qreq->message_list);
+        $mlj = Json::decode_user($qreq->message_list, 16384);
         if (!is_array($mlj)) {
             return JsonResult::make_parameter_error("message_list");
         }
@@ -220,28 +249,41 @@ class Session_API {
                 $ml[] = new MessageItem($status);
                 continue;
             }
-            // If nonempty, only formats <0>, <1>, and clean <5> allowed
-            $fmt = Ftext::format($message);
-            if ($fmt === null) {
-                $ml[] = new MessageItem($status, null, "<0>{$message}");
-            } else if ($fmt === 0
-                       || $fmt === 1
-                       || ($fmt === 5 && CleanHtml::basic_clean(substr($message, 3)))) {
-                $ml[] = new MessageItem($status, null, $message);
+            $message = self::clean_ftext($message);
+            if ($message === null) {
+                continue;
             }
+            $mi = new MessageItem($status, null, $message);
+            // Only string landmarks are relevant
+            if (isset($mx->landmark) && is_string($mx->landmark)) {
+                $mi->landmark = $mx->landmark;
+            }
+            $ml[] = $mi;
         }
         if (empty($ml)) {
             return JsonResult::make_ok()->set("smsg", false);
         }
         $smsg = $qreq->smsg ?? base48_encode(random_bytes(6));
-        $qreq->open_session();
-        $smsgs = $qreq->gsession("smsg") ?? [];
-        $smsgs[] = [$smsg, Conf::$now, Ht::feedback_msg_content($ml)];
-        $qreq->set_gsession("smsg", $smsgs);
+        self::store_smsg($qreq, $smsg, Ht::feedback_msg_content($ml));
         return (new JsonResult(200))->set("smsg", $smsg);
     }
 
+    /** @param Qrequest $qreq
+     * @param string $smsg
+     * @param array{string,int} ...$mx */
+    static function store_smsg($qreq, $smsg, ...$mx) {
+        // `feedback_msg_content` and friends yield null for messages that render
+        // empty; drop those so no null entry is stored
+        $mx = array_values(array_filter($mx, function ($m) { return $m !== null; }));
+        if (!empty($mx)) {
+            $qreq->open_session();
+            $smsgs = $qreq->gsession("smsg") ?? [];
+            $smsgs[] = [$smsg, Conf::$now, ...$mx];
+            $qreq->set_gsession("smsg", $smsgs);
+        }
+    }
+
     static function reauth(Contact $user, Qrequest $qreq) {
-        return $user->authentication_checker($qreq, $qreq->reason ?? "api")->api();
+        return $user->authentication_checker($qreq, "api")->api();
     }
 }

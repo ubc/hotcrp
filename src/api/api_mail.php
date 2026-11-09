@@ -4,8 +4,17 @@
 
 class Mail_API {
     static function mailtext(Contact $user, Qrequest $qreq, ?PaperInfo $prow) {
-        if (!$user->isPC
-            || ($prow && !$user->can_view_paper($prow))) {
+        if (!$user->isPC) {
+            return JsonResult::make_permission_error();
+        }
+        if ($prow) {
+            $fr = $user->perm_view_paper($prow);
+        } else {
+            $fr = $qreq->p ? $qreq->annex("paper_whynot") : null;
+        }
+        if ($fr) {
+            return Conf::paper_error_json_result($fr);
+        } else if ($prow && $user->act_author_view($prow)) {
             return JsonResult::make_permission_error();
         }
 
@@ -16,13 +25,13 @@ class Mail_API {
 
         $mailinfo = [
             "prow" => $prow,
-            "sending_user" => $user,
             "requester_contact" => $user,
-            "width" => $qreq->width ?? 10000,
-            "censor" => Mailer::CENSOR_DISPLAY
+            "width" => stoi($qreq->width) ?? 10000,
+            "censor" => Mailer::CENSOR_PREVIEW,
+            "preview" => true
         ];
         if (isset($qreq->reason)) {
-            $mailinfo["reason"] = $qreq->reason;
+            $mailinfo["reason"] = convert_to_utf8($qreq->reason);
         }
         $rid = $qreq->r;
         if ($prow) {
@@ -36,12 +45,12 @@ class Mail_API {
                 $mailinfo["rrow"] = $rrow;
             }
         }
-        $mailer = new HotCRPMailer($user->conf, $recipient, $mailinfo);
+        $mailer = new HotCRPMailer($user, $recipient, $mailinfo);
 
         if (isset($qreq->text) || isset($qreq->subject) || isset($qreq->body)) {
             $j = ["ok" => true];
             foreach (["text", "subject", "body"] as $k) {
-                $j[$k] = $mailer->expand($qreq[$k], $k);
+                $j[$k] = $mailer->expand(convert_to_utf8($qreq[$k] ?? ""), $k);
             }
             return $j;
         } else if (!$qreq->template) {

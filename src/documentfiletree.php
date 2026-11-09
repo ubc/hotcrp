@@ -281,10 +281,9 @@ class DocumentFileTree implements JsonSerializable {
         for ($i = 0; $i < $this->_n; ++$i) {
             if ($i % 2 === 0) {
                 $fm->fname .= $this->_components[$i];
-            } else {
-                $di = $this->_dirinfo[$fm->fname];
-                if (!$di->append_first_component($this, $i, $fm, $after))
-                    break;
+            } else if (($di = $this->_dirinfo[$fm->fname] ?? null)
+                       && !$di->append_first_component($this, $i, $fm, $after)) {
+                break;
             }
         }
         if ($this->_complete) {
@@ -301,10 +300,9 @@ class DocumentFileTree implements JsonSerializable {
         for ($i = 0; $i < $this->_n; ++$i) {
             if ($i % 2 === 0) {
                 $fm->fname .= $this->_components[$i];
-            } else {
-                $di = $this->_dirinfo[$fm->fname];
-                if (!$di->append_random_component($this, $i, $fm))
-                    break;
+            } else if (($di = $this->_dirinfo[$fm->fname] ?? null)
+                       && !$di->append_random_component($this, $i, $fm)) {
+                break;
             }
         }
         if ($this->_complete) {
@@ -378,16 +376,24 @@ class DocumentFileTreeMatch {
     /** @return int|false */
     function atime() {
         if ($this->_atime === null) {
-            $this->_atime = fileatime($this->fname);
+            $this->_atime = @fileatime($this->fname);
         }
         return $this->_atime;
     }
     /** @return int|false */
     function mtime() {
         if ($this->_mtime === null) {
-            $this->_mtime = filemtime($this->fname);
+            $this->_mtime = @filemtime($this->fname);
         }
         return $this->_mtime;
+    }
+    /** @param int|float $cutoff
+     * @return bool */
+    function older_than($cutoff) {
+        $at = $this->atime();
+        $mt = $this->mtime();
+        return $at !== false && $at < $cutoff
+            && $mt !== false && $mt < $cutoff;
     }
 }
 

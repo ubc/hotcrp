@@ -42,6 +42,11 @@ class Graph_Formula_Page {
             $fg->add_dataset($ds);
         }
 
+        // compute the graph before printing messages: an empty graph
+        // reports why it is empty
+        // fill down to the fold, no further
+        $gj = $fg->graph_json(["maxHeight" => "viewport"]);
+
         if ($fg->has_message()) {
             echo Ht::msg(MessageSet::feedback_html($fg->decorated_message_list()), $fg->problem_status());
         }
@@ -53,30 +58,30 @@ class Graph_Formula_Page {
 
         if ($fg->fx_format() === Fexpr::FSEARCH) {
             $h2 = "";
-        } else if ($fg->type === FormulaGraph::OGIVE) {
+        } else if ($fg->gtype === FormulaGraph::GTS_OGIVE) {
             $h2 = "Cumulative frequency of {$xhtml}";
-        } else if ($fg->type & FormulaGraph::CDF) {
+        } else if ($fg->gtype === FormulaGraph::GTS_MULTICDF) {
+            $h2 = "{$xhtml} CDF by " . $fg->fy->annotated_expression_h();
+        } else if ($fg->gtype & FormulaGraph::GT_CDF) {
             $h2 = "{$xhtml} CDF";
-        } else if (($fg->type & FormulaGraph::BARCHART)
+        } else if (($fg->gtype & FormulaGraph::GT_BARCHART)
                    && $fg->fy->expression === "sum(1)") {
             $h2 = $xhtml;
-        } else if ($fg->type & FormulaGraph::BARCHART) {
+        } else if ($fg->gtype & FormulaGraph::GT_BARCHART) {
             $h2 = $fg->fy->annotated_expression_h() . " by {$xhtml}";
         } else {
             $h2 = $fg->fy->annotated_expression_h() . " vs. {$xhtml}";
         }
-        $highlightable = ($fg->type & (FormulaGraph::SCATTER | FormulaGraph::DOT | FormulaGraph::BOXPLOT)) !== 0;
-
-        $attr = [];
-        if (!($fg->type & FormulaGraph::CDF)) {
-            $attr["data-graph-fx"] = $fg->fx->expression;
-            $attr["data-graph-fy"] = $fg->fy->expression;
+        if ($h2 !== "" && $fg->fxorder) {
+            $h2 .= " ordered by " . $fg->fxorder->annotated_expression_h();
         }
-        Graph_Page::print_graph($highlightable, $h2, $attr);
+        $highlightable = ($fg->gtype & (FormulaGraph::GT_SCATTER | FormulaGraph::GT_DOT | FormulaGraph::GT_BOXPLOT)) !== 0;
+
+        Graph_Page::print_graph($highlightable, $h2, []);
 
         echo Ht::unstash(), Ht::script_open(),
             '$(function () { hotcrp.graph("#hotgraph", ',
-            json_encode_browser($fg->graph_json()),
+            json_encode_browser($gj),
             ") });</script>\n";
     }
 
@@ -84,32 +89,26 @@ class Graph_Formula_Page {
      * @param list<FormulaGraphDataset> $datasets */
     private function print_ui($fgm, $datasets) {
         echo $this->conf->hotform("graph", ["group" => "formula"], ["method" => "get"]);
-        /*echo '<div>',
-            Ht::button(Icons::ui_graph_scatter(), ["class" => "btn-t"]),
-            Ht::button(Icons::ui_graph_bars(), ["class" => "btn-t"]),
-            Ht::button(Icons::ui_graph_box(), ["class" => "btn-t"]),
-            Ht::button(Icons::ui_graph_cdf(), ["class" => "btn-t"]),
-            '</div>';*/
 
         // X axis
         echo '<div class="f-mcol">',
-            '<div class="', $fgm->control_class("fx", "f-i maxw-480"), '">',
+            '<div class="', $fgm->control_class("x", "f-i maxw-480"), '">',
             '<label for="x_entry">X axis</label>',
-            $fgm->feedback_html_at("fx"),
+            $fgm->feedback_html_at("x"),
             Ht::entry("x", (string) $this->qreq->x, ["id" => "x_entry", "size" => 32, "class" => "w-99", "spellcheck" => false]),
             '<div class="f-d">', $this->conf->hotlink("Formula", "help", ["t" => "formulas"]), ' or “search”</div>',
             '</div>';
         // Y axis
-        echo '<div class="', $fgm->control_class("fy", "f-i maxw-480"), '">',
+        echo '<div class="', $fgm->control_class("y", "f-i maxw-480"), '">',
             '<label for="y_entry">Y axis</label>',
-            $fgm->feedback_html_at("fy"),
+            $fgm->feedback_html_at("y"),
             Ht::entry("y", (string) $this->qreq->y, ["id" => "y_entry", "size" => 32, "class" => "w-99", "spellcheck" => false]),
             '<div class="f-d">', $this->conf->hotlink("Formula", "help", ["t" => "formulas"]), ' or “cdf”, “count”, “fraction”, “box <em>formula</em>”, “bar <em>formula</em>”</div>',
             '</div>',
             '</div>';
         // Series
         echo '<div class="', $fgm->control_class("q1", "f-i"), '">',
-            '<label for="q1">Data sets</label>',
+            '<label for="q1">Series</label>',
             '<div id="graph-datasets" class="js-row-order" data-min-rows="1" data-row-template="formula-dataset-template">';
         foreach ($datasets as $i => $ds) {
             $this->echo_formulas_qrow($i + 1, $ds, $fgm);
@@ -117,7 +116,7 @@ class Graph_Formula_Page {
         echo '</div><template id="formula-dataset-template" class="hidden">';
         $this->echo_formulas_qrow('$', new FormulaGraphDataset("ALL", null, "by-tag", '$'), $fgm);
         echo '</template>',
-            Ht::button("Add data set", ["class" => "ui row-order-append", "data-rowset" => "graph-datasets"]),
+            Ht::button("Add series", ["class" => "ui row-order-append", "data-rowset" => "graph-datasets"]),
             '</div>',
             Ht::submit("Graph", ["class" => 'btn-primary']),
             '</form>';
@@ -146,11 +145,13 @@ class Graph_Formula_Page {
         $datasets = FormulaGraph::parse_datasets($qreq);
 
         // create graph
-        if ($qreq->x && ($qreq->gtype || $qreq->y)) {
+        if (trim((string) $qreq->x) !== ""
+            && ($qreq->gtype || trim((string) $qreq->y) !== "")) {
             $fg = new FormulaGraph($this->user, $qreq->gtype, $qreq->x, $qreq->y);
             if ($qreq->xorder) {
                 $fg->set_xorder($qreq->xorder);
             }
+            $fg->prepare();
             $this->print_graph($fg, $datasets);
             $this->print_ui($fg, $datasets);
         } else {

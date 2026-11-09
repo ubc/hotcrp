@@ -2,7 +2,7 @@
 // mailpreparation.php -- HotCRP prepared mail
 // Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
 
-class MailPreparation implements JsonSerializable {
+class MailPreparation extends MessageSet implements JsonSerializable {
     /** @var Conf */
     public $conf;
     /** @var string */
@@ -19,10 +19,6 @@ class MailPreparation implements JsonSerializable {
     public $sensitive = false;
     /** @var array<string,string> */
     public $headers = [];
-    /** @var int */
-    private $problem_status = 0;
-    /** @var list<MessageItem> */
-    private $errors = [];
     /** @var bool */
     public $unique_preparation = false;
     /** @var ?string */
@@ -42,6 +38,8 @@ class MailPreparation implements JsonSerializable {
         if ($recipient) {
             $this->add_recipient($recipient);
         }
+        $this->set_ignore_duplicates(true)
+            ->set_message_formatter($this->conf);
     }
 
     /** @return bool */
@@ -56,34 +54,16 @@ class MailPreparation implements JsonSerializable {
         return $this;
     }
 
-    /** @return int */
-    function problem_status() {
-        return $this->problem_status;
-    }
-
-    /** @return bool */
-    function has_error() {
-        return $this->problem_status > 1;
-    }
-
-    /** @param MessageItem $mi
-     * @return MessageItem */
-    function append_item($mi) {
-        $this->errors[] = $mi;
-        $this->problem_status = max($this->problem_status, $mi->status);
-        return $mi;
-    }
-
-    /** @return list<MessageItem> */
-    function message_list() {
-        return $this->errors;
-    }
-
     /** @param Contact $u
      * @return string */
     static function recipient_address($u) {
-        $e = $u->preferredEmail ?? $u->email;
-        return Text::name($u->firstName, $u->lastName, $e, NAME_MAILQUOTE | NAME_E);
+        return Text::name($u->firstName, $u->lastName, $u->delivery_email(), NAME_MAILQUOTE | NAME_E);
+    }
+
+    /** @return Contact */
+    function single_recipient() {
+        assert(count($this->recip) === 1);
+        return $this->recip[0];
     }
 
     /** @return list<Contact> */
@@ -156,8 +136,8 @@ class MailPreparation implements JsonSerializable {
             || ($this->headers["cc"] ?? null) !== ($p->headers["cc"] ?? null)
             || ($this->headers["reply-to"] ?? null) !== ($p->headers["reply-to"] ?? null)
             || $this->preparation_owner !== $p->preparation_owner
-            || !empty($this->errors)
-            || !empty($p->errors)) {
+            || $this->has_error()
+            || $p->has_error()) {
             return false;
         }
         $max_recipients = $this->conf->opt("emailMaxRecipients") ?? 200;
@@ -179,9 +159,10 @@ class MailPreparation implements JsonSerializable {
     /** @return bool */
     function can_send() {
         // see also MailPreparation::send()
-        return (empty($this->errors)
-                && (!$this->sensitive || $this->conf->opt("sendEmail")))
-            || $this->conf->opt("debugShowSensitiveEmail");
+        return !$this->has_error()
+            && (!$this->sensitive
+                || $this->conf->opt("sendEmail")
+                || $this->conf->opt("debugShowSensitiveEmail"));
     }
 
     /** @suppress PhanAccessReadOnlyProperty */
@@ -196,7 +177,10 @@ class MailPreparation implements JsonSerializable {
         foreach ($this->recip as $ru) {
             if ($ru->can_receive_mail($this->_self_requested)) {
                 continue;
-            } else if (!Contact::is_plausible_email($ru->preferredEmail ?? $ru->email)) {
+            } else if ($ru->is_bot()) {
+                // bot addresses are implausible, but report them separately
+                $mx["bot"][] = $ru->email;
+            } else if (!Contact::is_plausible_email($ru->delivery_email())) {
                 $mx["fake"][] = $ru->email;
             } else if ($ru->is_disabled()) {
                 $mx["disabled"][] = $ru->email;
@@ -212,6 +196,9 @@ class MailPreparation implements JsonSerializable {
             return [];
         }
         $ml = [];
+        if (isset($mx["bot"])) {
+            $ml[] = MessageItem::warning($this->conf->_("<0>Bot {emails:plural account} {emails:list} {emails:plural was} not notified", new FmtArg("emails", $mx["bot"], 0)));
+        }
         if (isset($mx["disabled"])) {
             $ml[] = MessageItem::warning($this->conf->_("<0>Disabled {emails:plural account} {emails:list} cannot receive mail", new FmtArg("emails", $mx["disabled"], 0)));
         }
@@ -257,7 +244,7 @@ class MailPreparation implements JsonSerializable {
 
         // can we send? (subset of self::can_send())
         $sendEmail = $this->conf->opt("sendEmail");
-        $sendable = empty($this->errors) && $sendEmail;
+        $sendable = !$this->has_error() && $sendEmail;
 
         // create valid To: header
         $eol = $this->conf->opt("postfixEOL") ?? "\r\n";
@@ -299,15 +286,12 @@ class MailPreparation implements JsonSerializable {
 
         // then try `mail` function
         if ($sendable) {
-            if (strpos($to, $eol) === false) {
-                unset($headers["to"]);
-                $to = substr($to, 4); // skip "To: "
-            } else {
-                $to = "";
-            }
-            unset($headers["subject"]);
+            unset($headers["to"], $headers["subject"]);
             $htext = substr(join("", $headers), 0, -2);
-            return ($this->sent = mail($to, $this->subject, $qpe_body, $htext, $extra));
+            $to = str_replace("{$eol} ", " ", substr($to, 4));
+            $subject = str_replace("{$eol} ", " ", $this->subject);
+            $extra = $extra ?? "";
+            return ($this->sent = mail($to, $subject, $qpe_body, $htext, $extra));
         }
 
         // print email if debugging (and pretend email was successfully sent)
@@ -337,10 +321,12 @@ class MailPreparation implements JsonSerializable {
         if (!isset($this->headers["subject"]) && !empty($this->subject)) {
             $j["subject"] = $this->subject;
         }
-        $j = [];
-        foreach (["body", "sensitive", "errors", "unique_preparation", "reset_capability", "landmark"] as $k) {
+        foreach (["body", "sensitive", "unique_preparation", "reset_capability", "landmark"] as $k) {
             if (!empty($this->$k))
                 $j[$k] = $this->$k;
+        }
+        if ($this->has_message()) {
+            $j["message_list"] = $this->message_list();
         }
         return $j;
     }

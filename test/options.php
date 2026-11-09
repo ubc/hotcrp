@@ -19,5 +19,7 @@ $Opt["timezone"] = "America/New_York";
 $Opt["postfixEOL"] = "\n";
 $Opt["contactdbDsn"] = "mysql://hotcrp_testdb:m5LuaN23j26g@" . $Opt["dbHost"] . "/hotcrp_testdb_cdb";
 $Opt["obsoletePasswordInterval"] = 1;
+$Opt["updatesSite"] = false;
 $Opt["include"][] = "?test/localoptions.php";
 $Opt["hooks"]["send_mail"] = "MailChecker::send_hook";
+$Opt["workLockfilePrefix"] = "test/var/work";

@@ -63,6 +63,7 @@ with refreshed tag and status information for the affected submissions. This
 lets a client apply an assignment and update a displayed submission list in a
 single round trip.
 
+* scope paper:admin
 * badge featured
 * param ?assignments string
 
@@ -101,13 +102,7 @@ single round trip.
     `assignment_pids`); `none` returns only `assignment_count`.
 
     * default json
-* param ?forceShow boolean
-
-    Whether administrators override their own conflicts. Defaults to `true`; set
-    `forceShow=false` to respect conflicts instead.
-
-    * default true
-
+* param ?forceShow
 * param ?search search_parameter_specification
 
     A search to evaluate after the assignment is applied. When supplied on a
@@ -201,6 +196,7 @@ parameters each action accepts. Use this to discover the `action` values and
 columns valid in an [`/assign`](#post-assign) request.
 The visible set of actions reflects the calling user’s privileges.
 
+* scope other:read
 * badge featured
 * response assigners [assignment_action]: Available assignment actions
 
@@ -231,12 +227,13 @@ endpoint with that identifier to follow progress and retrieve the resulting
 assignment as CSV. When the computation finishes quickly enough, the result is
 returned directly instead, in the same shape as a completed `/job` response.
 
+* scope paper:admin
 * badge featured
 * param autoassigner string: Name of the autoassignment algorithm to run, as listed by [`/autoassigners`](#get-autoassigners).
 * param q search_string: Search selecting the submissions to assign.
-* param t
+* param ?t search_scope
 
-    * default s
+    * default alladmin
 * param ?dry_run boolean: If true, compute and validate the assignment and report errors, but do not perform it. The computed assignment is still returned as `output`.
 * param ?minimal_dry_run boolean: Like `dry_run`, but skips extra validation passes. For example, an ordinary dry run reports potential conflicts created by the assignment; a minimal dry run does not.
 * param ?u [string]: PC members to consider for assignment; defaults to all PC members. Each value is a user search string—a user ID (`1`), an email (`kohler@g.harvard.edu`), or a tag (`#heavy`)—and may be prefixed with `-` to remove the matching users from the set.
@@ -308,5 +305,7 @@ List every autoassignment algorithm understood by this HotCRP installation, with
 the parameters each one accepts. Use this to discover valid `autoassigner` values
 and `param` settings for [`/autoassign`](#post-autoassign).
 
+* scope other:read
 * badge featured
+* badge admin
 * response autoassigners [autoassignment_action]: Available autoassignment algorithms

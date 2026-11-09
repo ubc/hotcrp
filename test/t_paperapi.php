@@ -2,7 +2,7 @@
 // t_paperapi.php -- HotCRP tests
 // Copyright (c) 2024-2025 Eddie Kohler; see LICENSE.
 
-#[RequireDb("fresh")]
+#[RequireDb(true)]
 class PaperAPI_Tester {
     /** @var Conf
      * @readonly */
@@ -38,6 +38,13 @@ class PaperAPI_Tester {
         $this->u_estrin = $conf->checked_user_by_email("estrin@usc.edu"); // pc
         $this->u_puneet = $conf->checked_user_by_email("puneet@catarina.usc.edu");
         $this->u_micke = $conf->checked_user_by_email("micke@cdt.luth.se");
+
+        // restore the seed submissions that the document tests expect, in case
+        // an earlier suite replaced them (e.g. PaperStatus_Tester)
+        foreach ([1 => "%PDF-whatever", 2 => "%PDF-whatever2"] as $pid => $content) {
+            $ps = new PaperStatus($this->user);
+            $ps->save_paper_json((object) ["id" => $pid, "submission" => (object) ["content" => $content]]);
+        }
     }
 
     function allow_submission() {
@@ -49,12 +56,310 @@ class PaperAPI_Tester {
     }
 
     function set_submission_deadline($t) {
-        $a = $this->conf->save_setting("sub_update", $t);
-        $b = $this->conf->save_setting("sub_sub", $t);
-        if ($a || $b) {
+        $a = $this->conf->save_setting("sub_sub", $t);
+        if ($a) {
             $this->conf->refresh_settings();
         }
-        return $a || $b;
+        return $a;
+    }
+
+    /** Long text fields are served as a reader sees them. `word_limit=hard`
+     * asks for what the page shows behind “Show more”, and stops at the hard
+     * limit, past which HotCRP displays nothing to anyone. */
+    function test_get_paper_word_limit() {
+        $conf = $this->conf;
+        $options = $conf->setting_json("options");
+        $options[] = (object) ["id" => 6, "name" => "Notes", "type" => "text",
+                               "order" => 9, "wordlimit" => 10, "hard_wordlimit" => 20];
+        $conf->save_setting("options", 1, json_encode($options));
+        $conf->invalidate_caches("options");
+
+        $words = [];
+        for ($i = 1; $i <= 30; ++$i) {
+            $words[] = "w{$i}";
+        }
+        $jr = call_api("=paper", $this->u_estrin,
+            TestQreq::post_json((object) ["object" => "paper", "pid" => "new",
+                "title" => "Word limit paper", "abstract" => "Abstract",
+                "authors" => [["name" => "Puneet Sharma", "email" => "puneet@catarina.usc.edu"]],
+                "Notes" => join(" ", $words), "status" => "draft"]));
+        xassert_eqq($jr->ok, true, $jr->message_list[0]->message ?? "");
+        $pid = $jr->paper->pid;
+
+        $get = function ($args) use ($pid) {
+            return call_api("paper", $this->u_estrin, TestQreq::get(["p" => $pid] + $args));
+        };
+
+        // by default the field is cut at its word limit, and says so
+        $jr = $get([]);
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(count_words($jr->paper->Notes ?? ""), 10);
+        xassert_eqq(($jr->paper->overlong ?? [])["Notes"] ?? null, true);
+        xassert_eqq(($jr->paper->truncated ?? [])["Notes"] ?? null, "soft");
+
+        // `hard` is the “Show more” view, and stops at the hard limit
+        $jr = $get(["word_limit" => "hard"]);
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(count_words($jr->paper->Notes ?? ""), 20);
+        xassert_eqq(($jr->paper->overlong ?? [])["Notes"] ?? null, true);
+        xassert_eqq(($jr->paper->truncated ?? [])["Notes"] ?? null, "hard");
+        xassert(!str_contains($jr->paper->Notes ?? "", "w21"));
+
+        // `soft` is the default spelled out
+        $jr = $get(["word_limit" => "soft"]);
+        xassert_eqq(count_words($jr->paper->Notes ?? ""), 10);
+
+        // a field under its limit says nothing at all
+        xassert_eqq(($jr->paper->overlong ?? [])["title"] ?? null, null);
+        xassert_eqq(($jr->paper->truncated ?? [])["title"] ?? null, null);
+
+        // an unknown value is refused rather than silently defaulted
+        $jr = $get(["word_limit" => "none"]);
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains($jr->message_list[0]->field ?? "", "word_limit");
+
+        // and the multi-paper endpoint takes it too
+        $jr = call_api("papers", $this->u_estrin,
+            TestQreq::get(["q" => "Word limit paper", "word_limit" => "hard"]));
+        xassert_eqq($jr->ok, true);
+        $found = false;
+        foreach ($jr->papers ?? [] as $pj) {
+            if ($pj->pid === $pid) {
+                $found = true;
+                xassert_eqq(count_words($pj->Notes ?? ""), 20);
+                xassert_eqq(($pj->truncated ?? [])["Notes"] ?? null, "hard");
+            }
+        }
+        xassert($found);
+
+        // echoing text cut at the soft limit is refused...
+        $pj = $get([])->paper;
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pj, ["p" => $pid, "dry_run" => 1]));
+        xassert_not_in_eqq("Notes", $jr->change_list);
+        $msgs = array_map(function ($mi) { return [$mi->field ?? null, $mi->status]; }, $jr->message_list);
+        xassert_in_eqq(["Notes", 2], $msgs);
+        // ...but saves, with a warning, as a new submission
+        $pjn = clone $pj;
+        $pjn->pid = "new";
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pjn, ["p" => "new", "dry_run" => 1]));
+        xassert_in_eqq("Notes", $jr->change_list);
+        $msgs = array_map(function ($mi) { return [$mi->field ?? null, $mi->status]; }, $jr->message_list);
+        xassert_in_eqq(["Notes", 1], $msgs);
+        xassert_not_in_eqq(["Notes", 2], $msgs);
+        // ...while text cut at the hard limit saves with a warning
+        $pj = $get(["word_limit" => "hard"])->paper;
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pj, ["p" => $pid, "dry_run" => 1]));
+        xassert_eqq($jr->valid, true);
+        xassert_eqq($jr->change_list, ["Notes"]);
+        $msgs = array_map(function ($mi) { return [$mi->field ?? null, $mi->status]; }, $jr->message_list);
+        xassert_in_eqq(["Notes", 1], $msgs);
+        xassert_not_in_eqq(["options", 1], $msgs); // not an unknown field
+        // POST responses default to the hard limit
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json((object) ["pid" => $pid], ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(count_words($jr->paper->Notes ?? ""), 20);
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json((object) ["pid" => $pid], ["p" => $pid, "word_limit" => "soft"]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(count_words($jr->paper->Notes ?? ""), 10);
+
+        // bulk JSON exports are for reimport, so they carry the full text
+        $u_chair = $conf->checked_user_by_email("chair@_.com");
+        $qreq = TestQreq::get(["p" => (string) $pid]);
+        $ssel = SearchSelection::make_papers($qreq, $u_chair);
+        $la = ListAction::lookup("get/json", $u_chair, $qreq, $ssel);
+        xassert($la instanceof ListAction);
+        $dopt = $la->run($u_chair, $qreq, $ssel);
+        xassert($dopt instanceof Downloader);
+        $pj = json_decode($dopt->content_string());
+        xassert_eqq($pj->pid ?? null, $pid);
+        xassert_eqq(count_words($pj->Notes ?? ""), 20);
+
+        TestRunner::reset_options();
+        $conf->invalidate_caches("options");
+    }
+
+    /** Echoing a document field the caller can't edit, as GET /paper returned
+     * it, is not an attempt to change it: the field parses to its current
+     * value. */
+    function test_save_unwritable_document_echo() {
+        $conf = $this->conf;
+        $options = $conf->setting_json("options");
+        $options[] = (object) ["id" => 7, "name" => "Locked docs", "type" => "attachments",
+                               "order" => 9, "editable_if" => "NONE"];
+        $options[] = (object) ["id" => 8, "name" => "Locked file", "type" => "document",
+                               "order" => 10, "editable_if" => "NONE"];
+        $conf->save_setting("options", 1, json_encode($options));
+        $conf->invalidate_caches("options");
+
+        $jr = call_api("=paper", $this->u_estrin,
+            TestQreq::post_json((object) ["object" => "paper", "pid" => "new",
+                "title" => "Unwritable document paper", "abstract" => "Abstract",
+                "authors" => [["name" => "Puneet Sharma", "email" => "puneet@catarina.usc.edu"]],
+                "status" => "draft"]));
+        xassert_eqq($jr->ok, true);
+        $pid = $jr->paper->pid;
+        $jr = call_api("=paper", $this->u_chair,
+            TestQreq::post_json((object) ["object" => "paper", "pid" => $pid,
+                "Locked docs" => [
+                    ["content" => "%PDF-locked-1", "mimetype" => "application/pdf", "filename" => "one.pdf"],
+                    ["content" => "%PDF-locked-2", "mimetype" => "application/pdf", "filename" => "two.pdf"]
+                ],
+                "Locked file" => ["content" => "%PDF-locked-3", "mimetype" => "application/pdf", "filename" => "three.pdf"]
+            ]));
+        xassert_eqq($jr->ok, true);
+        $refused = function ($jr) {
+            foreach ($jr->message_list ?? [] as $mi) {
+                if (str_contains($mi->message ?? "", "allowed to edit"))
+                    return true;
+            }
+            return false;
+        };
+
+        // the author echoes the paper back with a new title
+        $pj = call_api("paper", $this->u_estrin, TestQreq::get(["p" => $pid]))->paper;
+        xassert_eqq(count($pj->{"Locked docs"} ?? []), 2);
+        xassert(is_object($pj->{"Locked file"} ?? null));
+        $pj->title = "Echoed";
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pj, ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert(!$refused($jr));
+        xassert_eqq($conf->checked_paper_by_id($pid)->title, "Echoed");
+
+        // ...also when the documents carry their content
+        $pj3 = clone $pj;
+        $pj3->{"Locked docs"} = [
+            ["content_base64" => base64_encode("%PDF-locked-1"), "mimetype" => "application/pdf", "filename" => "one.pdf"],
+            ["content" => "%PDF-locked-2"]
+        ];
+        $pj3->{"Locked file"} = ["content_base64" => base64_encode("%PDF-locked-3"), "mimetype" => "application/pdf"];
+        $pj3->title = "Echoed with content";
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pj3, ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert(!$refused($jr));
+        xassert_eqq($conf->checked_paper_by_id($pid)->title, "Echoed with content");
+
+        // but a changed list or document is still refused
+        $pj2 = clone $pj;
+        $pj2->{"Locked docs"} = [$pj->{"Locked docs"}[1], $pj->{"Locked docs"}[0]];
+        $pj2->title = "Reordered";
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pj2, ["p" => $pid]));
+        xassert($refused($jr));
+        $pj2->{"Locked docs"} = [$pj->{"Locked docs"}[0]];
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pj2, ["p" => $pid]));
+        xassert($refused($jr));
+        $pj2->{"Locked docs"} = [$pj->{"Locked docs"}[0], ["content" => "%PDF-new", "mimetype" => "application/pdf"]];
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pj2, ["p" => $pid]));
+        xassert($refused($jr));
+        $pj2->{"Locked docs"} = [$pj->{"Locked docs"}[0], ["content" => "%PDF-locked-2", "mimetype" => "application/pdf", "filename" => "renamed.pdf"]];
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pj2, ["p" => $pid]));
+        xassert($refused($jr));
+        $pj2 = clone $pj;
+        $pj2->{"Locked file"} = ["content" => "%PDF-other", "mimetype" => "application/pdf"];
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pj2, ["p" => $pid]));
+        xassert($refused($jr));
+        xassert_eqq($conf->checked_paper_by_id($pid)->title, "Echoed with content");
+
+        TestRunner::reset_options();
+        $conf->invalidate_caches("options");
+    }
+
+    /** A field the caller may see but not write is no longer dropped in
+     * silence: the API reports it, attributed to the field, and writes nothing
+     * for it. A browser posts every field it rendered, including read-only
+     * ones, so the form path keeps ignoring them — that is what
+     * `set_ignore_unwritable_fields` selects. */
+    function test_save_unwritable_field_is_reported() {
+        $conf = $this->conf;
+        $options = $conf->setting_json("options");
+        $options[] = (object) ["id" => 5, "name" => "Locked", "type" => "numeric",
+                               "order" => 8, "editable_if" => "NONE"];
+        $conf->save_setting("options", 1, json_encode($options));
+        $conf->invalidate_caches("options");
+
+        $jr = call_api("=paper", $this->u_estrin,
+            TestQreq::post_json((object) ["object" => "paper", "pid" => "new",
+                "title" => "Unwritable field paper", "abstract" => "Abstract",
+                "authors" => [["name" => "Puneet Sharma", "email" => "puneet@catarina.usc.edu"]],
+                "status" => "draft"]));
+        xassert_eqq($jr->ok, true);
+        $pid = $jr->paper->pid;
+
+        // an administrator may write it, so there is a value to leave alone
+        $jr = call_api("=paper", $this->u_chair,
+            TestQreq::post_json((object) ["object" => "paper", "pid" => $pid, "Locked" => 5]));
+        xassert_eqq([$jr->ok, $jr->paper->Locked ?? null], [true, 5]);
+
+        $locked = function () use ($conf, $pid) {
+            $ov = $conf->checked_paper_by_id($pid)->option(5);
+            return $ov ? $ov->value : null;
+        };
+        $modify_message = function ($jr) {
+            foreach ($jr->message_list ?? [] as $mi) {
+                if (str_contains($mi->message ?? "", "allowed to edit"))
+                    return $mi;
+            }
+            return null;
+        };
+
+        // the author may not write it, and is told which field rather than
+        // left to infer it from an absence
+        $jr = call_api("=paper", $this->u_estrin,
+            TestQreq::post_json((object) ["object" => "paper", "pid" => $pid, "Locked" => 6]));
+        $mi = $modify_message($jr);
+        xassert_neqq($mi, null);
+        if ($mi) {
+            // the catalog's `field:edit` wording, so it names the field and
+            // takes the conference's word for a submission
+            xassert_eqq($mi->message, "<0>You aren’t allowed to edit the Locked field for submission #{$pid}");
+            xassert_eqq($mi->field, "Locked");
+            xassert_eqq($mi->status, MessageSet::ESTOP);
+        }
+        xassert_eqq($jr->change_list, []);
+        xassert_eqq($locked(), 5);
+
+        // echoing the field back unchanged is what a round-trip does, so it
+        // says nothing: a client that GETs a paper and PUTs it whole is not
+        // scolded for every field it may not edit
+        $jr = call_api("=paper", $this->u_estrin,
+            TestQreq::post_json((object) ["object" => "paper", "pid" => $pid,
+                                          "title" => "Renamed", "Locked" => 5]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($modify_message($jr), null);
+        xassert_eqq($conf->checked_paper_by_id($pid)->title, "Renamed");
+
+        // the refusal stops the whole request: a save that cannot do what was
+        // asked does none of it, rather than leaving the caller to work out
+        // which half landed
+        $jr = call_api("=paper", $this->u_estrin,
+            TestQreq::post_json((object) ["object" => "paper", "pid" => $pid,
+                                          "title" => "Renamed again", "Locked" => 6]));
+        xassert_neqq($modify_message($jr), null);
+        xassert_eqq($jr->ok, false);
+        xassert_eqq($conf->checked_paper_by_id($pid)->title, "Renamed");
+        xassert_eqq($locked(), 5);
+
+        // a caller that means to post a whole paper it only partly owns asks
+        // for the lenient reading, and gets the form path's behavior
+        $jr = call_api("=paper", $this->u_estrin,
+            TestQreq::post_json((object) ["object" => "paper", "pid" => $pid,
+                                          "title" => "Renamed again", "Locked" => 6],
+                                ["ignore_unwritable_fields" => 1]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($modify_message($jr), null);
+        xassert_eqq($conf->checked_paper_by_id($pid)->title, "Renamed again");
+        xassert_eqq($locked(), 5);
+
+        // the form path still drops it quietly, which is what lets a browser
+        // post the fields it rendered read-only
+        $ps = new PaperStatus($this->u_estrin);
+        xassert($ps->save_paper_json(json_decode("{\"pid\":{$pid},\"Locked\":7}")));
+        foreach ($ps->message_list() as $mi) {
+            xassert(!str_contains($mi->message, "allowed to edit"));
+        }
+        xassert_eqq($locked(), 5);
+
+        TestRunner::reset_options();
+        $conf->invalidate_caches("options");
     }
 
     function test_save_submit_new_paper() {
@@ -65,6 +370,151 @@ class PaperAPI_Tester {
         xassert_eqq($jr->paper->title, "New paper");
         xassert_eqq($jr->paper->abstract, "This is an abstract");
         $this->npid = $jr->paper->pid;
+    }
+
+    /** A form upload's `content_file` can name a file part by its original
+     * name, although PHP mangles `paper.pdf` to `paper_pdf`. An exact match
+     * takes precedence. */
+    function test_content_file_mangled_part_name() {
+        $pj = ["pid" => "new", "title" => "Mangled part name", "abstract" => "Abstract",
+               "authors" => [["name" => "Deborah Estrin", "email" => "estrin@usc.edu"]],
+               "submission" => ["content_file" => "paper.pdf"], "status" => "draft"];
+        $qreq = TestQreq::post(["json" => json_encode($pj)])
+            ->set_file_content("paper_pdf", "%PDF-mangled", "paper.pdf", "application/pdf");
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert_eqq($jr->ok, true);
+        $prow = $this->conf->checked_paper_by_id($jr->paper->pid);
+        xassert_eqq($prow->document(DTYPE_SUBMISSION)->content(), "%PDF-mangled");
+
+        $qreq = TestQreq::post(["json" => json_encode(["pid" => $prow->paperId] + $pj)])
+            ->set_file_content("paper_pdf", "%PDF-mangled-2", "paper.pdf", "application/pdf")
+            ->set_file_content("paper.pdf", "%PDF-exact", "paper.pdf", "application/pdf");
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert_eqq($jr->ok, true);
+        $prow = $this->conf->checked_paper_by_id($prow->paperId);
+        xassert_eqq($prow->document(DTYPE_SUBMISSION)->content(), "%PDF-exact");
+    }
+
+    /** An author's GET → POST round trip keeps the names of authors with no
+     * email address. */
+    function test_round_trip_keeps_authors_without_email() {
+        $jr = call_api("=paper", $this->u_estrin,
+            TestQreq::post_json((object) ["object" => "paper", "pid" => "new",
+                "title" => "Author round trip paper", "abstract" => "Abstract",
+                "authors" => [["name" => "Puneet Sharma", "email" => "puneet@catarina.usc.edu"],
+                              ["given_name" => "Nomail", "family_name" => "Author",
+                               "affiliation" => "Nowhere University"]],
+                "status" => "draft"]));
+        xassert_eqq($jr->ok, true);
+        $pid = $jr->paper->pid;
+        $names = function () use ($pid) {
+            $prow = $this->conf->checked_paper_by_id($pid);
+            return array_map(function ($au) {
+                return [$au->firstName, $au->lastName, $au->email, $au->affiliation];
+            }, $prow->author_list());
+        };
+        $before = $names();
+        xassert_eqq($before[1], ["Nomail", "Author", "", "Nowhere University"]);
+
+        $pj = call_api("paper", $this->u_estrin, TestQreq::get(["p" => $pid]))->paper;
+        $pj->title = "Author round trip paper, again";
+        $jr = call_api("=paper", $this->u_estrin, TestQreq::post_json($pj, ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert_not_in_eqq("authors", $jr->change_list ?? []);
+        xassert_eqq($names(), $before);
+    }
+
+    function test_dry_run_then_save_document() {
+        $content = "%PDF-2.0 dry run then save\n";
+        $paper = [
+            "pid" => "new", "title" => "Dry run then save",
+            "abstract" => "Abstract.\r\n",
+            "authors" => [["name" => "Ethan Iverson", "email" => "iverson@_.com"]],
+            "submission" => ["content" => $content],
+            "status" => "draft"
+        ];
+        $nstorage = $this->conf->fetch_ivalue("select count(*) from PaperStorage");
+
+        // a dry run reports success and leaves nothing behind: no paper, and
+        // no document row for the submission it validated
+        $qreq = TestQreq::post_json($paper, ["p" => "new", "dry_run" => 1]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->dry_run, true);
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from Paper where title='Dry run then save'"), 0);
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from PaperStorage"), $nstorage);
+
+        // saving the same paper then stores exactly one copy
+        $qreq = TestQreq::post_json($paper, ["p" => "new"]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert_eqq($jr->ok, true);
+        $pid = $jr->paper->pid;
+        xassert($pid > 0);
+
+        $prow = $this->conf->checked_paper_by_id($pid);
+        $doc = $prow->document(DTYPE_SUBMISSION);
+        xassert(!!$doc);
+        xassert_eqq($doc->content(), $content);
+
+        // exactly one document row for the paper, and no orphan left behind
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from PaperStorage where paperId=? and documentType=?", $pid, DTYPE_SUBMISSION), 1);
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from PaperStorage where sha1=? and paperId<=0", $doc->binary_hash()), 0);
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from PaperStorage"), $nstorage + 1);
+
+        // a dry run against an existing paper leaves nothing behind either
+        $nstorage = $this->conf->fetch_ivalue("select count(*) from PaperStorage");
+        $qreq = TestQreq::post_json([
+            "pid" => $pid, "submission" => ["content" => "%PDF-2.0 dry run replacement\n"]
+        ], ["p" => $pid, "dry_run" => 1]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->dry_run, true);
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from PaperStorage"), $nstorage);
+        xassert_eqq($this->conf->checked_paper_by_id($pid)->document(DTYPE_SUBMISSION)->content(), $content);
+    }
+
+    /** @return object */
+    private function new_paper_json($title, $content) {
+        return json_decode(json_encode([
+            "pid" => "new", "title" => $title, "abstract" => "Abstract.\r\n",
+            "authors" => [["name" => "Ethan Iverson", "email" => "iverson@_.com"]],
+            "submission" => ["content" => $content],
+            "status" => "draft"
+        ]));
+    }
+
+    /** @return list<array{int,int}> */
+    private function storage_rows($content) {
+        $hash = HashAnalysis::hash_as_binary("sha2-" . hash("sha256", $content));
+        $rows = [];
+        $result = $this->conf->qe("select paperId, inactive from PaperStorage where sha1=?", $hash);
+        while (($row = $result->fetch_row())) {
+            $rows[] = [(int) $row[0], (int) $row[1]];
+        }
+        Dbl::free($result);
+        return $rows;
+    }
+
+    function test_abort_save_document_disposition() {
+        // preparing a save stores the document under the paper ID it reserved
+        $content = "%PDF-2.0 abort tombstone\n";
+        $ps = new PaperStatus($this->u_estrin);
+        xassert($ps->prepare_save_paper_json($this->new_paper_json("Abort tombstone", $content)));
+        $rows = $this->storage_rows($content);
+        xassert_eqq(count($rows), 1);
+        xassert_gt($rows[0][0], 0);
+
+        // an aborted save keeps that document as an unattached, inactive tombstone
+        $ps->abort_save();
+        xassert_eqq($this->storage_rows($content), [[-1, 1]]);
+
+        // ...but an abort that promises to modify nothing removes it
+        $content = "%PDF-2.0 abort delete\n";
+        $ps = new PaperStatus($this->u_estrin);
+        xassert($ps->prepare_save_paper_json($this->new_paper_json("Abort delete", $content)));
+        xassert_eqq(count($this->storage_rows($content)), 1);
+        $ps->abort_save(true);
+        xassert_eqq($this->storage_rows($content), []);
     }
 
     function test_save_submit_new_paper_zip() {
@@ -82,6 +532,62 @@ class PaperAPI_Tester {
         xassert_eqq($doc->filename, "janspaper.pdf");
         xassert_eqq($doc->mimetype, "application/pdf");
         xassert_eqq($doc->content(), "%PDF-JAN");
+    }
+
+    function test_papers_zip_data_json_size_limit() {
+        // a ZIP whose `data.json` exceeds the size limit is refused before it
+        // is inflated into memory (HC-083 zip-bomb residual)
+        $this->conf->set_opt("jsonSizeLimit", 2048);
+
+        $big = ["pid" => "new", "title" => str_repeat("x", 5000),
+                "abstract" => "a", "authors" => [["name" => "A B", "email" => "ab@_.com"]],
+                "status" => "draft"];
+        $qreq = TestQreq::post_zip(["data.json" => $big], ["p" => "new", "dry_run" => 1]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert_eqq($jr->ok ?? null, false);
+        xassert_str_contains(json_encode($jr), "too large");
+
+        // a small `data.json` passes the size check (dry run, no save)
+        $small = ["pid" => "new", "title" => "Small", "abstract" => "a",
+                  "authors" => [["name" => "A B", "email" => "ab@_.com"]],
+                  "submission" => ["content_file" => "p.pdf"], "status" => "submitted"];
+        $qreq = TestQreq::post_zip(["data.json" => $small, "p.pdf" => "%PDF-x"], ["p" => "new", "dry_run" => 1]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert_not_str_contains(json_encode($jr), "too large");
+
+        $this->conf->set_opt("jsonSizeLimit", null);
+    }
+
+    function test_zip_document_size_limit() {
+        // HC-230: a ZIP document entry larger than the field's size limit is
+        // refused before it is inflated into a temp file
+        $this->conf->set_opt("uploadMaxFilesize", 4096);
+
+        $bomb = str_repeat("%PDF-1.4 padding\n", 1000); // ~17 KB > 4096
+        xassert_gt(strlen($bomb), 4096);
+        $qreq = TestQreq::post_zip([
+            "data.json" => ["pid" => "new", "title" => "Z", "abstract" => "a",
+                            "authors" => [["name" => "A B", "email" => "ab@_.com"]],
+                            "submission" => ["content_file" => "big.pdf", "mimetype" => "application/pdf"],
+                            "status" => "submitted"],
+            "big.pdf" => $bomb
+        ], ["p" => "new", "dry_run" => 1]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert_eqq($jr->ok ?? null, false);
+        xassert_str_contains(json_encode($jr), "too large");
+
+        // a small document passes the size check
+        $qreq = TestQreq::post_zip([
+            "data.json" => ["pid" => "new", "title" => "Z", "abstract" => "a",
+                            "authors" => [["name" => "A B", "email" => "ab@_.com"]],
+                            "submission" => ["content_file" => "ok.pdf", "mimetype" => "application/pdf"],
+                            "status" => "submitted"],
+            "ok.pdf" => "%PDF-ok"
+        ], ["p" => "new", "dry_run" => 1]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert_not_str_contains(json_encode($jr), "too large");
+
+        $this->conf->set_opt("uploadMaxFilesize", null);
     }
 
     function test_submit_new_paper_pleb() {
@@ -107,6 +613,32 @@ class PaperAPI_Tester {
         xassert_eqq($jr->paper->object, "paper");
     }
 
+    function test_update_paper_json_param_no_body() {
+        // `json` supplied as a bare parameter with no request body: the null
+        // content type must not crash `is_form()`, and the JSON still defines
+        // the modification (previously `json` required a form content type)
+        $qreq = (new Qrequest("POST", [
+            "json" => json_encode(["pid" => 1, "title" => "Scalable Timers, No-Body Edition"])
+        ]))->approve_token();
+        xassert_eqq($qreq->body_content_type(), null);
+        $jr = call_api("paper", $this->u_puneet, $qreq);
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->paper->object, "paper");
+        xassert_eqq($jr->paper->title, "Scalable Timers, No-Body Edition");
+    }
+
+    function test_post_json_and_upload_conflict() {
+        // `json` and `upload` are alternative payload selectors; supplying both
+        // is an error (the upload token need not even resolve)
+        $qreq = TestQreq::post([
+            "json" => json_encode(["pid" => 1, "title" => "Should Not Apply"]),
+            "upload" => "hct_nonexistent"
+        ]);
+        $jr = call_api("=paper", $this->u_puneet, $qreq);
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains($jr->message_list[0]->message, "at most one of `json` and `upload`");
+    }
+
     function test_update_attack_paper_pleb() {
         $prow = $this->conf->checked_paper_by_id(2);
         xassert_eqq($this->u_puneet->can_view_paper($prow), false);
@@ -116,7 +648,7 @@ class PaperAPI_Tester {
         $jr = call_api("=paper", $this->u_puneet, $qreq);
         xassert_eqq($jr->ok, false);
         xassert_eqq($jr->change_list, []);
-        xassert_eqq($jr->message_list[0]->message, "<0>You aren’t allowed to view submission #2");
+        xassert_eqq($jr->message_list[0]->message, "<0>Submission #2 does not exist, or you’re not allowed to view it");
 
         $qreq = TestQreq::post_json([
             "pid" => 10000, "title" => "Scalable Timers for Soft State Protocols: Taylor’s Version"
@@ -124,7 +656,7 @@ class PaperAPI_Tester {
         $jr = call_api("=paper", $this->u_puneet, $qreq);
         xassert_eqq($jr->ok, false);
         xassert_eqq($jr->change_list, []);
-        xassert_eqq($jr->message_list[0]->message, "<0>You aren’t allowed to view submission #10000");
+        xassert_eqq($jr->message_list[0]->message, "<0>Submission #10000 does not exist, or you’re not allowed to view it");
     }
 
     function test_assigned_paper_id() {
@@ -171,11 +703,201 @@ class PaperAPI_Tester {
         $this->conf->id_randomizer()->cleanup();
     }
 
+    function test_dry_run_conditional() {
+        $prow = $this->conf->checked_paper_by_id($this->npid);
+        $title = $prow->title;
+        // a paper save is forgiving: a bad field is reported and left alone
+        // while the rest is saved, so `if_error` withholds the whole save
+        $qreq = TestQreq::post_json((object) ["object" => "paper", "pid" => $prow->paperId,
+            "title" => "Conditional dry run", "submission" => (object) ["content_base64" => "!!"]],
+            ["dry_run" => "if_error"]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq, $prow);
+        xassert_eqq($jr->dry_run, true);
+        xassert_eqq($jr->paper ?? null, null);
+        xassert_eqq($this->conf->checked_paper_by_id($prow->paperId)->title, $title);
+
+        // with no errors, `if_error` commits
+        $qreq = TestQreq::post_json((object) ["object" => "paper", "pid" => $prow->paperId,
+            "title" => "Conditional dry run"], ["dry_run" => "if_error"]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq, $prow);
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->dry_run ?? null, null);
+        xassert_eqq($jr->change_list, ["title"]);
+        xassert_eqq($this->conf->checked_paper_by_id($prow->paperId)->title, "Conditional dry run");
+
+        // an unrecognized mode is a parameter error, not a silent live save
+        $qreq = TestQreq::post_json((object) ["object" => "paper", "pid" => $prow->paperId,
+            "title" => "Should not be saved"], ["dry_run" => "bogus"]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq, $prow);
+        xassert_eqq($jr->ok, false);
+        xassert_eqq($this->conf->checked_paper_by_id($prow->paperId)->title, "Conditional dry run");
+
+        // restore
+        $qreq = TestQreq::post_json((object) ["object" => "paper", "pid" => $prow->paperId,
+            "title" => $title]);
+        call_api("=paper", $this->u_estrin, $qreq, $prow);
+    }
+
+    /** @param array<string,mixed> $pj
+     * @return string */
+    private function dry_run_feedback(Contact $u, $pj) {
+        $jr = call_api("=paper", $u, TestQreq::post_json($pj, ["p" => $pj["pid"], "dry_run" => 1]));
+        xassert_eqq($jr->paper ?? null, null);
+        $this->conf->id_randomizer()->cleanup();
+        return ($jr->ok ? "OK " : "!OK ") . json_encode_db($jr->message_list ?? []);
+    }
+
+    function test_many_contacts_authors() {
+        // Any user may dry-run a new submission, and each listed contact
+        // or author may look up or create an account, so overlong
+        // `contacts` and `authors` lists are rejected before that work.
+        $nusers = $this->conf->fetch_ivalue("select count(*) from ContactInfo");
+        $u = $this->conf->checked_user_by_email("kohler@seas.harvard.edu");
+        xassert_eqq($u->roles, 0);
+        xassert(!$u->is_placeholder());
+        $me = ["name" => "Eddie Kohler", "email" => $u->email];
+        $new = ["pid" => "new", "title" => "Many people", "abstract" => "An abstract", "authors" => [$me]];
+        $max = Authors_PaperOption::MAX_AUTHORS;
+        xassert_eqq(Contacts_PaperOption::MAX_CONTACTS, $max);
+        $aumsg = "may have at most {$max} authors";
+        $comsg = "may have at most {$max} contacts";
+
+        // too many contacts, as JSON list, JSON object, and form:
+        // no accounts made
+        $contacts = [$u->email];
+        $post = [
+            "p" => "new", "dry_run" => 1,
+            "title" => "Many people", "abstract" => "An abstract",
+            "has_authors" => 1, "authors:1:email" => $u->email,
+            "has_contacts" => 1, "contacts:1:email" => $u->email, "contacts:1:active" => 1
+        ];
+        for ($i = 2; count($contacts) < $max + 50; ++$i) {
+            $contacts[] = "u{$i}@xc.edu";
+            $post["contacts:{$i}:email"] = "u{$i}@xc.edu";
+            $post["contacts:{$i}:active"] = 1;
+        }
+        $t = $this->dry_run_feedback($u, ["contacts" => $contacts] + $new);
+        xassert_str_starts_with($t, "!OK ");
+        xassert_str_contains($t, $comsg);
+        $t = $this->dry_run_feedback($u, ["contacts" => (object) array_fill_keys($contacts, true)] + $new);
+        xassert_str_starts_with($t, "!OK ");
+        xassert_str_contains($t, $comsg);
+        $jr = call_api("=paper", $u, TestQreq::post($post));
+        xassert(!$jr->ok);
+        xassert_str_contains(json_encode_db($jr->message_list), $comsg);
+        $this->conf->id_randomizer()->cleanup();
+        xassert(!$this->conf->fresh_user_by_email("u2@xc.edu"));
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from ContactInfo"), $nusers);
+
+        // the limit applies to the resulting contacts, too
+        $t = $this->dry_run_feedback($u, ["contacts" => array_slice($contacts, 0, $max + 1)] + $new);
+        xassert_str_starts_with($t, "!OK ");
+        xassert_str_contains($t, $comsg);
+        $t = $this->dry_run_feedback($u, ["contacts" => array_merge(["notanemail"], array_slice($contacts, 0, $max))] + $new);
+        xassert_not_str_contains($t, $comsg);
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from ContactInfo"), $nusers);
+
+        // shorter lists parse as before: invalid address reported,
+        // current contact matched case-insensitively, `false` removes.
+        // NB The error in each request is what keeps the dry run from
+        // creating accounts for the valid addresses.
+        $contacts = ["notanemail", strtoupper($u->email)];
+        $cobj = ["NOTANEMAIL" => true, strtoupper($u->email) => false];
+        for ($i = 0; $i < 20; ++$i) {
+            $contacts[] = "u{$i}@xc.edu";
+            $cobj["u{$i}@xc.edu"] = true;
+        }
+        $t = $this->dry_run_feedback($u, ["contacts" => $contacts] + $new);
+        xassert_not_str_contains($t, $comsg);
+        xassert_str_contains($t, "Invalid email address ‘notanemail’");
+        xassert_not_str_contains($t, "can’t remove yourself");
+        $t = $this->dry_run_feedback($u, ["contacts" => (object) $cobj] + $new);
+        xassert_not_str_contains($t, $comsg);
+        xassert_str_contains($t, "Invalid email address ‘NOTANEMAIL’");
+        xassert_str_contains($t, "can’t remove yourself");
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from ContactInfo"), $nusers);
+
+        // too many authors, as JSON and as form: no accounts made
+        $authors = [$me];
+        $post = [
+            "p" => "new", "dry_run" => 1,
+            "title" => "Many people", "abstract" => "An abstract",
+            "has_authors" => 1, "authors:1:email" => $u->email
+        ];
+        for ($i = 2; count($authors) < $max + 50; ++$i) {
+            $authors[] = ["name" => "Author {$i}", "email" => "a{$i}@xa.edu"];
+            $post["authors:{$i}:name"] = "Author {$i}";
+            $post["authors:{$i}:email"] = "a{$i}@xa.edu";
+        }
+        $t = $this->dry_run_feedback($u, ["authors" => $authors] + $new);
+        xassert_str_starts_with($t, "!OK ");
+        xassert_str_contains($t, $aumsg);
+        $jr = call_api("=paper", $u, TestQreq::post($post));
+        xassert(!$jr->ok);
+        xassert_str_contains(json_encode_db($jr->message_list), $aumsg);
+        $this->conf->id_randomizer()->cleanup();
+        xassert(!$this->conf->fresh_user_by_email("a2@xa.edu"));
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from ContactInfo"), $nusers);
+
+        // with a configured maximum, that is the limit reported
+        xassert_eqq($this->conf->opt("maxAuthors"), null);
+        $this->conf->set_opt("maxAuthors", 25);
+        $this->conf->invalidate_caches("options");
+        $t = $this->dry_run_feedback($u, ["authors" => $authors] + $new);
+        xassert_str_starts_with($t, "!OK ");
+        xassert_str_contains($t, "may have at most 25 authors");
+        xassert_not_str_contains($t, $aumsg);
+        $t = $this->dry_run_feedback($u, ["authors" => array_slice($authors, 0, 30)] + $new);
+        xassert_str_starts_with($t, "!OK ");
+        xassert_str_contains($t, "may have at most 25 authors");
+        xassert_not_str_contains($t, $aumsg);
+        $this->conf->set_opt("maxAuthors", null);
+        $this->conf->invalidate_caches("options");
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from ContactInfo"), $nusers);
+
+        // blank entries don't count, and a new submission's contacts may
+        // name as many people as it may have authors (here the invalid
+        // author address is what prevents account creation)
+        $authors = array_merge([$me], array_fill(0, $max, ""), ["Nobody"]);
+        $t = $this->dry_run_feedback($u, ["authors" => $authors] + $new);
+        xassert_not_str_contains($t, $aumsg);
+        $authors = [$me, ["name" => "Bad Address", "email" => "bogus"]];
+        $contacts = [$u->email];
+        for ($i = 0; count($authors) < $max; ++$i) {
+            $authors[] = ["name" => "Author {$i}", "email" => "a{$i}@xa.edu"];
+            $contacts[] = "a{$i}@xa.edu";
+        }
+        $t = $this->dry_run_feedback($u, ["authors" => $authors, "contacts" => $contacts] + $new);
+        xassert_not_str_contains($t, $aumsg);
+        xassert_not_str_contains($t, $comsg);
+        xassert_str_contains($t, "Invalid email address ‘bogus’");
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from ContactInfo"), $nusers);
+
+        // duplicate author emails are still noticed, case-insensitively
+        $authors = [$me, ["name" => "Mikael Degermark", "email" => $this->u_micke->email],
+            ["name" => "Eddie Again", "email" => strtoupper($u->email)], "Nobody"];
+        $t = $this->dry_run_feedback($u, ["authors" => $authors] + $new);
+        xassert_str_contains($t, "same email address has been used for different authors");
+        xassert_str_contains($t, "\"field\":\"authors:1:email\"");
+        xassert_str_contains($t, "\"field\":\"authors:3:email\"");
+        xassert_not_str_contains($t, "\"field\":\"authors:2:email\"");
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from ContactInfo"), $nusers);
+    }
+
     function test_pid_mismatch() {
         $qreq = TestQreq::post_json(["title" => "Foo", "pid" => $this->npid + 1],
             ["p" => 1, "dry_run" => 1]);
         $jr = call_api("=paper", $this->u_estrin, $qreq, $this->conf->checked_paper_by_id(1));
         xassert_eqq($jr->ok, false);
+    }
+
+    function test_object_type_mismatch() {
+        // a JSON whose `object` is not `paper` is rejected
+        $qreq = TestQreq::post_json(["object" => "comment", "title" => "Foo"]);
+        $jr = call_api_result("=paper", $this->u_chair, $qreq);
+        xassert_eqq($jr->content["ok"], false);
+        xassert_eqq($jr->message_item(0)->field, "object");
+        xassert_match($jr->message_item(0)->message, '/Object type mismatch/');
     }
 
     function test_decision() {
@@ -222,16 +944,121 @@ class PaperAPI_Tester {
         $qreq = TestQreq::post_json(["pid" => 200, "title" => "Fart", "abstract" => "Fart", "authors" => [["name" => "Dan Bisers", "email" => "farterchild@example.net"]]]);
         $jr = call_api("=paper", $this->u_chair, $qreq);
         xassert_eqq($jr->ok, true);
-        xassert_eqq($jr->change_list[0], "pid");
+        xassert_eqq($jr->change_list[0], "new");
 
-        $qreq = TestQreq::post_json(["pid" => 201, "title" => "Fart Again", "abstract" => "Extra Fart", "authors" => [["name" => "Dan Bisers", "email" => "farterchild@example.net"]], "status" => ["if_unmodified_since" => 0]]);
+        $qreq = TestQreq::post_json(["pid" => 201, "title" => "Fart Again", "abstract" => "Extra Fart", "authors" => [["name" => "Dan Bisers", "email" => "farterchild@example.net"]], "if_unmodified_since" => 0]);
         $jr = call_api("=paper", $this->u_chair, $qreq);
         xassert_eqq($jr->ok, true);
-        xassert_eqq($jr->change_list[0], "pid");
+        xassert_eqq($jr->change_list[0], "new");
 
         $qreq = TestQreq::post_json(["pid" => 201, "title" => "Fart", "abstract" => "Fart", "authors" => [["name" => "Dan Bisers", "email" => "farterchild@example.net"]], "status" => ["if_unmodified_since" => 0]]);
         $jr = call_api("=paper", $this->u_chair, $qreq);
         xassert_eqq($jr->ok, false);
+        xassert_eqq($jr->valid, false);
+        xassert_eqq($jr->conflict, true);
+    }
+
+    // The flat `if_unmodified_since` parameter is an alias for the JSON
+    // `if_unmodified_since/status.if_unmodified_since` field, and edit
+    // conflicts report `conflict`.
+    function test_if_unmodified_since_param() {
+        $qreq = TestQreq::post_json(["pid" => 202, "title" => "IUS", "abstract" => "A", "authors" => [["name" => "Ann Ug", "email" => "ann@_.com"]]]);
+        $jr = call_api("=paper", $this->u_chair, $qreq);
+        xassert_eqq($jr->ok, true);
+        $mod = (int) $this->conf->fetch_ivalue("select timeModified from Paper where paperId=202");
+        xassert($mod > 0);
+
+        // a stale flat precondition is an edit conflict
+        $qreq = TestQreq::post_json(["pid" => 202, "title" => "IUS 2"], ["if_unmodified_since" => $mod - 1]);
+        $jr = call_api("=paper", $this->u_chair, $qreq);
+        xassert_eqq($jr->ok, false);
+        xassert_eqq($jr->valid, false);
+        xassert_eqq($jr->conflict, true);
+
+        // `if_unmodified_since=0` also conflicts on an existing submission
+        $qreq = TestQreq::post_json(["pid" => 202, "title" => "IUS 3"], ["if_unmodified_since" => 0]);
+        $jr = call_api("=paper", $this->u_chair, $qreq);
+        xassert_eqq($jr->ok, false);
+        xassert_eqq($jr->conflict, true);
+
+        // the flat parameter works for a form-encoded POST too
+        $qreq = TestQreq::post(["p" => 202, "title" => "IUS form", "if_unmodified_since" => $mod - 1]);
+        $jr = call_api("=paper", $this->u_chair, $qreq);
+        xassert_eqq($jr->ok, false);
+        xassert_eqq($jr->conflict, true);
+
+        // a current precondition allows the edit
+        $qreq = TestQreq::post_json(["pid" => 202, "title" => "IUS 4"], ["if_unmodified_since" => $mod]);
+        $jr = call_api("=paper", $this->u_chair, $qreq);
+        xassert_eqq($jr->ok, true);
+        xassert(!isset($jr->conflict));
+    }
+
+    // For a multi-submission request the flat `if_unmodified_since` is a
+    // per-paper backup, overridable by each paper's `status.if_unmodified_since`.
+    // Conflicts are reported per item in `status_list` (absent or true); there
+    // is no top-level aggregate.
+    function test_if_unmodified_since_multi() {
+        $qreq = TestQreq::post_json([
+            ["pid" => 210, "title" => "M1", "abstract" => "A", "authors" => [["name" => "Al Fa", "email" => "alfa@_.com"]]],
+            ["pid" => 211, "title" => "M2", "abstract" => "A", "authors" => [["name" => "Be Ta", "email" => "beta@_.com"]]]
+        ]);
+        $jr = call_api("=papers", $this->u_chair, $qreq);
+        xassert_eqq($jr->ok, true);
+        xassert(!isset($jr->conflict));
+        xassert_eqq($jr->status_list[0]->valid, true);
+        xassert_eqq($jr->status_list[0]->conflict ?? false, false);
+        xassert_eqq($jr->status_list[1]->valid, true);
+        $mod210 = (int) $this->conf->fetch_ivalue("select timeModified from Paper where paperId=210");
+        xassert($mod210 > 0);
+
+        // flat `if_unmodified_since=0` conflicts every paper as a per-paper backup
+        $qreq = TestQreq::post_json([
+            ["pid" => 210, "title" => "M1x"],
+            ["pid" => 211, "title" => "M2x"]
+        ], ["if_unmodified_since" => 0]);
+        $jr = call_api("=papers", $this->u_chair, $qreq);
+        xassert_eqq($jr->ok, false);
+        xassert(!isset($jr->conflict));
+        xassert_eqq($jr->status_list[0]->valid, false);
+        xassert_eqq($jr->status_list[0]->conflict, true);
+        xassert_eqq($jr->status_list[1]->valid, false);
+        xassert_eqq($jr->status_list[1]->conflict, true);
+
+        // a per-paper `if_unmodified_since` overrides the flat backup
+        $qreq = TestQreq::post_json([
+            ["pid" => 210, "title" => "M1y", "if_unmodified_since" => $mod210],
+            ["pid" => 211, "title" => "M2y"]
+        ], ["if_unmodified_since" => 0]);
+        $jr = call_api("=papers", $this->u_chair, $qreq);
+        xassert_eqq($jr->status_list[0]->valid, true);
+        xassert_eqq($jr->status_list[0]->conflict ?? false, false);
+        xassert_eqq($jr->status_list[1]->valid, false);
+        xassert_eqq($jr->status_list[1]->conflict, true);
+    }
+
+    function test_get_download_json() {
+        // `download=1` trades the response envelope for the bare payload that
+        // `POST /paper` accepts
+        $jr = call_api_result("paper", $this->u_chair, TestQreq::get(["p" => 1, "download" => 1]));
+        xassert($jr instanceof JsonResult);
+        xassert($jr->minimal);
+        xassert_str_contains($jr->header("Content-Disposition"),
+            $this->conf->download_prefix . "paper1.json");
+        $pj = (object) $jr->content;
+        xassert_eqq($pj->object, "paper");
+        xassert_eqq($pj->pid, 1);
+        xassert(!isset($pj->ok));
+
+        // `/papers` downloads the bare array `POST /papers` accepts
+        $jr = call_api_result("papers", $this->u_chair, TestQreq::get(["q" => "1-3", "download" => 1]));
+        xassert($jr instanceof JsonResult);
+        xassert($jr->minimal);
+        xassert_str_contains($jr->header("Content-Disposition"),
+            $this->conf->download_prefix . "papers.json");
+        xassert(is_list($jr->content));
+        xassert_eqq(count($jr->content), 3);
+        xassert_eqq($jr->content[0]->object, "paper");
     }
 
     function test_get_sort() {
@@ -265,10 +1092,10 @@ class PaperAPI_Tester {
         $jr = call_api("=papers", $this->u_chair, $qreq);
         xassert_eqq($jr->ok, true);
         for ($i = 0; $i !== 10; ++$i) {
-            xassert_eqq($jr->status_list[$i]->change_list, ["calories"]);
+            xassert_eqq($jr->status_list[$i]->change_list, ["Calories"]);
             xassert_eqq($jr->status_list[$i]->pid, $i + 1);
             xassert_eqq($jr->papers[$i]->pid, $i + 1);
-            xassert_eqq($jr->papers[$i]->calories, 10);
+            xassert_eqq($jr->papers[$i]->Calories, 10);
         }
 
         $qreq = TestQreq::post_json(["calories" => 10, "pid" => 1], ["q" => "1-10"]);
@@ -280,9 +1107,9 @@ class PaperAPI_Tester {
         $qreq = TestQreq::post_json(["calories" => 9], ["p" => "1"]);
         $jr = call_api("=paper", $this->u_chair, $qreq);
         xassert_eqq($jr->ok, true);
-        xassert_eqq($jr->change_list, ["calories"]);
+        xassert_eqq($jr->change_list, ["Calories"]);
         xassert_eqq($jr->paper->pid, 1);
-        xassert_eqq($jr->paper->calories, 9);
+        xassert_eqq($jr->paper->Calories, 9);
     }
 
     function test_delete() {
@@ -455,17 +1282,33 @@ class PaperAPI_Tester {
         xassert_eqq($jr->message_list[0]->field, "status:submitted");
     }
 
+    function test_get() {
+        $qreq = TestQreq::get(["p" => 3]);
+        $jr = call_api("paper", $this->u_chair, $qreq);
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->paper->object, "paper");
+        xassert_eqq($jr->paper->pid, 3);
+    }
+
     function test_get_fail() {
-        $qreq = TestQreq::get(["p" => 100101]);
+        // unknown pid
+        $qreq = TestQreq::get(["p" => 1093]);
         $jr = call_api("paper", $this->u_estrin, $qreq);
         xassert_eqq($jr->ok, false);
         xassert_str_contains($jr->message_list[0]->message, "does not exist");
 
+        // absent `p`
         $qreq = TestQreq::get();
         $jr = call_api("paper", $this->u_estrin, $qreq);
         xassert_eqq($jr->ok, false);
         xassert_eqq($jr->message_list[0]->field, "p");
         xassert_eqq($jr->message_list[0]->message, "<0>Parameter missing");
+
+        // broken `p`
+        $qreq = TestQreq::get(["p" => "xxx"]);
+        $jr = call_api("paper", $this->u_estrin, $qreq);
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains($jr->message_list[0]->message, "Invalid");
     }
 
     function test_document() {
@@ -589,6 +1432,200 @@ class PaperAPI_Tester {
         xassert_eqq($dl->response_code(), 200);
     }
 
+    /** @param int $pid
+     * @return int */
+    private function storage_count($pid) {
+        return (int) $this->conf->fetch_ivalue("select count(*) from PaperStorage where paperId=?", $pid);
+    }
+
+    // Each document listed for an attachments field is looked up and
+    // stored separately: that should cost a bounded amount of work per
+    // document, and one request should list only so many.
+    function test_many_attachments() {
+        $saved_options = $this->conf->setting_data("options");
+        $options = json_decode($saved_options ?? "[]");
+        // (a lowercase name so the field's JSON key is `attachments`)
+        $options[] = (object) ["id" => 2, "name" => "attachments", "type" => "attachments", "order" => 3];
+        $this->conf->save_refresh_setting("options", 1, json_encode_db($options));
+        $this->allow_submission();
+        $pid = null;
+        try {
+            $this->_test_many_attachments($pid);
+        } finally {
+            // (leave no field-2 values or documents behind for later tests)
+            MailChecker::clear();
+            $this->prevent_submission();
+            if ($pid !== null) {
+                $this->conf->qe("delete from PaperOption where paperId=? and optionId=2", $pid);
+                $this->conf->qe("delete from PaperStorage where paperId=? and documentType=2", $pid);
+            }
+            if ($saved_options === null) {
+                $this->conf->save_refresh_setting("options", null);
+            } else {
+                $this->conf->save_refresh_setting("options", 1, $saved_options);
+            }
+        }
+    }
+
+    /** @param ?int &$pid */
+    private function _test_many_attachments(&$pid) {
+        xassert_eqq($this->u_micke->roles, 0);
+        $doc0 = ["content" => "data", "filename" => "a.txt"];
+        $jr = call_api("=paper", $this->u_micke, TestQreq::post_json([
+            "pid" => "new", "title" => "Many Small Attachments",
+            "abstract" => "Each cheap alone",
+            "authors" => [["name" => "Mikael Degermark", "email" => $this->u_micke->email]],
+            "status" => "draft", "attachments" => [$doc0, $doc0]
+        ], ["p" => "new"]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(count($jr->paper->attachments), 2);
+        $pid = $jr->paper->pid;
+        $nps = $this->storage_count($pid);
+        xassert_eqq($nps, 1); // one row for two copies
+        $max = Attachments_PaperOption::MAX_PARSE_COUNT;
+        $msg = "Too many attachments (at most {$max})";
+
+        // replace the attachments several times; the old rows stay behind
+        // (inactive), but looking for stored copies of the listed documents
+        // should read those rows once per save, not once per document
+        // (`db_rows_read` counts rows the database reads, not time)
+        $perround = intdiv($max * 3, 5);
+        $rounds = 4;
+        $nreads = [];
+        for ($r = 0; $r < $rounds; ++$r) {
+            $docs = [];
+            for ($i = 0; $i < $perround; ++$i) {
+                $docs[] = ["content" => "data-{$r}-{$i}", "filename" => "a{$i}.txt"];
+            }
+            $nr = db_rows_read($this->conf);
+            $jr = call_api("=paper", $this->u_micke, TestQreq::post_json(["pid" => $pid, "attachments" => $docs], ["p" => $pid]));
+            xassert_eqq($jr->ok, true);
+            xassert_eqq(count($jr->paper->attachments), $perround);
+            $nreads[] = db_rows_read($this->conf) - $nr;
+        }
+        xassert_eqq($this->storage_count($pid), $nps + $rounds * $perround);
+        // - the last save started with `$grown` more stored rows than the
+        //   first; a save passes over the submission’s rows a fixed few
+        //   times (to index them, to reload its document list: about 4),
+        //   so allow it several more passes’ worth of reads -- where it
+        //   used to pass over them once or twice per listed document
+        $grown = ($rounds - 1) * $perround;
+        $passes = 25;
+        xassert_lt($passes, $perround);
+        xassert_lt($nreads[$rounds - 1] - $nreads[0], $grown * $passes);
+
+        // stored copies are still found -- by ID, by hash, by content (also
+        // among inactive rows), and for duplicates within one request --
+        // but not under another name
+        $attopt = $this->conf->checked_option_by_id(2);
+        $odids = $attopt->value_dids($this->conf->checked_paper_by_id($pid)->force_option($attopt));
+        xassert_eqq(count($odids), $perround);
+        $docs = [];
+        $r = $rounds - 1;
+        foreach ($jr->paper->attachments as $i => $dj) {
+            if ($i % 3 === 0) {
+                $docs[] = ["docid" => $odids[$i]];
+            } else if ($i % 3 === 1) {
+                $docs[] = ["hash" => $dj->hash];
+            } else {
+                $docs[] = ["content" => "data-{$r}-{$i}", "filename" => "a{$i}.txt"];
+            }
+        }
+        $d = ["content" => "data-0-7", "filename" => "a7.txt"];
+        array_push($docs, $d, $d);
+        $d = ["content" => "data-new", "filename" => "anew.txt"];
+        array_push($docs, $d, $d);
+        $docs[] = ["content" => "data-new", "filename" => "bnew.txt"];
+        $jr = call_api("=paper", $this->u_micke, TestQreq::post_json(["pid" => $pid, "attachments" => $docs], ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(count($jr->paper->attachments), $perround + 5);
+        $ndids = $attopt->value_dids($this->conf->checked_paper_by_id($pid)->force_option($attopt));
+        xassert_eqq(array_slice($ndids, 0, $perround), $odids);
+        $ndids = array_slice($ndids, $perround);
+        xassert_eqq($ndids[0], $ndids[1]);
+        xassert_lt($ndids[0], $odids[0]);
+        xassert_eqq($ndids[2], $ndids[3]);
+        xassert_lt($ndids[3], $ndids[4]);
+        $nps += $rounds * $perround + 2;
+        xassert_eqq($this->storage_count($pid), $nps);
+
+        // however many replaced rows pile up, only so many are searched by
+        // hash -- the field’s current documents first, then the newest:
+        // here, past a pile of newer junk, the current documents are all
+        // found again by hash alone, and so is the newest junk row, but
+        // not the oldest
+        $njunk = DocumentImporter::HASH_INDEX_LIMIT + 10;
+        $junk = [];
+        for ($i = 0; $i < $njunk; ++$i) {
+            $junk[] = [$pid, Conf::$now, "text/plain", sha1("junk-{$i}", true), 2, "junk{$i}.txt", 6, 1];
+        }
+        $this->conf->qe("insert into PaperStorage (paperId, timestamp, mimetype, sha1, documentType, filename, size, inactive) values ?v", $junk);
+        $nps += $njunk;
+        $docs = [];
+        foreach ($jr->paper->attachments as $dj) {
+            $docs[] = ["hash" => $dj->hash];
+        }
+        $docs[] = ["hash" => sha1("junk-" . ($njunk - 1))];
+        $jr = call_api("=paper", $this->u_micke, TestQreq::post_json(["pid" => $pid, "attachments" => $docs], ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(count($jr->paper->attachments), $perround + 6);
+        $docs[] = ["hash" => sha1("junk-0")];
+        $jr = call_api("=paper", $this->u_micke, TestQreq::post_json(["pid" => $pid, "attachments" => $docs], ["p" => $pid]));
+        xassert_str_contains(json_encode_db($jr->message_list), "without any content");
+        xassert_eqq(count($jr->paper->attachments), $perround + 6);
+        xassert_eqq($this->storage_count($pid), $nps);
+
+        // too many, as JSON and as form: nothing stored
+        $docs = [];
+        $qreq = TestQreq::post(["p" => $pid, "has_opt2" => 1]);
+        for ($i = 1; $i <= $max + 1; ++$i) {
+            $docs[] = ["content" => "data-a{$i}", "filename" => "a{$i}.txt"];
+            $qreq["opt2:{$i}"] = "new";
+            $qreq->set_file_content("opt2:{$i}:file", "data-f{$i}", "f{$i}.txt", "text/plain");
+        }
+        $jr = call_api("=paper", $this->u_micke, TestQreq::post_json(["pid" => $pid, "attachments" => $docs], ["p" => $pid]));
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains(json_encode_db($jr->message_list), $msg);
+        xassert_eqq($this->storage_count($pid), $nps);
+        $jr = call_api("=paper", $this->u_micke, $qreq);
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains(json_encode_db($jr->message_list), $msg);
+        xassert_eqq($this->storage_count($pid), $nps);
+
+        // the limit itself is accepted
+        array_pop($docs);
+        $jr = call_api("=paper", $this->u_micke, TestQreq::post_json(["pid" => $pid, "attachments" => $docs], ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(count($jr->paper->attachments), $max);
+        xassert_eqq($this->storage_count($pid), $nps + $max);
+
+        // a site administrator’s JSON is exempt (say for a bulk import)...
+        $docs[] = ["content" => "data-extra", "filename" => "extra.txt"];
+        xassert_eqq(count($docs), $max + 1);
+        $jr = call_api("=paper", $this->u_chair, TestQreq::post_json(["pid" => $pid, "attachments" => $docs], ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(count($jr->paper->attachments), $max + 1);
+        $nps += $max + 1;
+        xassert_eqq($this->storage_count($pid), $nps);
+
+        // ...and then the submission can be saved with that many by anyone,
+        // however they are listed, but can’t grow
+        $dids = $attopt->value_dids($this->conf->checked_paper_by_id($pid)->force_option($attopt));
+        xassert_eqq(count($dids), $max + 1);
+        foreach ([0, 10, 20] as $i) {
+            $docs[$i] = ["docid" => $dids[$i]];
+        }
+        $jr = call_api("=paper", $this->u_micke, TestQreq::post_json(["pid" => $pid, "attachments" => $docs], ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(count($jr->paper->attachments), $max + 1);
+        $docs[] = ["content" => "data-grow", "filename" => "grow.txt"];
+        $jr = call_api("=paper", $this->u_micke, TestQreq::post_json(["pid" => $pid, "attachments" => $docs], ["p" => $pid]));
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains(json_encode_db($jr->message_list), "Too many attachments (at most " . ($max + 1) . ")");
+        xassert_eqq($attopt->value_dids($this->conf->checked_paper_by_id($pid)->force_option($attopt)), $dids);
+        xassert_eqq($this->storage_count($pid), $nps);
+    }
+
     function test_api_scope() {
         $qreq = TestQreq::get(["p" => 1]);
         $resp = call_api_result("paper", $this->u_estrin, $qreq);
@@ -619,7 +1656,7 @@ class PaperAPI_Tester {
 
         $qreq = TestQreq::get(["p" => 2]);
         $resp = call_api_result("paper", $this->u_estrin, $qreq);
-        xassert_eqq($resp->response_code(), 401);
+        xassert_eqq($resp->response_code(), 403);
         xassert_eqq($resp->get("paper"), null);
         Scope_Tester::xassert_scope_error($resp, "submeta:read");
 
@@ -646,7 +1683,7 @@ class PaperAPI_Tester {
 
         $qreq = TestQreq::get(["p" => 1, "dt" => 0]);
         $resp = call_api_result("document", $this->u_estrin, $qreq);
-        xassert_eqq($resp->response_code(), 401);
+        xassert_eqq($resp->response_code(), 403);
         Scope_Tester::xassert_scope_error($resp, "document:read");
 
         $qreq = TestQreq::get(["p" => 2, "dt" => 0]);
@@ -655,5 +1692,287 @@ class PaperAPI_Tester {
         xassert($resp instanceof Downloader);
 
         $this->u_estrin->set_scope();
+    }
+
+    // An API response’s real HTTP status is surfaced only for non-cross-site
+    // requests; otherwise it’s 200 + status_code to avoid an XS-Leak oracle.
+    // See JsonResult::emit and Qrequest::same_origin.
+    function test_emit_status_disclosure() {
+        $save_code = Navigation::$http_response_code;
+        // emit a 404 through $qreq, return [wire status, decoded body]
+        $emit = function ($qreq) {
+            Navigation::$http_response_code = 200;
+            ob_start();
+            JsonResult::make_error(404, "<0>Function not found")->emit($qreq);
+            return [Navigation::$http_response_code, json_decode(ob_get_clean())];
+        };
+
+        // cross-site no-cors element load: status veiled as 200 + status_code
+        $qreq = TestQreq::get()->set_user($this->user);
+        $qreq->set_header("Sec-Fetch-Site", "cross-site");
+        list($code, $body) = $emit($qreq);
+        xassert_eqq($code, 200);
+        xassert_eqq($body->ok, false);
+        xassert_eqq($body->status_code, 404);
+
+        // no Sec-Fetch-Site but a cross-origin Origin: inferred cross-site, veiled
+        $qreq = TestQreq::get()->set_user($this->user);
+        $qreq->set_header("Origin", "https://evil.example");
+        list($code, $body) = $emit($qreq);
+        xassert_eqq($code, 200);
+        xassert_eqq($body->status_code, 404);
+
+        // same-origin request: real 404 on the wire, no status_code veil
+        $qreq = TestQreq::get()->set_user($this->user);
+        $qreq->set_header("Sec-Fetch-Site", "same-origin");
+        list($code, $body) = $emit($qreq);
+        xassert_eqq($code, 404);
+        xassert_eqq($body->status_code ?? null, null);
+
+        // direct navigation (Sec-Fetch-Site: none): real 404
+        $qreq = TestQreq::get()->set_user($this->user);
+        $qreq->set_header("Sec-Fetch-Site", "none");
+        list($code, $body) = $emit($qreq);
+        xassert_eqq($code, 404);
+
+        // no fetch-metadata and no Origin (non-browser client): treated same-origin
+        $qreq = TestQreq::get()->set_user($this->user);
+        list($code, $body) = $emit($qreq);
+        xassert_eqq($code, 404);
+
+        // authorized request (valid CSRF/bearer token) is surfaced even cross-site
+        $qreq = TestQreq::post()->set_user($this->user);
+        $qreq->set_header("Sec-Fetch-Site", "cross-site");
+        list($code, $body) = $emit($qreq);
+        xassert_eqq($code, 404);
+
+        Navigation::$http_response_code = $save_code;
+    }
+
+    // `notify=off` is honored for submission administrators (not only site
+    // chairs), decided per paper via can_manage()
+    function test_paper_notify_off() {
+        // create a submitted paper with two real (enabled) contact authors
+        $qreq = TestQreq::post_json([
+            "pid" => "new", "title" => "Notify Test Paper",
+            "abstract" => "First abstract",
+            "authors" => [
+                ["name" => "Puneet Sharma", "email" => $this->u_puneet->email],
+                ["name" => "Mikael Degermark", "email" => $this->u_micke->email]
+            ],
+            "submission" => ["content" => "%PDF-2"],
+            "status" => "bogus status"
+        ], ["p" => "new"]);
+        $jr = call_api("=paper", $this->u_chair, $qreq);
+        xassert($jr->ok);
+        $pid = $jr->paper->pid;
+
+        // make estrin (PC, not a site chair) the paper's administrator
+        xassert_assign($this->u_chair, "action,paper,user\nadministrator,{$pid},{$this->u_estrin->email}\n");
+        $prow = $this->conf->checked_paper_by_id($pid);
+        xassert(!$this->u_estrin->privChair);
+        xassert($this->u_estrin->can_manage($prow));
+
+        // baseline: an administrator's edit notifies the contact authors
+        MailChecker::clear();
+        $qreq = TestQreq::post_json(["pid" => $pid, "abstract" => "Second abstract"]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert($jr->ok);
+        xassert_gt(count(MailChecker::$preps), 0);
+
+        // a non-chair submission administrator may suppress with notify=off
+        MailChecker::clear();
+        $qreq = TestQreq::post_json(["pid" => $pid, "abstract" => "Third abstract"], ["notify" => "off"]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert($jr->ok);
+        MailChecker::check0();
+
+        // ... but an ordinary edit still notifies
+        MailChecker::clear();
+        $qreq = TestQreq::post_json(["pid" => $pid, "abstract" => "Fourth abstract"]);
+        $jr = call_api("=paper", $this->u_estrin, $qreq);
+        xassert($jr->ok);
+        xassert_gt(count(MailChecker::$preps), 0);
+
+        // clean up the administrator assignment
+        xassert_assign($this->u_chair, "action,paper,user\nadministrator,{$pid},none\n");
+        MailChecker::clear();
+    }
+
+    function test_contacts_no_privilege_escalation() {
+        // Regression: a non-author, non-manager user must not be able to make
+        // themselves a contact-author of someone else's paper via POST /api/paper.
+        // A contacts-only (or even no-op) save skipped the edit-permission gate
+        // and `_check_contacts_last` auto-added the saving user as a contact-
+        // author — granting paper edit and author-view of reviews on a paper
+        // they don't own, even past the submission deadline.
+        $conf = $this->conf;
+        $pid = 2;
+        $attacker = $this->u_estrin; // PC, not author/contact/manager of paper 2
+        $prow = $conf->checked_paper_by_id($pid);
+        xassert($attacker->isPC);
+        xassert(!$attacker->can_manage($prow));
+        xassert(!$prow->has_author($attacker));
+        xassert(!$attacker->can_edit_paper($prow));
+        xassert_eqq($prow->conflict_type($attacker) & CONFLICT_CONTACTAUTHOR, 0);
+        // a legitimate contact exists and must survive
+        xassert(($prow->conflict_type($this->u_micke) & CONFLICT_CONTACTAUTHOR) !== 0);
+
+        // (a) a no-op save must not escalate the saver to contact-author
+        call_api_result("=paper", $attacker, TestQreq::post_json(["pid" => $pid], ["p" => $pid]));
+        $prow = $conf->checked_paper_by_id($pid);
+        xassert_eqq($prow->conflict_type($attacker) & CONFLICT_CONTACTAUTHOR, 0);
+        xassert(!$attacker->can_edit_paper($prow));
+
+        // (b) explicitly naming self as a contact must also be refused
+        call_api_result("=paper", $attacker,
+            TestQreq::post_json(["pid" => $pid, "contacts" => [$attacker->email => true]], ["p" => $pid]));
+        $prow = $conf->checked_paper_by_id($pid);
+        xassert_eqq($prow->conflict_type($attacker) & CONFLICT_CONTACTAUTHOR, 0);
+        xassert(!$attacker->can_edit_paper($prow));
+
+        // (c) the legitimate contact must be untouched by the unauthorized saves
+        xassert(($prow->conflict_type($this->u_micke) & CONFLICT_CONTACTAUTHOR) !== 0);
+    }
+
+    function test_author_pc_conflicts_keep_hidden_pc() {
+        // An author's `pc_conflicts` replace only the conflicts of PC members
+        // the author can see
+        $conf = $this->conf;
+        $pid = 1;
+        $email = "unlisted.pcconf@_.com";
+        $conf->qe("delete from ContactInfo where email=?", $email);
+        $us = new UserStatus($conf->root_user());
+        $acct = $us->save_user((object) ["email" => $email, "roles" => ["unlistedpc"]]);
+        xassert(!!$acct, $us->full_feedback_text());
+        $conf->invalidate_caches("users", "pc");
+        $u_unlisted = $conf->checked_user_by_email($email);
+        $u_mjh = $conf->checked_user_by_email("mjh@isi.edu");
+        xassert(isset($conf->pc_members()[$u_unlisted->contactId]));
+        xassert(!isset($conf->listed_pc_members()[$u_unlisted->contactId]));
+        xassert(isset($conf->listed_pc_members()[$u_mjh->contactId]));
+
+        $prow = $conf->checked_paper_by_id($pid);
+        $old_mjh_ct = $prow->conflict_type($u_mjh);
+        $set_conflicts = function () use ($conf, $pid, $u_unlisted, $u_mjh) {
+            foreach ([$u_unlisted, $u_mjh] as $u) {
+                $conf->qe("delete from PaperConflict where paperId=? and contactId=?", $pid, $u->contactId);
+                $conf->qe("insert into PaperConflict set paperId=?, contactId=?, conflictType=?", $pid, $u->contactId, Conflict::GENERAL);
+            }
+        };
+        $conflict_types = function () use ($conf, $pid, $u_unlisted, $u_mjh) {
+            $prow = $conf->checked_paper_by_id($pid);
+            return [$prow->conflict_type($u_unlisted), $prow->conflict_type($u_mjh)];
+        };
+
+        // unchanged round trip: the author doesn't see the unlisted member
+        $set_conflicts();
+        $this->allow_submission();
+        $author = $conf->checked_user_by_email($this->u_puneet->email);
+        $prow = $conf->checked_paper_by_id($pid);
+        xassert($prow->has_author($author));
+        xassert($author->can_edit_paper($prow));
+        $jr = call_api("paper", $author, TestQreq::get(["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        $pj = $jr->paper;
+        xassert(isset($pj->pc_conflicts->{$u_mjh->email}));
+        xassert(!isset($pj->pc_conflicts->{$email}));
+        $pj->title .= " (round trip)";
+        $jr = call_api("=paper", $author, TestQreq::post_json($pj, ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert_in_eqq("title", $jr->change_list);
+        xassert_not_in_eqq("pc_conflicts", $jr->change_list);
+        xassert_eqq($conflict_types(), [Conflict::GENERAL, Conflict::GENERAL]);
+
+        // explicit `pc_conflicts` still remove visible conflicts
+        $jr = call_api("=paper", $author, TestQreq::post_json(["pid" => $pid, "pc_conflicts" => (object) []], ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($conflict_types(), [Conflict::GENERAL, 0]);
+
+        // with `privatePC`, the author can't see or change any PC conflict
+        $set_conflicts();
+        $conf->set_opt("privatePC", true);
+        Contact::update_rights();
+        $author = $conf->checked_user_by_email($this->u_puneet->email);
+        xassert(!$author->can_view_pc());
+        $jr = call_api("=paper", $author, TestQreq::post_json(["pid" => $pid, "pc_conflicts" => (object) []], ["p" => $pid]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($conflict_types(), [Conflict::GENERAL, Conflict::GENERAL]);
+        $conf->set_opt("privatePC", null);
+        Contact::update_rights();
+
+        // clean up
+        $conf->qe("delete from PaperConflict where paperId=? and contactId=?", $pid, $u_mjh->contactId);
+        if ($old_mjh_ct !== 0) {
+            $conf->qe("insert into PaperConflict set paperId=?, contactId=?, conflictType=?", $pid, $u_mjh->contactId, $old_mjh_ct);
+        }
+        $conf->qe("delete from PaperConflict where contactId=?", $u_unlisted->contactId);
+        $conf->qe("delete from ContactInfo where contactId=?", $u_unlisted->contactId);
+        $conf->invalidate_caches("users", "pc");
+    }
+
+    function test_pc_conflicts_reject_non_pc_sysadmin() {
+        // a site administrator who isn't on the PC can't be given a PC conflict
+        $conf = $this->conf;
+        $email = "sysadmin.only@_.com";
+        $conf->qe("delete from ContactInfo where email=?", $email);
+        $us = new UserStatus($conf->root_user());
+        xassert(!!$us->save_user((object) ["email" => $email, "roles" => ["sysadmin"]]), $us->full_feedback_text());
+        $conf->invalidate_caches("users", "pc");
+        $u = $conf->checked_user_by_email($email);
+        xassert($u->privChair);
+        xassert_eqq($u->roles & Contact::ROLE_ANYPC, 0);
+        try {
+            $jr = call_api("=paper", $this->u_chair, TestQreq::post_json(
+                ["pid" => 1, "pc_conflicts" => [$email => "collaborator"]], ["p" => 1, "dry_run" => 1]));
+            xassert_eqq($jr->ok, true);
+            xassert_str_contains(MessageSet::feedback_text($jr->message_list ?? []), "does not match a PC member");
+        } finally {
+            $conf->qe("delete from ContactInfo where contactId=?", $u->contactId);
+            $conf->invalidate_caches("users", "pc");
+        }
+    }
+
+    function test_missing_conflict_warning_respects_pc_visibility() {
+        // the missing-conflicts warning names PC members, so authors who can't
+        // see the PC don't get it
+        $conf = $this->conf;
+        $this->allow_submission();
+        $ps = new PaperStatus($conf->root_user());
+        $pid = $ps->save_paper_json((object) [
+            "pid" => "new", "title" => "Missing conflict warning", "abstract" => "Abstract",
+            "authors" => [["name" => "Puneet Sharma", "email" => $this->u_puneet->email]],
+            "status" => "submitted", "submission" => (object) ["content" => "%PDF-missing-conflict"]
+        ]);
+        xassert($pid > 0, $ps->full_feedback_text());
+        $estrin = $this->u_estrin;
+        xassert($conf->checked_paper_by_id($pid)->potential_conflict($estrin));
+
+        $save = function ($title) use ($conf, $pid) {
+            $author = $conf->checked_user_by_email($this->u_puneet->email);
+            $jr = call_api("=paper", $author, TestQreq::post_json(["pid" => $pid, "title" => $title], ["p" => $pid]));
+            xassert_eqq($jr->ok, true);
+            return MessageSet::feedback_text($jr->message_list ?? []);
+        };
+        try {
+            // the PC is public: the author is warned
+            $t = $save("Missing conflict warning, public PC");
+            xassert_str_contains($t, "You may have missed conflicts of interest");
+            xassert_str_contains($t, $estrin->name());
+
+            // `privatePC`: the author can't see the PC, so no warning
+            $conf->set_opt("privatePC", true);
+            Contact::update_rights();
+            xassert(!$conf->checked_user_by_email($this->u_puneet->email)->can_view_pc());
+            $t = $save("Missing conflict warning, private PC");
+            xassert_not_str_contains($t, "missed conflicts");
+            xassert_not_str_contains($t, $estrin->name());
+        } finally {
+            $conf->set_opt("privatePC", null);
+            Contact::update_rights();
+            $conf->qe("delete from Paper where paperId=?", $pid);
+            $conf->qe("delete from PaperConflict where paperId=?", $pid);
+            $conf->qe("delete from PaperStorage where paperId=?", $pid);
+        }
     }
 }

@@ -46,11 +46,15 @@ class AutomaticTag_SettingParser extends SettingParser {
 
     private function _apply_automatic_tag_req(Si $si, SettingValues $sv) {
         $djs = [];
-        foreach ($sv->oblist_keys("automatic_tag") as $ctr) {
+        foreach ($sv->oblist_nondeleted_keys("automatic_tag") as $ctr) {
             $atr = $sv->object_newv("automatic_tag/{$ctr}");
-            if (!$atr->deleted && !$sv->reqstr("automatic_tag/{$ctr}/delete") /* XXX */) {
-                $djs[] = $atr;
+            if ($atr->tag === "") {
+                if (!$sv->has_error_at("automatic_tag/{$ctr}/tag")) {
+                    $sv->error_at("automatic_tag/{$ctr}/tag", "<0>Entry required");
+                }
+                continue;
             }
+            $djs[] = $atr;
         }
 
         // sort and save
@@ -76,7 +80,7 @@ class AutomaticTag_SettingParser extends SettingParser {
             return $this->_apply_automatic_tag_req($si, $sv);
         }
         if ($si->name0 === "automatic_tag/" && $si->name2 === "/search") {
-            $q = $sv->reqstr($si->name);
+            $q = $sv->base_parse_req($si) ?? "";
             if (simplify_whitespace($q) === "") {
                 $sv->error_at($si, "<0>Entry required");
             } else {

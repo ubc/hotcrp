@@ -67,36 +67,38 @@ class PaperOptionList implements IteratorAggregate {
     }
 
     private function add_abbrev_matcher(AbbreviationMatcher $am, $id, $oj) {
+        $amflag = Conf::MFLAG_OPTION | Conf::MFLAG_GLOBAL;
         $cb = [$this, "option_by_id"];
-        $am->add_keyword_lazy("opt{$id}", $cb, [$id], Conf::MFLAG_OPTION);
+        $am->add_keyword_lazy("opt{$id}", $cb, [$id], $amflag);
         if ($oj->name ?? null) {
-            $am->add_phrase_lazy($oj->name, $cb, [$id], Conf::MFLAG_OPTION);
+            $am->add_phrase_lazy($oj->name, $cb, [$id], $amflag);
         }
         $oj->search_keyword = $oj->search_keyword ?? $oj->json_key ?? null;
         if ($oj->search_keyword) {
-            $am->add_keyword_lazy($oj->search_keyword, $cb, [$id], Conf::MFLAG_OPTION);
+            $am->add_keyword_lazy($oj->search_keyword, $cb, [$id], $amflag);
         }
         if (($oj->json_key ?? null)
             && $oj->json_key !== $oj->search_keyword
             && (($oj->name ?? null)
                 || strcasecmp(str_replace("_", " ", $oj->json_key), $oj->name) !== 0)) {
-            $am->add_keyword_lazy($oj->json_key, $cb, [$id], Conf::MFLAG_OPTION);
+            $am->add_keyword_lazy($oj->json_key, $cb, [$id], $amflag);
         }
     }
 
     function populate_abbrev_matcher(AbbreviationMatcher $am) {
+        $amflag = Conf::MFLAG_OPTION | Conf::MFLAG_GLOBAL;
         $cb = [$this, "option_by_id"];
-        $am->add_keyword_lazy("paper", $cb, [DTYPE_SUBMISSION], Conf::MFLAG_OPTION);
-        $am->add_keyword_lazy("submission", $cb, [DTYPE_SUBMISSION], Conf::MFLAG_OPTION);
-        $am->add_keyword_lazy("final", $cb, [DTYPE_FINAL], Conf::MFLAG_OPTION);
-        $am->add_keyword_lazy("title", $cb, [PaperOption::TITLEID], Conf::MFLAG_OPTION);
-        $am->add_keyword_lazy("authors", $cb, [PaperOption::AUTHORSID], Conf::MFLAG_OPTION);
-        $am->add_keyword_lazy("nonblind", $cb, [PaperOption::ANONYMITYID], Conf::MFLAG_OPTION);
-        $am->add_keyword_lazy("contacts", $cb, [PaperOption::CONTACTSID], Conf::MFLAG_OPTION);
-        $am->add_keyword_lazy("abstract", $cb, [PaperOption::ABSTRACTID], Conf::MFLAG_OPTION);
-        $am->add_keyword_lazy("topics", $cb, [PaperOption::TOPICSID], Conf::MFLAG_OPTION);
-        $am->add_keyword_lazy("pc_conflicts", $cb, [PaperOption::PCCONFID], Conf::MFLAG_OPTION);
-        $am->add_keyword_lazy("collaborators", $cb, [PaperOption::COLLABORATORSID], Conf::MFLAG_OPTION);
+        $am->add_keyword_lazy("paper", $cb, [DTYPE_SUBMISSION], $amflag);
+        $am->add_keyword_lazy("submission", $cb, [DTYPE_SUBMISSION], $amflag);
+        $am->add_keyword_lazy("final", $cb, [DTYPE_FINAL], $amflag);
+        $am->add_keyword_lazy("title", $cb, [PaperOption::TITLEID], $amflag);
+        $am->add_keyword_lazy("authors", $cb, [PaperOption::AUTHORSID], $amflag);
+        $am->add_keyword_lazy("nonblind", $cb, [PaperOption::ANONYMITYID], $amflag);
+        $am->add_keyword_lazy("contacts", $cb, [PaperOption::CONTACTSID], $amflag);
+        $am->add_keyword_lazy("abstract", $cb, [PaperOption::ABSTRACTID], $amflag);
+        $am->add_keyword_lazy("topics", $cb, [PaperOption::TOPICSID], $amflag);
+        $am->add_keyword_lazy("pc_conflicts", $cb, [PaperOption::PCCONFID], $amflag);
+        $am->add_keyword_lazy("collaborators", $cb, [PaperOption::COLLABORATORSID], $amflag);
         $am->add_keyword("reviews", null); // reserve keyword
         $am->add_keyword("comments", null); // reserve keyword
         $am->add_keyword("json", null); // reserve keyword
@@ -108,12 +110,13 @@ class PaperOptionList implements IteratorAggregate {
     }
 
     function assign_search_keywords($nonpaper, AbbreviationMatcher $am) {
+        $amflag = Conf::MFLAG_OPTION | Conf::MFLAG_GLOBAL;
         $cb = [$this, "option_by_id"];
         foreach ($this->option_json_map() as $id => $oj) {
             if (!isset($oj->search_keyword)
                 && (($oj->nonpaper ?? false) === true) === $nonpaper) {
                 if ($oj->name ?? null) {
-                    $e = AbbreviationEntry::make_lazy($oj->name, $cb, [$id], Conf::MFLAG_OPTION);
+                    $e = AbbreviationEntry::make_lazy($oj->name, $cb, [$id], $amflag);
                     $s = $am->ensure_entry_keyword($e, AbbreviationMatcher::KW_CAMEL) ?? false;
                 } else {
                     $s = false;
@@ -132,7 +135,7 @@ class PaperOptionList implements IteratorAggregate {
     static function make_intrinsic_json_map(Conf $conf, $vconf, $all) {
         // start with fixed defaults
         $map = [];
-        foreach (json_decode(file_get_contents(SiteLoader::find("etc/intrinsicoptions.json"))) as $j) {
+        foreach (json_decode(file_get_contents(SiteLoader::resolve("etc/intrinsicoptions.json"))) as $j) {
             $map[$j->id] = $j;
         }
 
@@ -338,13 +341,16 @@ class PaperOptionList implements IteratorAggregate {
         if (($oj->nonpaper ?? false) !== true
             && !($nonfinal && ($oj->final ?? false) === true)) {
             return $this->option_by_id($id);
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @param ?string $key
-     * @return list<PaperOption> */
+     * @return list<PaperOption>
+     *
+     * Return an unsorted list of PaperOptions that might be present on
+     * `$prow`. Does not fully check existence conditions, but does
+     * elide final-version options on a non-accepted paper. */
     private function unsorted_field_list(?PaperInfo $prow, $key) {
         $nonfinal = $prow && $prow->outcome_sign <= 0;
         $olist = [];
@@ -362,7 +368,13 @@ class PaperOptionList implements IteratorAggregate {
     }
 
     /** @param bool $all
-     * @return array<int,PaperOption> */
+     * @return array<int,PaperOption>
+     *
+     * Return a list of form fields that might be present on `$prow`.
+     * Does not fully check existence conditions, but does elide
+     * final-version options on a non-accepted paper. Drop fields that
+     * are not on the form unless `$all` is true (which is used only in
+     * settings). */
     function form_fields(?PaperInfo $prow = null, $all = false) {
         $omap = [];
         foreach ($this->unsorted_field_list($prow, "form_order") as $o) {
@@ -403,41 +415,54 @@ class PaperOptionList implements IteratorAggregate {
         return count($this->option_json_map()) !== 0;
     }
 
-    /** @return array<int,PaperOption> */
-    function find_all($name) {
-        $iname = strtolower($name);
-        if ($iname === (string) DTYPE_SUBMISSION
-            || $iname === "paper"
-            || $iname === "submission") {
-            return [DTYPE_SUBMISSION => $this->option_by_id(DTYPE_SUBMISSION)];
-        } else if ($iname === (string) DTYPE_FINAL
-                   || $iname === "final") {
-            return [DTYPE_FINAL => $this->option_by_id(DTYPE_FINAL)];
-        } else if ($iname === "" || $iname === "none") {
+    /** @param bool $nonpaper
+     * @param bool $no_any
+     * @return list<PaperOption> */
+    private function _list_all($name, $nonpaper, $no_any) {
+        $lname = strtolower($name);
+        if ($lname === "" || $lname === "none") {
             return [];
-        } else if ($iname === "any") {
-            return $this->normal();
-        } else if (substr($iname, 0, 3) === "opt"
-                   && ctype_digit(substr($iname, 3))) {
-            $o = $this->option_by_id((int) substr($iname, 3));
-            return $o ? [$o->id => $o] : [];
-        } else {
-            if (substr($iname, 0, 4) === "opt-") {
+        } else if ($lname === "any") {
+            if ($no_any) {
+                return [];
+            }
+            return array_values($nonpaper ? $this->nonpaper() : $this->normal());
+        } else if (str_starts_with($lname, "opt")) {
+            if (ctype_digit(substr($lname, 3))) {
+                $o = $this->option_by_id(intval(substr($lname, 3)));
+                return $o && $o->nonpaper === $nonpaper ? [$o] : [];
+            } else if (($lname[3] ?? "") === "-") {
                 $name = substr($name, 4);
             }
-            $omap = [];
-            foreach ($this->conf->find_all_fields($name, Conf::MFLAG_OPTION) as $o) {
-                $omap[$o->id] = $o;
+        } else if (!$nonpaper) {
+            if ($lname === (string) DTYPE_SUBMISSION
+                || $lname === "paper"
+                || $lname === "submission") {
+                return [$this->option_by_id(DTYPE_SUBMISSION)];
+            } else if ($lname === (string) DTYPE_FINAL
+                       || $lname === "final") {
+                return [$this->option_by_id(DTYPE_FINAL)];
             }
-            return $omap;
         }
+        if ($nonpaper) {
+            return $this->nonpaper_abbrev_matcher()->find_all($name);
+        }
+        return $this->conf->find_all_fields($name, Conf::MFLAG_OPTION);
+    }
+
+    /** @return array<int,PaperOption> */
+    function find_all($name) {
+        $omap = [];
+        foreach ($this->_list_all($name, false, false) as $o) {
+            $omap[$o->id] = $o;
+        }
+        return $omap;
     }
 
     /** @return ?PaperOption */
     function find($name) {
-        $omap = $this->find_all($name);
-        reset($omap);
-        return count($omap) === 1 ? current($omap) : null;
+        $olist = $this->_list_all($name, false, true);
+        return count($olist) === 1 ? $olist[0] : null;
     }
 
     /** @return AbbreviationMatcher<PaperOption> */
@@ -459,7 +484,7 @@ class PaperOptionList implements IteratorAggregate {
     /** @return array<int,PaperOption> */
     function find_all_nonpaper($name) {
         $omap = [];
-        foreach ($this->nonpaper_abbrev_matcher()->find_all($name) as $o) {
+        foreach ($this->_list_all($name, true, false) as $o) {
             $omap[$o->id] = $o;
         }
         return $omap;
@@ -467,9 +492,8 @@ class PaperOptionList implements IteratorAggregate {
 
     /** @return ?PaperOption */
     function find_nonpaper($name) {
-        $omap = $this->find_all_nonpaper($name);
-        reset($omap);
-        return count($omap) == 1 ? current($omap) : null;
+        $olist = $this->_list_all($name, true, true);
+        return count($olist) === 1 ? $olist[0] : null;
     }
 
     function refresh_topics() {

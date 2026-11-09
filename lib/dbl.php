@@ -131,6 +131,8 @@ class Dbl_ConnectionParams {
     public $port;
     /** @var ?string */
     public $user;
+    /** @var bool */
+    public $user_template = false;
     /** @var ?string */
     public $password;
     /** @var ?string */
@@ -152,6 +154,44 @@ class Dbl_ConnectionParams {
     public $ssl_cipher;
     /** @var ?bool */
     public $ssl_verify = true;
+    /** @var int
+     * Error number from the last `connect()` (0 on success). */
+    public $connect_errno = 0;
+    /** @var string */
+    public $connect_error = "";
+
+    /** Return true if the last `connect()` failed because the requested
+     * database doesn't exist, or this database's own account doesn't. (A
+     * missing database and one the account can't access look the same.)
+     * @return bool */
+    function missing() {
+        // 1044 access denied to database, 1049 unknown database;
+        // 1045 access denied for user, which means a missing database only if
+        // the user is per-database (otherwise the shared account is broken)
+        return $this->connect_errno === 1044
+            || $this->connect_errno === 1049
+            || ($this->connect_errno === 1045 && $this->per_database_user());
+    }
+
+    /** Return true if the user is specific to this database: it is named
+     * after the database (the default, and `lib/createdb.sh`'s convention)
+     * or configured with `${confid}`.
+     * @return bool */
+    function per_database_user() {
+        return $this->user !== null
+            && ($this->user === $this->name || $this->user_template);
+    }
+
+    /** Return true if the last `connect()` failed because the database
+     * server is unreachable or overloaded.
+     * @return bool */
+    function transient() {
+        // 2000–2999 are client errors (can't connect, server gone away, ...);
+        // 1040 too many connections, 1053 shutdown in progress,
+        // 1203 too many user connections
+        return ($this->connect_errno >= 2000 && $this->connect_errno < 3000)
+            || in_array($this->connect_errno, [1040, 1053, 1203], true);
+    }
 
     /** @return string */
     function sanitized_dsn() {
@@ -162,11 +202,15 @@ class Dbl_ConnectionParams {
         return $t . urlencode($this->host ?? "localhost") . "/" . urlencode($this->name);
     }
 
+    /** @return string */
+    function client_option_file() {
+        $pw = addcslashes($this->password ?? "", "\\\"\n\r\t\x08");
+        return "[client]\npassword=\"{$pw}\"\n";
+    }
+
     function apply_defaults() {
-        if ($this->port === null) {
-            $this->port = $this->socket ? (int) ini_get("mysqli.default_port") : 0;
-        }
         $this->host = $this->host ?? ini_get("mysqli.default_host");
+        $this->port = $this->port ?? (int) ini_get("mysqli.default_port");
         $this->user = $this->user ?? ini_get("mysqli.default_user");
         $this->password = $this->password ?? ini_get("mysqli.default_pw");
     }
@@ -198,7 +242,9 @@ class Dbl_ConnectionParams {
             $client_flags
         );
 
-        if ($dblink->connect_errno || mysqli_connect_errno()) {
+        $this->connect_errno = $dblink->connect_errno;
+        $this->connect_error = $dblink->connect_error ?? "";
+        if ($this->connect_errno) {
             return null;
         }
 
@@ -289,7 +335,9 @@ class Dbl {
         if (isset($opt["confid"]) && is_string($opt["confid"])) {
             $cp->name = str_replace('${confid}', $opt["confid"], $cp->name);
             if ($cp->user !== null) {
-                $cp->user = str_replace('${confid}', $opt["confid"], $cp->user);
+                $user = $cp->user;
+                $cp->user = str_replace('${confid}', $opt["confid"], $user);
+                $cp->user_template = $user !== $cp->user;
             }
             if ($cp->password !== null) {
                 $cp->password = str_replace('${confid}', $opt["confid"], $cp->password);
@@ -303,6 +351,11 @@ class Dbl {
         }
         if (isset($opt["dbSocket"]) && is_string($opt["dbSocket"])) {
             $cp->socket = $opt["dbSocket"];
+        }
+        if (isset($opt["dbPort"])
+            && (is_int($opt["dbPort"]) || (is_string($opt["dbPort"]) && ctype_digit($opt["dbPort"])))
+            && (int) $opt["dbPort"] > 0) {
+            $cp->port = (int) $opt["dbPort"];
         }
         if (($opt["dbSsl"] ?? false) === true) {
             $cp->ssl = true;
@@ -396,53 +449,58 @@ class Dbl {
      * @param list $argv
      * @return string */
     static private function format_query_args($dblink, $qstr, $argv) {
-        $original_qstr = $qstr;
-        $strpos = $argpos = 0;
+        $qpos = $argpos = 0;
         $usedargs = [];
         $simpleargs = true;
         $U_mysql8 = null;
-        while (($strpos = strpos($qstr, "?", $strpos)) !== false) {
-            $prefix = substr($qstr, 0, $strpos);
-            $nextpos = $strpos + 1;
-            $nextch = substr($qstr, $nextpos, 1);
+        $out = "";
+        while (($nextpos = strpos($qstr, "?", $qpos)) !== false) {
+            $out .= substr($qstr, $qpos, $nextpos - $qpos);
+            $qpos = $nextpos + 1;
+            $nextch = substr($qstr, $qpos, 1);
 
             // non-argument expansions
             if ($nextch === "?") {
-                $qstr = $prefix . substr($qstr, $nextpos);
-                $strpos = $nextpos;
+                $out .= "?";
+                ++$qpos;
                 continue;
             } else if ($nextch === "U") {
                 $U_mysql8 = $U_mysql8 ?? (strpos($dblink->server_info, "Maria") === false
                                           && $dblink->server_version >= 80020);
-                if (substr($qstr, $nextpos + 1, 1) === "(") {
-                    $rparen = strpos($qstr, ")", $nextpos + 2);
-                    $name = substr($qstr, $nextpos + 2, $rparen - $nextpos - 2);
-                    $suffix = substr($qstr, $rparen + 1);
-                    if ($U_mysql8) {
-                        $qstr = "{$prefix}__values.{$name}{$suffix}";
+                if (substr($qstr, $qpos + 1, 1) === "(") {
+                    $comma = $qpos + 2 + strcspn($qstr, ",)", $qpos + 2);
+                    $rparen = strpos($qstr, ")", $comma);
+                    $name = substr($qstr, $qpos + 2, $comma - $qpos - 2);
+                    if ($U_mysql8 && $comma !== $rparen) {
+                        // column alias
+                        $out .= substr($qstr, $comma + 1, $rparen - $comma - 1);
+                    } else if ($U_mysql8) {
+                        // row alias
+                        $out .= "__values.{$name}";
                     } else {
-                        $qstr = "{$prefix}values({$name}){$suffix}";
+                        // MariaDB: `values` function
+                        $out .= "values({$name})";
                     }
+                    $qpos = $rparen + 1;
                 } else {
-                    $suffix = substr($qstr, $nextpos + 1);
                     if ($U_mysql8) {
-                        $qstr = "{$prefix} as __values {$suffix}";
-                    } else {
-                        $qstr = "{$prefix}{$suffix}";
+                        // apply row alias
+                        $out .= " as __values ";
                     }
+                    ++$qpos;
                 }
-                $nextpos = strlen($qstr) - strlen($suffix);
                 continue;
             }
 
             // find argument
             if ($nextch === "{"
-                && ($rbracepos = strpos($qstr, "}", $nextpos + 1)) !== false) {
-                $thisarg = substr($qstr, $nextpos + 1, $rbracepos - $nextpos - 1);
-                if ($thisarg === (string) (int) $thisarg)
+                && ($rbracepos = strpos($qstr, "}", $qpos + 1)) !== false) {
+                $thisarg = substr($qstr, $qpos + 1, $rbracepos - $qpos - 1);
+                if ($thisarg === (string) (int) $thisarg) {
                     --$thisarg;
-                $nextpos = $rbracepos + 1;
-                $nextch = substr($qstr, $nextpos, 1);
+                }
+                $qpos = $rbracepos + 1;
+                $nextch = substr($qstr, $qpos, 1);
                 $simpleargs = false;
             } else {
                 for (++$argpos; isset($usedargs[$argpos - 1]); ++$argpos) {
@@ -450,7 +508,7 @@ class Dbl {
                 $thisarg = $argpos - 1;
             }
             if (!array_key_exists($thisarg, $argv)) {
-                trigger_error(self::landmark() . ": query '$original_qstr' argument " . (is_int($thisarg) ? $thisarg + 1 : $thisarg) . " not set");
+                trigger_error(self::landmark() . ": query '{$qstr}' argument " . (is_int($thisarg) ? $thisarg + 1 : $thisarg) . " not set");
             }
             $usedargs[$thisarg] = true;
 
@@ -464,7 +522,7 @@ class Dbl {
                 } else {
                     $arg = ($nextch === "e" ? "='" : "!='") . $dblink->real_escape_string($arg) . "'";
                 }
-                ++$nextpos;
+                ++$qpos;
             } else if ($nextch === "a" || $nextch === "A") {
                 if ($arg === null) {
                     $arg = [];
@@ -494,22 +552,22 @@ class Dbl {
                 } else {
                     $arg = ($nextch === "a" ? " IN (" : " NOT IN (") . join(", ", $arg) . ")";
                 }
-                ++$nextpos;
+                ++$qpos;
             } else if ($nextch === "s") {
                 $arg = $dblink->real_escape_string((string) $arg);
-                ++$nextpos;
+                ++$qpos;
             } else if ($nextch === "l") {
                 $arg = $dblink->real_escape_string(self::escape_like((string) $arg));
-                ++$nextpos;
-                if (substr($qstr, $nextpos, 1) === "s") {
-                    ++$nextpos;
+                ++$qpos;
+                if (substr($qstr, $qpos, 1) === "s") {
+                    ++$qpos;
                 } else {
                     $arg = "'{$arg}'";
                 }
             } else if ($nextch === "v") {
-                ++$nextpos;
+                ++$qpos;
                 if (!is_array($arg) || empty($arg)) {
-                    trigger_error(self::landmark() . ": query `{$original_qstr}` argument " . (is_int($thisarg) ? $thisarg + 1 : $thisarg) . " should be nonempty array");
+                    trigger_error(self::landmark() . ": query `{$qstr}` argument " . (is_int($thisarg) ? $thisarg + 1 : $thisarg) . " should be nonempty array");
                     $arg = "NULL";
                 } else {
                     $alln = -1;
@@ -523,7 +581,7 @@ class Dbl {
                             $alln = $n;
                         }
                         if ($alln !== $n && $alln !== -2) {
-                            trigger_error(self::landmark() . ": query `{$original_qstr}` argument " . (is_int($thisarg) ? $thisarg + 1 : $thisarg) . " has components of different lengths");
+                            trigger_error(self::landmark() . ": query `{$qstr}` argument " . (is_int($thisarg) ? $thisarg + 1 : $thisarg) . " has components of different lengths");
                             $alln = -2;
                         }
                         foreach ($x as &$y) {
@@ -538,6 +596,9 @@ class Dbl {
                     }
                     $arg = join(", ", $vs);
                 }
+            } else if ($nextch === "R") {
+                // raw interpolation (e.g., an already-formatted query fragment)
+                ++$qpos;
             } else {
                 if ($arg === null) {
                     $arg = "NULL";
@@ -546,14 +607,13 @@ class Dbl {
                 }
             }
             // combine
-            $suffix = substr($qstr, $nextpos);
-            $qstr = "{$prefix}{$arg}{$suffix}";
-            $strpos = strlen($qstr) - strlen($suffix);
+            $out .= $arg;
         }
+        $out .= substr($qstr, $qpos);
         if ($simpleargs && $argpos !== count($argv)) {
-            trigger_error(self::landmark() . ": query `{$original_qstr}` unused arguments");
+            trigger_error(self::landmark() . ": query `{$qstr}` unused arguments");
         }
-        return $qstr;
+        return $out;
     }
 
     /** @return string */
@@ -945,8 +1005,10 @@ class Dbl {
             $update_query_args["expected"] = $value;
             $update_query_args["desired"] = $new_value;
             $result = self::qe_apply($dblink, $update_query, $update_query_args);
-            if ($result->affected_rows) {
+            if ($result->affected_rows > 0) {
                 return $new_value;
+            } else if (self::is_error($result)) {
+                break;
             }
         }
         throw new Exception("Dbl::compare_exchange failure on query `" . Dbl::format_query_args($dblink, $value_query, $value_query_args) . "`");

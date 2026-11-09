@@ -14,7 +14,10 @@ class PaperExport {
     public $include_docids = false;
     /** @var bool
      * @readonly */
-    public $include_content = false;
+    public $include_document_content = false;
+    /** @var bool
+     * @readonly */
+    public $ignore_soft_word_limits = false;
     /** @var bool
      * @readonly */
     public $include_permissions = true;
@@ -24,6 +27,9 @@ class PaperExport {
     /** @var bool
      * @readonly */
     public $override_ratings = false;
+    /** @var bool
+     * @readonly */
+    public $include_comment_content = true;
     /** @var list<callable> */
     private $_on_document_export = [];
 
@@ -48,8 +54,16 @@ class PaperExport {
     /** @param bool $x
      * @return $this
      * @suppress PhanAccessReadOnlyProperty */
-    function set_include_content($x) {
-        $this->include_content = $x;
+    function set_include_document_content($x) {
+        $this->include_document_content = $x;
+        return $this;
+    }
+
+    /** @param bool $x
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_ignore_soft_word_limits($x) {
+        $this->ignore_soft_word_limits = $x;
         return $this;
     }
 
@@ -77,6 +91,14 @@ class PaperExport {
         return $this;
     }
 
+    /** @param bool $x
+     * @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_include_comment_content($x) {
+        $this->include_comment_content = $x;
+        return $this;
+    }
+
     /** @param callable(object,DocumentInfo,int,PaperStatus):(?bool) $cb
      * @return $this */
     function on_document_export($cb) {
@@ -86,7 +108,7 @@ class PaperExport {
 
 
     /** @return ?object */
-    function document_json(?DocumentInfo $doc) {
+    function document_json(?DocumentInfo $doc, $options = []) {
         if (!$doc) {
             return null;
         }
@@ -107,10 +129,11 @@ class PaperExport {
         if (($sz = $doc->size()) >= 0) {
             $d->size = $sz;
         }
-        if ($doc->filename) {
+        if (($options["want_filename"] ?? true)
+            && $doc->filename) {
             $d->filename = $doc->filename;
         }
-        if ($this->include_content
+        if ($this->include_document_content
             && ($content = $doc->content()) !== false) {
             $d->content_base64 = base64_encode($content);
         }
@@ -157,6 +180,7 @@ class PaperExport {
             return null;
         }
 
+        $old_viewer = $this->conf->swap_viewer($this->viewer);
         $pj = (object) [
             "object" => "paper",
             "pid" => (int) $prow->paperId
@@ -164,6 +188,7 @@ class PaperExport {
         if (($sr = $prow->submission_round()) && !$sr->unnamed) {
             $pj->submission_class = $sr->tag;
         }
+        $overlong = $truncated = [];
 
         foreach ($prow->form_fields() as $opt) {
             if (!$this->viewer->can_view_option($prow, $opt)) {
@@ -174,11 +199,30 @@ class PaperExport {
             if ($oj === null) {
                 continue;
             }
-            $pj->{$opt->json_key()} = $oj;
+            $key = $opt->json_key();
+            if (is_string($oj)
+                && ($tt = $opt->json_value_truncate($oj, $this))) {
+                if ($tt->overlong) {
+                    $overlong[$key] = true;
+                }
+                if ($tt->truncation !== null) {
+                    $truncated[$key] = $tt->truncation_band;
+                    $oj = $tt->truncation;
+                }
+            }
+            $pj->{$key} = $oj;
         }
 
         $this->apply_paper_status($prow, $pj);
         $this->apply_paper_tags($prow, $pj);
+
+        if (!empty($overlong)) {
+            $pj->overlong = $overlong;
+        }
+        if (!empty($truncated)) {
+            $pj->truncated = $truncated;
+        }
+        $this->conf->swap_viewer($old_viewer);
         return $pj;
     }
 
@@ -215,7 +259,8 @@ class PaperExport {
             $pj->submitted_at = $t;
         }
 
-        if ($prow->timeFinalSubmitted > 0) {
+        if ($prow->timeFinalSubmitted > 0
+            && $this->viewer->can_view_decision($prow)) {
             $pj->final_submitted = true;
             $pj->final_submitted_at = $prow->timeFinalSubmitted;
         }
@@ -236,6 +281,7 @@ class PaperExport {
     function review_json(PaperInfo $prow, ReviewInfo $rrow) {
         ReviewForm::check_review_author_seen($prow, $rrow, $this->viewer);
         $my_review = $this->viewer->is_my_review($rrow);
+        $old_viewer = $this->conf->swap_viewer($this->viewer);
 
         $rj = [
             "object" => "review",
@@ -264,7 +310,7 @@ class PaperExport {
         if ($rrow->is_subreview()) {
             $rj["subreview"] = true;
         }
-        if ($rrow->reviewBlind) {
+        if ($rrow->is_blind()) {
             $rj["blind"] = true;
         }
 
@@ -274,6 +320,10 @@ class PaperExport {
             $rj["reviewer"] = $this->viewer->reviewer_html_for($rrow);
             if (!Contact::is_anonymous_email($reviewer->email)) {
                 $rj["reviewer_email"] = $reviewer->email;
+            }
+            if ($reviewer->is_bot()) {
+                // machine-readable, since `reviewer` carries the mark as HTML
+                $rj["reviewer_bot"] = true;
             }
         }
 
@@ -339,6 +389,7 @@ class PaperExport {
             $rj["format"] = $fmt;
         }
 
+        $this->conf->swap_viewer($old_viewer);
         return (object) $rj;
     }
 
@@ -397,5 +448,13 @@ class PaperExport {
             }
         }
         return (object) $rj;
+    }
+
+    /** @return ?object */
+    function comment_json(PaperInfo $prow, CommentInfo $crow) {
+        // XXX should move unparsing code from CommentInfo here eventually
+        $fl = ($this->include_comment_content ? 0 : CommentInfo::UNPARSE_NO_CONTENT)
+            | ($this->ignore_soft_word_limits ? CommentInfo::UNPARSE_HARD_LIMIT : 0);
+        return $crow->unparse_json($this->viewer, $fl);
     }
 }

@@ -32,8 +32,8 @@
     {"name": "LOGINURLPARTS", "function": "*kw_login", "urlparam": true},
     {"name": "PASSWORD", "function": "*kw_login"},
     {"name": "NEEDPASSWORD", "function": "*kw_needpassword"},
-    {"name": "RESETPASSWORDLINK", "function": "*kw_passwordlink"},
-    {"name": "PASSWORDLINK", "function": "*kw_passwordlink"},
+    {"name": "RESETPASSWORDLINK", "function": "*kw_passwordlink", "require_whitespace": true},
+    {"name": "PASSWORDLINK", "function": "*kw_passwordlink", "require_whitespace": true},
     {"name": "ALERT", "function": "*kw_alert"},
 
     {"name": "DEADLINE", "function": "*kw_deadline", "global": true, "is_review": false},
@@ -51,7 +51,7 @@
     {"name": "DECISION", "function": "*kw_decision", "expand_if": "*kw_haspaper"},
     {"name": "REVIEWS", "function": "*kw_reviews", "expand_if": "*kw_haspaper"},
     {"name": "COMMENTS", "function": "*kw_comments", "expand_if": "*kw_haspaper"},
-    {"match": "(OTHER|REQUESTER|REVIEWER)(CONTACT|NAME|EMAIL|FIRST|LAST)", "function": "*kw_reviewercontact", "global": true},
+    {"match": "(OTHER(?!\\z)|REQUESTER|REVIEWER)(CONTACT|USER|NAME|EMAIL|FIRST|LAST|)", "function": "*kw_reviewercontact", "global": true},
     {"name": "REVIEWNAME", "function": "*kw_reviewname", "expand_if": "*kw_haspaper"},
     {"name": "REVIEWID", "function": "*kw_reviewid", "expand_if": "*kw_haspaper"},
     {"name": "REVIEWAUTHOR", "function": "*kw_reviewercontact", "global": true, "match_data": [null, "REVIEWER", "CONTACT"]},
@@ -64,8 +64,8 @@
     {"name": "TAGVALUE", "function": "*kw_tagvalue", "expand_if": "*kw_haspaper"},
     {"name": "TAGSESSION", "function": "*kw_tagvalue", "expand_if": "*kw_haspaper", "session": true},
     {"match": "#(~?~?[a-zA-Z@*_:.][-a-zA-Z0-9!@*_:.\/]*)", "function": "*kw_tagvalue", "expand_if": "*kw_haspaper"},
-    {"name": "SHEPHERD", "function": "*kw_paperpc", "expand_if": "*kw_haspaper", "userx": "CONTACT", "pctype": "shepherd"},
-    {"name": "SHEPHERDNAME", "function": "*kw_paperpc", "expand_if": "*kw_haspaper", "userx": "NAME", "pctype": "shepherd"},
-    {"name": "SHEPHERDEMAIL", "function": "*kw_paperpc", "expand_if": "*kw_haspaper", "userx": "EMAIL", "pctype": "shepherd"},
+    {"name": "SHEPHERD", "function": "*kw_shepherd", "expand_if": "*kw_haspaper", "userx": "CONTACT"},
+    {"name": "SHEPHERDNAME", "function": "*kw_shepherd", "expand_if": "*kw_haspaper", "userx": "NAME"},
+    {"name": "SHEPHERDEMAIL", "function": "*kw_shepherd", "expand_if": "*kw_haspaper", "userx": "EMAIL"},
     {"match": "(_*(?:[A-Za-z~][a-z~?!]*|[0-9][0-9.]*|\\.[0-9][0-9.]*)+)", "function": "*kw_paperfield", "expand_if": ["*kw_haspaper", "*kw_is_paperfield"], "priority": -1}
 ]

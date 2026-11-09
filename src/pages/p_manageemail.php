@@ -300,9 +300,14 @@ class ManageEmail_Page {
         return $u;
     }
 
+    /** @return AuthenticationChecker */
+    private function make_authentication_checker(Contact $user) {
+        return ManageEmail_API::make_authentication_checker($user, $this->qreq);
+    }
+
     /** @return ?AuthenticationChecker */
     private function find_failed_authchecker() {
-        $acv = $this->viewer->authentication_checker($this->qreq, "manageemail");
+        $acv = $this->make_authentication_checker($this->viewer);
         if (!$acv->test()) {
             return $acv;
         }
@@ -310,13 +315,13 @@ class ManageEmail_Page {
             return null;
         }
         if ($this->user !== $this->viewer) {
-            $ac = $this->user->authentication_checker($this->qreq, "manageemail");
+            $ac = $this->make_authentication_checker($this->user);
             if (!$ac->test()) {
                 return $ac;
             }
         }
         if ($this->dstuser && $this->dstuser !== $this->viewer) {
-            $ac = $this->dstuser->authentication_checker($this->qreq, "manageemail");
+            $ac = $this->make_authentication_checker($this->dstuser);
             if (!$ac->test()) {
                 return $ac;
             }
@@ -385,7 +390,7 @@ class ManageEmail_Page {
         if ($what === "fail") {
             echo '<div class="aabut">', Ht::submit("Restart", ["name" => "back", "value" => "restart"]), '</div>';
         } else {
-            echo '<div class="aabut">', Ht::submit($this->curstep->next_label ?? "Next →", ["class" => $this->curstep->next_class ?? "btn-primary", "name" => "next", "value" => 1]), '</div>';
+            echo '<div class="aabut">', Ht::submit($this->curstep->next_label ?? "Next <span class=\"arrow\">→</span>", ["class" => $this->curstep->next_class ?? "btn-primary", "name" => "next", "value" => 1]), '</div>';
             if ($this->curstep->index > 0) {
                 echo '<div class="aabut">', Ht::submit("Back", ["name" => "back", "value" => 1]), '</div>';
             }
@@ -400,7 +405,7 @@ class ManageEmail_Page {
         if ($this->curstep->name === "start") {
             // maybe there's a user in the query; check it
             if (isset($this->qreq->u)
-                && $this->qreq->is_get()
+                && $this->qreq->is_getlike()
                 && !$this->ms->has_message_at("u")) {
                 $u = $this->qreq->u;
                 if ($u === "other") {
@@ -449,7 +454,7 @@ class ManageEmail_Page {
             }
             $this->authchecker->set_actions_class("aax mt-4");
             $this->authchecker->add_actions(Ht::submit("Back", [
-                "formaction" => $this->conf->hoturl_raw("=manageemail", $this->step_param(["back" => 1])),
+                "formaction" => $this->conf->hoturl("=manageemail", $this->step_param(["back" => 1])),
                 "formmethod" => "post",
                 "formnovalidate" => true
             ]));
@@ -499,8 +504,8 @@ class ManageEmail_Page {
             if ($this->token) {
                 $this->token->change_data($key, null)->update();
             }
-            $redirect = $this->conf->hoturl_raw("manageemail", $this->step_param(["signedin" => 1]), Conf::HOTURL_SERVERREL | Conf::HOTURL_RAW);
-            throw new Redirection($this->conf->hoturl_raw("signin", ["redirect" => $redirect]));
+            $redirect = $this->conf->hoturl("manageemail", $this->step_param(["signedin" => 1]), Conf::HOTURL_SERVERREL);
+            throw new Redirection($this->conf->hoturl("signin", ["redirect" => $redirect]));
         }
         if (($user = $this->parse_user($key, $email))) {
             $this->create_token()
@@ -659,7 +664,7 @@ class ManageEmail_Page {
         if ($this->curstep->name === "start") {
             // maybe there's a user in the query; check it
             if (($this->qreq->u ?? "") !== ""
-                && $this->qreq->is_get()
+                && $this->qreq->is_getlike()
                 && !$this->ms->has_message_at("u")) {
                 $this->parse_user("u", $this->qreq->u);
             }
@@ -682,7 +687,7 @@ class ManageEmail_Page {
             echo '<p>You must confirm all accounts involved in the link to continue.</p>';
             $this->authchecker->set_actions_class("aax mt-4");
             $this->authchecker->add_actions(Ht::submit("Back", [
-                "formaction" => $this->conf->hoturl_raw("=manageemail", $this->step_param(["back" => 1])),
+                "formaction" => $this->conf->hoturl("=manageemail", $this->step_param(["back" => 1])),
                 "formmethod" => "post",
                 "formnovalidate" => true
             ]));
@@ -900,7 +905,7 @@ class ManageEmail_Page {
         if ($this->curstep->name === "start") {
             // maybe there's a user in the query; check it
             if (($this->qreq->u ?? "") !== ""
-                && $this->qreq->is_get()
+                && $this->qreq->is_getlike()
                 && !$this->ms->has_message_at("u")) {
                 $this->parse_user("u", $this->qreq->u);
             }
@@ -917,7 +922,7 @@ class ManageEmail_Page {
             echo '<p>You must confirm this account to continue.</p>';
             $this->authchecker->set_actions_class("aax mt-4");
             $this->authchecker->add_actions(Ht::submit("Back", [
-                "formaction" => $this->conf->hoturl_raw("=manageemail", $this->step_param(["back" => 1])),
+                "formaction" => $this->conf->hoturl("=manageemail", $this->step_param(["back" => 1])),
                 "formmethod" => "post",
                 "formnovalidate" => true
             ]));
@@ -1146,6 +1151,7 @@ class ManageEmail_Page {
     }
 
     static function go(Contact $user, Qrequest $qreq) {
+        $user->conf->emit_credential_page_headers();
         $pg = new ManageEmail_Page($user, $qreq);
         $pg->run();
     }

@@ -37,9 +37,15 @@ $Opt["dbName"] = "FIXME";
 //   downloadPrefix  Prefix for downloaded files, such as papers; should
 //                   end in a dash. Example: "hotnets5-". Defaults to
 //                   $Opt["dbName"] plus a dash.
-//   paperSite       [OPTIONAL] URL for this HotCRP installation. Used in
-//                   emails. Default is derived from the access URL.
-//   conferenceSite  [OPTIONAL] Conference site URL (CFP, registration).
+//   paperSite       URL for this HotCRP installation. It is best to set this
+//                   explicitly (and sites using a contact database MUST set
+//                   it explicitly). If unset, HotCRP will derive the site URL
+//                   from administrator accesses.
+//   defaultPaperSite [OPTIONAL] Like paperSite, but used primarily for email
+//                   (links on web pages will use the URL the user accessed).
+//                   May be preferable to paperSite for sites accessible via
+//                   multiple names.
+//   conferenceSite  [OPTIONAL] Public conference URL (e.g., CFP, registration).
 
 
 // EMAIL
@@ -111,17 +117,19 @@ $Opt["emailSender"] = null;
 //                   passwords. Defaults to false.
 
 
-// PAPER STORAGE
+// DOCUMENT STORAGE
 //
-//   docstore        Set to true to serve papers and other downloads from a
-//                   cache on the local filesystem. By default this cache is
-//                   created in the "docs" directory. You can also set
-//                   $Opt["docstore"] to a directory name, or to a directory
+//   docstore        Set to true to serve documents from the local filesystem.
+//                   By default the document directory is "docs". You can also
+//                   set $Opt["docstore"] to a directory name, or to a directory
 //                   pattern such as "docs/%2H/%h%x".
-//   s3_bucket       Amazon S3 bucket name to store paper submissions.
-//   s3_key          Amazon AWS access key ID (used for S3).
-//   s3_secret       Amazon AWS secret access key (used for S3).
-//   dbNoPapers      Set to true to not store papers in the database.
+//   s3Clients       List of S3 bucket specifications, which are arrays/objects
+//                   with "bucket" (bucket name), "key" (access key ID),
+//                   "secret" (secret access key), "region", "domain".
+//                   ("key" "@FILENAME:PROFILE" reads keys from an AWS
+//                   credentials file.) If the list has more than one entry,
+//                   the first receives writes, and reads try them in order.
+//   dbNoPapers      Set to true to not store documents in the database.
 //                   Requires docstore, S3 storage, or both.
 
 
@@ -148,7 +156,7 @@ $Opt["emailSender"] = null;
 
 // DISPLAY CUSTOMIZATION OPTIONS
 //
-//   favicon         Link to favicon. Default is images/review24.png.
+//   favicon         Link to favicon. Default is images/review48.svg.
 //   stylesheets     Array of additional stylesheet filenames/URIs to be
 //                   included after "style.css". Example: ["x.css"].
 //   fontScript      HTML added to <head> before stylesheets.
@@ -174,7 +182,8 @@ $Opt["emailSender"] = null;
 //                   alphabetically after B (i.e., C or D).
 //   noFooterVersion Set to true to avoid a version comment in footer HTML.
 //   strictJavascript If true, send Javascript with "use strict".
-//   hideManager     If set, PC members are not shown paper managers.
+//   hideManager     If true, reviewers cannot see paper administrator
+//                   identities.
 //   authorSharing   Controls whether authors can create sharing links.
 //                   If -1, they cannot. If +1, authors get sharing links
 //                   by default. If 0, authors can request sharing links.

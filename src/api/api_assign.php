@@ -29,7 +29,8 @@ class Assign_API {
         }
 
         // parse CSV upload or get JSON string
-        $csvp = $jsonstr = $jsonfn = null;
+        $csvp = new CsvParser;
+        $jsonstr = $jsonfn = null;
         $errparam = null;
         if ($ct === "application/json") {
             if ($updoc) {
@@ -40,14 +41,12 @@ class Assign_API {
             }
         } else if ($ct === "text/csv" || $ct === "text/plain") {
             $fn = $updoc ? $updoc->content_file() : $qreq->body_file();
-            $csvp = new CsvParser;
             $csvp->set_content(fopen($fn, "rb"));
             $aset->set_csv_context(true);
         } else if (isset($qreq->assignments)) {
             if (preg_match('/\A\s*[\[\{]/s', $qreq->assignments)) {
                 $jsonstr = $qreq->assignments;
             } else {
-                $csvp = new CsvParser;
                 $csvp->set_content($qreq->assignments);
                 $aset->set_csv_context(true);
             }
@@ -55,27 +54,27 @@ class Assign_API {
         }
 
         // parse JSON string
-        if ($csvp === null) {
+        if (!$csvp->has_content()) {
             if ($jsonstr === null || $jsonstr === false) {
                 return JsonResult::make_missing_error("assignments");
             }
-            $j = json_decode($jsonstr);
-            if (!$j) {
-                $jparser = (new JsonParser($jsonstr))->set_filename($jsonfn);
-                if (friendly_boolean($qreq->json5)) {
-                    $jparser->set_flags(JsonParser::JSON5);
-                }
-                $j = $jparser->decode();
-                if ($jparser->last_error()) {
-                    return JsonResult::make_message_list(MessageItem::error_at($errparam, "<0>Invalid JSON: " . $jparser->last_error_msg()));
-                }
+            $jparser = (new JsonParser($jsonstr))->set_filename($jsonfn)->set_user();
+            if ($user->privChair) {
+                $jparser->set_complexity_scale(0);
+            }
+            if (friendly_boolean($qreq->json5)) {
+                $jparser->set_flags(JsonParser::JSON5);
+            }
+            $j = $jparser->decode();
+            if ($jparser->last_error()) {
+                return JsonResult::make_message_list(MessageItem::error_at($errparam, "<0>Invalid JSON: " . $jparser->last_error_msg()));
             }
             if (is_object($j)) {
                 $j = [$j];
             } else if (!is_array($j)) {
                 return JsonResult::make_message_list(MessageItem::error_at($errparam, "<0>Expected JSON array"));
             }
-            $csvp = CsvParser::make_json($j);
+            $csvp->set_content_json($j);
         }
 
         // parse assignments
@@ -163,7 +162,7 @@ class Assign_API {
             $pr->add_tag_info_json($tmr, $user);
             if (($pids[$pr->paperId] & 2) !== 0) {
                 list($class, $name) = $pr->status_class_and_name($user);
-                if ($class !== "ps-submitted") {
+                if ($class !== "status-submitted") {
                     $tmr->status_html = "<span class=\"pstat {$class}\">" . htmlspecialchars($name) . "</span>";
                 } else {
                     $tmr->status_html = "";

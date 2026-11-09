@@ -21,6 +21,24 @@ abstract class SearchTerm {
     }
 
     /** @param string|SearchOperator $op
+     * @return ?Op_SearchTerm */
+    static function make_op($op) {
+        $name = is_string($op) ? $op : $op->type;
+        if ($name === "not") {
+            return new Not_SearchTerm;
+        } else if ($name === "and" || $name === "space") {
+            return new And_SearchTerm($name);
+        } else if ($name === "or") {
+            return new Or_SearchTerm;
+        } else if ($name === "xor") {
+            return new Xor_SearchTerm;
+        } else if ($name === "then" || $name === "highlight") {
+            return new Then_SearchTerm($op);
+        }
+        return null;
+    }
+
+    /** @param string|SearchOperator $op
      * @param SearchTerm ...$terms
      * @return SearchTerm */
     static function combine($op, ...$terms) {
@@ -33,30 +51,20 @@ abstract class SearchTerm {
      * @return SearchTerm */
     static function combine_in($op, $string_context, ...$terms) {
         $name = is_string($op) ? $op : $op->type;
-        if ($name === "not") {
-            $qr = new Not_SearchTerm;
-        } else if (count($terms) === 1) {
+        if ($name !== "not" && count($terms) === 1) {
             return $terms[0];
-        } else if ($name === "and" || $name === "space") {
-            $qr = new And_SearchTerm($name);
-        } else if ($name === "or") {
-            $qr = new Or_SearchTerm;
-        } else if ($name === "xor") {
-            $qr = new Xor_SearchTerm;
-        } else {
-            assert($name === "then" || $name === "highlight");
-            $qr = new Then_SearchTerm($op);
         }
+        $qr = self::make_op($op);
         foreach ($terms as $qt) {
-            $qr->append_in($qt, $string_context);
+            $qr->op_append($qt, $string_context);
         }
-        return $qr->_finish();
+        return $qr->op_finish();
     }
 
     /** @return SearchTerm */
     function negate() {
         $qr = new Not_SearchTerm;
-        return $qr->append_in($this, $this->string_context)->_finish();
+        return $qr->op_append($this, $this->string_context)->op_finish();
     }
 
     /** @param bool $negate
@@ -70,29 +78,34 @@ abstract class SearchTerm {
      * @return $this */
     final function add_view_anno($command, $sword) {
         foreach (ViewCommand::parse($command, ViewCommand::ORIGIN_SEARCH, $sword) as $svc) {
-            $this->float["view"][] = $svc;
+            $this->float["view"] = $this->float["view"] ?? new ViewCommandList;
+            $this->float["view"]->append($svc);
         }
         return $this;
     }
 
     /** @return list<ViewCommand> */
     final function view_commands() {
-        return $this->float["view"] ?? [];
-    }
-
-    /** @param string $field
-     * @return ?ViewCommand */
-    final function find_view_command($field) {
-        foreach ($this->view_commands() as $svc) {
-            if ($svc->keyword === $field)
-                return $svc;
-        }
-        return null;
+        $vl = $this->float["view"] ?? null;
+        '@phan-var-force ?ViewCommandList $vl';
+        return $vl ? $vl->flatten() : [];
     }
 
     /** @return array<string,mixed> */
     final function float_map() {
         return $this->float;
+    }
+
+    /** @param string $k
+     * @return bool */
+    final function has_float($k) {
+        return array_key_exists($k, $this->float);
+    }
+
+    /** @param string $k
+     * @return mixed */
+    final function get_float($k) {
+        return $this->float[$k] ?? null;
     }
 
     /** @param string $k */
@@ -101,8 +114,25 @@ abstract class SearchTerm {
     }
 
     /** @param string $k */
-    final function get_float($k) {
-        return $this->float[$k] ?? null;
+    final function unset_float($k) {
+        unset($this->float[$k]);
+    }
+
+    /** @param ?SearchStringContext $context
+     * @return ?array{int,int} */
+    final function strspan_in($context) {
+        if ($this->pos1 === null) {
+            return null;
+        }
+        $pos1 = $this->pos1;
+        $pos2 = $this->pos2;
+        $tcontext = $this->string_context;
+        while ($tcontext && $tcontext !== $context) {
+            $pos1 = $tcontext->ppos1;
+            $pos2 = $tcontext->ppos2;
+            $tcontext = $tcontext->parent;
+        }
+        return $tcontext === $context ? [$pos1, $pos2] : null;
     }
 
     /** @param int $pos1
@@ -129,28 +159,13 @@ abstract class SearchTerm {
         $this->pos1 = $term->pos1;
         $this->pos2 = $term->pos2;
         $this->string_context = $term->string_context;
-        $this->float = $term->float;
+        if (!empty($term->float)) {
+            $this->float = empty($this->float) ? $term->float : array_merge($this->float, $term->float);
+        }
         if ($clone_of !== null && ($this->float["ge"] ?? null) === $clone_of) {
             $this->float["ge"] = $this;
         }
         return $this;
-    }
-
-    /** @param ?SearchStringContext $context
-     * @return ?array{int,int} */
-    final function strspan_in($context) {
-        if ($this->pos1 === null) {
-            return null;
-        }
-        $pos1 = $this->pos1;
-        $pos2 = $this->pos2;
-        $tcontext = $this->string_context;
-        while ($tcontext && $tcontext !== $context) {
-            $pos1 = $tcontext->ppos1;
-            $pos2 = $tcontext->ppos2;
-            $tcontext = $tcontext->parent;
-        }
-        return $tcontext === $context ? [$pos1, $pos2] : null;
     }
 
     /** @param string $q
@@ -192,6 +207,13 @@ abstract class SearchTerm {
         return "true";
     }
 
+    /** @return string */
+    function precise_sqlexpr(SearchQueryInfo $sqi) {
+        // must *always* call `sqlexpr` so we add columns to $sqi
+        $sql = $this->sqlexpr($sqi);
+        return $this->is_sqlexpr_precise() ? $sql : "true";
+    }
+
     /** @param ?bool $b
      * @return null|False_SearchTerm|True_SearchTerm */
     static function make_constant($b) {
@@ -203,7 +225,8 @@ abstract class SearchTerm {
         return null;
     }
 
-    /** @return string */
+    /** @param list<string> $ff
+     * @return string */
     static function andjoin_sqlexpr($ff) {
         if (empty($ff) || in_array("false", $ff, true)) {
             return "false";
@@ -217,16 +240,22 @@ abstract class SearchTerm {
         return "(" . join(" and ", $ff) . ")";
     }
 
-    /** @param list<string> $q
+    /** @param list<string> $ff
      * @param 'false'|'true' $default
      * @return string */
-    static function orjoin_sqlexpr($q, $default) {
-        if (empty($q)) {
+    static function orjoin_sqlexpr($ff, $default) {
+        if (empty($ff)) {
             return $default;
-        } else if (in_array("true", $q, true)) {
+        } else if (in_array("true", $ff, true)) {
             return "true";
         }
-        return "(" . join(" or ", $q) . ")";
+        $ff = array_filter($ff, function ($f) { return $f !== "false"; });
+        if (empty($ff)) {
+            return "false";
+        } else if (count($ff) === 1) {
+            return join("", $ff);
+        }
+        return "(" . join(" or ", $ff) . ")";
     }
 
     /** @return bool */
@@ -235,7 +264,18 @@ abstract class SearchTerm {
     }
 
 
-    /** @param ?ReviewInfo|?CommentInfo $xinfo
+    /** @return bool */
+    function need_pretest() {
+        return false;
+    }
+
+    /** @param null|ReviewInfo|CommentInfo $xinfo
+     * @return ?bool */
+    function pretest(PaperInfo $row, $xinfo) {
+        return $this->test($row, $xinfo);
+    }
+
+    /** @param null|ReviewInfo|CommentInfo $xinfo
      * @return bool */
     abstract function test(PaperInfo $row, $xinfo);
 
@@ -295,13 +335,14 @@ abstract class SearchTerm {
     // What class of information does this search concern? (bitmask)
     const ABOUT_SUB = 0x1;               // Submission information
     const ABOUT_TAGS = 0x2;              // About tags
-    const ABOUT_PAPER = 0x3;             // Submission information or tags
-    const ABOUT_REVIEW = 0x4;            // About a single review
-    const ABOUT_REVIEW_SET = 0x8;        // About reviews as a class
-    const ABOUT_REVIEWS = 0xC;           // Either ABOUT_REVIEW or ABOUT_REVIEW_SET
-    const ABOUT_COMMENTS = 0x10;         // About comments
-    const ABOUT_REACTIONS = 0x20;        // About reactions (e.g. review ratings)
-    const ABOUT_PREFS = 0x40;            // About review preferences
+    const ABOUT_DECISION = 0x4;          // About decision
+    const ABOUT_PAPER = 0x7;             // Submission information or tags
+    const ABOUT_REVIEW = 0x8;            // About a single review
+    const ABOUT_REVIEW_SET = 0x10;       // About reviews as a class
+    const ABOUT_REVIEWS = 0x18;          // Either ABOUT_REVIEW or ABOUT_REVIEW_SET
+    const ABOUT_COMMENTS = 0x20;         // About comments
+    const ABOUT_REACTIONS = 0x40;        // About reactions (e.g. review ratings)
+    const ABOUT_PREFS = 0x80;            // About review preferences
     const ABOUT_OTHER = 0x8000;          // About something else (prefs, comments)
     const ABOUT_ANY = 0xFFFF;            // Who knows what it's about
     const ABOUT_NO_SHORT_CIRCUIT = 0x10000;  // script_expression only
@@ -375,86 +416,77 @@ class True_SearchTerm extends SearchTerm {
 abstract class Op_SearchTerm extends SearchTerm {
     /** @var list<SearchTerm> */
     public $child = [];
+    /** @var int */
+    public $height = 1;
+
+    const SQLEXPR_HEIGHT = 100;
 
     function __construct($type) {
         parent::__construct($type);
     }
     /** @param SearchTerm $term
-     * @param ?SearchStringContext $context */
-    protected function append_in($term, $context) {
+     * @param ?SearchStringContext $context
+     * @return $this */
+    function op_append($term, $context) {
         if (!$term) {
             return $this;
         }
+        $this->op_append_floats($term, $context);
         $this->child[] = $term;
+        return $this;
+    }
+    /** @param SearchTerm $term
+     * @param ?SearchStringContext $context */
+    function op_append_floats($term, $context) {
+        if (($span = $term->strspan_in($context))) {
+            $this->apply_strspan($span[0], $span[1], $context);
+        }
+        if ($term instanceof Op_SearchTerm) {
+            $this->height = max($this->height, $term->height + 1);
+        }
         foreach ($term->float as $k => $v) {
             if ($k === "view") {
-                if ($this->type === "then") {
-                    $v = ViewCommand::strip_sorts($v);
+                // Then_SearchTerm::op_finish collects its children's views
+                if ($this->type !== "then") {
+                    $this->float[$k] = $this->float[$k] ?? new ViewCommandList;
+                    $this->float[$k]->append($v);
                 }
-                $this->float[$k] = array_merge($this->float[$k] ?? [], $v);
-            } else if ($k === "tags") {
+            } else if ($k === "hl" || $k === "legend") {
                 if ($this->type !== "not") {
-                    $this->float["tags"] = array_merge($this->float["tags"] ?? [], $v);
-                }
-            } else if ($k === "hl") {
-                if ($this->type !== "not") {
-                    $this->float["hl"] = $v;
+                    $this->float[$k] = $v;
                 }
             } else if ($k === "ge") {
                 if (($this->type === "and" || $this->type === "space" || $this->type === "then")
-                    && !isset($this->float["ge"])) {
-                    $this->float["ge"] = $v;
-                }
-            } else if (str_starts_with($k, "fhl:")) {
-                '@phan-var-force TextPregexes $v';
-                if ($this->type !== "not" && !$v->is_empty()) {
-                    if (!isset($this->float[$k])) {
-                        $this->float[$k] = $v;
-                    } else {
-                        $this->float[$k] = $v2 = clone $this->float[$k];
-                        $v2->add_matches($v);
-                    }
+                    && !isset($this->float[$k])) {
+                    $this->float[$k] = $v;
                 }
             } else if ($k === "xlimit") {
                 if (($this->type === "and" || $this->type === "space")
                     && !isset($this->float[$k])) {
                     $this->float[$k] = $v;
                 }
-            } else {
-                $this->float[$k] = $v;
             }
         }
-        if (($span = $term->strspan_in($context))) {
-            $this->apply_strspan($span[0], $span[1], $context);
-        }
-        return $this;
+    }
+    /** @param SearchTerm $term
+     * @param list<SearchTerm> $stack
+     * @param int $stackpos1
+     * @param int $stackpos2
+     * @return bool */
+    function op_try_adopt($term, $stack, $stackpos1, $stackpos2) {
+        return false;
     }
     /** @return SearchTerm */
-    abstract protected function _finish();
-    /** @return list<SearchTerm> */
-    protected function _flatten_children() {
-        $qvs = [];
-        foreach ($this->child as $qv) {
-            if ($qv->type === $this->type) {
-                assert($qv instanceof Op_SearchTerm);
-                $qvs = array_merge($qvs, $qv->child);
-            } else {
-                $qvs[] = $qv;
-            }
-        }
-        return $qvs;
-    }
-    /** @param list<SearchTerm> $newchild
-     * @param bool $any */
-    protected function _finish_combine($newchild, $any) {
-        if (!$newchild) {
+    abstract protected function op_finish();
+    /** @param ?bool $any */
+    protected function op_finish_combine($any) {
+        if (empty($this->child)) {
             $qe = $any ? new True_SearchTerm : new False_SearchTerm;
             return $qe->assign_context($this);
-        } else if (count($newchild) === 1) {
-            return (clone $newchild[0])->assign_context($this, $newchild[0]);
+        } else if (count($this->child) > 1) {
+            return $this;
         }
-        $this->child = $newchild;
-        return $this;
+        return (clone $this->child[0])->assign_context($this, $this->child[0]);
     }
 
     function debug_json() {
@@ -475,25 +507,36 @@ abstract class Op_SearchTerm extends SearchTerm {
         }
     }
     function is_sqlexpr_precise() {
+        if ($this->height > self::SQLEXPR_HEIGHT) {
+            return false;
+        }
         foreach ($this->child as $ch) {
             if (!$ch->is_sqlexpr_precise())
                 return false;
         }
         return true;
     }
+    function need_pretest() {
+        foreach ($this->child as $ch) {
+            if ($ch->need_pretest())
+                return true;
+        }
+        return false;
+    }
     function visit($visitor) {
         $x = [];
-        foreach ($this->child as $ch) {
-            $x[] = $ch->visit($visitor);
+        if (!($visitor instanceof SearchVisitor)
+            || $visitor->visit_children($this)) {
+            foreach ($this->child as $ch) {
+                $x[] = $ch->visit($visitor);
+            }
         }
         return $visitor($this, ...$x);
     }
     function preorder() {
         yield $this;
         foreach ($this->child as $ch) {
-            foreach ($ch->preorder() as $chx) {
-                yield $chx;
-            }
+            yield from $ch->preorder();
         }
     }
     function about() {
@@ -559,7 +602,7 @@ class Not_SearchTerm extends Op_SearchTerm {
     function __construct() {
         parent::__construct("not");
     }
-    protected function _finish() {
+    function op_finish() {
         $qv = $this->child ? $this->child[0] : null;
         $qr = null;
         if (!$qv || $qv instanceof False_SearchTerm) {
@@ -576,13 +619,19 @@ class Not_SearchTerm extends Op_SearchTerm {
         $ctx = $sqi->set_context(SearchQueryInfo::CTX_ANY);
         $ff = $this->child[0]->sqlexpr($sqi);
         $sqi->set_context($ctx);
-        if (!$this->child[0]->is_sqlexpr_precise()
+        if ($this->height > self::SQLEXPR_HEIGHT
+            || !$this->child[0]->is_sqlexpr_precise()
             || $ff === "false") {
             return "true";
         } else if ($ff === "true") {
             return "false";
         }
         return "not coalesce({$ff},0)";
+    }
+    // parent::precise_sqlexpr is correct
+    function pretest(PaperInfo $row, $xinfo) {
+        $x = $this->child[0]->pretest($row, $xinfo);
+        return $x === null ? null : !$x;
     }
     function test(PaperInfo $row, $xinfo) {
         return !$this->child[0]->test($row, $xinfo);
@@ -593,30 +642,45 @@ class Not_SearchTerm extends Op_SearchTerm {
 }
 
 class And_SearchTerm extends Op_SearchTerm {
+    /** @var ?PaperID_SearchTerm */
+    private $pn;
+    /** @var ?bool */
+    private $short_circuit;
+
     /** @param string $type */
     function __construct($type) {
         parent::__construct($type);
     }
-    protected function _finish() {
-        $pn = null;
-        $newchild = [];
-        $any = false;
-        foreach ($this->_flatten_children() as $qv) {
+    function op_append($term, $context) {
+        if (!$term) {
+            return $this;
+        }
+        $this->op_append_floats($term, $context);
+        foreach ($term->type === $this->type ? $term->child : [$term] as $qv) {
             if ($qv instanceof False_SearchTerm) {
-                return (new False_SearchTerm)->assign_context($this);
+                $this->short_circuit = false;
             } else if ($qv instanceof True_SearchTerm) {
-                $any = true;
+                $this->short_circuit = $this->short_circuit ?? true;
             } else if ($qv->type === "pn" && $this->type === "space") {
-                if (!$pn) {
-                    $newchild[] = $pn = $qv;
+                if (!$this->pn) {
+                    $this->child[] = $this->pn = $qv;
                 } else {
-                    $pn->merge($qv);
+                    $this->pn->merge($qv);
                 }
             } else {
-                $newchild[] = $qv;
+                $this->child[] = $qv;
             }
         }
-        return $this->_finish_combine($newchild, $any);
+        return $this;
+    }
+    function op_try_adopt($term, $stack, $stackpos1, $stackpos2) {
+        return $term->type === $this->type;
+    }
+    function op_finish() {
+        if ($this->short_circuit === false) {
+            return (new False_SearchTerm)->assign_context($this);
+        }
+        return $this->op_finish_combine($this->short_circuit);
     }
 
     function sqlexpr(SearchQueryInfo $sqi) {
@@ -624,7 +688,32 @@ class And_SearchTerm extends Op_SearchTerm {
         foreach ($this->child as $subt) {
             $ff[] = $subt->sqlexpr($sqi);
         }
+        if ($this->height > self::SQLEXPR_HEIGHT) {
+            return "true";
+        }
         return self::andjoin_sqlexpr($ff);
+    }
+    function precise_sqlexpr(SearchQueryInfo $sqi) {
+        $ff = [];
+        foreach ($this->child as $subt) {
+            $ff[] = $subt->precise_sqlexpr($sqi);
+        }
+        if ($this->height > self::SQLEXPR_HEIGHT) {
+            return "true";
+        }
+        return self::andjoin_sqlexpr($ff);
+    }
+    function pretest(PaperInfo $row, $xinfo) {
+        $a = true;
+        foreach ($this->child as $subt) {
+            $x = $subt->pretest($row, $xinfo);
+            if ($x === false) {
+                return false;
+            } else if ($x === null) {
+                $a = null;
+            }
+        }
+        return $a;
     }
     function test(PaperInfo $row, $xinfo) {
         foreach ($this->child as $subt) {
@@ -685,28 +774,45 @@ class And_SearchTerm extends Op_SearchTerm {
 }
 
 class Or_SearchTerm extends Op_SearchTerm {
+    /** @var ?PaperID_SearchTerm */
+    private $pn;
+    /** @var bool */
+    private $short_circuit = false;
+
     function __construct() {
         parent::__construct("or");
     }
-    protected function _finish() {
-        $pn = $lastqv = null;
-        $newchild = [];
-        foreach ($this->_flatten_children() as $qv) {
+    function op_append($term, $context) {
+        if (!$term) {
+            return $this;
+        }
+        $this->op_append_floats($term, $context);
+        foreach ($term->type === $this->type ? $term->child : [$term] as $qv) {
             if ($qv instanceof True_SearchTerm) {
-                return (new True_SearchTerm)->assign_context($this);
+                $this->short_circuit = true;
             } else if ($qv instanceof False_SearchTerm) {
                 // skip
-            } else if ($qv->type === "pn") {
-                if (!$pn) {
-                    $newchild[] = $pn = $qv;
+            } else if ($qv->type === "pn" && $this->type === "space") {
+                if (!$this->pn) {
+                    $this->child[] = $this->pn = $qv;
                 } else {
-                    $pn->merge($qv);
+                    $this->pn->merge($qv);
                 }
-            } else if (!$lastqv || !$lastqv->merge($qv)) {
-                $newchild[] = $lastqv = $qv;
+            } else if (empty($this->child)
+                       || !$this->child[count($this->child) - 1]->merge($qv)) {
+                $this->child[] = $qv;
             }
         }
-        return $this->_finish_combine($newchild, false);
+        return $this;
+    }
+    function op_try_adopt($term, $stack, $stackpos1, $stackpos2) {
+        return $term->type === $this->type;
+    }
+    function op_finish() {
+        if ($this->short_circuit) {
+            return (new True_SearchTerm)->assign_context($this);
+        }
+        return $this->op_finish_combine(false);
     }
 
     /** @param list<SearchTerm> $child
@@ -731,7 +837,24 @@ class Or_SearchTerm extends Op_SearchTerm {
     }
 
     function sqlexpr(SearchQueryInfo $sqi) {
-        return self::orjoin_sqlexpr(self::or_sqlexprs($this->child, $sqi), "false");
+        $sqlexprs = self::or_sqlexprs($this->child, $sqi);
+        if ($this->height > self::SQLEXPR_HEIGHT) {
+            return "true";
+        }
+        return self::orjoin_sqlexpr($sqlexprs, "false");
+    }
+    // parent::precise_sqlexpr is correct
+    function pretest(PaperInfo $row, $xinfo) {
+        $a = false;
+        foreach ($this->child as $subt) {
+            $x = $subt->pretest($row, $xinfo);
+            if ($x === true) {
+                return true;
+            } else if ($x === null) {
+                $a = null;
+            }
+        }
+        return $a;
     }
     function test(PaperInfo $row, $xinfo) {
         foreach ($this->child as $subt) {
@@ -752,22 +875,33 @@ class Or_SearchTerm extends Op_SearchTerm {
 }
 
 class Xor_SearchTerm extends Op_SearchTerm {
+    /** @var bool */
+    private $negate;
+
     function __construct() {
         parent::__construct("xor");
     }
-    protected function _finish() {
-        $negate = false;
-        $newchild = [];
-        foreach ($this->_flatten_children() as $qv) {
+    function op_append($term, $context) {
+        if (!$term) {
+            return $this;
+        }
+        $this->op_append_floats($term, $context);
+        foreach ($term->type === $this->type ? $term->child : [$term] as $qv) {
             if ($qv instanceof False_SearchTerm) {
                 // skip
             } else if ($qv instanceof True_SearchTerm) {
-                $negate = !$negate;
+                $this->negate = !$this->negate;
             } else {
-                $newchild[] = $qv;
+                $this->child[] = $qv;
             }
         }
-        return $this->_finish_combine($newchild, false)->negate_if($negate);
+        return $this;
+    }
+    function op_try_adopt($term, $stack, $stackpos1, $stackpos2) {
+        return $term->type === $this->type;
+    }
+    function op_finish() {
+        return $this->op_finish_combine(false)->negate_if($this->negate);
     }
 
     function sqlexpr(SearchQueryInfo $sqi) {
@@ -775,12 +909,27 @@ class Xor_SearchTerm extends Op_SearchTerm {
         $ctx = $precise ? SearchQueryInfo::CTX_OPTIONAL : SearchQueryInfo::CTX_ANY;
         $ff = Or_SearchTerm::or_sqlexprs($this->child, $sqi, $ctx);
         $sqi->set_context($ctx);
-        if (empty($ff)) {
+        if ($this->height > self::SQLEXPR_HEIGHT) {
+            return "true";
+        } else if (empty($ff)) {
             return "false";
         } else if ($precise) {
             return "(coalesce(" . join(",0) xor coalesce(", $ff) . ",0))";
         }
         return self::orjoin_sqlexpr($ff, "false");
+    }
+    // parent::precise_sqlexpr is correct
+    function pretest(PaperInfo $row, $xinfo) {
+        $a = false;
+        foreach ($this->child as $subt) {
+            $x = $subt->pretest($row, $xinfo);
+            if ($x === true) {
+                $a = $a === false ? true : null;
+            } else if ($x === null) {
+                $a = null;
+            }
+        }
+        return $a;
     }
     function test(PaperInfo $row, $xinfo) {
         $x = false;
@@ -822,29 +971,65 @@ class Then_SearchTerm extends Op_SearchTerm {
         $this->is_highlight = $op->type === "highlight";
         $this->color = $this->is_highlight ? strtolower($op->subtype ?? "") : "";
     }
-    protected function _finish() {
-        $newchild = [];
-        foreach ($this->child as $qv) {
-            if (!($qv instanceof Then_SearchTerm)) {
-                $newchild[] = $qv;
-            } else if ($this->is_highlight) {
-                if (empty($newchild)) {
-                    $newchild = $qv->child;
-                    $this->nthen = $qv->nthen;
-                    $this->_colors = $qv->_colors;
-                } else {
-                    $newchild[] = $qv;
-                }
-            } else if ($qv->nthen === count($qv->child)) {
-                array_push($newchild, ...$qv->child);
-            } else {
-                $newchild[] = $qv;
-            }
-            if (!$this->is_highlight || $this->nthen === 0) {
-                $this->nthen = count($newchild);
-            }
+    function op_append($term, $context) {
+        // Structure (which children are groups, which are highlights, and
+        // their colors) is decided by op_try_adopt at compile time; here a
+        // term is just one more child.
+        if (!$term) {
+            return $this;
         }
-        $this->child = $newchild;
+        if ($this->is_highlight
+            && $this->nthen !== 0
+            && count($this->child) >= $this->nthen
+            && $term instanceof Then_SearchTerm) {
+            // A highlight search is tested for matches only; its own
+            // highlights are never consulted, so keep just its groups.
+            $term = $term->truncate_highlight();
+        }
+        $this->op_append_floats($term, $context);
+        $this->child[] = $term;
+        if (!$this->is_highlight || $this->nthen === 0) {
+            $this->nthen = count($this->child);
+        }
+        return $this;
+    }
+    /** @return SearchTerm */
+    private function truncate_highlight() {
+        if ($this->nthen === count($this->child)) {
+            return $this;
+        } else if ($this->nthen === 1) {
+            return $this->child[0];
+        }
+        $this->child = array_slice($this->child, 0, $this->nthen);
+        $this->_colors = [];
+        $this->unset_float("hl");
+        return $this;
+    }
+    function op_try_adopt($term, $stack, $stackpos1, $stackpos2) {
+        if (!($term instanceof Then_SearchTerm)) {
+            return false;
+        }
+        if (!$this->is_highlight) {
+            // a THEN's compiled children are all groups; splice them in
+            return !$term->is_highlight;
+        }
+        // a HIGHLIGHT adopts only its first child, inheriting that child's
+        // groups and colors
+        $n = count($stack) - $stackpos2;
+        if ($stackpos1 !== $stackpos2 || $n === 0) {
+            return false;
+        }
+        $this->nthen = $term->is_highlight ? max($term->nthen, 1) : $n;
+        // take the child's colors rather than copying them (the child is
+        // discarded), then color its remaining highlight terms
+        $this->_colors = $term->_colors;
+        while ($this->nthen + count($this->_colors) < $n) {
+            $this->_colors[] = $term->color;
+        }
+        $term->_colors = [];
+        return true;
+    }
+    function op_finish() {
         $this->_group_offsets[] = $go = 0;
         for ($i = 0; $i !== $this->nthen; ++$i) {
             $ge = $this->child[$i]->get_float("ge");
@@ -855,6 +1040,31 @@ class Then_SearchTerm extends Op_SearchTerm {
         }
         if ($this->nthen > 1) {
             $this->set_float("ge", $this);
+        } else if (($ge = $this->_nested_thens[0] ?? null)) {
+            // group expression comes from the group child only, never
+            // from a highlight child
+            $this->set_float("ge", $ge);
+        } else {
+            $this->unset_float("ge");
+        }
+        // groups sort themselves, and highlights do not sort
+        $vl = null;
+        foreach ($this->child as $i => $ch) {
+            if (($cv = $ch->get_float("view"))) {
+                $vl = $vl ?? new ViewCommandList;
+                $vl->append($i >= $this->nthen || $this->nthen > 1 ? ViewCommandList::make_strip_sorts($cv) : $cv);
+            }
+        }
+        if ($vl) {
+            $this->set_float("view", $vl);
+        } else {
+            $this->unset_float("view");
+        }
+        if ($this->nthen === 1
+            && ($legend = $this->child[0]->get_float("legend")) !== null) {
+            $this->set_float("legend", $legend);
+        } else {
+            $this->unset_float("legend");
         }
         if ($this->nthen < count($this->child)) {
             $this->set_float("hl", true);
@@ -868,8 +1078,18 @@ class Then_SearchTerm extends Op_SearchTerm {
     function visit($visitor) {
         // Only visit non-highlight terms
         $x = [];
-        for ($i = 0; $i !== $this->nthen; ++$i) {
-            $x[] = $this->child[$i]->visit($visitor);
+        if (!($visitor instanceof SearchVisitor)
+            || $visitor->visit_children($this)) {
+            for ($i = 0; $i !== $this->nthen; ++$i) {
+                $x[] = $this->child[$i]->visit($visitor);
+            }
+        }
+        if ($this->nthen !== count($this->child)
+            && $visitor instanceof SearchVisitor
+            && $visitor->visit_highlights($this)) {
+            for ($i = $this->nthen; $i !== count($this->child); ++$i) {
+                $x[] = $this->child[$i]->visit($visitor);
+            }
         }
         return $visitor($this, ...$x);
     }
@@ -878,6 +1098,14 @@ class Then_SearchTerm extends Op_SearchTerm {
         for ($i = 0; $i !== $this->nthen; ++$i) {
             $this->child[$i]->paper_options($oids);
         }
+    }
+
+    function default_sort_column($top, $pl) {
+        // highlights don't change how a search sorts (groups sort themselves)
+        if ($this->nthen === 1) {
+            return $this->child[0]->default_sort_column($top, $pl);
+        }
+        return null;
     }
 
     /** @return int */
@@ -916,7 +1144,23 @@ class Then_SearchTerm extends Op_SearchTerm {
             $ff[] = $subt->sqlexpr($sqi);
         }
         $sqi->set_context($ctx);
+        if ($this->height > self::SQLEXPR_HEIGHT) {
+            return "true";
+        }
         return self::orjoin_sqlexpr(array_slice($ff, 0, $this->nthen), "true");
+    }
+    // parent::precise_sqlexpr is correct
+    function pretest(PaperInfo $row, $xinfo) {
+        $a = false;
+        for ($i = 0; $i !== $this->nthen; ++$i) {
+            $x = $this->child[$i]->pretest($row, $xinfo);
+            if ($x === true) {
+                return true;
+            } else if ($x === null) {
+                $a = null;
+            }
+        }
+        return $a;
     }
     function test(PaperInfo $row, $xinfo) {
         for ($i = 0; $i !== $this->nthen; ++$i) {
@@ -1012,19 +1256,21 @@ class Limit_SearchTerm extends SearchTerm {
     public $named_limit;
     /** @var int
      * @readonly */
-    public $lflag;
+    public $lflag = 0;
     /** @var string */
     private $limit_class;
     /** @var ?list<int> */
     private $xlist;
     /** @var Contact */
     private $user;
-    /** @var Contact */
+    /** Only the `reviewable` limit selects papers relative to this reviewer;
+     * every other limit selects relative to `$user`.
+     * @var Contact */
     private $reviewer;
 
     /* NB all named_limits must equal themselves when urlencoded */
     /** @var array<string,string|array{string,string}> */
-    static public $reqtype_map = [
+    private const REQTYPE_MAP = [
         "a" => ["a", "author"],
         "acc" => "accepted",
         "accepted" => "accepted",
@@ -1038,6 +1284,7 @@ class Limit_SearchTerm extends SearchTerm {
         "alladmin" => "alladmin",
         "ar" => "ar",
         "author" => ["a", "author"],
+        "dec:none" => "undecided",
         "dec:yes" => "accepted",
         "editpref" => "reviewable",
         "lead" => "lead",
@@ -1055,6 +1302,8 @@ class Limit_SearchTerm extends SearchTerm {
         "reviews" => ["r", "reviews"],
         "rout" => ["rout", "outstandingreviews"],
         "s" => ["s", "submitted"],
+        "sa" => ["sa", "sall"],
+        "sall" => ["sa", "sall"],
         "submitted" => ["s", "submitted"],
         "und" => "undecided",
         "undec" => "undecided",
@@ -1068,9 +1317,13 @@ class Limit_SearchTerm extends SearchTerm {
 
     const LFLAG_ACTIVE = 1;
     const LFLAG_SUBMITTED = 2;
-    const LFLAG_IMPLICIT = 4;
-    const LFLAG_ACCEPTED = 8;
-    const LFLAG_STDDEC = 16;
+    const LFLAG_ACCEPTED = 4;
+    const LFLAG_STDDEC = 8;
+    const LFLAG_AUTHOR = 16;
+    const LFLAG_REVIEWER = 32;
+    const LFLAGM_TYPE = 0x3F;
+    const LFLAG_IMPLICIT = 64;
+    const LFLAG_BASE = 128;
 
     /** @param string|SearchWord $limit */
     function __construct(PaperSearch $srch, $limit, $implicit = false) {
@@ -1078,11 +1331,7 @@ class Limit_SearchTerm extends SearchTerm {
         $this->user = $srch->user;
         $this->reviewer = $srch->reviewer_user();
         $this->set_limit($limit, $srch);
-        if ($implicit) {
-            $this->lflag |= self::LFLAG_IMPLICIT;
-        } else {
-            $this->set_float("xlimit", $this);
-        }
+        $this->set_float("xlimit", $this);
     }
 
     static function parse($word, SearchWord $sword, PaperSearch $srch) {
@@ -1093,13 +1342,28 @@ class Limit_SearchTerm extends SearchTerm {
     static function canonical_names(Conf $conf, $limit) {
         if ($limit === null) {
             return null;
-        } else if (($rt = self::$reqtype_map[$limit] ?? null) !== null) {
+        } else if (($rt = self::REQTYPE_MAP[$limit] ?? null) !== null) {
             return is_string($rt) ? [$rt, $rt] : $rt;
         } else if (str_starts_with($limit, "dec:")
-                   && count($conf->decision_set()->matchexpr(SearchWord::unquote(substr($limit, 4)), true)) > 0) {
+                   && count($conf->decision_set()->match(SearchWord::unquote(substr($limit, 4)))) > 0) {
             return [$limit, $limit];
         }
         return null;
+    }
+
+    /** @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_implicit() {
+        $this->lflag |= self::LFLAG_IMPLICIT;
+        $this->unset_float("xlimit");
+        return $this;
+    }
+
+    /** @return $this
+     * @suppress PhanAccessReadOnlyProperty */
+    function set_base() {
+        $this->lflag |= self::LFLAG_BASE;
+        return $this;
     }
 
     /** @param string|SearchWord $limit
@@ -1120,7 +1384,7 @@ class Limit_SearchTerm extends SearchTerm {
         if ($limstr === "default") {
             if ($this->user->privChair
                 && ($this->user->is_root_user()
-                    || $conf->unnamed_submission_round()->time_update(true))) {
+                    || $conf->unnamed_submission_round()->time_submit(true))) {
                 $limstr = "all";
             } else if ($this->user->isPC) {
                 if ($this->user->can_view_some_incomplete()
@@ -1154,40 +1418,56 @@ class Limit_SearchTerm extends SearchTerm {
         }
         $this->named_limit = $limstr = $limitpair[0];
 
+        // a scope-restricted token that cannot read reviews cannot select
+        // papers by review relationship; `reviewable` still reports track
+        // assignability (handled in `test`/`sqlexpr`), but drops current
+        // assignments
+        if (!$this->user->scope_allows(TokenScope::S_REV_READ)
+            && in_array($limstr, ["ar", "r", "rout", "req"], true)) {
+            if ($srch && $limword) {
+                $srch->lwarning($limword, $conf->_("<0>{Submission} collection requires `review:read` scope"));
+            }
+            $limstr = $limstr === "ar" ? "a" : "none";
+        }
+
         // optimize SQL for some limits
         if ($limstr === "viewable" && $this->user->can_view_all()) {
             $limstr = "all";
-        } else if ($limstr === "reviewable" && !$this->reviewer->isPC) {
-            $limstr = "r";
         }
         $this->limit = $this->limit_class = $limstr;
 
         // mark flags
-        if (str_starts_with($limstr, "dec:")) {
+        $this->lflag &= ~self::LFLAGM_TYPE;
+        if (in_array($limstr, ["a", "ar", "r", "viewable", "all", "none"], true)) {
+            // no additional flags
+        } else if ($limstr === "reviewable") {
+            if ($this->user->contactXid !== $this->reviewer->contactXid) {
+                $this->lflag |= self::LFLAG_REVIEWER;
+            }
+        } else if (str_starts_with($limstr, "dec:")) {
             $this->limit_class = "dec";
-            $this->lflag = self::LFLAG_SUBMITTED | self::LFLAG_ACCEPTED | self::LFLAG_STDDEC;
+            $this->lflag |= self::LFLAG_SUBMITTED | self::LFLAG_ACCEPTED | self::LFLAG_STDDEC;
             $decset = $this->user->conf->decision_set();
             $this->xlist = $decset->matchexpr(SearchWord::unquote(substr($limstr, 4)), true);
             foreach ($this->xlist as $dec) {
                 if ($decset->get($dec)->sign === -2) {
-                    $this->lflag = self::LFLAG_SUBMITTED;
+                    $this->lflag &= ~(self::LFLAG_ACCEPTED | self::LFLAG_STDDEC);
                 } else if ($dec <= 0) {
                     $this->lflag &= ~self::LFLAG_ACCEPTED;
                 }
             }
-        } else if (in_array($limstr, ["a", "ar", "r", "req", "viewable",
-                                      "reviewable", "all", "none"], true)) {
-            $this->lflag = 0;
         } else if ($limstr === "accepted") {
-            $this->lflag = self::LFLAG_SUBMITTED | self::LFLAG_ACCEPTED;
+            $this->lflag |= self::LFLAG_SUBMITTED | self::LFLAG_ACCEPTED;
         } else if ($limstr === "undecided") {
-            $this->lflag = self::LFLAG_SUBMITTED | self::LFLAG_STDDEC;
+            $this->lflag |= self::LFLAG_SUBMITTED | self::LFLAG_STDDEC;
         } else if (in_array($limstr, ["active", "unsub", "actadmin"], true)
                    || ($conf->can_pc_view_some_incomplete()
                        && !in_array($limstr, ["s", "accepted"], true))) {
-            $this->lflag = self::LFLAG_ACTIVE | self::LFLAG_STDDEC;
+            $this->lflag |= self::LFLAG_ACTIVE | self::LFLAG_STDDEC;
+        } else if ($limstr === "sa") {
+            $this->lflag |= self::LFLAG_SUBMITTED;
         } else {
-            $this->lflag = self::LFLAG_SUBMITTED | self::LFLAG_STDDEC;
+            $this->lflag |= self::LFLAG_SUBMITTED | self::LFLAG_STDDEC;
         }
     }
 
@@ -1228,7 +1508,8 @@ class Limit_SearchTerm extends SearchTerm {
             && $conf->has_tracks()
             && $this->limit !== "a"
             && $this->limit !== "r"
-            && $this->limit !== "s") {
+            && $this->limit !== "s"
+            && $this->limit !== "sa") {
             return false;
         }
         // otherwise go by limit
@@ -1247,21 +1528,19 @@ class Limit_SearchTerm extends SearchTerm {
         case "viewable":
             return $this->user->privChair;
         case "s":
+        case "sa":
             assert($fin);
             return $this->user->isPC;
         case "active":
             assert($act || $fin);
             return $this->user->can_view_all_incomplete();
         case "reviewable":
-            if ($this->reviewer->isPC) {
-                return false;
-            }
-            $options["myReviews"] = true;
-            return true;
+            // `reviewable` is relative to `$reviewer`
+            return false;
         case "a":
             $options["author"] = true;
             // If complex author SQL, always do search the long way
-            return !$this->user->act_author_view_sql("%", true);
+            return !$this->user->is_author_view_sql("%", true);
         case "ar":
             return false;
         case "r":
@@ -1288,16 +1567,22 @@ class Limit_SearchTerm extends SearchTerm {
             $options["unsub"] = true;
             return $this->user->allow_admin_all();
         case "lead":
-            $options["myLead"] = true;
-            return true;
+            // Leading a submission does not imply permission to view it: a
+            // lead may have left the PC. Since this path skips
+            // `Contact::can_view_paper`, use the long way.
+            return false;
         case "alladmin":
         case "actadmin":
             return $this->user->allow_admin_all();
         case "admin":
             return false;
         case "req":
+            assert($act || $fin);
             $options["myReviewRequests"] = true;
-            return true;
+            // A requester views a submission as a PC member, so restrict to
+            // submissions PC members can view (see Conf::time_pc_view)
+            return $this->user->isPC
+                && ($fin || $this->user->can_view_all_incomplete());
         default:
             return false;
         }
@@ -1353,61 +1638,77 @@ class Limit_SearchTerm extends SearchTerm {
             }
         }
 
-        $act_reviewer_sql = "error";
-        if (in_array($this->limit, ["ar", "r", "rout"], true)) {
+        // Author/reviewer restrictions
+        $need_ar = 0;
+        if ($this->limit === "a") {
+            $need_ar = 1;
+        } else if ($this->limit === "r" || $this->limit === "rout") {
+            $need_ar = 2;
+        } else if ($this->limit === "ar") {
+            $need_ar = 3;
+        } else if (($this->lflag & self::LFLAG_BASE) !== 0
+                   && !$this->user->isPC) {
+            // Users other than PC members cannot search all papers.
+            // Always apply their inherent restrictions to the base limit query.
+            $need_ar = 3;
+        }
+
+        $arf = [];
+        if ($need_ar & 1) {
+            $arf[] = $this->user->is_author_view_sql($sqi->conflict_table($this->user));
+        }
+        if ($need_ar & 2) {
             $sqi->add_reviewer_columns();
-            if ($sqi->required()) {
-                $act_reviewer_sql = $this->user->act_reviewer_sql("MyReviews");
-                if ($act_reviewer_sql !== "false") {
-                    $sqi->add_table("MyReviews", [$this->limit === "ar" ? "left join" : "join", "PaperReview", $act_reviewer_sql]);
-                }
+            if ($sqi->required()
+                && $this->limit !== "rout"
+                && !$this->user->reviewer_capability_paper_ids()) {
+                $rtable = "MyReviews";
             } else {
-                $act_reviewer_sql = $this->user->act_reviewer_sql("PaperReview");
+                $rtable = "PaperReview";
             }
+            $q = $this->user->act_reviewer_sql($rtable, true);
+            if ($q !== "false" && $this->limit === "rout") {
+                $q .= " and reviewNeedsSubmit!=0";
+            }
+            if ($q === "false") {
+                $arf[] = "false";
+            } else if ($rtable === "PaperReview") {
+                $arf[] = "exists (select * from PaperReview force index (primary) where paperId=Paper.paperId and {$q})";
+            } else {
+                $sqi->add_table("MyReviews", [$need_ar === 3 ? "left join" : "join", "PaperReview", $q]);
+                $arf[] = ($need_ar === 3 ? "MyReviews.reviewType is not null" : "true");
+            }
+        }
+        if (!empty($arf)) {
+            $ff[] = self::orjoin_sqlexpr($arf, "false");
         }
 
         switch ($this->limit_class) {
         case "all":
         case "viewable":
         case "s":
+        case "sa":
         case "active":
             break;
         case "reviewable":
             $sqi->add_reviewer_columns();
+            if (!$this->reviewer->isPC
+                && (($this->lflag & self::LFLAG_REVIEWER) === 0
+                    || $this->user->is_manager())) {
+                $reviewable_sql = $this->reviewer->act_reviewer_sql("PaperReview", true);
+                $ff[] = "exists (select * from PaperReview force index (primary) where paperId=Paper.paperId and {$reviewable_sql})";
+            }
             break;
         case "a":
-            $ff[] = $this->user->act_author_view_sql($sqi->conflict_table($this->user));
-            break;
-        case "ar":
-            if ($act_reviewer_sql === "false") {
-                $r = "false";
-            } else if ($sqi->required()) {
-                $r = "MyReviews.reviewType is not null";
-            } else {
-                $r = "exists (select * from PaperReview force index (primary) where paperId=Paper.paperId and {$act_reviewer_sql})";
-            }
-            $ff[] = "(" . $this->user->act_author_view_sql($sqi->conflict_table($this->user)) . " or {$r})";
-            break;
         case "r":
-            if ($act_reviewer_sql === "false") {
-                $ff[] = "false";
-            } else if ($sqi->required()) {
-                // the `join` with MyReviews suffices
-            } else {
-                $ff[] = "exists (select * from PaperReview force index (primary) where paperId=Paper.paperId and {$act_reviewer_sql})";
-            }
-            break;
+        case "ar":
         case "rout":
-            if ($act_reviewer_sql === "false") {
-                $ff[] = "false";
-            } else if ($sqi->required()) {
-                $ff[] = "MyReviews.reviewNeedsSubmit!=0";
-            } else {
-                $ff[] = "exists (select * from PaperReview force index (primary) where paperId=Paper.paperId and {$act_reviewer_sql} and reviewNeedsSubmit!=0)";
-            }
+            assert($need_ar !== 0 && !empty($ff));
             break;
         case "accepted":
-            $ff[] = "Paper.outcome>0";
+            if ($this->user->can_view_all_decision()) {
+                $ff[] = "Paper.outcome>0";
+            }
             break;
         case "undecided":
             if ($this->user->can_view_all_decision()) {
@@ -1428,14 +1729,15 @@ class Limit_SearchTerm extends SearchTerm {
             break;
         case "alladmin":
         case "actadmin":
+            // null managed_track_tags: user administers the default track
             if ($this->user->privChair
                 || ($mttl = $this->user->managed_track_tags()) === null) {
                 break;
             }
             $fx = ["Paper.managerContactId={$this->user->contactXid}"];
             if (!empty($mttl)) {
-                $tsm = (new TagSearchMatcher($this->user))->add_tag_list($mttl);
-                $fx[] = $tsm->exists_sqlexpr("Paper");
+                $tsm = (new TagSearchMatcher($this->user->conf->root_user()))->add_tag_list($mttl);
+                $fx[] = $tsm->exists_sqlexpr("Paper") ?? "false";
             }
             $ff[] = "(" . join(" or ", $fx) . ")";
             break;
@@ -1444,8 +1746,8 @@ class Limit_SearchTerm extends SearchTerm {
             if (($mttl = $this->user->managed_track_tags()) === null) {
                 $fx[] = "Paper.managerContactId=0";
             } else if (!empty($mttl)) {
-                $tsm = (new TagSearchMatcher($this->user))->add_tag_list($mttl);
-                $fx[] = "(Paper.managerContactId=0 and " . $tsm->exists_sqlexpr("Paper") . ")";
+                $tsm = (new TagSearchMatcher($this->user->conf->root_user()))->add_tag_list($mttl);
+                $fx[] = "(Paper.managerContactId=0 and " . ($tsm->exists_sqlexpr("Paper") ?? "false") . ")";
             }
             $ff[] = "(" . join(" or ", $fx) . ")";
             break;
@@ -1462,22 +1764,28 @@ class Limit_SearchTerm extends SearchTerm {
 
     function test(PaperInfo $row, $xinfo) {
         $user = $this->user;
-        if ((($this->lflag & self::LFLAG_SUBMITTED) !== 0 && $row->timeSubmitted <= 0)
-            || (($this->lflag & self::LFLAG_ACTIVE) !== 0 && $row->timeWithdrawn > 0)
-            || (($this->lflag & self::LFLAG_STDDEC) !== 0 && $row->outcome_sign === -2)) {
+        if ((($this->lflag & self::LFLAG_SUBMITTED) !== 0
+             && $row->timeSubmitted <= 0)
+            || (($this->lflag & self::LFLAG_ACTIVE) !== 0
+                && $row->timeWithdrawn > 0)
+            || (($this->lflag & self::LFLAG_STDDEC) !== 0
+                && $row->outcome_sign === -2)
+            || (($this->lflag & self::LFLAG_REVIEWER) !== 0
+                && !$this->user->allow_admin($row))) {
             return false;
         }
         switch ($this->limit_class) {
         case "all":
         case "viewable":
         case "s":
+        case "sa":
         case "active":
             return true;
         case "a":
             return $row->has_author_view($user);
         case "ar":
             return $row->has_author_view($user)
-                || ($row->timeWithdrawn <= 0 && $row->has_active_reviewer($user));
+                || $row->has_active_reviewer($user);
         case "r":
             return $row->has_active_reviewer($user);
         case "rout":
@@ -1487,9 +1795,8 @@ class Limit_SearchTerm extends SearchTerm {
             }
             return false;
         case "reviewable":
-            if ($this->reviewer !== $user && !$user->allow_admin($row)) {
-                return false;
-            } else if ($row->has_active_reviewer($this->reviewer)) {
+            if ($this->user->scope_allows(TokenScope::S_REV_READ)
+                && $row->has_active_reviewer($this->reviewer)) {
                 return true;
             }
             return $this->reviewer->pc_track_assignable($row)
@@ -1531,8 +1838,10 @@ class Limit_SearchTerm extends SearchTerm {
     function about() {
         if (in_array($this->limit, ["viewable", "reviewable", "ar", "r", "rout", "req"], true)) {
             return self::ABOUT_REVIEW_SET;
+        } else if (in_array($this->limit_class, ["accepted", "undecided", "dec"], true)) {
+            return self::ABOUT_SUB | self::ABOUT_DECISION;
         }
-        return self::ABOUT_PAPER;
+        return self::ABOUT_SUB;
     }
 }
 
@@ -1552,7 +1861,7 @@ class TextMatch_SearchTerm extends SearchTerm {
         "au" => "authorInformation", "co" => "collaborators"
     ];
 
-    function __construct(Contact $user, $t, $text, $quoted) {
+    function __construct(Contact $user, $t, $text) {
         parent::__construct($t);
         $this->user = $user;
         $this->field = self::$map[$t];
@@ -1560,7 +1869,7 @@ class TextMatch_SearchTerm extends SearchTerm {
         if (is_bool($text)) {
             $this->trivial = $text;
         } else {
-            $this->regex = Text::star_text_pregexes($text, $quoted);
+            $this->regex = Text::star_text_pregexes($text);
             $this->set_float("fhl:{$t}", $this->regex);
         }
     }
@@ -1572,7 +1881,7 @@ class TextMatch_SearchTerm extends SearchTerm {
                 $word = false;
             }
         }
-        return new TextMatch_SearchTerm($srch->user, $sword->kwdef->name, $word, $sword->quoted);
+        return new TextMatch_SearchTerm($srch->user, $sword->kwdef->name, $word);
     }
 
     function sqlexpr(SearchQueryInfo $sqi) {
@@ -1612,7 +1921,7 @@ class TextMatch_SearchTerm extends SearchTerm {
         if ($this->trivial !== null) {
             return ["type" => $this->type, "any" => $this->trivial];
         }
-        return ["type" => $this->type, "match" => $this->regex->preg_utf8 ?? $this->regex->preg_raw];
+        return ["type" => $this->type, "match" => $this->regex->preg_utf8()];
     }
 }
 
@@ -1627,184 +1936,53 @@ class Show_SearchTerm {
     }
 }
 
-class PaperIDRange {
-    /** @var int */
-    public $first;
-    /** @var int */
-    public $last;
-    /** @var int */
-    public $pos;
-    /** @var bool */
-    public $rev;
-    /** @var bool */
-    public $explicit;
-
-    function __construct($first, $last, $pos, $rev, $explicit) {
-        $this->first = $first;
-        $this->last = $last;
-        $this->pos = $pos;
-        $this->rev = $rev;
-        $this->explicit = $explicit;
-    }
-}
-
 class PaperID_SearchTerm extends SearchTerm {
-    /** @var list<PaperIDRange> */
-    private $r = [];
-    /** @var int */
-    private $n = 0;
-    /** @var bool */
-    private $in_order = true;
+    /** @var PaperIDSet */
+    private $pidset;
 
     function __construct() {
         parent::__construct("pn");
-    }
-    /** @param int $p
-     * @return int */
-    private function lower_bound($p) {
-        $l = 0;
-        $r = count($this->r);
-        while ($l < $r) {
-            $m = $l + (($r - $l) >> 1);
-            $x = $this->r[$m];
-            if ($p < $x->first) {
-                $r = $m;
-            } else if ($p >= $x->last) {
-                $l = $m + 1;
-            } else {
-                $l = $r = $m;
-            }
-        }
-        return $l;
-    }
-    /** @return int|false */
-    function index_of($p) {
-        $i = $this->lower_bound($p);
-        if ($i >= count($this->r) || $p < $this->r[$i]->first) {
-            return false;
-        }
-        $d = $p - $this->r[$i]->first;
-        return $this->r[$i]->pos + ($this->r[$i]->rev ? -$d : $d);
-    }
-    /** @param int $p0
-     * @param int $p1
-     * @param bool $rev */
-    private function add_drange($p0, $p1, $rev, $explicit) {
-        while ($p0 < $p1) {
-            $i = $this->lower_bound($p0);
-            if ($i < count($this->r) && $p0 >= $this->r[$i]->first) {
-                $p0 = $this->r[$i]->last;
-                ++$i;
-            }
-            $p1x = $p1;
-            if ($i < count($this->r) && $p1 >= $this->r[$i]->first) {
-                $p1x = $this->r[$i]->first;
-            }
-            if ($p0 < $p1x) {
-                if ($rev || $i < count($this->r)) {
-                    $this->in_order = false;
-                }
-                if ($i > 0
-                    && $this->in_order
-                    && $p0 === $this->r[$i - 1]->last
-                    && $explicit === $this->r[$i - 1]->explicit) {
-                    $this->r[$i - 1]->last = $p1x;
-                } else {
-                    $n = $this->n + ($rev ? $p1x - $p0 - 1 : 0);
-                    array_splice($this->r, $i, 0, [new PaperIDRange($p0, $p1x, $n, $rev, $explicit)]);
-                }
-                // ensure `$this->n <= PHP_INT_MAX`
-                // (it naturally will be, UNLESS someone calls add_range
-                // with negative PIDs)
-                $delta = min($p1x - $p0, PHP_INT_MAX - $this->n);
-                $this->n += $delta;
-            }
-            $p0 = max($p0, $p1x);
-        }
-    }
-    /** @param int $p0
-     * @param int $p1
-     * @param bool $explicit */
-    function add_range($p0, $p1, $explicit = false) {
-        if ($p0 <= $p1) {
-            $this->add_drange($p0, $p1 + 1, false, $explicit);
-        } else {
-            $this->add_drange($p1, $p0 + 1, true, false);
-        }
+        $this->pidset = new PaperIDSet;
     }
     function merge(SearchTerm $st) {
         if (!($st instanceof PaperID_SearchTerm)) {
             return false;
         }
-        $rs = $st->r;
-        if (!$st->in_order) {
-            usort($rs, function ($a, $b) { return $a->first <=> $b->first; });
-        }
-        foreach ($rs as $r) {
-            $this->add_drange($r->first, $r->last, $r->rev, $r->explicit);
-        }
+        $this->pidset->merge($st->pidset);
         return true;
     }
-    /** @return ?list<int> */
-    function paper_ids() {
-        if ($this->n > 1000) {
-            return null;
-        }
-        $a = [];
-        foreach ($this->r as $r) {
-            for ($i = $r->first; $i < $r->last; ++$i) {
-                $a[] = $i;
-            }
-        }
-        return $a;
-    }
-    /** @return list<PaperIDRange> */
-    function ranges() {
-        return $this->r;
-    }
-    /** @return bool */
-    function is_empty() {
-        return empty($this->r);
-    }
-    /** @param string $field
-     * @return string */
-    function sql_predicate($field) {
-        if (empty($this->r)) {
-            return "false";
-        } else if ($this->n <= 8 * count($this->r)
-                   && ($pids = $this->paper_ids()) !== null) {
-            return "{$field} in (" . join(",", $pids) . ")";
-        }
-        $s = [];
-        foreach ($this->r as $r) {
-            $s[] = "({$field}>={$r->first} and {$field}<{$r->last})";
-        }
-        return "(" . join(" or ", $s) . ")";
+    /** @return PaperIDSet */
+    function id_set() {
+        return $this->pidset;
     }
 
     function sqlexpr(SearchQueryInfo $sqi) {
-        return $this->sql_predicate("Paper.paperId");
+        return $this->pidset->sql_predicate("Paper.paperId");
     }
     function is_sqlexpr_precise() {
-        return true;
+        return $this->pidset->is_sql_predicate_precise();
     }
     function test(PaperInfo $row, $xinfo) {
-        return $this->index_of($row->paperId) !== false;
+        return $this->pidset->contains($row->paperId);
     }
     function default_sort_column($top, $pl) {
-        if ($top && !$this->in_order) {
-            return new PaperIDOrder_PaperColumn($pl->conf, $this);
+        if ($top && !$this->pidset->is_sorted()) {
+            return new PaperIDOrder_PaperColumn($pl->conf, $this->pidset);
         }
         return null;
     }
     static function parse_pidcode($word, SearchWord $sword, PaperSearch $srch) {
-        if (($ids = SessionList::decode_ids($word)) === null) {
+        if (($ids = SessionList::decode_ids($word, true)) === null) {
             $srch->lwarning($sword, "<0>Invalid pidcode");
             return new False_SearchTerm;
         }
         $st = new PaperID_SearchTerm;
         foreach ($ids as $id) {
-            $st->add_range($id, $id);
+            if (is_array($id)) {
+                $st->pidset->add_range($id[0], $id[1]);
+            } else {
+                $st->pidset->add($id);
+            }
         }
         return $st;
     }
@@ -1822,7 +2000,7 @@ class PaperID_SearchTerm extends SearchTerm {
             } else {
                 $p2 = intval($m[3]);
             }
-            $st->add_range($p1, $p2, $m[2] === "");
+            $st->pidset->add_range($p1, $p2, $m[2] === "");
             $pos += strlen($m[0]);
         }
         return $st;

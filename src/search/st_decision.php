@@ -3,18 +3,24 @@
 // Copyright (c) 2006-2022 Eddie Kohler; see LICENSE.
 
 class Decision_SearchTerm extends SearchTerm {
+    /** @var Conf */
+    private $conf;
     /** @var Contact */
     private $user;
+    /** @var bool */
+    private $use_viewer;
     /** @var list<int> */
     private $decs;
 
     /** @param string|list<int> $match */
-    function __construct(Contact $user, $match) {
+    function __construct(PaperSearch $srch, $match) {
         parent::__construct("decision");
-        $this->user = $user;
+        $this->conf = $srch->conf;
+        $this->user = $srch->user;
+        $this->use_viewer = $srch->use_viewer_permissions();
         if (is_string($match)) {
             $this->decs = [];
-            foreach ($user->conf->decision_set()->filter_using($match) as $d) {
+            foreach ($this->conf->decision_set()->filter_using($match) as $d) {
                 $this->decs[] = $d->id;
             }
         } else {
@@ -25,24 +31,41 @@ class Decision_SearchTerm extends SearchTerm {
         $decs = $srch->conf->decision_set()->match($word);
         if (empty($decs)) {
             $srch->lwarning($sword, "<0>Decision not found");
-            return new Decision_SearchTerm($srch->user, [-10000000]);
+            return new Decision_SearchTerm($srch, [-10000000]);
         }
-        $st = new Decision_SearchTerm($srch->user, $decs);
-        $lim = new Limit_SearchTerm($srch, "dec:" . SearchWord::quote($word), true);
+        $lim = new Limit_SearchTerm($srch, "dec:" . SearchWord::quote($word));
+        $lim->set_implicit();
+        $st = new Decision_SearchTerm($srch, $decs);
         $st->set_float("xlimit", $lim);
         return $st;
     }
-    function sqlexpr(SearchQueryInfo $sqi) {
-        $f = ["Paper.outcome" . CountMatcher::sqlexpr_using($this->decs)];
-        if (in_array(0, $this->decs, true)
-            && !$this->user->allow_admin_all()) {
-            $f[] = "Paper.outcome=0";
+    /** @return ContactPermissions */
+    function permuser() {
+        if ($this->use_viewer && !$this->conf->is_updating_automatic_tags()) {
+            return $this->conf->viewer() ?? $this->user;
         }
-        return "(" . join(" or ", $f) . ")";
+        return $this->user;
+    }
+    function sqlexpr(SearchQueryInfo $sqi) {
+        $pu = $this->permuser();
+        if (in_array(0, $this->decs, true) && !$pu->can_view_all_decision()) {
+            return "true";
+        } else if (!$pu->can_view_some_standard_decision()) {
+            // can still view desk-reject decisions
+            $decs = array_values(array_intersect($this->decs, $this->conf->decision_set()->desk_reject_ids()));
+            return empty($decs) ? "false" : "Paper.outcome" . CountMatcher::sqlexpr_using($decs);
+        }
+        return "Paper.outcome" . CountMatcher::sqlexpr_using($this->decs);
+    }
+    function is_sqlexpr_precise() {
+        return $this->permuser()->can_view_all_decision();
     }
     function test(PaperInfo $row, $xinfo) {
-        $d = $this->user->can_view_decision($row) ? $row->outcome : 0;
+        $d = $this->permuser()->can_view_decision($row) ? $row->outcome : 0;
         return in_array($d, $this->decs, true);
+    }
+    function about() {
+        return self::ABOUT_DECISION;
     }
     function drag_assigners(Contact $user) {
         if (count($this->decs) !== 1 || !$user->can_set_some_decision()) {

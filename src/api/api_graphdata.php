@@ -7,17 +7,17 @@ class GraphData_API {
         if (!isset($qreq->x)) {
             return JsonResult::make_missing_error("x");
         }
-        $fg = new FormulaGraph($user, $qreq->gtype ? : "scatter", $qreq->x, $qreq->y);
+        $fg = new FormulaGraph($user, $qreq->gtype, $qreq->x, $qreq->y);
         if ($qreq->xorder) {
             $fg->set_xorder($qreq->xorder);
         }
         foreach (FormulaGraph::parse_datasets($qreq) as $dataset) {
             $fg->add_dataset($dataset);
         }
-
-        if ($fg->has_error()) {
+        if (!$fg->prepare()) {
             return new JsonResult(["ok" => false, "message_list" => $fg->message_list()]);
         }
-        return $fg->graph_json(["ok" => true]);
+        return (new JsonResult($fg->graph_json(["ok" => true, "message_list" => $fg->message_list()])))
+            ->set_pretty_print(false);
     }
 }

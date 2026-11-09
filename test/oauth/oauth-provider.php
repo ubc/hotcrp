@@ -2,6 +2,7 @@
 
 ini_set("display_errors", 0);
 require __DIR__ . "/vendor/autoload.php";
+require __DIR__ . "/oauth-servertest.php";
 
 const OAUTH_ISSUER = "hotcrp-oauth-test";
 const COOKIE_NAME = "hotcrp-oauth-test-ck";
@@ -55,9 +56,11 @@ class AccessTokenEntity implements AccessTokenEntityInterface {
 class AuthCodeEntity implements AuthCodeEntityInterface {
     use EntityTrait, TokenEntityTrait, AuthCodeTrait;
     public $nonce;
+    public $auth_time;
 
-    function __construct($nonce) {
+    function __construct($nonce, $auth_time) {
         $this->nonce = $nonce;
+        $this->auth_time = $auth_time;
     }
 }
 
@@ -105,9 +108,14 @@ class My implements ClientRepositoryInterface, AuthCodeRepositoryInterface, Acce
     public $tokens = [];
     public $interactions = [];
     public $nonce;
+    public $auth_time;
     private $last_auth;
 
+    /** @var My */
     static public $main;
+    /** The configuration file as read
+     * @var object */
+    static public $dbj;
 
 
     function getClientEntity($client_id) {
@@ -125,7 +133,8 @@ class My implements ClientRepositoryInterface, AuthCodeRepositoryInterface, Acce
             "aud" => $ac->getClient()->getIdentifier(),
             "iat" => time(),
             "exp" => $ac->getExpiryDateTime()->getTimestamp(),
-            "nonce" => $ac->nonce
+            "nonce" => $ac->nonce,
+            "auth_time" => $ac->auth_time
         ];
     }
     function getAuthCode($codeId) {
@@ -144,7 +153,7 @@ class My implements ClientRepositoryInterface, AuthCodeRepositoryInterface, Acce
         return $this->last_auth && ($this->last_auth->revoked ?? false);
     }
     function getNewAuthCode() {
-        return new AuthCodeEntity($this->nonce);
+        return new AuthCodeEntity($this->nonce, $this->auth_time);
     }
     function getLastAuthCode() {
         return $this->last_auth;
@@ -202,6 +211,7 @@ class My implements ClientRepositoryInterface, AuthCodeRepositoryInterface, Acce
         } else {
             $db = json_decode(file_get_contents(__DIR__ . "/db.json"));
         }
+        self::$dbj = is_object($db) ? $db : (object) [];
         foreach ($db->users ?? [] as $u) {
             self::$main->users[] = new UserEntity($u);
         }
@@ -303,8 +313,15 @@ class IdentityBearerTokenResponse extends BearerTokenResponse {
                     $idt[$k] = $u->$k;
             }
         }
-        if (($auth = $this->my->getLastAuthCode()) && $auth->nonce) {
-            $idt["nonce"] = $auth->nonce;
+        if (($auth = $this->my->getLastAuthCode())) {
+            if ($auth->nonce) {
+                $idt["nonce"] = $auth->nonce;
+            }
+            // required in a response to `max_age`, and the only way a relying
+            // party can tell a fresh authentication from a reused session
+            if ($auth->auth_time) {
+                $idt["auth_time"] = $auth->auth_time;
+            }
         }
         return ["id_token" => make_plaintext_jwt($idt)];
     }
@@ -395,6 +412,7 @@ function handle_auth_req(ServerRequestInterface $req, Response $res, Authorizati
             $authreq->setUser(My::$main->user_by_email($login_hint));
             $authreq->setAuthorizationApproved(true);
             My::$main->nonce = ($req->getQueryParams())["nonce"] ?? null;
+            My::$main->auth_time = $autht;
             return $server->completeAuthorizationRequest($authreq, $res);
         }
     }
@@ -417,10 +435,81 @@ function handle_auth_req(ServerRequestInterface $req, Response $res, Authorizati
     return $res->withStatus(200)->withBody(Stream::create(ob_get_clean()));
 }
 
+/** Landing page. Both halves of this server need configuration on the HotCRP
+ * side before they do anything, and the values to configure depend on where
+ * this server is listening — so print them, filled in, rather than making the
+ * reader transcribe them from the README. */
+function handle_index(ServerRequestInterface $req, Response $res) {
+    $self = self_uri($req);
+    $dbfile = file_exists(__DIR__ . "/localdb.json") ? "localdb.json" : "db.json";
+    $clients = My::$dbj->clients ?? [];
+    $c = $clients[0] ?? null;
+    $servers = server_list();
+
+    ob_start();
+    echo '<html><head><title>HotCRP OAuth test server</title>', PAGE_STYLE, '</head><body>',
+        '<h1>HotCRP OAuth test server</h1>',
+        '<p>This server plays both sides of OAuth against a HotCRP installation. ',
+        'Configuration is read from <code>', $dbfile, '</code>.</p>';
+
+    echo '<h2>Identity provider</h2>',
+        '<p>HotCRP signs users in <em>through</em> this server. Add it to HotCRP’s ',
+        '<code>conf/options.php</code>:</p>';
+    if ($c) {
+        echo '<pre>$Opt["oAuthProviders"][] = [
+    "name" => "local",
+    "client_id" => ', var_export($c->client_id, true), ',
+    "client_secret" => ', var_export($c->client_secret, true), ',
+    "auth_uri" => "', htmlspecialchars($self), '/auth",
+    "token_uri" => "', htmlspecialchars($self), '/token",
+    "redirect_uri" => ', var_export($c->redirect_uri, true), ',
+    "button_html" => "Sign in with local OAuth"
+];</pre>',
+            '<p>The <code>redirect_uri</code> is the <code>oauth</code> page of the HotCRP ',
+            'site under test; change it in <code>', $dbfile, '</code> if that is not where ',
+            'yours lives.</p>';
+    } else {
+        echo '<p class="sum-bad">No clients configured in <code>', $dbfile, '</code>.</p>';
+    }
+    echo '<p>Accounts you can sign in as: ';
+    foreach (My::$main->users as $i => $u) {
+        echo $i ? ", " : "", '<code>', htmlspecialchars($u->email), '</code>';
+    }
+    echo '</p>';
+
+    echo '<h2>Servers under test</h2>',
+        '<p>This server also signs in <em>through</em> HotCRP, so HotCRP’s ',
+        'authorization server is checked by code that shares nothing with it. ',
+        '<a href="/servers">Open the server tests</a>.</p>';
+    if ($servers) {
+        echo '<p>';
+        foreach ($servers as $i => $s) {
+            echo $i ? '<br>' : '', '<code>', htmlspecialchars($s->hotcrp_uri ?? $s->auth_uri), '</code>';
+            if (isset($s->name)) {
+                echo ' (<code>', htmlspecialchars($s->name), '</code>)';
+            }
+        }
+        echo '<br>Redirect URI to register with them: <code>',
+            htmlspecialchars($self . SERVER_CALLBACK), '</code></p>';
+    } else {
+        echo '<p class="sum-bad">List a site under <code>servers</code> in <code>',
+            $dbfile, '</code> to use this half.</p>';
+    }
+    echo '</body></html>';
+    return $res->withStatus(200)->withBody(Stream::create(ob_get_clean()));
+}
+
 function handle_req(ServerRequestInterface $req) {
     $res = new \Nyholm\Psr7\Response;
-    $server = create_server($req);
+    // the server-test half shares this server but none of its machinery
+    if (($rpres = server_handle_req($req, $res))) {
+        return $rpres;
+    }
     $uri = $req->getUri();
+    if ($uri->getPath() === "/" || $uri->getPath() === "") {
+        return handle_index($req, $res);
+    }
+    $server = create_server($req);
     try {
         if ($uri->getPath() === "/auth") {
             return handle_auth_req($req, $res, $server);
@@ -430,6 +519,7 @@ function handle_req(ServerRequestInterface $req) {
             if ($email && ($u = My::$main->user_by_email($email))) {
                 $authreq->setUser($u);
                 $authreq->setAuthorizationApproved(true);
+                My::$main->auth_time = time();
                 if (($cookie = get_cookie($req))) {
                     My::$main->record_cookie_authorization($cookie, $u->email);
                 }
@@ -442,7 +532,11 @@ function handle_req(ServerRequestInterface $req) {
         } else if ($uri->getPath() === "/token" && $req->getMethod() === "POST") {
             return $server->respondToAccessTokenRequest($req, $res);
         } else {
-            return $res->withStatus(500)->withBody(Stream::create("bad request " . htmlspecialchars($uri->getPath())));
+            return $res->withStatus(404)->withBody(Stream::create(
+                "<html><head><title>Not found</title>" . PAGE_STYLE . "</head><body>"
+                . "<h1>Not found</h1><p><code>" . htmlspecialchars($uri->getPath())
+                . "</code> is not a route on this server. <a href=\"/\">Start here</a>.</p>"
+                . "</body></html>"));
         }
     } catch (OAuthServerException $exception) {
         return $exception->generateHttpResponse($res);

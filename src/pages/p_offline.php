@@ -34,11 +34,12 @@ class Offline_Page {
             $this->ms->error_at("file");
             return false;
         }
-        $tf = (new ReviewValues($this->conf))
+        $tf = (new ReviewValues($this->user))
             ->set_text($this->qreq->file_content("file"),
                        $this->qreq->file_filename("file"));
-        while ($tf->set_req_override(!!$this->qreq->override)->parse_text()) {
-            $tf->check_and_save($this->user, null, null);
+        $override = friendly_boolean($this->qreq->override) ?? false;
+        while ($tf->set_req_override($override)->parse_text()) {
+            $tf->check_and_save(null, null);
             $tf->clear_req();
         }
         $tf->report();
@@ -65,7 +66,7 @@ class Offline_Page {
         $trp = new TagRankParser($this->user);
         $tagger = new Tagger($this->user);
         if ($this->qreq->tag
-            && ($tag = $tagger->check(trim($this->qreq->tag), Tagger::NOVALUE))) {
+            && ($tag = $tagger->check_syntax(trim($this->qreq->tag), Tagger::NOVALUE))) {
             $trp->set_tag($tag);
         }
         $aset = $trp->parse_assignment_set($text, $filename);
@@ -90,9 +91,8 @@ class Offline_Page {
                    && $this->qreq->valid_post()
                    && $this->user->is_reviewer()) {
             return $this->handle_tag_indexes();
-        } else {
-            return false;
         }
+        return false;
     }
 
     function print() {

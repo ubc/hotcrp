@@ -12,21 +12,21 @@ class ReviewRequestSearchMatcher extends ContactCountMatcher {
     }
 
     function apply_round($word, Conf $conf) {
-        if (($round = $conf->round_number($word)) !== null) {
-            $this->round[] = $round;
-            return true;
-        } else {
+        $round = $conf->round_number($word);
+        if ($round === null
+            || ($round === 0 && strcasecmp($word, "unnamed") !== 0)) {
             return false;
         }
+        $this->round[] = $round;
+        return true;
     }
     function apply_comparison($word) {
         $a = CountMatcher::unpack_search_comparison($word);
         if ($a[0] === "") {
             $this->set_relation_value($a[1], $a[2]);
             return true;
-        } else {
-            return false;
         }
+        return false;
     }
     /** @param int $cid */
     function apply_requester($cid) {
@@ -40,7 +40,7 @@ class ReviewRequestSearchMatcher extends ContactCountMatcher {
              && !in_array($rqrow->reviewRound, $this->round, true))
             || !$user->can_view_review_identity($prow, $rqrow)
             || ($this->has_contacts()
-                && !$this->test_contact($rqrow->contactId))
+                && !$this->test_contact($rqrow->reviewer()->contactId))
             || ($this->requester !== null
                 && ($rqrow->requestedBy !== $this->requester
                     || !$user->can_view_review_requester($prow, $rqrow)))) {
@@ -67,27 +67,24 @@ class Proposal_SearchTerm extends SearchTerm {
         $rqsm = new ReviewRequestSearchMatcher;
 
         $qword = $sword->qword;
-        $quoted = false;
         $contacts = null;
-        $tailre = '(?:\z|:|(?=[=!<>]=?|≠|≤|≥))(.*)\z/s';
-        while ($qword !== "") {
-            if (preg_match('/\A:?((?:[=!<>]=?|≠|≤|≥|)\d+)' . $tailre, $qword, $m)
+        $tailre = '(?:\z|:|(?=[=!<>]=?|≠|≤|≥))/s';
+        $pos = 0;
+        while ($pos !== strlen($qword)) {
+            if (preg_match('/\G:?((?:[=!<>]=?|≠|≤|≥|)\d++)' . $tailre, $qword, $m, 0, $pos)
                 && $rqsm->apply_comparison($m[1])) {
-                $qword = $m[2];
-            } else if (preg_match('/\A(.+?)' . $tailre, $qword, $m)
+                // ok
+            } else if (preg_match('/\G(.+?)' . $tailre, $qword, $m, 0, $pos)
                        && ($rqsm->apply_round($m[1], $srch->conf)
                            || $rqsm->apply_comparison($m[1]))) {
-                $qword = $m[2];
-            } else if (preg_match('/\A(..*?|"[^"]+(?:"|\z))' . $tailre, $qword, $m)) {
-                if (($quoted = $m[1][0] === "\"")) {
-                    $m[1] = str_replace(['"', '*'], ['', '\*'], $m[1]);
-                }
+                // ok
+            } else if (preg_match('/\G(..*?|"[^"]++(?:"|\z))' . $tailre, $qword, $m, 0, $pos)) {
                 $contacts = $m[1];
-                $qword = $m[2];
             } else {
                 $rqsm->set_comparison("<0");
                 break;
             }
+            $pos += strlen($m[0]);
         }
 
         if (($qr = SearchTerm::make_constant($rqsm->tautology()))) {
@@ -95,7 +92,8 @@ class Proposal_SearchTerm extends SearchTerm {
         }
 
         if ($contacts) {
-            $rqsm->set_contacts($srch->matching_uids($contacts, $quoted, false));
+            $usword = SearchWord::make_kwarg($contacts, $sword->kwpos1, $sword->pos1, $sword->pos2, $sword->string_context);
+            $rqsm->set_contacts($srch->user_search(ContactSearch::F_USER | ContactSearch::F_REQUIRED, $usword));
         }
         return new Proposal_SearchTerm($srch->user, $rqsm);
     }
@@ -107,9 +105,8 @@ class Proposal_SearchTerm extends SearchTerm {
         // ">=0" is a useless constraint in SQL-land.
         if ($this->rqsm->conservative_nonnegative_comparison() === ">=0") {
             return "true";
-        } else {
-            return "exists (select * from ReviewRequest where paperId=Paper.paperId)";
         }
+        return "exists (select * from ReviewRequest where paperId=Paper.paperId)";
     }
     function test(PaperInfo $prow, $xinfo) {
         $n = 0;
@@ -117,6 +114,9 @@ class Proposal_SearchTerm extends SearchTerm {
             $n += $this->rqsm->test_review_request($this->user, $prow, $rqrow);
         }
         return $this->rqsm->test($n);
+    }
+    function about() {
+        return self::ABOUT_REVIEW_SET;
     }
     function debug_json() {
         return ["type" => $this->type, "count" => $this->rqsm->comparison()];

@@ -28,15 +28,11 @@ class SavePapers_Batch {
     /** @var bool */
     public $any_content_file = false;
     /** @var bool */
-    public $ignore_content_file = false;
-    /** @var bool */
     public $reviews = false;
     /** @var bool */
     public $add_topics = false;
     /** @var bool */
-    public $skip_document_verify = false;
-    /** @var bool */
-    public $skip_document_content = false;
+    public $trust_document_metadata = false;
     /** @var bool */
     public $notify = false;
     /** @var bool */
@@ -51,8 +47,8 @@ class SavePapers_Batch {
     /** @var list<callable> */
     public $filters = [];
 
-    /** @var ?ZipArchive */
-    public $ziparchive;
+    /** @var ?DocumentLocator */
+    public $docloc;
     /** @var ?string */
     public $document_directory;
     /** @var ?list<callable> */
@@ -71,7 +67,7 @@ class SavePapers_Batch {
         $this->conf = $conf;
         $this->user = $conf->root_user();
         $this->user->set_overrides(Contact::OVERRIDE_CONFLICT);
-        $this->tf = (new ReviewValues($conf))->set_notify(false);
+        $this->tf = (new ReviewValues($this->user))->set_notify(false);
     }
 
     /** @return $this */
@@ -87,11 +83,9 @@ class SavePapers_Batch {
         }
         $this->disable_users = isset($arg["disable-users"]);
         $this->any_content_file = isset($arg["any-content-file"]);
-        $this->ignore_content_file = isset($arg["ignore-content-file"]);
+        $this->trust_document_metadata = isset($arg["trust-document-metadata"]);
         $this->add_topics = isset($arg["add-topics"]);
         $this->reviews = isset($arg["r"]);
-        $this->skip_document_verify = isset($arg["skip-document-verify"]);
-        $this->skip_document_content = isset($arg["skip-document-content"]);
         $this->log = !isset($arg["no-log"]);
         $this->dry_run = isset($arg["dry-run"]);
         $this->notify = isset($arg["notify"]);
@@ -113,13 +107,9 @@ class SavePapers_Batch {
 
     /** @param string $file */
     function set_zipfile($file) {
-        assert(!$this->ziparchive);
-        $this->ziparchive = new ZipArchive;
-        if ($this->ziparchive->open($file) !== true) {
-            throw new CommandLineException("{$file}: Invalid zip");
-        }
-        list($this->document_directory, $this->_ziparchive_json) =
-            Paper_API::analyze_zip_contents($this->ziparchive);
+        assert(!$this->docloc);
+        $this->docloc = new DocumentLocator($this->conf);
+        $this->_ziparchive_json = $this->docloc->set_zipfile($file);
     }
 
     /** @return string */
@@ -140,7 +130,7 @@ class SavePapers_Batch {
             $this->document_directory = $this->document_directory ?? (dirname($file) . "/");
         }
 
-        if (!$this->ziparchive
+        if (!$this->docloc
             && str_starts_with($content, "\x50\x4B\x03\x04")) {
             if (!($tmpdir = tempdir())) {
                 throw new CommandLineException("{$this->errprefix}Cannot create temporary directory");
@@ -151,7 +141,7 @@ class SavePapers_Batch {
             $content = null;
         }
 
-        if ($content === null && $this->ziparchive) {
+        if ($content === null && $this->docloc) {
             $content = $this->default_content();
             if ($content === null) {
                 throw new CommandLineException("{$this->errprefix}Should contain exactly one `*-data.json` file");
@@ -175,17 +165,17 @@ class SavePapers_Batch {
         } else {
             $this->errprefix = preg_replace('/: \z/', "/{$this->_ziparchive_json}: ", $this->errprefix);
         }
-        return $this->ziparchive->getFromName($this->_ziparchive_json);
+        return $this->docloc->ziparchive->getFromName($this->_ziparchive_json);
     }
 
-    function on_document_import($docj, PaperOption $o) {
+    /** @param DocumentImporter $importer */
+    function on_document_import($docj, $dt, $importer) {
         if (!is_string($docj->content_file ?? null)
             || $docj instanceof DocumentInfo) {
             return;
         }
-        if ($this->ziparchive) {
-            $fname = $this->document_directory . $docj->content_file;
-            return Paper_API::apply_zip_content_file($docj, $fname, $this->ziparchive, $o, $this->ps);
+        if ($this->docloc) {
+            return $this->docloc->on_document_import($docj, $dt, $importer);
         } else if ($this->document_directory) {
             $docj->content_file = $this->document_directory . $docj->content_file;
         }
@@ -227,15 +217,13 @@ class SavePapers_Batch {
         $this->ps = $this->ps ?? (new PaperStatus($this->user))
             ->set_disable_users($this->disable_users)
             ->set_any_content_file($this->any_content_file)
-            ->set_ignore_content_file($this->ignore_content_file)
+            ->set_trust_document_metadata($this->trust_document_metadata)
             ->set_notify($this->notify)
-            ->set_skip_document_verify($this->skip_document_verify)
-            ->set_skip_document_content($this->skip_document_content)
             ->on_document_import([$this, "on_document_import"]);
 
         if ($this->ps->prepare_save_paper_json($j)) {
             if ($this->dry_run) {
-                $this->ps->abort_save();
+                $this->ps->abort_save(true);
                 $action = $this->ps->has_change() ? "changed" : "unchanged";
                 $pid = true;
             } else {
@@ -247,7 +235,7 @@ class SavePapers_Batch {
             $action = "failed";
             $pid = false;
         }
-        if (!is_bool($pid) && $pidish === "new") {
+        if (!is_bool($pid) && !is_int($pidish)) {
             if (!$this->quiet) {
                 fwrite(STDERR, "-> #{$pid}: ");
             }
@@ -288,7 +276,7 @@ class SavePapers_Batch {
                         "affiliation" => $this->tf->req["reviewerAffiliation"] ?? null,
                         "disablement" => $this->disable_users ? Contact::CF_UDISABLED : 0
                     ])->store();
-                    $this->tf->check_and_save($this->user, $prow, null);
+                    $this->tf->check_and_save($prow, null);
                 }
                 $this->tf->clear_req();
             }
@@ -368,14 +356,8 @@ class SavePapers_Batch {
 
     /** @return 0|1|2 */
     function run($content) {
-        $j = $jparser = null;
-        if (!$this->json5) {
-            $j = json_decode($content);
-        }
-        if ($j === null) {
-            $jparser = (new JsonParser)->set_flags($this->json5 ? JsonParser::JSON5 : 0);
-            $j = $jparser->set_input($content)->decode();
-        }
+        $jparser = (new JsonParser($content))->set_flags($this->json5 ? JsonParser::JSON5 : 0);
+        $j = $jparser->decode();
         if ($j === null) {
             fwrite(STDERR, "{$this->errprefix}invalid JSON: " . $jparser->last_error_msg() . "\n");
             ++$this->nerrors;
@@ -384,7 +366,7 @@ class SavePapers_Batch {
             ++$this->nerrors;
         } else {
             $jl = is_object($j) ? [$j] : $j;
-            $j = $content = null; // release references
+            $j = $content = $jparser = null; // release references
             $this->_run_main($jl); // consumes `$jl`
         }
         if ($this->nerrors) {
@@ -408,12 +390,10 @@ class SavePapers_Batch {
             "disable-users,disable Disable newly created users",
             "notify,N Notify new users via email (off by default)",
             "any-content-file Allow any `content_file` in documents",
-            "ignore-content-file Ignore `content_file` in documents",
+            "trust-document-metadata Trust document hashes and CRCs and assume document content is already available",
             "ignore-pid Ignore `pid` JSON elements",
             "match-title Match papers by title if no `pid`",
             "add-topics Add all referenced topics to conference",
-            "skip-document-verify Do not verify document hashes",
-            "skip-document-content Avoid storing document content",
             "json5,5 Allow JSON5 extensions",
             "q,quiet Don’t print progress information",
             "silent Don’t print progress information or submission errors",

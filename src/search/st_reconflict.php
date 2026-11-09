@@ -4,17 +4,18 @@
 
 abstract class Reconflict_SearchTerm extends SearchTerm {
     static function parse($word, SearchWord $sword, PaperSearch $srch) {
-        $st = new PaperID_SearchTerm;
+        $pidset = new PaperIDSet;
         $xword = $word;
-        while (preg_match('/\A\s*#?(\d+)(?:-#?(\d+))?\s*,?\s*(.*)\z/s', $xword, $m)) {
+        $pos = 0;
+        while (preg_match('/\G\s*+\#?(\d++)(?:-\#?(\d++))?\s*+,?+\s*+/s', $xword, $m, 0, $pos)) {
             if (isset($m[2]) && $m[2]) {
-                $st->add_range((int) $m[1], (int) $m[2]);
+                $pidset->add_range((int) $m[1], (int) $m[2]);
             } else {
-                $st->add_range((int) $m[1], (int) $m[1]);
+                $pidset->add((int) $m[1]);
             }
-            $xword = $m[3];
+            $pos += strlen($m[0]);
         }
-        if ($xword !== "" || $st->is_empty()) {
+        if ($pos !== strlen($xword) || $pidset->is_empty()) {
             $srch->lwarning($sword, "<0>List of paper numbers expected");
             return new False_SearchTerm;
         }
@@ -22,7 +23,7 @@ abstract class Reconflict_SearchTerm extends SearchTerm {
         $old_overrides = $srch->user->add_overrides(Contact::OVERRIDE_CONFLICT);
         $cids = [];
         foreach ($srch->user->paper_set([
-                "paperId" => $st,
+                "paperId" => $pidset,
                 "reviewSignatures" => true,
                 "finalized" => $srch->limit_term()->is_submitted()
             ]) as $prow) {
@@ -39,9 +40,8 @@ abstract class Reconflict_SearchTerm extends SearchTerm {
 
         if (!empty($cids)) {
             return new Conflict_SearchTerm($srch->user, new ContactCountMatcher(">0", array_keys($cids)), false);
-        } else {
-            $srch->lwarning($sword, "<0>No visible reviewers");
-            return new False_SearchTerm;
         }
+        $srch->lwarning($sword, "<0>No visible reviewers");
+        return new False_SearchTerm;
     }
 }

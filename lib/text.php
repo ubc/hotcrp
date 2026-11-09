@@ -2,29 +2,67 @@
 // text.php -- HotCRP text helper functions
 // Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
+class TextTruncation {
+    /** @var int */
+    public $word_count;
+    /** @var bool */
+    public $overlong;
+    /** @var ?string */
+    public $truncation;
+    /** Limit of truncation.
+     * @var null|'soft'|'hard' */
+    public $truncation_band;
+}
+
 class TextPregexes {
     /** @var ?string */
-    public $preg_raw;
+    private $preg_raw;
     /** @var string */
-    public $preg_utf8;
-    /** @var ?string */
+    private $preg_utf8;
+    /** @var ?string
+     * @deprecated */
     public $value;
+    /** @var bool */
+    private $_is_merge_and = false;
 
     /** @param ?string $raw
-     * @param string $utf8 */
-    function __construct($raw, $utf8) {
+     * @param string $utf8
+     * @param ?string $value */
+    function __construct($raw, $utf8, $value = null) {
         $this->preg_raw = $raw;
         $this->preg_utf8 = $utf8;
+        $this->value = $value;
     }
 
-    /** @return TextPregexes */
-    static function make_empty() {
-        return new TextPregexes(null, '(?!)');
+    /** @param ?string $value
+     * @return TextPregexes */
+    static function make_empty($value = null) {
+        return new TextPregexes(null, '(?!)', $value);
     }
 
     /** @return bool */
     function is_empty() {
         return $this->preg_utf8 === '(?!)';
+    }
+
+    /** Return true if the patterns compile. A merge of many patterns can
+     * exceed PCRE's limits.
+     * @return bool */
+    function compiles() {
+        $s = "";
+        return @preg_match("{{$this->preg_utf8}}ui", $s) !== false
+            && ($this->preg_raw === null
+                || @preg_match("{{$this->preg_raw}}i", $s) !== false);
+    }
+
+    /** @return ?string */
+    function preg_raw() {
+        return $this->preg_raw;
+    }
+
+    /** @return string */
+    function preg_utf8() {
+        return $this->preg_utf8;
     }
 
     /** @param string $text
@@ -71,7 +109,12 @@ class TextPregexes {
         return !!preg_match("{{$this->preg_raw}}i", $text);
     }
 
+    /** @deprecated */
     function add_matches(TextPregexes $r) {
+        return $this->merge_any($r);
+    }
+
+    function merge_any(TextPregexes $r) {
         if ($r->is_empty()) {
             // do nothing
         } else if ($this->is_empty()) {
@@ -84,6 +127,31 @@ class TextPregexes {
             } else if ($this->preg_raw !== null) {
                 $this->preg_raw .= "|{$r->preg_raw}";
             }
+            $this->_is_merge_and = false;
+        }
+    }
+
+    private function wrap_all($s) {
+        if ($this->_is_merge_and) {
+            return substr($s, 2);
+        }
+        return "(?=[\\s\\S]*{$s})";
+    }
+
+    function merge_all(TextPregexes $r) {
+        if ($r->is_empty()) {
+            // do nothing
+        } else if ($this->is_empty()) {
+            $this->preg_utf8 = $r->preg_utf8;
+            $this->preg_raw = $r->preg_raw;
+        } else {
+            $this->preg_utf8 = "\\A" . $this->wrap_all($this->preg_utf8) . $r->wrap_all($r->preg_utf8);
+            if ($r->preg_raw === null) {
+                $this->preg_raw = null;
+            } else if ($this->preg_raw !== null) {
+                $this->preg_raw = "\\A" . $this->wrap_all($this->preg_raw) . $r->wrap_all($r->preg_raw);
+            }
+            $this->_is_merge_and = true;
         }
     }
 }
@@ -138,7 +206,10 @@ class Text {
             $name = UnicodeHelper::deaccent($name);
         }
         if (($flags & NAME_MAILQUOTE) !== 0
-            && preg_match('/[\000-\037()[\]<>@,;:\\".\\\\]/', $name)) {
+            && preg_match('/[\000-\037()[\]%{}<>@,;:".\\\\]|“|”|=\?/', $name)) {
+            // will be processed by MimeText::encode_email_header;
+            // quote MIME special characters, plus characters MimeText
+            // treats specially (curly quotes, Q encoding)
             $name = "\"" . addcslashes($name, '"\\') . "\"";
         }
         if ($email !== "" && ($flags & NAME_E) !== 0) {
@@ -203,7 +274,30 @@ class Text {
             . htmlspecialchars($affiliation) . ")</span>";
     }
 
-    const SUFFIX_REGEX = 'Jr\.?|Sr\.?|Esq\.?|Ph\.?D\.?|M\.?[SD]\.?|Junior|Senior|Esquire|I+|IV|V|VI*|IX|XI*|2n?d|3r?d|[4-9]th|1\dth';
+    const SUFFIX_REGEX = 'Jr\.?+|Sr\.?+|Esq\.?+|Ph\.?+D\.?+|M\.?+[SD]\.?+|Junior|Senior|Esquire|I++|IV|VI*+|IX|XI*+|2n?+d|3r?+d|[4-9]th|1\dth';
+
+    /** @param string $name
+     * @return int */
+    static private function suffix_position($name) {
+        // Return the start of `$name`'s trailing suffixes, i.e., the
+        // leftmost match of `(?:[, ]+(?:SUFFIX_REGEX))*\z`, where suffixes
+        // are limited to 7 bytes. Suffixes contain neither commas nor
+        // spaces, so walk backward suffix by suffix, testing an 8-byte window
+        // each time; the equivalent regex backtracks quadratically on
+        // separator runs.
+        $p = $e = strlen($name);
+        while (true) {
+            $s = max(0, $e - 8);
+            if (!preg_match('/[, ](?:' . self::SUFFIX_REGEX . ')\z/i', substr($name, $s, $e - $s), $m)) {
+                return $p;
+            }
+            $e -= strlen($m[0]);
+            while ($e > 0 && ($name[$e - 1] === "," || $name[$e - 1] === " ")) {
+                --$e;
+            }
+            $p = $e;
+        }
+    }
 
     /** @param string $name
      * @return array{string,string,?string} */
@@ -217,12 +311,12 @@ class Text {
                 /* do nothing */;
             } else if ($name[strlen($name) - 1] === ">"
                        && preg_match('/\A(?:\"(.*?)\"|(.*?))\s*<([^<>]+)>\z/', $name, $m)) {
-                list($name, $email) = [$m[1] . $m[2], $m[3]];
+                [$name, $email] = [$m[1] . $m[2], $m[3]];
             } else if (strpos($name, "@") === false) {
                 /* skip */;
             } else if ($name[0] === "\""
                        && preg_match('/\A\s*\"(.*)\"\s+(\S+@\S+)\z/', $name, $m)) {
-                list($name, $email) = [$m[1], $m[2]];
+                [$name, $email] = [$m[1], $m[2]];
             } else if (!preg_match('/\A(.*?)\s+(\S+)\z/', $name, $m)) {
                 return ["", "", trim($name)];
             } else if (strpos($m[2], "@") !== false) {
@@ -243,7 +337,8 @@ class Text {
             $paren = $m[2];
         }
 
-        preg_match('/\A(.*?)((?:[, ]+(?:' . self::SUFFIX_REGEX . '))*)\z/i', $name, $m);
+        $sfxpos = self::suffix_position($name);
+        $m = [$name, substr($name, 0, $sfxpos), substr($name, $sfxpos)];
         if (($comma = strrpos($m[1], ",")) !== false) {
             $ret[0] = ltrim(substr($m[1], $comma + 1));
             $ret[1] = rtrim(substr($m[1], 0, $comma)) . $m[2];
@@ -256,7 +351,7 @@ class Text {
             // see also split_von
             if (strpos($ret[0], " ") !== false
                 && preg_match('/\A(\S.*?)((?: (?:v[ao]n|d[aeiu]|de[nr]|l[ae]|al))+)\z/i', $ret[0], $m)) {
-                list($ret[0], $ret[1]) = [$m[1], ltrim($m[2]) . " " . $ret[1]];
+                [$ret[0], $ret[1]] = [$m[1], ltrim($m[2]) . " " . $ret[1]];
             }
         } else if ($m[1] !== ""
                    && $m[2] !== ""
@@ -330,70 +425,137 @@ class Text {
     }
 
 
-    /** @param string $word
-     * @param bool $literal
-     * @return string */
-    static function word_regex($word, $literal = false) {
-        if ($word === "") {
-            return "";
-        }
-        $aw = ctype_alnum($word[0]);
-        $zw = ctype_alnum($word[strlen($word) - 1]);
-        $sp = $literal ? '\s+' : '(?=\s).*\s';
-        return ($aw ? '\b' : '')
-            . str_replace(" ", $sp, preg_quote($word))
-            . ($zw ? '\b' : '');
-    }
-
-    const UTF8_INITIAL_NONLETTERDIGIT = '(?:\A|(?!\pL|\pN)\X)';
-    const UTF8_INITIAL_NONLETTER = '(?:\A|(?!\pL)\X)';
+    const UTF8_INITIAL_NONLETTERDIGIT = '(?:\A|[^\pL\pN\pM]\pM*+)';
+    const UTF8_INITIAL_NONLETTER = '(?:\A|[^\pL\pM]\pM*+)';
     const UTF8_FINAL_NONLETTERDIGIT = '(?:\z|(?!\pL|\pN)(?=\PM))';
     const UTF8_FINAL_NONLETTER = '(?:\z|(?!\pL)(?=\PM))';
 
-    /** @param string $word
-     * @param bool $literal
-     * @return string */
-    static function utf8_word_regex($word, $literal = false) {
-        if ($word === "") {
-            return "";
+    /** @param string $pattern
+     * @return TextPregexes */
+    static function star_text_pregexes($pattern) {
+        if (!is_valid_utf8($pattern)) {
+            $pattern = convert_to_utf8($pattern);
         }
-        $aw = preg_match('/\A(?:\pL|\pN)/u', $word);
-        $zw = preg_match('/(?:\pL|\pN)\z/u', $word);
-        // Maybe `$word` is not valid UTF-8. Avoid warnings later.
-        if ($aw || $zw || is_valid_utf8($word)) {
-            $sp = $literal ? '(?:\s|\p{Zs})+' : '(?=\s|\p{Zs}).*(?:\s|\p{Zs})';
-            return ($aw ? self::UTF8_INITIAL_NONLETTERDIGIT : '')
-                . str_replace(" ", $sp, preg_quote($word))
-                . ($zw ? self::UTF8_FINAL_NONLETTERDIGIT : '');
+        $words = preg_split('/(?:\s|\pZ)++/us', $pattern, -1, PREG_SPLIT_NO_EMPTY);
+        if (empty($words)) {
+            return TextPregexes::make_empty($pattern);
         }
-        return self::utf8_word_regex(convert_to_utf8($word));
+        $nwords = count($words);
+        $letnum_first = preg_match('/\A(?:\pL|\pN)/u', $words[0]);
+        $letnum_last = preg_match('/(?:\pL|\pN)\z/u', $words[$nwords - 1]);
+
+        $utf8s = [];
+        foreach ($words as $i => $word) {
+            if (strpos($word, "*") !== false) {
+                $tail = $i + 1 < $nwords
+                    ? '(?=\s|\pZ)'
+                    : ($letnum_last ? self::UTF8_FINAL_NONLETTERDIGIT : "");
+                $r = self::one_wildcard_regex($word, '(?<=\A|\s|\pZ)', '\s\pZ', $tail);
+            } else {
+                $r = preg_quote($word);
+            }
+            $utf8s[] = $r;
+        }
+        $preg_utf8 = ($letnum_first ? self::UTF8_INITIAL_NONLETTERDIGIT : "")
+            . join("(?:\\s|\\pZ)++", $utf8s)
+            . ($letnum_last ? self::UTF8_FINAL_NONLETTERDIGIT : "");
+
+        if (is_usascii($pattern)) {
+            $raws = [];
+            foreach ($words as $i => $word) {
+                if (strpos($word, "*") !== false) {
+                    $tail = $i + 1 < $nwords
+                        ? '(?=\s)'
+                        : ($letnum_last ? '(?![0-9A-Za-z])' : "");
+                    $r = self::one_wildcard_regex($word, '(?<=\A|\s)', '\s', $tail);
+                } else {
+                    $r = preg_quote($word);
+                }
+                $raws[] = $r;
+            }
+            $preg_raw = ($letnum_first ? '(?<![0-9A-Za-z])' : "")
+                . join("\\s++", $raws)
+                . ($letnum_last ? '(?![0-9A-Za-z])' : "");
+        } else {
+            $preg_raw = null;
+        }
+
+        return new TextPregexes($preg_raw, $preg_utf8, $pattern);
     }
 
-    /** @param string $word
-     * @param bool $literal
-     * @return TextPregexes */
-    static function star_text_pregexes($word, $literal = false) {
-        if (is_object($word)) {
-            $reg = $word;
-        } else {
-            $reg = new TextPregexes(null, "");
-            $reg->value = $word;
-        }
-
-        $word = preg_replace('/\s+/', " ", $reg->value);
-        if (is_usascii($word)) {
-            $reg->preg_raw = Text::word_regex($word, $literal);
-        }
-        $reg->preg_utf8 = Text::utf8_word_regex($word, $literal);
-
-        if (!$literal && strpos($word, "*") !== false) {
-            if ($reg->preg_raw !== null) {
-                $reg->preg_raw = str_replace('\\\\\S*', '\*', str_replace('\*', '\S*', $reg->preg_raw));
+    /** @param string $pattern
+     * @param bool $utf8
+     * @param string $head lookbehind the first literal must satisfy
+     * @param string $reject character specification (interpolated into []) a wildcard must reject
+     * @param string $tail lookahead the final literal must satisfy (word boundary)
+     * @param bool $capture if true, make capture groups for the wildcards
+     * @return string */
+    static function one_wildcard_regex($pattern, $head, $reject, $tail, $capture = false) {
+        $cseg = "";
+        $pos0 = 0;
+        $regex = preg_quote($pattern);
+        $pos = strcspn($regex, "\\");
+        $len = strlen($regex);
+        $litseg = []; // literal segments between *s
+        while ($len - $pos > 1) {
+            if ($regex[$pos + 1] === "*") {
+                if ($pos !== $pos0 || $cseg !== "" || empty($litseg)) {
+                    $litseg[] = $cseg . substr($regex, $pos0, $pos - $pos0);
+                }
+                $pos0 = $pos + 2;
+                $cseg = "";
+            } else if ($len - $pos > 3
+                       && $regex[$pos + 1] === "\\"
+                       && $regex[$pos + 2] === "\\"
+                       && ($regex[$pos + 3] === "\\" || $regex[$pos + 3] === "*")) {
+                $cseg .= substr($regex, $pos0, $pos - $pos0);
+                $pos += 2;
+                $pos0 = $pos;
             }
-            $reg->preg_utf8 = str_replace('\\\\\S*', '\*', str_replace('\*', '\S*', $reg->preg_utf8));
+            $pos += 2 + strcspn($regex, "\\", $pos + 2);
         }
+        $litseg[] = $cseg . substr($regex, $pos0);
+        $nlitseg = count($litseg);
 
-        return $reg;
+        // combine
+        $out = "";
+        foreach ($litseg as $i => $seg) {
+            $out .= $seg;
+            if ($i === 0 && $seg === "") {
+                // initial star: ensure it starts at a word boundary
+                $out .= $head;
+            }
+            if ($i === $nlitseg - 1) {
+                break;
+            }
+            $next = $litseg[$i + 1];
+            if ($next === "") {
+                // trailing star: no following literal to protect
+                $pat = $reject === "" ? "[\\s\\S]*+" : "[^{$reject}]*+";
+            } else {
+                // unrolled `\S*` that stops before the next literal. The guard
+                // keeps the possessive scan from swallowing that literal; the
+                // final literal additionally requires the word-boundary $tail.
+                preg_match('/\A(?:[^\\\\\xC0-\xFF]|\\\\.|[\xC0-\xFF][\x80-\xBF]++)/', $next, $m);
+                $ch = $m[0];
+                $boundary = $i + 2 === $nlitseg ? $tail : "";
+                if ($ch === $next && $boundary === "") {
+                    $pat = "[^{$ch}{$reject}]*+";
+                } else {
+                    $neg = "(?!{$next}{$boundary})";
+                    $pat = "[^{$ch}{$reject}]*+(?:{$neg}{$ch}[^{$ch}{$reject}]*+)*+";
+                }
+            }
+            $out .= $capture ? "({$pat})" : $pat;
+        }
+        return $out;
+    }
+
+    /** @param string $pattern
+     * @param bool $capture
+     * @return string */
+    static function wildcard_pregex($pattern, $capture = false) {
+        return self::one_wildcard_regex($pattern, '\A', '', '\z', $capture);
     }
 
     /** @param ?TextPregexes $reg
@@ -406,6 +568,10 @@ class Text {
     }
 
 
+    // Highlight at most this many matches per string; the remainder is shown
+    // unhighlighted. Bounds output size and work regardless of match count.
+    const HIGHLIGHT_LIMIT = 200;
+
     /** @param string $text
      * @param null|string|TextPregexes $match
      * @param ?int &$n
@@ -417,17 +583,18 @@ class Text {
         }
 
         $mtext = $text;
-        $offsetmap = null;
+        $do = null;
         $flags = "";
         if (is_object($match)) {
-            if ($match->preg_raw === null) {
-                $match = $match->preg_utf8;
+            if ($match->preg_raw() === null) {
+                $match = $match->preg_utf8();
                 $flags = "u";
             } else if (is_usascii($text)) {
-                $match = $match->preg_raw;
+                $match = $match->preg_raw();
             } else {
-                list($mtext, $offsetmap) = UnicodeHelper::deaccent_offsets($mtext);
-                $match = $match->preg_utf8;
+                $do = UnicodeHelper::deaccent_offsets($mtext);
+                $mtext = $do->out;
+                $match = $match->preg_utf8();
                 $flags = "u";
             }
         }
@@ -440,18 +607,18 @@ class Text {
             if ($match[0] !== "{") {
                 $match = "{(" . $match . ")}is" . $flags;
             }
-            $s = preg_split($match, $mtext, -1, PREG_SPLIT_DELIM_CAPTURE);
+            $s = preg_split($match, $mtext, self::HIGHLIGHT_LIMIT + 1, PREG_SPLIT_DELIM_CAPTURE);
         }
         if (!$s || count($s) == 1) {
             return htmlspecialchars($text);
         }
 
         $n = (int) (count($s) / 2);
-        if ($offsetmap) {
+        if ($do) {
             for ($i = $b = $o = 0; $i < count($s); ++$i) {
                 if ($s[$i] !== "") {
                     $o += strlen($s[$i]);
-                    $e = UnicodeHelper::deaccent_translate_offset($offsetmap, $o);
+                    $e = $do->reverse($o);
                     $s[$i] = substr($text, $b, $e - $b);
                     $b = $e;
                 }
@@ -460,7 +627,7 @@ class Text {
         if ($clean_initial_nonletter) {
             for ($i = 1; $i < count($s); $i += 2) {
                 if ($s[$i] !== ""
-                    && preg_match('/\A((?!\pL|\pN)\X)(.*)\z/us', $s[$i], $m)) {
+                    && preg_match('/\A([^\pL\pN\pM]\pM*+)(.*)\z/us', $s[$i], $m)) {
                     $s[$i - 1] .= $m[1];
                     $s[$i] = $m[2];
                 }
@@ -599,5 +766,30 @@ class Text {
             }
             return substr($a, 0, $apx) . substr($b, $bpx);
         }
+    }
+
+    /** @param string $text
+     * @param int $wordlimit
+     * @param ?int $hard_wordlimit
+     * @param bool $allow_over_soft
+     * @return TextTruncation */
+    static function apply_wordlimit($text, $wordlimit, $hard_wordlimit = null,
+                                    $allow_over_soft = false) {
+        if (($hard_wordlimit ?? 0) > 0
+            && ($wordlimit <= 0 || $wordlimit > $hard_wordlimit)) {
+            $wordlimit = $hard_wordlimit;
+        }
+        $tt = new TextTruncation;
+        $tt->word_count = count_words($text);
+        $tt->overlong = $wordlimit > 0 && $tt->word_count > $wordlimit;
+        if ($tt->overlong
+            && (!$allow_over_soft
+                || (($hard_wordlimit ?? 0) > 0
+                    && $tt->word_count > $hard_wordlimit))) {
+            $cut = $allow_over_soft ? $hard_wordlimit : $wordlimit;
+            $tt->truncation_band = $cut === $hard_wordlimit ? "hard" : "soft";
+            [$tt->truncation, ] = count_words_split($text, $cut);
+        }
+        return $tt;
     }
 }

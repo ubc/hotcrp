@@ -15,8 +15,10 @@ class ViewOptionType {
     public $enum;
     /** @var ?string */
     public $alias;
-    /** @var ?int */
+    /** @var null|int|float */
     public $min;
+    /** @var null|int|float */
+    public $max;
     /** @var bool */
     public $lifted = false;
     /** @var bool */
@@ -126,14 +128,18 @@ class ViewOptionType {
             if (is_array($this->enum)) {
                 $this->enum = join("|", $this->enum);
             }
+            if ($x->extensible ?? false) {
+                $this->enum .= $this->enum === "" ? "\$" : "|\$";
+            }
         }
     }
 
 
     /** @param mixed $value
      * @param string $enum
+     * @param bool $no_extensible
      * @return ?string */
-    static function parse_enum($value, $enum) {
+    static function parse_enum($value, $enum, $no_extensible = false) {
         if (is_bool($value)) {
             $value = $value ? "yes" : "no";
         } else {
@@ -141,7 +147,7 @@ class ViewOptionType {
         }
         $vlen = strlen($value);
         $enumlen = strlpos($enum, " ");
-        if ($vlen === 0 || $vlen > $enumlen) {
+        if ($vlen === 0 || $enumlen === 0) {
             return null;
         }
         $first = $enum[0] === "=" ? 1 : 0;
@@ -166,6 +172,15 @@ class ViewOptionType {
             }
             $p = $pf + $vlen;
         }
+        // otherwise accept an arbitrary value if the enum has a `$` member
+        if (!$no_extensible) {
+            $dollar = strpos($enum, "\$");
+            if ($dollar !== false
+                && ($dollar === 0 || ord($enum[$dollar - 1]) === 124)
+                && ($dollar === $enumlen - 1 || ord($enum[$dollar + 1]) === 124)) {
+                return $value;
+            }
+        }
         return null;
     }
 
@@ -181,7 +196,8 @@ class ViewOptionType {
             return SearchWord::unquote((string) $value);
         } else if ($this->type === "int") {
             if (($iv = stoi($value)) !== null
-                && (!isset($this->min) || $iv >= $this->min)) {
+                && (!isset($this->min) || $iv >= $this->min)
+                && (!isset($this->max) || $iv <= $this->max)) {
                 return $iv;
             }
         } else if ($this->type === "tag") {
@@ -227,8 +243,17 @@ class ViewOptionType {
             }
         } else if ($this->type === "enum") {
             $v["enum"] = self::split_enum($this->enum);
-        } else if ($this->type === "int" && isset($this->min)) {
-            $v["min"] = $this->min;
+            if (($dpos = array_search("\$", $v["enum"], true)) !== false) {
+                array_splice($v["enum"], $dpos, 1);
+                $v["extensible"] = true;
+            }
+        } else if ($this->type === "int") {
+            if (isset($this->min)) {
+                $v["min"] = $this->min;
+            }
+            if (isset($this->max)) {
+                $v["max"] = $this->max;
+            }
         }
         if ($this->required) {
             $v["required"] = true;
@@ -263,7 +288,10 @@ class ViewOptionType {
         if ($this->type === "bool") {
             $s .= "yes|no";
         } else if ($this->type === "enum") {
-            $s .= join("|", ViewOptionType::split_enum($this->enum));
+            $vals = array_map(function ($x) {
+                return $x === "\$" ? ($this->argname ?? "...") : $x;
+            }, ViewOptionType::split_enum($this->enum));
+            $s .= join("|", $vals);
         } else if ($this->type === "int") {
             $s .= $this->argname ?? ($this->min >= 0 ? "N" : "NUM");
         } else if ($this->type === "string") {

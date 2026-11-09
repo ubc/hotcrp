@@ -79,10 +79,8 @@ class CheckInvariants_Batch {
 
     /** @return int */
     private function method_level(ReflectionMethod $m) {
-        if (PHP_MAJOR_VERSION >= 8) {
-            foreach ($m->getAttributes("ConfInvariantLevel") ?? [] as $attr) {
-                return $attr->newInstance()->level;
-            }
+        foreach ($m->getAttributes("ConfInvariantLevel") ?? [] as $attr) {
+            return $attr->newInstance()->level;
         }
         return 0;
     }
@@ -325,6 +323,7 @@ class CheckInvariants_Batch {
     private function fix_roles() {
         $this->conf->qe("update ContactInfo set roles=roles&? where (roles&~?)!=0",
             Contact::ROLE_DBMASK, Contact::ROLE_DBMASK);
+        (new UpdateSchema($this->conf))->v332_listed_unlisted_pc();
     }
 
     private function fix_cdbroles() {

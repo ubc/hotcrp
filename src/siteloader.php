@@ -21,8 +21,8 @@ class SiteLoader {
         "FormatChecker" => "src/formatspec.php",
         "JsonSerializable" => "lib/json.php",
         "Limit_SearchTerm" => "src/searchterm.php",
-        "LogEntryGenerator" => "src/logentry.php",
         "LoginHelper" => "lib/login.php",
+        "MeetingTracker_Permissionizer" => "src/meetingtracker.php",
         "MessageItem" => "lib/messageset.php",
         "Numeric_ValueFormat" => "src/valueformat.php",
         "PaperInfoSet" => "src/paperinfo.php",
@@ -32,7 +32,6 @@ class SiteLoader {
         "ReviewFieldInfo" => "src/reviewfield.php",
         "SearchSplitter" => "src/searchparser.php",
         "SearchStringContext" => "src/papersearch.php",
-        "StreamS3Result" => "lib/s3result.php",
         "TagAnno" => "lib/tagger.php",
         "TagInfo" => "lib/tagger.php",
         "TagMap" => "lib/tagger.php",
@@ -64,6 +63,7 @@ class SiteLoader {
         "_reviewfield.php" => ["rf_", "src/reviewfields"],
         "_reviewfieldsearch.php" => ["rf_", "src/reviewfields"],
         "_searchterm.php" => ["st_", "src/search"],
+        "_searchvisitor.php" => ["sv_", "src/search"],
         "_setting.php" => ["s_", "src/settings"],
         "_settingrenderer.php" => ["s_", "src/settings"],
         "_settingparser.php" => ["s_", "src/settings"],
@@ -74,7 +74,7 @@ class SiteLoader {
         "_valueformat.php" => ["vf_", "src/valueformats"]
     ];
 
-    /** @var string */
+    /** @var string - never ends in `/` */
     static public $root;
 
     static function set_root() {
@@ -89,12 +89,31 @@ class SiteLoader {
     }
 
     /** @param non-empty-string $suffix
-     * @return string */
-    static function find($suffix) {
+     * @return non-empty-string */
+    static function resolve($suffix) {
         if ($suffix[0] === "/") {
-            return self::$root . $suffix;
+            return $suffix;
         }
         return self::$root . "/" . $suffix;
+    }
+
+    /** @param non-empty-string $suffix
+     * @return non-empty-string
+     * @deprecated */
+    static function find($suffix) {
+        return self::resolve($suffix);
+    }
+
+    /** @return ?int */
+    static function server_id() {
+        global $Opt;
+        if (!array_key_exists("serverId", $Opt)
+            && is_readable(SiteLoader::$root . "/conf/serverid.php")) {
+            @include_once SiteLoader::$root . "/conf/serverid.php";
+            $Opt["serverId"] = $Opt["serverId"] ?? null;
+        }
+        $sid = $Opt["serverId"] ?? null;
+        return is_int($sid) && $sid > 0 ? $sid : null;
     }
 
     // Set up conference options

@@ -4,19 +4,16 @@
 
 class GetCheckFormat_ListAction extends ListAction {
     function run(Contact $user, Qrequest $qreq, SearchSelection $ssel) {
-        $papers = [];
-        foreach ($ssel->paper_set($user) as $prow) {
-            if ($user->can_view_pdf($prow))
-                $papers[$prow->paperId] = $prow;
-        }
         $csvg = $user->conf->make_csvg("formatcheck")->select(["paper", "title", "pages", "format_status", "format", "messages"]);
         $csvg->export_headers();
         Navigation::header("Content-Type: " . $csvg->mimetype_with_charset());
         echo $csvg->unparse();
         $cf = new CheckFormat($user->conf, CheckFormat::RUN_IF_NECESSARY);
-        foreach ($papers as $prow) {
-            $dtype = $prow->finalPaperStorageId ? DTYPE_FINAL : DTYPE_SUBMISSION;
-            $doc = $prow->document($dtype, 0, true);
+        foreach ($ssel->paper_set($user) as $prow) {
+            if (($doc = $prow->viewable_primary_document($user))) {
+                // reload full PaperStorage row for CheckFormat
+                $doc = $prow->document($doc->documentType, $doc->paperStorageId, true);
+            }
             if ($doc && $doc->mimetype === "application/pdf") {
                 $cf->check_document($doc);
                 $pages = $cf->npages ?? "?";
@@ -58,6 +55,7 @@ class GetPcconflicts_ListAction extends ListAction {
             if (!$user->can_view_conflicts($prow)) {
                 continue;
             }
+            $cva = $user->can_view_authors($prow);
             $m = [];
             foreach ($prow->conflict_types() as $uid => $ctype) {
                 if (!($pc = $pcm[$uid] ?? null)
@@ -70,7 +68,7 @@ class GetPcconflicts_ListAction extends ListAction {
                     $pc->firstName,
                     $pc->lastName,
                     $pc->email,
-                    $confset->unparse_text($ctype)
+                    $confset->unparse_text($cva ? $ctype : Conflict::CT_GENERIC)
                 ];
             }
             ksort($m);
@@ -84,15 +82,17 @@ class GetPcconflicts_ListAction extends ListAction {
 class GetTopics_ListAction extends ListAction {
     function run(Contact $user, Qrequest $qreq, SearchSelection $ssel) {
         $texts = [];
+        $opt = $user->conf->option_by_id(PaperOption::TOPICSID);
+        $safe = $opt->always_visible();
         foreach ($ssel->paper_set($user, ["topics" => 1]) as $row) {
-            if ($user->can_view_paper($row)) {
-                $n = count($texts);
+            $n = count($texts);
+            if ($safe || $user->can_view_option($row, $opt)) {
                 foreach ($row->topic_map() as $t) {
                     $texts[] = [$row->paperId, $row->title, $t];
                 }
-                if (count($texts) === $n) {
-                    $texts[] = [$row->paperId, $row->title, "<none>"];
-                }
+            }
+            if (count($texts) === $n) {
+                $texts[] = [$row->paperId, $row->title, "<none>"];
             }
         }
         return $user->conf->make_csvg("topics")
@@ -103,13 +103,14 @@ class GetTopics_ListAction extends ListAction {
 
 class GetCSV_ListAction extends ListAction {
     function run(Contact $user, Qrequest $qreq, SearchSelection $ssel) {
+        $qreq["tsoft"] = $qreq["tsoft"] ?? "1";
         $search = new PaperSearch($user, $qreq);
         $search->restrict_match([$ssel, "is_selected"]);
         assert(!isset($qreq->display));
         $pl = new PaperList("pl", $search, ["sort" => true], $qreq);
         $pl->apply_view_report_default();
         $pl->apply_view_session($qreq);
-        $pl->set_view("sel", false, PaperList::VIEWORIGIN_MAX);
+        $pl->add_view(ViewCommand::make_visibility("sel", false));
         list($header, $data) = $pl->text_csv();
         return $user->conf->make_csvg("data", CsvGenerator::FLAG_ITEM_COMMENTS)
             ->set_keys(array_keys($header))->set_header($header)
