@@ -39,7 +39,7 @@
 	--error-fg: light-dark(#dc0000, #ff4040);
 	--error-msg-bg: light-dark(#ffeeee, #331c1c);
 	--error-entry-bg: light-dark(#fff9f9, #2c1f1f);
-	--warning-fg: light-dark(#c07700, #e0a030);
+	--warning-fg: light-dark(#9d6100, #e0a030);
 	--warning-msg-bg: light-dark(#ffffdd, #262811);
 	--warning-entry-bg: light-dark(#fdfcf9, #292620);
 	--success-fg: light-dark(#006600, #3fba3f);

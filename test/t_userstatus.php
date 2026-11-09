@@ -102,7 +102,7 @@ class UserStatus_Tester {
         xassert(!!$acct, $us->full_feedback_text());
         $preps = array_splice(MailChecker::$preps, $npreps);
         xassert_eqq(count($preps), 1);
-        xassert_str_contains($preps[0]->subject, "Welcome to the program committee");
+        xassert_str_contains($preps[0]->subject, "Welcome to the adjudication committee");
 
         $this->conf->qe("delete from ContactInfo where email=?", $email);
         $this->conf->invalidate_caches("users", "pc");

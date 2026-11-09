@@ -5443,20 +5443,6 @@ class Conf {
         } else {
             $this->print_body_header($qreq, $title, $id, $extra);
         }
-
-
-        echo '<div id="h-right">';
-        if ($user && !$user->is_empty()) {
-            $this->print_header_profile($id, $qreq, $user);
-        }
-        echo '</div>';
-        if ($title_div && !($extra["hide_title"] ?? false)) {
-            echo $title_div;
-        }
-        echo $action_bar;
-
-        echo "  <hr class=\"c\">\n";
-
         $this->_header_printed = true;
 
         // Update saved messages
