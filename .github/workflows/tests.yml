@@ -52,6 +52,11 @@ jobs:
   build-24:
     runs-on: ubuntu-24.04
 
+    # test/options.php builds contactdbDsn from MYSQL_HOST (fork change), so the
+    # upstream sed on "@localhost" below does not reach it
+    env:
+      MYSQL_HOST: 127.0.0.1
+
     strategy:
       matrix:
         php-versions: ['8.1', '8.5']
