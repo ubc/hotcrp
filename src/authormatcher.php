@@ -113,16 +113,16 @@ class AuthorMatcher extends Author {
                 $fnmatch[] = $w;
                 $hlmatch[] = $w;
                 if (ctype_alpha($w[0]) && $i === $fulli) {
-                    $ix = "{$w[0]}[\\.\\s*]*";
+                    $ix = "{$w[0]}[.\\s]*";
                     $imatch[] = $ix;
                     $hlmatch[] = $ix;
                 }
             } else if ($i === 0 && $fulli === count($fws)) {
-                $ix = "{$w}[a-z]*[\\.\\s]*";
+                $ix = "{$w}[a-z]*+[.\\s]*";
                 $imatch[] = $ix;
                 $hlmatch[] = $ix;
             } else if ($i < $fulli) {
-                $imatch[] = "(?:|{$w}[a-z]*[\\.\\s*]*)";
+                $imatch[] = "(?:|{$w}[a-z]*+[.\\s]*)";
             }
         }
         if (!empty($imatch)) {
@@ -324,12 +324,10 @@ class AuthorMatcher extends Author {
         foreach ($matchers as $matcher) {
             if (($preg1 = $matcher->highlight_pregexes())) {
                 $preg = $preg ?? TextPregexes::make_empty();
-                $preg->add_matches($preg1);
+                $preg->merge_any($preg1);
             }
         }
-        if ($preg) {
-            $au = Text::highlight($au, $preg);
-        }
+        $au = Text::highlight($au, $preg);
         if ($aff_suffix !== null && str_ends_with($au, $aff_suffix)) {
             $au = substr($au, 0, -strlen($aff_suffix))
                 . '<span class="auaff">' . $aff_suffix . '</span>';
@@ -346,7 +344,7 @@ class AuthorMatcher extends Author {
     static function wordinfo() {
         // XXX validate input JSON
         if (self::$wordinfo === null) {
-            self::$wordinfo = (array) json_decode(file_get_contents(SiteLoader::find("etc/affiliationmatchers.json")));
+            self::$wordinfo = (array) json_decode(file_get_contents(SiteLoader::resolve("etc/affiliationmatchers.json")));
         }
         return self::$wordinfo;
     }
@@ -618,19 +616,21 @@ class AuthorMatcher extends Author {
         if ($ncomma <= 2 && ($type === 0 || $nparen <= 1) && $nsemi <= 1) {
             return false;
         }
+        $off = 0;
+        $len = strlen($line);
         if ($ncomma === 0 && $nsemi === 0 && $type === 1) {
             $pairs = [];
-            while (($pos = strpos($line, "(")) !== false) {
+            while (($pos = strpos($line, "(", $off)) !== false) {
                 $rpos = self::skip_balanced_parens($line, $pos);
-                $rpos = min($rpos + 1, strlen($line));
+                $rpos = min($rpos + 1, $len);
                 if ((string) substr($line, $rpos, 2) === " -") {
-                    $rpos = strlen($line);
+                    $rpos = $len;
                 }
-                $pairs[] = trim(substr($line, 0, $rpos));
-                $line = ltrim(substr($line, $rpos));
+                $pairs[] = trim(substr($line, $off, $rpos - $off));
+                $off = $rpos + strspn($line, " \n\r\t\x0B\x00", $rpos); // == ltrim
             }
-            if ($line !== "") {
-                $pairs[] = $line;
+            if ($off < $len) {
+                $pairs[] = substr($line, $off);
             }
             if (count($pairs) <= 2) {
                 return false;
@@ -641,17 +641,20 @@ class AuthorMatcher extends Author {
             }
         }
         $any = false;
-        while ($line !== "") {
-            if (str_starts_with($line, "\"")) {
-                preg_match('/\A"(?:[^"]|"")*(?:"|\z)([\s,;]*)/', $line, $m);
-                $skip = strlen($m[1]);
-                $pos = strlen($m[0]) - $skip;
+        while ($off < $len) {
+            if ($line[$off] === "\"") {
+                // quoted entry: ends at a `"` that is not doubled
+                $pos = $off;
+                do {
+                    $pos = strpos($line, "\"", $pos + 1);
+                    $pos = $pos === false ? $len : $pos + 1;
+                } while ($pos < $len && $line[$pos] === "\"");
+                $skip = strspn($line, " \t\n\x0B\f\r,;", $pos); // == [\s,;]*
                 $any = false;
             } else {
-                $pos = $skip = 0;
-                $len = strlen($line);
+                $pos = $off;
+                $skip = 0;
                 while ($pos < $len) {
-                    $last = $pos;
                     if (!preg_match('/\G([^,(;]*)([,(;])/', $line, $mm, 0, $pos)) {
                         $pos = $len;
                         break;
@@ -672,7 +675,7 @@ class AuthorMatcher extends Author {
                     }
                 }
             }
-            $w = substr($line, 0, $pos);
+            $w = substr($line, $off, $pos - $off);
             if ($nparen === 0 && $nsemi === 0 && $any
                 && self::is_likely_affiliation($w)) {
                 $lines[count($lines) - 1] .= ", " . $w;
@@ -680,7 +683,7 @@ class AuthorMatcher extends Author {
                 $lines[] = ltrim($w);
                 $any = $any || strpos($w, "(") === false;
             }
-            $line = (string) substr($line, $pos + $skip);
+            $off = $pos + $skip;
         }
         return true;
     }

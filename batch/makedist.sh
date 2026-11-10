@@ -1,4 +1,4 @@
-export VERSION=3.3.1
+export VERSION=3.5
 
 # check that schema.sql and updateschema.php agree on schema version
 updatenum=`grep 'settings.*allowPaperOption.*=\|update_schema_version' src/updateschema.php | tail -n 1 | sed 's/.*= *//;s/.*[(] *//;s/[;)].*//'`
@@ -40,7 +40,7 @@ mkdistdir () {
     while read f; do
         if [ -n "$f" ]; then
             d=`echo "$f" | sed 's/[^\/]*$//'`
-            [ -n "$d" -a ! -d "$crpd/$d" ] && mkdir "$crpd/$d"
+            [ -n "$d" -a ! -d "$crpd/$d" ] && mkdir -p "$crpd/$d"
             if [ -f "$f" ]; then
                 ln "$f" "$crpd/$f"
             else
@@ -60,6 +60,7 @@ mkdistdir <<EOF
 LICENSE
 NEWS.md
 README.md
+SECURITY.md
 api.php
 assign.php
 authorize.php
@@ -83,6 +84,7 @@ mergeaccounts.php
 newaccount.php
 oauth.php
 offline.php
+package.json
 paper.php
 profile.php
 resetpassword.php
@@ -96,32 +98,42 @@ signout.php
 users.php
 
 batch/.htaccess
+batch/account.php
 batch/actionlog.php
 batch/apispec.php
+batch/apitoken.php
 batch/assign.php
 batch/autoassign.php
 batch/backupdb.php
+batch/checkformat.php
 batch/checkinvariants.php
 batch/cli/cli_assign.php
 batch/cli/cli_autoassign.php
+batch/cli/cli_comment.php
 batch/cli/cli_document.php
 batch/cli/cli_job.php
 batch/cli/cli_paper.php
 batch/cli/cli_parameterhelp.php
+batch/cli/cli_review.php
 batch/cli/cli_search.php
 batch/cli/cli_settings.php
 batch/cli/cli_test.php
 batch/cli/cli_upload.php
 batch/collaboratordiff.php
 batch/createdb.php
+batch/db.php
 batch/deletepapers.php
 batch/fixdelegation.php
+batch/fileinfo.php
 batch/hotcrapi.php
+batch/hotcrp-daemonize
 batch/killinactivedoc.php
 batch/paperjson.php
 batch/pcemails.php
+batch/processwork.php
 batch/render.php
 batch/reviewcsv.php
+batch/rewindreviews.php
 batch/s3test.php
 batch/s3transfer.php
 batch/s3verifyall.php
@@ -134,7 +146,6 @@ batch/updatecontactdb.php
 
 conf/.htaccess
 
-devel/hotcrp-daemonize.c
 devel/manual/components.md
 devel/manual/css.md
 devel/manual/docstore.md
@@ -144,6 +155,7 @@ devel/manual/index.md
 devel/manual/oauth.md
 devel/manual/pages.md
 devel/manual/sessions.md
+devel/manual/settings.md
 devel/openapi.json
 
 etc/.htaccess
@@ -220,8 +232,11 @@ lib/mimetext.php
 lib/mimetype.php
 lib/mincostmaxflow.php
 lib/navigation.php
+lib/nulls3result.php
 lib/oklabcolor.php
 lib/oklchcolor.php
+lib/paperidset.php
+lib/pdfmimetype.php
 lib/phpqsession.php
 lib/polyfills.php
 lib/qrequest.php
@@ -232,6 +247,7 @@ lib/runsql.sh
 lib/s3client.php
 lib/s3result.php
 lib/scoreinfo.php
+lib/streams3result.php
 lib/subprocess.php
 lib/tagger.php
 lib/toposort.php
@@ -304,6 +320,7 @@ src/autoassigners/aa_prefconflict.php
 src/autoassigners/aa_review.php
 src/backuppattern.php
 src/banal
+src/botcontact.php
 src/capabilities/cap_authorization.php
 src/capabilities/cap_authorview.php
 src/capabilities/cap_job.php
@@ -312,6 +329,7 @@ src/capabilities/cap_reviewaccept.php
 src/cdbuserupdate.php
 src/checkformat.php
 src/commentinfo.php
+src/commentstatus.php
 src/componentset.php
 src/confactions.php
 src/conference.php
@@ -321,6 +339,7 @@ src/contact.php
 src/contactalerts.php
 src/contactcounter.php
 src/contactcountmatcher.php
+src/contactintersection.php
 src/contactlist.php
 src/contactprimary.php
 src/contactsearch.php
@@ -331,9 +350,11 @@ src/decisioninfo.php
 src/decisionset.php
 src/docstore.php
 src/documentfiletree.php
+src/documentimporter.php
 src/documentinfo.php
 src/documentinfoset.php
 src/documenthashmatcher.php
+src/documentlocator.php
 src/documentrequest.php
 src/failurereason.php
 src/fieldchangeset.php
@@ -358,6 +379,7 @@ src/formulas/f_realnumberoption.php
 src/formulas/f_reviewer.php
 src/formulas/f_reviewermatch.php
 src/formulas/f_reviewround.php
+src/formulas/f_reviewstatus.php
 src/formulas/f_reviewwordcount.php
 src/formulas/f_revtype.php
 src/formulas/f_search.php
@@ -407,14 +429,19 @@ src/listactions/la_revpref.php
 src/listactions/la_tag.php
 src/logentry.php
 src/logentryfilter.php
+src/logentrygenerator.php
 src/mailrecipients.php
 src/mailsender.php
 src/meetingtracker.php
 src/mentionlister.php
 src/mentionparser.php
+src/mentionphrase.php
 src/multiconference.php
 src/namedformula.php
 src/notificationinfo.php
+src/oauthclient.php
+src/oauthclientdocument.php
+src/oauthprovider.php
 src/options/o_abstract.php
 src/options/o_attachments.php
 src/options/o_authorcertification.php
@@ -532,7 +559,6 @@ src/search/st_conflict.php
 src/search/st_decision.php
 src/search/st_documentcount.php
 src/search/st_documentname.php
-src/search/st_editfinal.php
 src/search/st_emoji.php
 src/search/st_formula.php
 src/search/st_namedsearch.php
@@ -544,7 +570,6 @@ src/search/st_optionvaluein.php
 src/search/st_paperpc.php
 src/search/st_paperstatus.php
 src/search/st_proposal.php
-src/search/st_perm.php
 src/search/st_pdf.php
 src/search/st_phase.php
 src/search/st_realnumberoption.php
@@ -554,7 +579,10 @@ src/search/st_reviewtoken.php
 src/search/st_revpref.php
 src/search/st_sclass.php
 src/search/st_tag.php
+src/search/st_time.php
 src/search/st_topic.php
+src/search/sv_highlight.php
+src/search/sv_tags.php
 src/searchexample.php
 src/searchexpr.php
 src/searchoperator.php
@@ -562,6 +590,7 @@ src/searchoperatorset.php
 src/searchparser.php
 src/searchselection.php
 src/searchterm.php
+src/searchvisitor.php
 src/searchword.php
 src/sessionlist.php
 src/settinginfoset.php
@@ -586,6 +615,7 @@ src/settings/s_reviewform.php
 src/settings/s_reviewvisibility.php
 src/settings/s_rf.php
 src/settings/s_sf.php
+src/settings/s_siteurl.php
 src/settings/s_shepherds.php
 src/settings/s_sitecontact.php
 src/settings/s_sround.php
@@ -620,21 +650,31 @@ src/usersecurityevent.php
 src/userstatus.php
 src/valueformat.php
 src/viewcommand.php
+src/viewcommandlist.php
 src/viewoptionlist.php
 src/viewoptionschema.php
 src/viewoptiontype.php
+src/workitem.php
 src/xtparams.php
 
 devel/hotcrp.vim
 
 images/.htaccess
 images/_.gif
-images/assign48.png
+images/archive24.svg
+images/archivef24.svg
+images/archivefx24.svg
+images/archivex24.svg
+images/assign48.svg
+images/audio24.svg
+images/audiof24.svg
+images/audiofx24.svg
+images/audiox24.svg
 images/buzzer.mp3
 images/check.png
-images/comment48.png
+images/comment48.svg
 images/cross.png
-images/edit48.png
+images/edit48.svg
 images/exassignone.png
 images/exsearchaction.png
 images/extagcolors.png
@@ -645,29 +685,56 @@ images/extagvotehover.png
 images/extracker.png
 images/generic.png
 images/generic24.png
+images/generic24.svg
 images/genericf.png
 images/genericf24.png
+images/genericf24.svg
+images/genericfx24.svg
+images/genericx24.svg
+images/icons.svg
+images/image24.svg
+images/imagef24.svg
+images/imagefx24.svg
+images/imagex24.svg
 images/info45.png
 images/pageresultsex.png
 images/pdf.png
 images/pdf24.png
+images/pdf24.svg
 images/pdff.png
 images/pdff24.png
+images/pdff24.svg
 images/pdffx.png
 images/pdffx24.png
+images/pdffx24.svg
 images/pdfx.png
 images/pdfx24.png
+images/pdfx24.svg
+images/play24.svg
+images/playf24.svg
+images/playfx24.svg
+images/playx24.svg
 images/postscript.png
 images/postscript24.png
 images/postscriptf.png
 images/postscriptf24.png
 images/quicksearchex.png
-images/review24.png
-images/review48.png
-images/stophand45.png
+images/review48.svg
+images/slides24.svg
+images/slidesf24.svg
+images/slidesfx24.svg
+images/slidesx24.svg
 images/txt.png
 images/txt24.png
-images/view48.png
+images/txt24.svg
+images/txtf24.svg
+images/txtfx24.svg
+images/txtx24.svg
+images/video24.svg
+images/videof24.svg
+images/videofx24.svg
+images/videox24.svg
+images/view48.svg
 images/viewas.png
 
 scripts/.htaccess

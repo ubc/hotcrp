@@ -16,8 +16,8 @@ class SearchConfig_API {
             }
 
             $pl = new PaperList($report, $search, ["sort" => true]);
-            $pl->parse_view($qreq->display, PaperList::VIEWORIGIN_MAX);
-            $parsed_view = $pl->unparse_view(PaperList::VIEWORIGIN_REPORT, true);
+            $pl->parse_view($qreq->display, ViewCommand::ORIGIN_MAX);
+            $parsed_view = $pl->unparse_view(ViewCommand::ORIGIN_REPORT, true);
             $pl->prepare_table_view();
             if ($pl->has_error()) {
                 return new JsonResult(["ok" => false, "message_list" => $pl->message_list()]);
@@ -41,7 +41,7 @@ class SearchConfig_API {
         $pl = new PaperList($report, $search, ["sortable" => true], $qreq);
         $pl->set_report_view_errors(true);
         $pl->apply_view_report_default();
-        $vd = $pl->unparse_view(PaperList::VIEWORIGIN_REPORT, true);
+        $vd = $pl->unparse_view(ViewCommand::ORIGIN_REPORT, true);
         $dml = $pl->prepare_table_view()->message_list();
 
         $qreq->q = $qreq->q ?? "NONE";
@@ -50,8 +50,8 @@ class SearchConfig_API {
         $pl->set_report_view_errors(true);
         $pl->apply_view_report_default();
         $pl->apply_view_session($qreq);
-        $vr = $pl->unparse_view(PaperList::VIEWORIGIN_REPORT, true);
-        $vrx = $pl->unparse_view(PaperList::VIEWORIGIN_DEFAULT_DISPLAY, true);
+        $vr = $pl->unparse_view(ViewCommand::ORIGIN_REPORT, true);
+        $vrx = $pl->unparse_view(ViewCommand::ORIGIN_DEFAULT_DISPLAY, true);
 
         return new JsonResult([
             "ok" => true, "report" => $report,
@@ -83,15 +83,6 @@ class SearchConfig_API {
         return new JsonResult(["ok" => true, "formulas" => $fjs]);
     }
 
-    static private function translate_qreq(Qrequest $qreq) { // XXX backward compat
-        for ($fidx = 1; isset($qreq["formulaid_{$fidx}"]); ++$fidx) {
-            $qreq["formula/{$fidx}/name"] = $qreq["formulaname_{$fidx}"];
-            $qreq["formula/{$fidx}/expression"] = $qreq["formulaexpression_{$fidx}"];
-            $qreq["formula/{$fidx}/id"] = $qreq["formulaid_{$fidx}"];
-            $qreq["formula/{$fidx}/delete"] = $qreq["formuladeleted_{$fidx}"];
-        }
-    }
-
     static function save_namedformula(Contact $user, Qrequest $qreq) {
         // NB permissions handled in loop
 
@@ -101,13 +92,9 @@ class SearchConfig_API {
             return max($max, $f->formulaId);
         }, 0);
 
-        if (!isset($qreq["formula/1/id"])) {
-            self::translate_qreq($qreq);
-        }
-
         // determine new formula set from request
         $id2idx = [];
-        $msgset = new MessageSet;
+        $msgset = (new MessageSet)->set_message_formatter($user->conf);
         for ($fidx = 1; isset($qreq["formula/{$fidx}/id"]); ++$fidx) {
             $name = $qreq["formula/{$fidx}/name"];
             $expr = $qreq["formula/{$fidx}/expression"];
@@ -117,9 +104,9 @@ class SearchConfig_API {
                 continue;
             }
 
-            $name = simplify_whitespace($name ?? "");
+            $name = simplify_whitespace(convert_to_utf8($name ?? ""));
             $lname = strtolower($name);
-            $expr = simplify_whitespace($expr ?? "");
+            $expr = simplify_whitespace(convert_to_utf8($expr ?? ""));
             $pfx = $name === "" ? "" : "{$name}: ";
 
             if ($id === "new") {
@@ -174,24 +161,43 @@ class SearchConfig_API {
 
         // validate formulas using new formula set
         $user->conf->replace_named_formulas($new_formula_by_id);
+        $broken = [];
         foreach ($new_formula_by_id as $nf) {
             $fdef = $formula_by_id[$nf->formulaId] ?? null;
+            $fidx = $id2idx[$nf->formulaId] ?? null;
             $pfx = $nf->name ? htmlspecialchars($nf->name) . ": " : "";
             $f = $nf->realize($user);
             if ($f->ok()) {
                 if ((!$fdef || $fdef->expression !== $nf->expression)
                     && !$f->viewable())  {
-                    $msgset->error_at("formula/" . $id2idx[$nf->formulaId] . "/expression", "<0>{$pfx}This expression refers to properties you can’t access");
+                    $msgset->error_at("formula/{$fidx}/expression", "<0>{$pfx}This expression refers to properties you can’t access");
+                }
+            } else if ($fidx !== null) {
+                foreach ($f->message_list() as $mi) {
+                    $msgset->append_item($mi->with_field("formula/{$fidx}/expression"));
                 }
             } else {
-                foreach ($f->message_list() as $mi) {
-                    $msgset->append_item($mi->with_field("formula/" . $id2idx[$nf->formulaId] . "/expression"));
+                $broken[] = [$nf, $f];
+            }
+        }
+
+        // a formula outside the request that fails only under the new set
+        // is broken by the request
+        if (!empty($broken)) {
+            $user->conf->replace_named_formulas($formula_by_id);
+            foreach ($broken as [$nf, $f]) {
+                if ($nf->realize($user)->ok()) {
+                    $msgset->error_at(null, "<0>This change would break saved formula ‘{}’", $nf->name);
+                    $msgset->append_list($f->message_list());
                 }
             }
+            $user->conf->replace_named_formulas($new_formula_by_id);
         }
 
         // save
         if ($msgset->has_error()) {
+            // the new set was installed only to validate against
+            $user->conf->replace_named_formulas($formula_by_id);
             return ["ok" => false, "message_list" => $msgset->message_list()];
         }
         $q = $qv = [];
@@ -211,15 +217,13 @@ class SearchConfig_API {
                 array_push($qv, $f->name, $f->expression, Conf::$now, $f->formulaId);
             }
         }
-        if (empty($new_formula_by_id)) {
-            $q[] = "delete from Settings where name='formulas'";
-        } else {
-            $q[] = "insert into Settings set name='formulas', value=1 on duplicate key update value=1";
+        if (!empty($q)) {
+            $mresult = Dbl::multi_qe_apply($user->conf->dblink, join(";", $q), $qv);
+            $mresult->free_all();
         }
-        $mresult = Dbl::multi_qe_apply($user->conf->dblink, join(";", $q), $qv);
-        $mresult->free_all();
 
         $user->conf->replace_named_formulas(null);
+        $user->conf->save_refresh_setting("formulas", empty($new_formula_by_id) ? null : 1);
         return self::namedformula($user, $qreq);
     }
 
@@ -227,7 +231,10 @@ class SearchConfig_API {
     static function namedsearch(Contact $user, Qrequest $qreq) {
         $fjs = [];
         $ms = new MessageSet;
-        foreach ($user->viewable_named_searches(false) as $sj) {
+        foreach ($user->conf->named_searches() as $sj) {
+            if (!$user->can_view_named_search($sj, false)) {
+                continue;
+            }
             $q = $sj->q;
             if ($q !== "" && ($sj->t ?? "") !== "" && $sj->t !== "s") {
                 $q = "({$sj->q}) in:{$sj->t}";
@@ -290,9 +297,8 @@ class SearchConfig_API {
             return "Name required";
         } else if (preg_match('/\A(?:formula[:\d].*|[fs]:.*|ss:.*|search:.*|[-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d*)?|none|any|all|unknown|new)\z|[()\[\]\{\}\\\\"\'\#]|\A(?:~.|\d+~|(?=[^~\d])).*~|~\z|\pZ/u', $name)) {
             return "Name reserved";
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @param string $name
@@ -308,8 +314,8 @@ class SearchConfig_API {
             if (!$user->privChair) {
                 $ms->error_at($field, "<0>Search reserved for chairs");
             }
-        } else if ($twiddle === 0) {
-            $name = $user->contactId . $name;
+        } else if ($twiddle === 0 || str_starts_with($name, "me~")) {
+            $name = $user->contactId . substr($name, $twiddle);
         } else if (str_starts_with($name, $user->contactId . "~")) {
             /* ok */
         } else {
@@ -319,13 +325,18 @@ class SearchConfig_API {
     }
 
     static function save_namedsearch(Contact $user, Qrequest $qreq) {
-        // NB permissions handled in loop
+        // NB permissions handled in loop; for safety, only PC can save searches
+        if (!$user->isPC) {
+            return JsonResult::make_permission_error();
+        }
 
         // capture current named searches set
-        $ssjs = $user->conf->named_searches();
-        foreach ($ssjs as $sj) {
+        $ssjs = [];
+        foreach ($user->conf->named_searches() as $sj) {
+            $sj = clone $sj;
             $sj->id = $sj->name;
             $sj->ctr = null;
+            $ssjs[] = $sj;
         }
         $tagger = new Tagger($user);
 
@@ -342,8 +353,9 @@ class SearchConfig_API {
                 continue;
             }
 
-            $name = simplify_whitespace($name ?? "");
-            $q = simplify_whitespace($q ?? "");
+            $id = convert_to_utf8($id);
+            $name = simplify_whitespace(convert_to_utf8($name ?? ""));
+            $q = simplify_whitespace(convert_to_utf8($q ?? ""));
             $pfx = $name === "" ? "" : "{$name}: ";
 
             // fix name and id
@@ -368,16 +380,37 @@ class SearchConfig_API {
                     continue;
                 }
             }
-
-            // check if search is editable
             $fdef = $ssjs[$sidx] ?? null;
-            $editable = !$fdef || self::can_edit_search($user, $fdef);
-            if (!$editable
-                && !$ms->has_error_at("{$kpfx}/name")
-                && (strcasecmp($name, $fdef->name) !== 0
-                    || $q !== $fdef->q
-                    || $deleted)) {
-                $ms->error_at("{$kpfx}/name", "<0>{$pfx}You can’t change this named search");
+
+            // parse requested description and display
+            if (($description = $qreq["{$kpfx}/description"]) !== null) {
+                $description = cleannl(convert_to_utf8($description));
+                if ($description === "") {
+                    $description = null;
+                }
+            } else {
+                $description = $fdef->description ?? null;
+            }
+            if ($qreq["{$kpfx}/highlight"]) {
+                $display = "highlight";
+            } else if ($qreq["has-{$kpfx}/highlight"]) {
+                $display = null;
+            } else {
+                $display = $fdef->display ?? null;
+            }
+
+            // check if search is editable; non-editors may resubmit an
+            // existing search unchanged, but never modify it
+            if ($fdef && !self::can_edit_search($user, $fdef)) {
+                if (!$ms->has_error_at("{$kpfx}/name")
+                    && (strcasecmp($name, $fdef->name) !== 0
+                        || $q !== $fdef->q
+                        || $deleted
+                        || $description !== ($fdef->description ?? null)
+                        || $display !== ($fdef->display ?? null))) {
+                    $ms->error_at("{$kpfx}/name", "<0>{$pfx}You can’t change this named search");
+                }
+                continue;
             }
 
             // maybe delete search
@@ -406,18 +439,15 @@ class SearchConfig_API {
             $fdef->q = $q;
             $fdef->owner = $user->privChair ? "chair" : $user->contactId;
             $fdef->ctr = $ctr;
-            if ($qreq["{$kpfx}/highlight"]) {
-                $fdef->display = "highlight";
-            } else if ($qreq["has-{$kpfx}/highlight"]) {
+            if ($display !== null) {
+                $fdef->display = $display;
+            } else {
                 unset($fdef->display);
             }
-            if (($description = $qreq["{$kpfx}/description"]) !== null) {
-                $description = cleannl($description);
-                if ($description !== "") {
-                    $fdef->description = $description;
-                } else {
-                    unset($fdef->description);
-                }
+            if ($description !== null) {
+                $fdef->description = $description;
+            } else {
+                unset($fdef->description);
             }
         }
 
@@ -458,6 +488,7 @@ class SearchConfig_API {
         } else {
             $user->conf->save_setting("named_searches", null);
         }
+        $user->conf->invalidate_caches("named_searches");
         return self::namedsearch($user, $qreq);
     }
 }

@@ -11,14 +11,7 @@ class API_Page {
         $conf->set_site_path_relative($qreq->navigation(), $qreq->base ?? null);
         if (!$user->has_account_here()
             && ($key = $user->capability("@kiosk"))) {
-            $kiosks = $conf->setting_json("__tracker_kiosk") ? : (object) [];
-            if (isset($kiosks->$key) && $kiosks->$key->update_at >= Conf::$now - 172800) {
-                if ($kiosks->$key->update_at < Conf::$now - 3600) {
-                    $kiosks->$key->update_at = Conf::$now;
-                    $conf->save_setting("__tracker_kiosk", 1, $kiosks);
-                }
-                $user->tracker_kiosk_state = $kiosks->$key->show_papers ? 2 : 1;
-            }
+            MeetingTracker::apply_kiosk($user, $key);
         }
         if ($qreq->p) {
             $conf->set_paper_request($qreq, $user);
@@ -61,6 +54,11 @@ class API_Page {
         }
         if ($jr instanceof Downloader) {
             $conf->emit_browser_security_headers($qreq);
+            if ($uf
+                && ($uf->charge ?? null) !== false
+                && $jr->will_emit_content_or_redirect()) {
+                $qreq->contact_counter()->api_charge_bytes($jr->response_content_length());
+            }
             $jr->emit();
             Navigation::complete();
         } else if ($jr instanceof PageCompletion) {

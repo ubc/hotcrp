@@ -61,7 +61,7 @@ class ReviewPrefs_Page {
         }
 
         $search = (new PaperSearch($user, [
-            "t" => $qreq->t, "q" => $qreq->q, "reviewer" => $reviewer
+            "t" => $qreq->t, "q" => $qreq->q, "reviewer" => $reviewer, "tsoft" => true
         ]))->set_urlbase("reviewprefs");
         $pl = new PaperList("pf", $search, ["sort" => true], $qreq);
         $pl->apply_view_report_default();
@@ -190,12 +190,12 @@ class ReviewPrefs_Page {
             $u = ctype_digit($qreq->reviewer)
                 ? $conf->user_by_id(intval($qreq->reviewer), USER_SLICE)
                 : $conf->user_by_email($qreq->reviewer, USER_SLICE);
-            if ($u && ($u->roles & Contact::ROLE_PC) !== 0) {
+            if ($u && $u->is_pc_member()) {
                 $reviewer = $u;
                 $correct_reviewer = true;
                 $qreq->reviewer = $u->email;
             }
-        } else if (!$qreq->reviewer && !($user->roles & Contact::ROLE_PC)) {
+        } else if (!$qreq->reviewer && $user->privChair && !$user->is_pc_member()) {
             foreach ($conf->pc_members() as $pcm) {
                 $qreq->redirect_self(["reviewer" => $pcm->email]);
                 // in case redirection fails:
@@ -225,7 +225,7 @@ class ReviewPrefs_Page {
         }
 
         // paper selection, search actions
-        $ssel = SearchSelection::make($qreq, $user);
+        $ssel = SearchSelection::make_papers($qreq, $user);
         SearchSelection::clear_request($qreq);
         $qreq->q = $qreq->q ?? "";
         $qreq->t = "editpref";

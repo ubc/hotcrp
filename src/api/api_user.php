@@ -26,19 +26,18 @@ class User_API {
         $broad_lookup = $user->conf->opt("allowLookupUser");
 
         $found = null;
-        if (strcasecmp($user->email, $email) >= 0
-            && strcasecmp($user->email, "{$email}~") < 0) {
+        if (strncasecmp($user->email, $email, strlen($email)) === 0) {
             $found = $user->populated_user();
         }
 
         if (($user->can_view_pc() || $broad_lookup)
             && (!$found || strcasecmp($found->email, $email) !== 0)) {
             $roles = "";
-            if (!$user->is_manager() && !$broad_lookup) {
-                $roles = " and roles!=0 and (roles&" . Contact::ROLE_PC . ")!=0";
+            if (!$user->is_track_manager() && !$broad_lookup) {
+                $roles = " and roles!=0 and (roles&" . ($user->viewable_roles_mask() & Contact::ROLE_ANYPC) . ")!=0";
             }
-            $result = $user->conf->qe("select " . $user->conf->user_query_fields($slice) . " from ContactInfo where email>=? and email<? and (cflags&?)=0{$roles} order by email asc limit 1",
-                $email, "{$email}~", Contact::CFM_DISABLEMENT);
+            $result = $user->conf->qe("select " . $user->conf->user_query_fields($slice) . " from ContactInfo where email like '?ls%' and (cflags&?)=0{$roles} order by email asc limit 1",
+                $email, Contact::CFM_DISABLEMENT);
             while (($u = Contact::fetch($result, $user->conf))) {
                 if (!$found || strcasecmp($found->email, $u->email) > 0)
                     $found = $u;
@@ -49,8 +48,8 @@ class User_API {
         if ($broad_lookup
             && ($db = $user->conf->contactdb())
             && (!$found || strcasecmp($found->email, $email) !== 0)) {
-            $result = Dbl::qe($db, "select " . $user->conf->contactdb_user_query_fields($slice) . " from ContactInfo where email>=? and email<? and (cflags&?)=0 order by email asc limit 1",
-                $email, "{$email}~", Contact::CFM_DISABLEMENT);
+            $result = Dbl::qe($db, "select " . $user->conf->contactdb_user_query_fields($slice) . " from ContactInfo where email like '?ls%' and (cflags&?)=0 order by email asc limit 1",
+                $email, Contact::CFM_DISABLEMENT);
             $i = 0;
             while (($u = Contact::fetch($result, $user->conf))) {
                 if (!$found || strcasecmp($found->email, $u->email) > 0)
@@ -88,9 +87,11 @@ class User_API {
     }
 
     static function clickthrough(Contact $user, Qrequest $qreq) {
-        if ($qreq->accept
-            && $qreq->clickthrough_id
-            && ($hash = HashAnalysis::sha1_hash_as_text($qreq->clickthrough_id))) {
+        if (!$user->scope_allows(TokenScope::S_OTH_WRITE)) {
+            return JsonResult::make_scope_error($qreq, TokenScope::S_OTH_WRITE);
+        } else if ($qreq->accept
+                   && $qreq->clickthrough_id
+                   && ($hash = HashAnalysis::sha1_hash_as_text($qreq->clickthrough_id))) {
             if ($user->has_email()) {
                 $dest_user = $user;
             } else if ($qreq->p
@@ -112,9 +113,11 @@ class User_API {
 
     /** @param bool $disabled
      * @return JsonResult */
-    static function account_disable(Contact $user, Contact $viewer, $disabled) {
+    static private function account_disable(Contact $user, Contact $viewer, Qrequest $qreq, $disabled) {
         if (!$viewer->privChair) {
             return JsonResult::make_permission_error();
+        } else if (!$viewer->scope_allows(TokenScope::S_OTH_ADMIN)) {
+            return JsonResult::make_scope_error($qreq, TokenScope::S_OTH_ADMIN);
         } else if ($viewer->contactId === $user->contactId) {
             return JsonResult::make_error(400, "<0>You cannot disable your own account");
         }
@@ -126,9 +129,11 @@ class User_API {
     }
 
     /** @return JsonResult */
-    static function account_sendinfo(Contact $user, Contact $viewer) {
+    static private function account_sendinfo(Contact $user, Contact $viewer, Qrequest $qreq) {
         if (!$viewer->privChair) {
             return JsonResult::make_permission_error();
+        } else if (!$viewer->scope_allows(TokenScope::S_OTH_ADMIN)) {
+            return JsonResult::make_scope_error($qreq, TokenScope::S_OTH_ADMIN);
         }
         $user->activate_placeholder(false, $viewer);
         $prep = $user->prepare_mail("@accountinfo");
@@ -143,23 +148,22 @@ class User_API {
         $u = $qreq->email ?? $qreq->u;
         if ($u === null || $u === "me" || strcasecmp($u, $viewer->email) === 0) {
             $user = $viewer;
-        } else if ($viewer->isPC) {
-            $user = $viewer->conf->user_by_email($u);
-        } else {
+        } else if (!$viewer->privChair) {
             return JsonResult::make_permission_error();
+        } else {
+            $user = $viewer->conf->user_by_email($u);
         }
         if (!$user) {
             return JsonResult::make_error(404, "<0>User not found");
         }
-        $disable = friendly_boolean($qreq->disable);
         $jr = null;
         if ($qreq->valid_post()) {
             if (friendly_boolean($qreq->disable)) {
-                $jr = self::account_disable($user, $viewer, true);
+                $jr = self::account_disable($user, $viewer, $qreq, true);
             } else if (friendly_boolean($qreq->enable)) {
-                $jr = self::account_disable($user, $viewer, false);
+                $jr = self::account_disable($user, $viewer, $qreq, false);
             } else if (friendly_boolean($qreq->sendinfo)) {
-                $jr = self::account_sendinfo($user, $viewer);
+                $jr = self::account_sendinfo($user, $viewer, $qreq);
             }
         }
         $jr = $jr ?? new JsonResult(["ok" => true]);

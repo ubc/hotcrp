@@ -6,14 +6,92 @@ class Unit_Tester {
     /** @var Conf
      * @readonly */
     public $conf;
+    /** @var Contact
+     * @readonly */
+    public $u_root;
 
     function __construct(Conf $conf) {
         $this->conf = $conf;
+        $this->u_root = $conf->root_user();
     }
 
     function test_xassert_nan() {
         xassert_eqq(NAN, NAN);
         xassert_in_eqq(NAN, [NAN]);
+    }
+
+    function test_hoturl_php_suffix() {
+        // hoturl() must insert `php_suffix` before any slash in the page name,
+        // so that slash-containing pages like `api/declinereview` resolve to
+        // `api.php/declinereview` (page `api`, path `/declinereview`) rather
+        // than the unroutable `api/declinereview.php`.
+        $nav = Qrequest::$main_request ? Qrequest::$main_request->navigation() : Navigation::get();
+        $saved = $nav->php_suffix;
+        $flags = Conf::HOTURL_SITEREL | Conf::HOTURL_NO_DEFAULTS;
+        try {
+            $nav->php_suffix = "";
+            xassert_eqq($this->conf->hoturl("api/declinereview", ["p" => 1, "r" => 2], $flags),
+                        "api/declinereview?p=1&r=2");
+            xassert_eqq($this->conf->hoturl("api/job", ["job" => "x"], $flags),
+                        "api/job?job=x");
+            xassert_eqq($this->conf->hoturl("paper", ["p" => 1], $flags),
+                        "paper/1");
+
+            $nav->php_suffix = ".php";
+            xassert_eqq($this->conf->hoturl("api/declinereview", ["p" => 1, "r" => 2], $flags),
+                        "api.php/declinereview?p=1&r=2");
+            xassert_eqq($this->conf->hoturl("api/acceptreview", ["p" => 3, "r" => 4], $flags),
+                        "api.php/acceptreview?p=3&r=4");
+            xassert_eqq($this->conf->hoturl("api/claimreview", ["p" => 5], $flags),
+                        "api.php/claimreview?p=5");
+            xassert_eqq($this->conf->hoturl("api/job", ["job" => "x"], $flags),
+                        "api.php/job?job=x");
+            // a normal single-segment page still gets the suffix
+            xassert_eqq($this->conf->hoturl("paper", ["p" => 1], $flags),
+                        "paper.php/1");
+            // the fn-parameter form routes as /pid/fn under the `api` page
+            xassert_eqq($this->conf->hoturl("api", ["fn" => "declinereview", "p" => 1], $flags),
+                        "api.php/1/declinereview");
+            // an already-suffixed first segment is not double-suffixed
+            xassert_eqq($this->conf->hoturl("api.php/job", ["job" => "x"], $flags),
+                        "api.php/job?job=x");
+        } finally {
+            $nav->php_suffix = $saved;
+        }
+    }
+
+    function test_hoturl_mail_template_placeholders() {
+        // mail templates contain URLs like
+        // `{{LINK(review, p={{PID}}&cap={{REVIEWACCEPTOR}})}}`, which may be
+        // partially expanded (e.g. for the bulk-assignment notification
+        // preview). With HOTURL_PLACEHOLDERS, unexpanded keywords survive
+        // hoturl unencoded so a later expansion pass can find them.
+        $nav = Qrequest::$main_request ? Qrequest::$main_request->navigation() : Navigation::get();
+        $saved = $nav->php_suffix;
+        $flags = Conf::HOTURL_SITEREL | Conf::HOTURL_NO_DEFAULTS | Conf::HOTURL_PLACEHOLDERS;
+        try {
+            $nav->php_suffix = "";
+            xassert_eqq($this->conf->hoturl("review", ["p" => "{{PID}}", "cap" => "{{REVIEWACCEPTOR}}"], $flags),
+                        "review/{{PID}}?cap={{REVIEWACCEPTOR}}");
+            // old-style %WORD% keywords also survive
+            xassert_eqq($this->conf->hoturl("review", ["p" => "%NUMBER%", "cap" => "%REVIEWACCEPTOR%"], $flags),
+                        "review/%NUMBER%?cap=%REVIEWACCEPTOR%");
+            // partial or non-keyword brace/percent text is still urlencoded
+            xassert_eqq($this->conf->hoturl("search", ["q" => "a b{{c}"], $flags),
+                        "search?q=a+b%7B%7Bc%7D");
+            xassert_eqq($this->conf->hoturl("search", ["q" => "50%{{off}} %sale%!"], $flags),
+                        "search?q=50%25%7B%7Boff%7D%7D+%25sale%25%21");
+            xassert_eqq($this->conf->hoturl("review", ["p" => 1, "cap" => "hcraxyzzy"], $flags),
+                        "review/1?cap=hcraxyzzy");
+            // without the flag, keywords are urlencoded like anything else
+            $strict = Conf::HOTURL_SITEREL | Conf::HOTURL_NO_DEFAULTS;
+            xassert_eqq($this->conf->hoturl("review", ["p" => "{{PID}}", "cap" => "{{REVIEWACCEPTOR}}"], $strict),
+                        "review?p=%7B%7BPID%7D%7D&cap=%7B%7BREVIEWACCEPTOR%7D%7D");
+            xassert_eqq($this->conf->hoturl("paper", ["p" => "new"], $strict),
+                        "paper/new");
+        } finally {
+            $nav->php_suffix = $saved;
+        }
     }
 
     function test_dbl_format_query() {
@@ -22,6 +100,9 @@ class Unit_Tester {
         xassert_eqq(Dbl::format_query("Hello????"), "Hello??");
         xassert_eqq(Dbl::format_query("Hello????? What the heck", 1), "Hello??1 What the heck");
         xassert_in_eqq(Dbl::format_query("Hello ?U? ?U(a)?", 1, 2), ["Hello 1 values(a)2", "Hello  as __values 1 __values.a2"]);
+        // `?U(target,source)` references the source column: MySQL8 uses the
+        // source alias directly, MariaDB the `values()` of the target column
+        xassert_in_eqq(Dbl::format_query("x ?U(a,b) y"), ["x values(a) y", "x b y"]);
         xassert_eqq(Dbl::format_query("select ?, ?, ?, ?s, ?s, ?s, ?",
                                       1, "a", null, 2, "b", null, 3),
                     "select 1, 'a', NULL, 2, b, , 3");
@@ -42,6 +123,67 @@ class Unit_Tester {
                     "insert (1), (2), (3)");
         xassert_eqq(Dbl::format_query("insert ?v", [[1, null], [2, "A"], ["b", 0.1]]),
                     "insert (1,NULL), (2,'A'), ('b',0.1)");
+    }
+
+    // Execute `INSERT ... ON DUPLICATE KEY UPDATE` through Dbl's `?U` handling
+    // against a real table, in each of its four shapes. PaperConflict has PK
+    // (paperId, contactId); we use an out-of-range paperId so no real row is
+    // touched, and clean up afterward. On MariaDB the `?U` row alias vanishes
+    // and `?U(...)` becomes `values(...)`; on MySQL 8 they become the row/column
+    // aliases -- both are checked formulaically in test_dbl_format_query above.
+    function test_dbl_insert_on_duplicate() {
+        $p = 90000123; // out-of-range paperId, no real conflicts
+        $ct = function ($cid) use ($p) {
+            return $this->conf->fetch_ivalue("select conflictType from PaperConflict where paperId=? and contactId=?", $p, $cid);
+        };
+        $this->conf->qe("delete from PaperConflict where paperId=?", $p);
+
+        // 1. INSERT ... SET ... ON DUPLICATE KEY UPDATE
+        $this->conf->qe("insert into PaperConflict set paperId=?, contactId=?, conflictType=?", $p, 1, 2);
+        $this->conf->qe("insert into PaperConflict set paperId=?, contactId=?, conflictType=? ?U
+            on duplicate key update conflictType=PaperConflict.conflictType|?U(conflictType)", $p, 1, 4);
+        xassert_eqq((int) $ct(1), 6); // 2 | 4, the ON DUPLICATE path
+        $this->conf->qe("insert into PaperConflict set paperId=?, contactId=?, conflictType=? ?U
+            on duplicate key update conflictType=PaperConflict.conflictType|?U(conflictType)", $p, 2, 8);
+        xassert_eqq((int) $ct(2), 8); // fresh insert path
+
+        // 2. INSERT ... VALUES ... ON DUPLICATE KEY UPDATE (multi-row)
+        $this->conf->qe("insert into PaperConflict (paperId, contactId, conflictType) values ?v", [[$p, 3, 2], [$p, 4, 8]]);
+        $this->conf->qe("insert into PaperConflict (paperId, contactId, conflictType) values ?v ?U
+            on duplicate key update conflictType=PaperConflict.conflictType|?U(conflictType)", [[$p, 3, 4], [$p, 4, 16]]);
+        xassert_eqq((int) $ct(3), 6);  // 2 | 4
+        xassert_eqq((int) $ct(4), 24); // 8 | 16
+
+        // 3. INSERT ... SELECT ... ON DUPLICATE KEY UPDATE with column aliases:
+        // the SELECT columns are aliased inside a derived table, and the update
+        // references the source column via `?U(target,source)`
+        $this->conf->qe("insert into PaperConflict (paperId, contactId, conflictType) values (?,?,?)", $p, 12, 8);
+        $this->conf->qe("insert into PaperConflict (paperId, contactId, conflictType) values (?,?,?)", $p, 22, 2);
+        $this->conf->qe("insert into PaperConflict (paperId, contactId, conflictType)
+            select * from
+                (select src.paperId as srcPaperId, ? as srcContactId, src.conflictType as srcConflictType
+                 from PaperConflict src where src.paperId=? and src.contactId=?) as tmp
+            on duplicate key update conflictType=PaperConflict.conflictType|?U(conflictType,srcConflictType)", 22, $p, 12);
+        xassert_eqq((int) $ct(22), 10); // 2 | 8
+        // fresh insert path for the derived-table form
+        $this->conf->qe("insert into PaperConflict (paperId, contactId, conflictType)
+            select * from
+                (select src.paperId as srcPaperId, ? as srcContactId, src.conflictType as srcConflictType
+                 from PaperConflict src where src.paperId=? and src.contactId=?) as tmp
+            on duplicate key update conflictType=PaperConflict.conflictType|?U(conflictType,srcConflictType)", 23, $p, 12);
+        xassert_eqq((int) $ct(23), 8); // fresh insert = source's conflictType
+
+        $this->conf->qe("delete from PaperConflict where paperId=?", $p);
+    }
+
+    function test_validate_email() {
+        xassert(validate_email("ekohler@hotcrp.com"));
+        xassert(validate_email("kohler@_.com"));
+        xassert(!validate_email(""));
+        xassert(!validate_email("kohler"));
+        // no longer than the `email` columns in the schema
+        xassert(validate_email(str_repeat("x", 114) . "@_.com"));
+        xassert(!validate_email(str_repeat("x", 115) . "@_.com"));
     }
 
     function test_escape_like() {
@@ -91,6 +233,25 @@ class Unit_Tester {
                                           "update Settings set value?{desired}e where name=? and value?{expected}e", ["cmpxchg"]),
                     3);
         xassert_eqq(Dbl::fetch_ivalue("select value from Settings where name='cmpxchg'"), 3);
+    }
+
+    function test_dbl_compare_exchange_error() {
+        Dbl::qe("delete from Settings where name='cmpxchg'");
+        Dbl::qe("insert into Settings set name='cmpxchg', value=1");
+        // a failed update is not an exchange
+        Dbl::set_error_handler(function ($dblink, $query) {});
+        $threw = false;
+        try {
+            Dbl::compare_exchange(Dbl::$default_dblink,
+                                  "select value from Settings where name=?", ["cmpxchg"],
+                                  function ($x) { return (int) $x + 1; },
+                                  "update Settings set value=?{desired}, nonesuch=1 where name=? and value=?{expected}", ["cmpxchg"]);
+        } catch (Exception $e) {
+            $threw = true;
+        }
+        Dbl::set_error_handler([$this->conf, "query_error_handler"]);
+        xassert($threw);
+        xassert_eqq(Dbl::fetch_ivalue("select value from Settings where name='cmpxchg'"), 1);
     }
 
     function test_dbl_multiquery() {
@@ -287,13 +448,222 @@ class Unit_Tester {
         xassert_eqq($csvr["Fungi"], "10");
     }
 
+    function test_csv_table_box() {
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_ASCII);
+        $t->select(["id", "title"]);
+        $t->add_row(["id" => 1, "title" => "Short"]);
+        $t->add_row(["id" => 137, "title" => "A longer title"]);
+        // numeric `id` column auto-right-aligned, `title` left-aligned
+        xassert_eqq($t->unparse(),
+            "+-----+----------------+\n"
+            . "|  id | title          |\n"
+            . "+-----+----------------+\n"
+            . "|   1 | Short          |\n"
+            . "| 137 | A longer title |\n"
+            . "+-----+----------------+\n");
+    }
+
+    function test_csv_table_rule() {
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_RULE | CsvGenerator::TABLE_ASCII);
+        $t->select(["id", "title"]);
+        $t->add_row(["id" => 1, "title" => "Short"]);
+        $t->add_row(["id" => 137, "title" => "A longer title"]);
+        // trailing whitespace on the last column is trimmed
+        xassert_eqq($t->unparse(),
+            " id  title\n"
+            . "---  --------------\n"
+            . "  1  Short\n"
+            . "137  A longer title\n");
+    }
+
+    function test_csv_table_unicode_width() {
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_RULE | CsvGenerator::TABLE_ASCII);
+        xassert_eqq($t->table_width("abc"), 3);
+        xassert_eqq($t->table_width("café"), 4);
+        // a 5-wide accented value should pad the same as a 5-wide ASCII value
+        $t->add_row(["café", "x"]);
+        $t->add_row(["abcde", "y"]);
+        xassert_eqq($t->unparse(), "café   x\nabcde  y\n");
+        // truncate width counts the first line plus room for "..."
+        $tt = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_TRUNCATE);
+        xassert_eqq($tt->table_width("café"), 4);
+        xassert_eqq($tt->table_width("café\nlong"), 7);
+    }
+
+    function test_csv_table_align() {
+        // explicit alignment overrides the numeric auto-detection
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_RULE | CsvGenerator::TABLE_ASCII);
+        $t->select(["n", "v"]);
+        $t->set_cell_align("n", "l")->set_cell_align("v", "c");
+        $t->add_row(["n" => 1, "v" => "x"]);
+        $t->add_row(["n" => 200, "v" => "yyy"]);
+        xassert_eqq($t->unparse(),
+            "n     v\n"
+            . "---  ---\n"
+            . "1     x\n"
+            . "200  yyy\n");
+    }
+
+    function test_csv_table_center() {
+        // centering with odd padding puts the extra space on the right
+        // ("a" in width 4: 1 space left, 2 right); box style keeps both sides
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_ASCII);
+        $t->select(["c"]);
+        $t->set_cell_align("c", "c");
+        $t->add_row(["c" => "a"]);
+        $t->add_row(["c" => "wxyz"]);
+        xassert_eqq($t->unparse(),
+            "+------+\n"
+            . "|  c   |\n"
+            . "+------+\n"
+            . "|  a   |\n"
+            . "| wxyz |\n"
+            . "+------+\n");
+    }
+
+    function test_csv_table_wrap() {
+        // long word boundaries soft-wrap; the row grows to multiple lines
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_RULE
+            | CsvGenerator::TABLE_ASCII);
+        $t->set_table_max_width(18)->select(["id", "title"]);
+        $t->add_row(["id" => 1, "title" => "the quick brown fox jumps"]);
+        $t->add_row(["id" => 2, "title" => "short"]);
+        // budget 18 - 2 gutter = 16 content; id width 2, title shrinks to 14
+        xassert_eqq($t->unparse(),
+            "id  title\n"
+            . "--  --------------\n"
+            . " 1  the quick\n"
+            . "    brown fox\n"
+            . "    jumps\n"
+            . " 2  short\n");
+    }
+
+    function test_csv_table_wrap_box() {
+        // box style: continuation lines keep borders and pad the non-wrapped
+        // column blank; a short row stays single-line
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_ASCII);
+        $t->set_table_max_width(22)->select(["id", "title"]);
+        $t->add_row(["id" => 1, "title" => "the quick brown fox"]);
+        $t->add_row(["id" => 2, "title" => "hi"]);
+        xassert_eqq($t->unparse(),
+            "+----+---------------+\n"
+            . "| id | title         |\n"
+            . "+----+---------------+\n"
+            . "|  1 | the quick     |\n"
+            . "|    | brown fox     |\n"
+            . "|  2 | hi            |\n"
+            . "+----+---------------+\n");
+    }
+
+    function test_csv_table_wrap_multicolumn() {
+        // when an earlier column wraps deeper than a later one, continuation
+        // lines render the later column blank (and emit no warnings)
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_ASCII);
+        $t->set_table_max_width(20)->select(["title", "x"]);
+        $t->add_row(["title" => "the quick brown fox", "x" => "y"]);
+        xassert_eqq($t->unparse(),
+            "+--------------+---+\n"
+            . "| title        | x |\n"
+            . "+--------------+---+\n"
+            . "| the quick    | y |\n"
+            . "| brown fox    |   |\n"
+            . "+--------------+---+\n");
+    }
+
+    function test_csv_table_newline() {
+        // an interior newline splits a cell across lines...
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_ASCII);
+        $t->select(["n", "v"]);
+        $t->add_row(["n" => "alpha\nbeta", "v" => "x"]);
+        $t->add_row(["n" => "g", "v" => "y"]);
+        xassert_eqq($t->unparse(),
+            "+-------+---+\n"
+            . "| n     | v |\n"
+            . "+-------+---+\n"
+            . "| alpha | x |\n"
+            . "| beta  |   |\n"
+            . "| g     | y |\n"
+            . "+-------+---+\n");
+
+        // ...a trailing newline is trimmed (not misread as a comment line)...
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_ASCII);
+        $t->select(["n", "v"]);
+        $t->add_row(["n" => "a", "v" => "trailing\n"]);
+        $t->add_row(["n" => "b", "v" => "z"]);
+        xassert_eqq($t->unparse(),
+            "+---+----------+\n"
+            . "| n | v        |\n"
+            . "+---+----------+\n"
+            . "| a | trailing |\n"
+            . "| b | z        |\n"
+            . "+---+----------+\n");
+
+        // ...and CRLF normalizes to a split with no stray CR.
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_ASCII);
+        $t->select(["n"]);
+        $t->add_row(["n" => "one\r\ntwo"]);
+        xassert_eqq($t->unparse(),
+            "+-----+\n"
+            . "| n   |\n"
+            . "+-----+\n"
+            . "| one |\n"
+            . "| two |\n"
+            . "+-----+\n");
+    }
+
+    function test_csv_table_wrap_hardbreak() {
+        // a word longer than its column is hard-broken across lines rather
+        // than overflowing and breaking the box alignment
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_ASCII);
+        $t->set_table_max_width(14)->select(["w"]);
+        $t->add_row(["w" => "abcdefghijklmnop"]);
+        xassert_eqq($t->unparse(),
+            "+------------+\n"
+            . "| w          |\n"
+            . "+------------+\n"
+            . "| abcdefghij |\n"
+            . "| klmnop     |\n"
+            . "+------------+\n");
+    }
+
+    function test_csv_table_truncate() {
+        // TABLE_TRUNCATE limits each cell to one line; a multi-line cell is
+        // clipped to its first line with "..." (column sized to fit the "...")
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_ASCII
+            | CsvGenerator::TABLE_TRUNCATE);
+        $t->select(["n", "v"]);
+        $t->add_row(["n" => "alpha\nbeta", "v" => "x"]);
+        $t->add_row(["n" => "g", "v" => "y"]);
+        xassert_eqq($t->unparse(),
+            "+----------+---+\n"
+            . "| n        | v |\n"
+            . "+----------+---+\n"
+            . "| alpha... | x |\n"
+            . "| g        | y |\n"
+            . "+----------+---+\n");
+
+        // with a max width, an over-wide cell is clipped to fit the column
+        $t = new CsvGenerator(CsvGenerator::TYPE_TABLE | CsvGenerator::TABLE_ASCII
+            | CsvGenerator::TABLE_TRUNCATE);
+        $t->set_table_max_width(20)->select(["id", "title"]);
+        $t->add_row(["id" => 1, "title" => "the quick brown fox"]);
+        $t->add_row(["id" => 2, "title" => "hi"]);
+        xassert_eqq($t->unparse(),
+            "+----+-------------+\n"
+            . "| id | title       |\n"
+            . "+----+-------------+\n"
+            . "|  1 | the quic... |\n"
+            . "|  2 | hi          |\n"
+            . "+----+-------------+\n");
+    }
+
     function test_numrangejoin() {
         xassert_eqq(numrangejoin([1, 2, 3, 4, 6, 8]), "1–4, 6, and 8");
         xassert_eqq(numrangejoin(["#1", "#2", "#3", 4, "xx6", "xx7", 8]), "#1–3, 4, xx6–7, and 8");
     }
 
     function test_php_behavior() {
-        xassert(PHP_MAJOR_VERSION >= 7);
+        xassert(PHP_VERSION_ID >= 80100);
         xassert_eqq(substr("", 0, 1), ""); // UGH
         xassert(!ctype_digit(""));
         xassert_eqq(!!preg_match('/\A\pZ\z/u', ' '), true);
@@ -346,28 +716,26 @@ class Unit_Tester {
     }
 
     function test_json() {
-        xassert_eqq(json_encode(Json::decode("{}")), "{}");
-        xassert_eqq(Json::decode('"\\u0030"'), "0");
-        xassert_eqq(json_encode(Json::decode('"\\u0030"')), '"0"');
-        xassert_eqq(json_encode(Json::decode('""')), '""');
-        xassert_eqq(json_encode(Json::decode('"')), 'null');
-        xassert_eqq(json_encode(Json::decode('"\\""')), '"\\""');
-        xassert_eqq(json_encode(Json::decode('"\\"\\\\"')), '"\\"\\\\"');
-        xassert_eqq(json_encode(Json::decode('"\\"\\\\\\')), 'null');
-        xassert_eqq(json_encode(Json::decode("null")), "null");
-        xassert_eqq(json_encode(Json::decode("true")), "true");
-        xassert_eqq(json_encode(Json::decode("false")), "false");
-        xassert_eqq(Json::decode('"'), null);
-        xassert_eqq(Json::decode("\"\r\n\""), null);
-        xassert_eqq(Json::decode("\"\027\""), null);
-        xassert_eqq(Json::encode("\n"), '"\\n"');
-        xassert_eqq(Json::encode("\007"), '"\\u0007"');
-        xassert_eqq(Json::encode("–"), '"–"');
-        xassert_eqq(Json::decode(Json::encode("–")), "–");
-        xassert_eqq(Json::decode(Json::encode("\xE2\x80\xA8\xE2\x80\xA9")), "\xE2\x80\xA8\xE2\x80\xA9");
-        xassert_eqq(json_encode(Json::decode('{"1":"1"}')), '{"1":"1"}');
-        xassert_eqq(json_encode(Json::decode('[1,"1"]   ')), '[1,"1"]');
-        xassert_eqq(json_encode(Json::decode('[1,"1"]   !')), "null");
+        $jb = new JsonParser;
+        xassert_eqq(json_encode($jb->set_input("{}")->base_decode()), "{}");
+        xassert_eqq($jb->set_input('"\\u0030"')->base_decode(), "0");
+        xassert_eqq(json_encode($jb->set_input('"\\u0030"')->base_decode()), '"0"');
+        xassert_eqq(json_encode($jb->set_input('""')->base_decode()), '""');
+        xassert_eqq(json_encode($jb->set_input('"')->base_decode()), 'null');
+        xassert_eqq(json_encode($jb->set_input('"\\""')->base_decode()), '"\\""');
+        xassert_eqq(json_encode($jb->set_input('"\\"\\\\"')->base_decode()), '"\\"\\\\"');
+        xassert_eqq(json_encode($jb->set_input('"\\"\\\\\\')->base_decode()), 'null');
+        xassert_eqq(json_encode($jb->set_input("null")->base_decode()), "null");
+        xassert_eqq(json_encode($jb->set_input("true")->base_decode()), "true");
+        xassert_eqq(json_encode($jb->set_input("false")->base_decode()), "false");
+        xassert_eqq($jb->set_input('"')->base_decode(), null);
+        xassert_eqq($jb->set_input("\"\r\n\"")->base_decode(), null);
+        xassert_eqq($jb->set_input("\"\027\"")->base_decode(), null);
+        xassert_eqq($jb->set_input(json_encode("–"))->base_decode(), "–");
+        xassert_eqq($jb->set_input(json_encode("\xE2\x80\xA8\xE2\x80\xA9"))->base_decode(), "\xE2\x80\xA8\xE2\x80\xA9");
+        xassert_eqq(json_encode($jb->set_input('{"1":"1"}')->base_decode()), '{"1":"1"}');
+        xassert_eqq(json_encode($jb->set_input('[1,"1"]   ')->base_decode()), '[1,"1"]');
+        xassert_eqq(json_encode($jb->set_input('[1,"1"]   !')->base_decode()), "null");
 
         $input = '{
     "a": ["b", "c"],
@@ -398,100 +766,261 @@ class Unit_Tester {
         xassert_eqq(JsonParser::path_push("\$[0]", "a"), "\$[0].a");
         xassert_eqq(JsonParser::path_push("\$[0]", "a\\"), "\$[0][\"a\\\\\"]");
         xassert_eqq(JsonParser::path_push("\$[0]", "\n"), "\$[0][\"\\n\"]");
+
+        // numbers decode as json_decode does
+        $jp = (new JsonParser)->set_assoc(true);
+        xassert_eqq($jp->set_input("[1E2, -5, 0, -0, 1.0]")->base_decode(), [100.0, -5, 0, 0, 1.0]);
+        xassert_eqq($jp->set_input("[9223372036854775807]")->base_decode(), [PHP_INT_MAX]);
+        xassert_eqq($jp->set_input("[9223372036854775808]")->base_decode(), [9223372036854775808.0]);
+        xassert_eqq($jp->set_input("[12345678901234567890]")->base_decode(), [12345678901234567890.0]);
+        xassert_eqq($jp->set_input("[01]")->base_decode(), null);
+
+        // strings
+        xassert_eqq($jp->set_input("\"\\u00e9\\n\"")->base_decode(), "\u{e9}\n");
+        xassert_eqq($jp->set_input("\"\027\"")->base_decode(), null);
+        xassert_eqq($jp->last_error(), JSON_ERROR_CTRL_CHAR);
+        xassert_eqq($jp->error_pos, 1);
+        xassert_eqq($jp->set_input("\"abc")->base_decode(), null);
+        xassert_eqq($jp->last_error(), JSON_ERROR_SYNTAX);
+        xassert_eqq($jp->error_pos, 4);
+
+        // invalid UTF-8 is rejected before parsing, with a position
+        xassert_eqq($jp->set_input("[\"a\xffb\"]")->base_decode(), null);
+        xassert_eqq($jp->last_error(), JSON_ERROR_UTF8);
+        xassert_eqq($jp->error_pos, 3);
+        xassert_eqq($jp->set_input("[\"\xe2\x80\"]")->base_decode(), null);
+        xassert_eqq($jp->last_error(), JSON_ERROR_UTF8);
+        xassert_eqq($jp->error_pos, 2);
+        xassert_eqq($jp->set_input("[\"\xe2\x80\xa8\"]")->base_decode(), ["\xe2\x80\xa8"]);
+        xassert_eqq(Json::decode("[\"a\xffb\"]"), null);
+        xassert_eqq(Json::last_error(), JSON_ERROR_UTF8);
+
+        // Json::decode locates errors by reparsing, except when that is
+        // expensive and unhelpful
+        xassert_eqq(Json::decode("null"), null);
+        xassert_eqq(Json::last_error(), JSON_ERROR_NONE);
+        xassert_eqq(Json::decode("[1,]"), null);
+        xassert_eqq(Json::last_error(), Json::ERROR_TRAILING_COMMA);
+        xassert_str_contains(Json::last_error_msg(), "at character 3");
+        xassert_eqq(Json::decode("[\"a\xffb\"]"), null);
+        xassert_eqq(Json::last_error(), JSON_ERROR_UTF8);
+        xassert_str_contains(Json::last_error_msg(), "at character 3");
+        xassert_eqq(Json::decode("[" . str_repeat(" ", JsonParser::MAX_LOCATE_SIZE) . "\"\xff\"]"), null);
+        xassert_eqq(Json::last_error(), JSON_ERROR_UTF8);
+        xassert_str_contains(Json::last_error_msg(), "at character " . (JsonParser::MAX_LOCATE_SIZE + 2));
+        xassert_eqq(Json::decode(str_repeat("[", 600) . str_repeat("]", 600)), null);
+        xassert_eqq(Json::last_error(), JSON_ERROR_DEPTH);
+        xassert_not_str_contains(Json::last_error_msg(), "at character");
+        xassert_eqq(Json::decode("[" . str_repeat(" ", JsonParser::MAX_LOCATE_SIZE) . "x]"), null);
+        xassert_eqq(Json::last_error(), JSON_ERROR_SYNTAX);
+        xassert_not_str_contains(Json::last_error_msg(), "at character");
+        xassert_eqq(Json::decode("[1, 2]"), [1, 2]);
+        xassert_eqq(Json::last_error(), JSON_ERROR_NONE);
+        $jp5 = (new JsonParser)->set_assoc(true)->set_flags(JsonParser::JSON5);
+        $big5 = "[" . str_repeat(" ", JsonParser::MAX_LOCATE_SIZE) . "1, 2,]";
+        xassert_eqq(Json::decode($big5, $jp5), [1, 2]);
+        xassert_eqq(Json::last_error(), JSON_ERROR_NONE);
+        xassert_eqq(Json::decode($big5 . "x", $jp5), null);
+        xassert_eqq(Json::last_error(), JSON_ERROR_STATE_MISMATCH);
+        xassert_eqq($jp5->last_error(), JSON_ERROR_STATE_MISMATCH);
+        xassert_str_contains(Json::last_error_msg(), "at character");
+        $jpw = (new JsonParser)->set_assoc(true)->set_flags(JsonParser::JSON_EXTENDED_WHITESPACE);
+        $bigw = "[" . str_repeat(" ", JsonParser::MAX_LOCATE_SIZE) . "1,\u{a0}2]";
+        xassert_eqq(Json::decode($bigw, $jpw), [1, 2]);
+        xassert_eqq(Json::last_error(), JSON_ERROR_NONE);
+        // the parser's own decode carries its filename into messages
+        $jpf = (new JsonParser("[1,]"))->set_filename("f.json");
+        xassert_eqq($jpf->decode(), null);
+        xassert_str_contains($jpf->last_error_msg(), "f.json:1:4");
+        // a JSON5-only document still takes the fast path when it is plain JSON
+        xassert_eqq((new JsonParser("[1, 2]"))->set_flags(JsonParser::JSON5)->decode(), [1, 2]);
+        xassert_eqq((new JsonParser("[1, 2,] // c"))->set_flags(JsonParser::JSON5)->decode(), [1, 2]);
+
+        // object keys
+        xassert_eqq($jp->set_input("{\"a\\\"b\": 1, \"\": 2, \"c\\u00e9\": 3}")->base_decode(), ["a\"b" => 1, "" => 2, "c\u{e9}" => 3]);
+        xassert_eqq($jp->set_input("{\"a\tb\": 1}")->base_decode(), null);
+        xassert_eqq($jp->last_error(), JSON_ERROR_CTRL_CHAR);
+        xassert_eqq($jp->error_pos, 3);
+        xassert_eqq($jp->set_input("{\"a\":1,}")->base_decode(), null);
+        xassert_eqq($jp->last_error(), Json::ERROR_TRAILING_COMMA);
+        xassert_eqq($jp->error_pos, 7);
+        $jpo = (new JsonParser)->set_assoc(false);
+        xassert_eqq(json_encode($jpo->set_input("{\"\": 1}")->base_decode()), '{"":1}');
+        xassert_eqq($jpo->set_input("{\"\\u0000a\": 1}")->base_decode(), null);
+        xassert_eqq($jpo->last_error(), JSON_ERROR_INVALID_PROPERTY_NAME);
+
+        // whitespace
+        xassert_eqq($jp->set_input(" \t\r\n[ \n1 ,\t2\r]\n ")->base_decode(), [1, 2]);
+    }
+
+    function test_json_decode_user() {
+        // normal input decodes as an object, no error
+        $o = Json::decode_user('{"a":1,"authors":"x"}', 1000);
+        xassert(is_object($o));
+        xassert_eqq($o->a, 1);
+        xassert_eqq(Json::last_error(), JSON_ERROR_NONE);
+
+        // empty and over-length inputs are refused with distinct codes
+        xassert_eqq(Json::decode_user("", 1000), null);
+        xassert_eqq(Json::last_error(), JSON_ERROR_SYNTAX);
+        xassert_eqq(Json::decode_user(str_repeat("a", 100), 10), null);
+        xassert_eqq(Json::last_error(), Json::ERROR_TOO_LONG);
+
+        // hash-collision-shaped input (many object members) is refused
+        $evil = "{" . str_repeat('"Ez":0,', 15000) . '"Ez":0}';
+        xassert_gt(strlen($evil), 8192);
+        xassert_eqq(Json::decode_user($evil, 1 << 20), null);
+        xassert_eqq(Json::last_error(), Json::ERROR_TOO_COMPLEX);
+
+        // ...but a long string that merely contains many colons is not
+        // collision-shaped: only structural colons count, so it decodes
+        $colonstr = '{"u":"' . str_repeat("x:", 30000) . '"}';
+        xassert_gt(strlen($colonstr), 8192);
+        xassert(is_object(Json::decode_user($colonstr, 1 << 20)));
+        xassert_eqq(Json::last_error(), JSON_ERROR_NONE);
+
+        // small dense input is below the guard threshold and decodes
+        $small = "{" . str_repeat('"a":0,', 1000) . '"a":0}';
+        xassert_lt(strlen($small), 8192);
+        xassert(is_object(Json::decode_user($small, 1 << 20)));
+        xassert_eqq(Json::last_error(), JSON_ERROR_NONE);
+
+        // a large *legitimate* bulk document — an array of many small objects,
+        // not one hash-collision object — trips the default complexity cap
+        $rows = [];
+        for ($i = 0; $i !== 8000; ++$i) {
+            $rows[] = "{\"email\":\"u{$i}@x.edu\",\"firstName\":\"F{$i}\",\"lastName\":\"L{$i}\"}";
+        }
+        $bulk = "[" . join(",", $rows) . "]";
+        xassert_eqq(Json::decode_user($bulk, 1 << 20), null);
+        xassert_eqq(Json::last_error(), Json::ERROR_TOO_COMPLEX);
+
+        // ...but a caller that raises the complexity scale accepts it...
+        $a = Json::decode($bulk, (new JsonParser)->set_user(1 << 20)->set_complexity_scale(4.0));
+        xassert(is_array($a));
+        xassert_eqq(count($a), 8000);
+        xassert_eqq(Json::last_error(), JSON_ERROR_NONE);
+
+        // ...and a scale of 0 lifts the cap entirely
+        $a = Json::decode($bulk, (new JsonParser)->set_user(1 << 20)->set_complexity_scale(0));
+        xassert(is_array($a));
+        xassert_eqq(count($a), 8000);
+
+        // the length limit still applies whatever the scale
+        xassert_eqq(Json::decode(str_repeat("a", 100), (new JsonParser)->set_user(10)->set_complexity_scale(0)), null);
+        xassert_eqq(Json::last_error(), Json::ERROR_TOO_LONG);
     }
 
     function test_json5() {
         $jp = (new JsonParser)->set_assoc(true);
         $jp5 = (new JsonParser)->set_assoc(true)->set_flags(JsonParser::JSON5);
 
-        xassert_eqq($jp->set_input("[\"a\"]")->decode(), ["a"]);
+        // surrogate pairs decode to the supplementary character
+        xassert_eqq($jp5->set_input("['\\ud83d\\ude00']")->base_decode(), ["\u{1F600}"]);
+        xassert_eqq($jp5->set_input("['a\\uD834\\uDD1Eb']")->base_decode(), ["a\u{1D11E}b"]);
+        xassert_eqq($jp5->set_input("{'\\ud83d\\ude00': 1}")->base_decode(), ["\u{1F600}" => 1]);
+        xassert_eqq($jp5->set_input("[\"\\ud83d\\ude00\\'\"]")->base_decode(), ["\u{1F600}'"]);
+        xassert_eqq($jp5->set_input("['\\ud83d']")->base_decode(), null);
+        xassert_eqq($jp5->error_type, JSON_ERROR_UTF16);
+
+        xassert_eqq($jp->set_input("[\"a\"]")->base_decode(), ["a"]);
         xassert($jp->ok());
-        xassert_eqq($jp5->set_input("[\"a\"]")->decode(), ["a"]);
+        xassert_eqq($jp5->set_input("[\"a\"]")->base_decode(), ["a"]);
         xassert($jp5->ok());
-        xassert_eqq($jp->set_input("[\"a\",]")->decode(), null);
+        xassert_eqq($jp->set_input("[\"a\",]")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp5->set_input("[\"a\",]")->decode(), ["a"]);
+        xassert_eqq($jp5->set_input("[\"a\",]")->base_decode(), ["a"]);
         xassert($jp5->ok());
-        xassert_eqq($jp->set_input("[,]")->decode(), null);
+        xassert_eqq($jp->set_input("[,]")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp5->set_input("[,]")->decode(), null);
+        xassert_eqq($jp5->set_input("[,]")->base_decode(), null);
         xassert(!$jp5->ok());
 
-        xassert_eqq($jp->set_input("{\"a\":1}")->decode(), ["a" => 1]);
+        xassert_eqq($jp->set_input("{\"a\":1}")->base_decode(), ["a" => 1]);
         xassert($jp->ok());
-        xassert_eqq($jp5->set_input("{\"a\":1}")->decode(), ["a" => 1]);
+        xassert_eqq($jp5->set_input("{\"a\":1}")->base_decode(), ["a" => 1]);
         xassert($jp5->ok());
-        xassert_eqq($jp->set_input("{\"a\":1,}")->decode(), null);
+        xassert_eqq($jp->set_input("{\"a\":1,}")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp5->set_input("{\"a\":1,}")->decode(), ["a" => 1]);
+        xassert_eqq($jp5->set_input("{\"a\":1,}")->base_decode(), ["a" => 1]);
         xassert($jp5->ok());
-        xassert_eqq($jp->set_input("{\"b\",\"a\":1}")->decode(), null);
+        xassert_eqq($jp->set_input("{\"b\",\"a\":1}")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp5->set_input("{\"b\",\"a\":1}")->decode(), null);
+        xassert_eqq($jp5->set_input("{\"b\",\"a\":1}")->base_decode(), null);
         xassert(!$jp5->ok());
-        xassert_eqq($jp->set_input("{,}")->decode(), null);
+        xassert_eqq($jp->set_input("{,}")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp5->set_input("{,}")->decode(), null);
+        xassert_eqq($jp5->set_input("{,}")->base_decode(), null);
         xassert(!$jp5->ok());
 
-        xassert_eqq($jp->set_input("0x1A")->decode(), null);
+        xassert_eqq($jp->set_input("0x1A")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp5->set_input("0x1A")->decode(), 26);
+        xassert_eqq($jp5->set_input("0x1A")->base_decode(), 26);
         xassert($jp5->ok());
-        xassert_eqq($jp->set_input("+12")->decode(), null);
+        xassert_eqq($jp->set_input("+12")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp5->set_input("+12")->decode(), 12);
+        xassert_eqq($jp5->set_input("+12")->base_decode(), 12);
         xassert($jp5->ok());
 
-        xassert_eqq($jp->set_input("Infinity")->decode(), null);
+        xassert_eqq($jp->set_input("Infinity")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp5->set_input("Infinity")->decode(), INF);
+        xassert_eqq($jp5->set_input("Infinity")->base_decode(), INF);
         xassert($jp5->ok());
 
-        xassert_eqq($jp->set_input("NaN")->decode(), null);
+        xassert_eqq($jp->set_input("NaN")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp5->set_input("NaN")->decode(), NAN);
+        xassert_eqq($jp5->set_input("NaN")->base_decode(), NAN);
         xassert($jp5->ok());
 
-        xassert_eqq($jp->set_input("// Comment\ntrue\n/* Yep */")->decode(), null);
+        xassert_eqq($jp->set_input("// Comment\ntrue\n/* Yep */")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp5->set_input("// Comment\ntrue\n/* Yep */")->decode(), true);
+        xassert_eqq($jp5->set_input("// Comment\ntrue\n/* Yep */")->base_decode(), true);
         xassert($jp5->ok());
 
-        xassert_eqq($jp5->set_input("'Hello.\t'")->decode(), "Hello.\t");
+        xassert_eqq($jp5->set_input("'Hello.\t'")->base_decode(), "Hello.\t");
         xassert($jp5->ok());
-        xassert_eqq($jp5->set_input("'Hello.\n'")->decode(), null);
+        xassert_eqq($jp5->set_input("'Hello.\n'")->base_decode(), null);
         xassert(!$jp5->ok());
-        xassert_eqq($jp5->set_input("'Hello.\\\n'")->decode(), "Hello.");
+        xassert_eqq($jp5->set_input("'Hello.\\\n'")->base_decode(), "Hello.");
         xassert($jp5->ok());
-        xassert_eqq($jp5->set_input("'Hello.\\\n\"'")->decode(), "Hello.\"");
+        xassert_eqq($jp5->set_input("'Hello.\\\n\"'")->base_decode(), "Hello.\"");
         xassert($jp5->ok());
-        xassert_eqq($jp5->set_input("\"Hello.\t'")->decode(), null);
+        xassert_eqq($jp5->set_input("\"Hello.\t'")->base_decode(), null);
         xassert(!$jp5->ok());
-        xassert_eqq($jp5->set_input("\"Hello.\t\"")->decode(), "Hello.\t");
+        xassert_eqq($jp5->set_input("\"Hello.\t\"")->base_decode(), "Hello.\t");
         xassert($jp5->ok());
-        xassert_eqq($jp5->set_input("\"Hello.\n\"")->decode(), null);
+        xassert_eqq($jp5->set_input("\"Hello.\n\"")->base_decode(), null);
         xassert(!$jp5->ok());
-        xassert_eqq($jp5->set_input("\"Hello.\\\n\"")->decode(), "Hello.");
+        xassert_eqq($jp5->set_input("\"Hello.\\\n\"")->base_decode(), "Hello.");
         xassert($jp5->ok());
-        xassert_eqq($jp5->set_input("\"Hello.\\\n'\"")->decode(), "Hello.'");
+        xassert_eqq($jp5->set_input("\"Hello.\\\n'\"")->base_decode(), "Hello.'");
         xassert($jp5->ok());
 
-        xassert_eqq($jp->set_input("\"Hello.\t'")->decode(), null);
+        xassert_eqq($jp->set_input("\"Hello.\t'")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp->set_input("\"Hello.\t\"")->decode(), null);
+        xassert_eqq($jp->set_input("\"Hello.\t\"")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp->set_input("\"Hello.\n\"")->decode(), null);
+        xassert_eqq($jp->set_input("\"Hello.\n\"")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp->set_input("\"Hello.\\\n\"")->decode(), null);
+        xassert_eqq($jp->set_input("\"Hello.\\\n\"")->base_decode(), null);
         xassert(!$jp->ok());
-        xassert_eqq($jp->set_input("\"Hello.\\\n'\"")->decode(), null);
+        xassert_eqq($jp->set_input("\"Hello.\\\n'\"")->base_decode(), null);
         xassert(!$jp->ok());
 
-        xassert_eqq($jp5->set_input("{a:1}")->decode(), ["a" => 1]);
+        xassert_eqq($jp5->set_input("{a:1}")->base_decode(), ["a" => 1]);
         xassert($jp5->ok());
-        xassert_eqq($jp->set_input("{a:1}")->decode(), null);
+        xassert_eqq($jp->set_input("{a:1}")->base_decode(), null);
         xassert(!$jp->ok());
+
+        // numbers
+        xassert_eqq($jp5->set_input("[1, 0x10, -0x10, +0x1F]")->base_decode(), [1, 16, -16, 31]);
+        xassert_eqq($jp5->set_input("{a: 0xff}")->base_decode(), ["a" => 255]);
+        xassert_eqq($jp5->set_input("[.5, -.5, 5., +12, -0]")->base_decode(), [0.5, -0.5, 5.0, 12, 0]);
+        xassert_eqq($jp5->set_input("[9223372036854775808]")->base_decode(), [9223372036854775808.0]);
+        xassert_eqq($jp5->set_input("0x10.5")->base_decode(), null);
+        xassert_eqq($jp5->set_input("'a\xffb'")->base_decode(), null);
+        xassert_eqq($jp5->last_error(), JSON_ERROR_UTF8);
+        xassert_eqq($jp5->set_input("// c\n{a: 1, /* x */ b: [2,],}")->base_decode(), ["a" => 1, "b" => [2]]);
     }
 
     /** @param JsonParser $jp
@@ -557,9 +1086,9 @@ class Unit_Tester {
     }
 
     function test_session_list_ids() {
-        xassert_eqq(Json::decode("[1-2]"), null);
+        xassert_eqq((new JsonParser("[1-2]"))->base_decode(), null);
         xassert_eqq(json_decode("[1-2]"), null);
-        xassert_eqq(Json::decode("[1,2,3-4,5,6-10,11]"), null);
+        xassert_eqq((new JsonParser("[1,2,3-4,5,6-10,11]"))->base_decode(), null);
         xassert_eqq(json_decode("[1,2,3-4,5,6-10,11]"), null);
 
         xassert_eqq(SessionList::decode_ids("[1-2]"), [1,2]);
@@ -584,6 +1113,184 @@ class Unit_Tester {
         // check for short encodings
         xassert(strlen(SessionList::encode_ids([10,9,8,7])) <= 5);
         xassert(strlen(SessionList::encode_ids([10,9,8,7,5,4,1])) <= 7);
+
+        // reject decodings that would expand past DECODE_LIMIT (DoS backstop)
+        xassert_eqq(SessionList::decode_ids("1-100000000"), null);
+    }
+
+    /** @return array{int,string} */
+    private function call_fail_bad_database() {
+        $old_test_mode = Navigation::$test_mode;
+        Navigation::$test_mode = 2;
+        $qreq = (new Qrequest("GET"))->set_page("api")->set_conf($this->conf);
+        $old_qreq = Qrequest::$main_request;
+        Qrequest::set_main_request($qreq);
+        $status = 0;
+        ob_start();
+        try {
+            Multiconference::fail_bad_database($this->conf);
+        } catch (PageCompletion $pc) {
+            $status = Navigation::http_response_code();
+        }
+        $out = ob_get_clean();
+        Navigation::$test_mode = $old_test_mode;
+        if ($old_qreq) {
+            Qrequest::set_main_request($old_qreq);
+        }
+        return [$status, $out];
+    }
+
+    function test_database_unavailable_is_not_nonexistence() {
+        global $Opt;
+        // an unreachable database server is temporary and logged; a missing
+        // database is a nonexistent conference
+        $cp = Dbl::parse_connection_params($Opt);
+        $down = clone $cp;
+        $down->host = "127.0.0.1";
+        $down->port = 9;
+        $down->socket = null;
+        // (failed connections warn; that's expected here)
+        xassert_eqq(@$down->connect(), null);
+        xassert($down->transient());
+        xassert_neqq($down->connect_error, "");
+        $missing = clone $cp;
+        $missing->name = "hotcrp_testdb_nonexistent";
+        xassert_eqq(@$missing->connect(), null);
+        xassert_neqq($missing->connect_errno, 0);
+        xassert(!$missing->transient());
+
+        // a nonexistent conference with its own (nonexistent) account
+        $noacct = clone $cp;
+        $noacct->name = $noacct->user = "hotcrp_testdb_nonexistent";
+        xassert_eqq(@$noacct->connect(), null);
+        xassert_eqq($noacct->connect_errno, 1045);
+        xassert($noacct->per_database_user());
+        // a broken shared account
+        $sharedacct = clone $cp;
+        $sharedacct->user = "hotcrp_nonexistent_user";
+        xassert_eqq(@$sharedacct->connect(), null);
+        xassert_eqq($sharedacct->connect_errno, 1045);
+        xassert(!$sharedacct->per_database_user());
+        xassert(!$down->missing());
+
+        // 1045 (bad account) means a missing database only for per-database
+        // users; a broken shared account is a server problem
+        $pcp = function ($opt) {
+            return Dbl::parse_connection_params($opt);
+        };
+        xassert($pcp(["dbName" => "x"])->per_database_user());
+        xassert(!$pcp(["dbName" => "x", "dbUser" => "shared"])->per_database_user());
+        xassert($pcp(["dbName" => "x", "dbUser" => "x"])->per_database_user());
+        xassert($pcp(["confid" => "c", "dbName" => "db_\${confid}", "dbUser" => "u_\${confid}"])->per_database_user());
+        xassert(!$pcp(["confid" => "c", "dbName" => "db_\${confid}", "dbUser" => "shared"])->per_database_user());
+        xassert(!$pcp(["dsn" => "mysql://shared:pw@localhost/x"])->per_database_user());
+        xassert($pcp(["confid" => "c", "dsn" => "mysql://u_\${confid}:pw@localhost/\${confid}"])->per_database_user());
+        $per = $pcp(["dbName" => "x"]);
+        $shared = $pcp(["dbName" => "x", "dbUser" => "shared"]);
+        foreach ([1044, 1049] as $errno) {
+            $per->connect_errno = $shared->connect_errno = $errno;
+            xassert($per->missing());
+            xassert($shared->missing());
+        }
+        $per->connect_errno = $shared->connect_errno = 1045;
+        xassert($per->missing());
+        xassert(!$shared->missing());
+        $per->connect_errno = 2002;
+        xassert(!$per->missing());
+        xassert($per->transient());
+
+        // `Conf` keeps its connection parameters, including a failed attempt
+        xassert($this->conf->dbparams instanceof Dbl_ConnectionParams);
+        xassert_eqq($this->conf->dbparams->connect_errno, 0);
+        $dconf = @new Conf(["dsn" => "mysql://nobody@127.0.0.1:9/hotcrp_testdb"], true);
+        xassert(!$dconf->dblink);
+        $dcp = $dconf->dbparams;
+        xassert($dcp instanceof Dbl_ConnectionParams);
+        xassert($dcp->transient());
+        xassert_neqq($dcp->connect_error, "");
+        // ...or null if there was nothing to try
+        $dconf = @new Conf(["dbName" => ""], true);
+        xassert(!$dconf->dblink);
+        xassert_eqq($dconf->dbparams, null);
+
+        $old = [$this->conf->opt("multiconference"), $this->conf->opt("confid"), $this->conf->dbparams];
+        $old_log = ini_get("error_log");
+        $logfn = tempnam(sys_get_temp_dir(), "hotcrp-errlog");
+        ini_set("error_log", $logfn);
+        $fail = function ($xcp) use ($logfn) {
+            /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
+            $this->conf->dbparams = $xcp;
+            file_put_contents($logfn, "");
+            [$status, $out] = $this->call_fail_bad_database();
+            return [$status, $out, file_get_contents($logfn)];
+        };
+
+        // multiconference: only a missing conference is 404, and unlogged
+        $this->conf->set_opt("multiconference", true);
+        $this->conf->set_opt("confid", "testconf");
+        [$status, $out, $log] = $fail($down);
+        xassert_eqq($status, 503);
+        xassert_str_contains($out, "temporarily unavailable");
+        xassert_str_contains($log, "Unable to connect to database");
+        foreach ([$missing, $noacct, null] as $xcp) {
+            [$status, $out, $log] = $fail($xcp);
+            xassert_eqq($status, 404);
+            xassert_str_contains($out, "“testconf” conference does not exist");
+            xassert_eqq($log, "");
+        }
+        // ...but with a shared user, a bad account breaks every conference
+        [$status, $out, $log] = $fail($sharedacct);
+        xassert_eqq($status, 503);
+        xassert_str_contains($out, "unable to connect to its database");
+        xassert_str_contains($log, "1045");
+        // ...an unexpected error is the administrator's problem
+        $blocked = clone $missing;
+        $blocked->connect_errno = 1129;
+        $blocked->connect_error = "Host is blocked";
+        [$status, $out, $log] = $fail($blocked);
+        xassert_eqq($status, 503);
+        xassert_str_contains($out, "unable to connect to its database");
+        xassert_str_contains($log, "1129 Host is blocked");
+
+        // single conference: always 503 and logged
+        $this->conf->set_opt("multiconference", null);
+        [$status, $out, $log] = $fail($missing);
+        xassert_eqq($status, 503);
+        xassert_str_contains($out, "unable to connect to its database");
+        xassert_str_contains($log, "Unable to connect to database");
+        [$status, $out, $log] = $fail(null);
+        xassert_eqq($status, 503);
+        xassert_str_contains($log, "no database configuration");
+
+        $this->conf->set_opt("multiconference", $old[0]);
+        $this->conf->set_opt("confid", $old[1]);
+        /** @phan-suppress-next-line PhanAccessReadOnlyProperty */
+        $this->conf->dbparams = $old[2];
+        ini_set("error_log", $old_log);
+        @unlink($logfn);
+        $dblink = $cp->connect();
+        xassert(!!$dblink);
+        xassert_eqq($cp->connect_errno, 0);
+        $dblink->close();
+    }
+
+    function test_session_list_decode_limit() {
+        // DECODE_LIMIT bounds the total, however the IDs are spelled
+        $lim = SessionList::DECODE_LIMIT;
+        xassert_eqq(count(SessionList::decode_ids("q{$lim}") ?? []), $lim);
+        xassert_eqq(SessionList::decode_ids("q" . ($lim + 1)), null);
+        xassert_eqq(SessionList::decode_ids("q{$lim}q1"), null);
+        xassert_eqq(SessionList::decode_ids("q{$lim}a"), null);
+        xassert_eqq(count(SessionList::decode_ids("q" . ($lim - 1) . "a") ?? []), $lim);
+        xassert_eqq(count(SessionList::decode_ids("1-{$lim}") ?? []), $lim);
+        xassert_eqq(SessionList::decode_ids("1-" . ($lim + 1)), null);
+        xassert_eqq(SessionList::decode_ids("1-{$lim} " . ($lim + 5)), null);
+        xassert_eqq(SessionList::decode_ids("5 1-{$lim}"), null);
+        xassert_eqq(count(SessionList::decode_ids(json_encode(range(1, $lim))) ?? []), $lim);
+        xassert_eqq(SessionList::decode_ids(json_encode(range(1, $lim + 1))), null);
+        // with ranges, a range is one entry
+        xassert_eqq(SessionList::decode_ids("1-99999999999 5", true), [[1, 99999999999], 5]);
+        xassert_eqq(SessionList::decode_ids("q99999999999", true), [[0, 99999999998]]);
     }
 
     /** @return list<int> */
@@ -682,42 +1389,42 @@ class Unit_Tester {
 
     function test_tagger_checks() {
         $tagger = new Tagger($this->conf->root_user());
-        xassert_eqq($tagger->check("none", 0), false);
-        xassert_eqq($tagger->check("any", 0), false);
-        xassert_eqq($tagger->check("undefined", 0), false);
-        xassert_eqq($tagger->check("none", Tagger::ALLOWRESERVED), "none");
-        xassert_eqq($tagger->check("any", Tagger::ALLOWRESERVED), "any");
-        xassert_eqq($tagger->check("undefined", Tagger::ALLOWRESERVED), "undefined");
-        xassert_eqq($tagger->check("~none", 0), false);
-        xassert_eqq($tagger->check("~any", 0), false);
-        xassert_eqq($tagger->check("~undefined", 0), false);
-        xassert_eqq($tagger->check("~~none", 0), false);
-        xassert_eqq($tagger->check("~~any", 0), false);
-        xassert_eqq($tagger->check("~~undefined", 0), false);
-        xassert_eqq($tagger->check("hello", 0), "hello");
-        xassert_eqq($tagger->check("hello#0", 0), "hello#0");
-        xassert_eqq($tagger->check("~hello", 0), "~hello");
-        xassert_eqq($tagger->check("~hello#0", 0), "~hello#0");
-        xassert_eqq($tagger->check("~~hello", 0), "~~hello");
-        xassert_eqq($tagger->check("~~hello#0", 0), "~~hello#0");
-        xassert_eqq($tagger->check("hello", Tagger::NOVALUE), "hello");
-        xassert_eqq($tagger->check("hello#0", Tagger::NOVALUE), false);
-        xassert_eqq($tagger->check("~hello", Tagger::NOVALUE), "~hello");
-        xassert_eqq($tagger->check("~hello#0", Tagger::NOVALUE), false);
-        xassert_eqq($tagger->check("~~hello", Tagger::NOVALUE), "~~hello");
-        xassert_eqq($tagger->check("~~hello#0", Tagger::NOVALUE), false);
-        xassert_eqq($tagger->check("hello", Tagger::NOPRIVATE), "hello");
-        xassert_eqq($tagger->check("hello#0", Tagger::NOPRIVATE), "hello#0");
-        xassert_eqq($tagger->check("~hello", Tagger::NOPRIVATE), false);
-        xassert_eqq($tagger->check("~hello#0", Tagger::NOPRIVATE), false);
-        xassert_eqq($tagger->check("~~hello", Tagger::NOPRIVATE), "~~hello");
-        xassert_eqq($tagger->check("~~hello#0", Tagger::NOPRIVATE), "~~hello#0");
-        xassert_eqq($tagger->check("hello", Tagger::NOCHAIR), "hello");
-        xassert_eqq($tagger->check("hello#0", Tagger::NOCHAIR), "hello#0");
-        xassert_eqq($tagger->check("~hello", Tagger::NOCHAIR), "~hello");
-        xassert_eqq($tagger->check("~hello#0", Tagger::NOCHAIR), "~hello#0");
-        xassert_eqq($tagger->check("~~hello", Tagger::NOCHAIR), false);
-        xassert_eqq($tagger->check("~~hello#0", Tagger::NOCHAIR), false);
+        xassert_eqq($tagger->check_syntax("none", 0), false);
+        xassert_eqq($tagger->check_syntax("any", 0), false);
+        xassert_eqq($tagger->check_syntax("undefined", 0), false);
+        xassert_eqq($tagger->check_syntax("none", Tagger::ALLOWRESERVED), "none");
+        xassert_eqq($tagger->check_syntax("any", Tagger::ALLOWRESERVED), "any");
+        xassert_eqq($tagger->check_syntax("undefined", Tagger::ALLOWRESERVED), "undefined");
+        xassert_eqq($tagger->check_syntax("~none", 0), false);
+        xassert_eqq($tagger->check_syntax("~any", 0), false);
+        xassert_eqq($tagger->check_syntax("~undefined", 0), false);
+        xassert_eqq($tagger->check_syntax("~~none", 0), false);
+        xassert_eqq($tagger->check_syntax("~~any", 0), false);
+        xassert_eqq($tagger->check_syntax("~~undefined", 0), false);
+        xassert_eqq($tagger->check_syntax("hello", 0), "hello");
+        xassert_eqq($tagger->check_syntax("hello#0", 0), "hello#0");
+        xassert_eqq($tagger->check_syntax("~hello", 0), "~hello");
+        xassert_eqq($tagger->check_syntax("~hello#0", 0), "~hello#0");
+        xassert_eqq($tagger->check_syntax("~~hello", 0), "~~hello");
+        xassert_eqq($tagger->check_syntax("~~hello#0", 0), "~~hello#0");
+        xassert_eqq($tagger->check_syntax("hello", Tagger::NOVALUE), "hello");
+        xassert_eqq($tagger->check_syntax("hello#0", Tagger::NOVALUE), false);
+        xassert_eqq($tagger->check_syntax("~hello", Tagger::NOVALUE), "~hello");
+        xassert_eqq($tagger->check_syntax("~hello#0", Tagger::NOVALUE), false);
+        xassert_eqq($tagger->check_syntax("~~hello", Tagger::NOVALUE), "~~hello");
+        xassert_eqq($tagger->check_syntax("~~hello#0", Tagger::NOVALUE), false);
+        xassert_eqq($tagger->check_syntax("hello", Tagger::NOPRIVATE), "hello");
+        xassert_eqq($tagger->check_syntax("hello#0", Tagger::NOPRIVATE), "hello#0");
+        xassert_eqq($tagger->check_syntax("~hello", Tagger::NOPRIVATE), false);
+        xassert_eqq($tagger->check_syntax("~hello#0", Tagger::NOPRIVATE), false);
+        xassert_eqq($tagger->check_syntax("~~hello", Tagger::NOPRIVATE), "~~hello");
+        xassert_eqq($tagger->check_syntax("~~hello#0", Tagger::NOPRIVATE), "~~hello#0");
+        xassert_eqq($tagger->check_syntax("hello", Tagger::NOCHAIR), "hello");
+        xassert_eqq($tagger->check_syntax("hello#0", Tagger::NOCHAIR), "hello#0");
+        xassert_eqq($tagger->check_syntax("~hello", Tagger::NOCHAIR), "~hello");
+        xassert_eqq($tagger->check_syntax("~hello#0", Tagger::NOCHAIR), "~hello#0");
+        xassert_eqq($tagger->check_syntax("~~hello", Tagger::NOCHAIR), false);
+        xassert_eqq($tagger->check_syntax("~~hello#0", Tagger::NOCHAIR), false);
     }
 
     function test_ordinal() {
@@ -752,6 +1459,9 @@ class Unit_Tester {
         xassert_eqq(plural_word(2, "this"), "these");
         xassert_eqq(plural_word(2, "this butt"), "these butts");
         xassert_eqq(plural_word(2, "day"), "days");
+        xassert_eqq(plural_word(2, "was"), "were");
+        xassert_eqq(plural_word(2, "does"), "do");
+        xassert_eqq(plural_word(2, "do"), "does");
         xassert_eqq(plural_word(2, "ply"), "plies");
         xassert_eqq(plural_word(2, "worth"), "worths");
         xassert_eqq(plural_word(2, "hutch"), "hutches");
@@ -768,6 +1478,148 @@ class Unit_Tester {
         xassert_eqq(SettingParser::parse_duration("1h15m"), 60 * 75.0);
         xassert_eqq(SettingParser::parse_duration("1h15mo"), null);
         xassert_eqq(SettingParser::parse_duration("15"), 15.0);
+        xassert_eqq(SettingParser::parse_duration("never"), -1.0);
+        xassert_eqq(SettingParser::parse_duration("none"), 0.0);
+        xassert_eqq(SettingParser::parse_duration(""), null);
+        xassert_eqq(SettingParser::parse_duration("1y6mo"), 86400 * (365 + 180.0));
+        xassert_eqq(SettingParser::parse_duration("1:30"), 90.0);
+        xassert_eqq(SettingParser::parse_duration("P1Y6M"), 86400 * (365 + 180.0));
+        xassert_eqq(SettingParser::parse_duration("PT1H15M"), 60 * 75.0);
+    }
+
+    function test_parse_duration_yms() {
+        xassert_eqq(SettingParser::parse_duration_yms("2y"), [2, 0, 0.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("1 year 6 months"), [1, 6, 0.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("1.5y"), [1, 6, 0.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("1.5mo"), [0, 1, 15 * 86400.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("2w3d"), [0, 0, 17 * 86400.0]);
+        xassert_eqq(SettingParser::parse_duration_yms(" 1h 15m "), [0, 0, 4500.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("1:30"), [0, 0, 90.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("15"), [0, 0, 15.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("never"), [null, null, -1.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("none"), [null, null, 0.0]);
+        xassert_eqq(SettingParser::parse_duration_yms(""), [null, null, null]);
+        xassert_eqq(SettingParser::parse_duration_yms("15m1h"), [null, null, null]);
+        xassert_eqq(SettingParser::parse_duration_yms("2 dayz"), [null, null, null]);
+
+        // ISO 8601 durations: `M` is months before the `T` designator and
+        // minutes after it
+        xassert_eqq(SettingParser::parse_duration_yms("P1Y"), [1, 0, 0.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("P2M"), [0, 2, 0.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("PT2M"), [0, 0, 120.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("2M"), [0, 0, 120.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("P3W"), [0, 0, 21 * 86400.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("P4D"), [0, 0, 4 * 86400.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("PT5H"), [0, 0, 5 * 3600.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("PT7S"), [0, 0, 7.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("P1Y2M3DT4H5M6S"), [1, 2, 3 * 86400 + 4 * 3600 + 5 * 60 + 6.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("P1DT12H"), [0, 0, 36 * 3600.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("PT1H30M"), [0, 0, 5400.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("PT0.5H"), [0, 0, 1800.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("P1.5Y"), [1, 6, 0.0]);
+        xassert_eqq(SettingParser::parse_duration_yms("P"), [null, null, null]);
+        xassert_eqq(SettingParser::parse_duration_yms("PT"), [null, null, null]);
+        xassert_eqq(SettingParser::parse_duration_yms("PT1H2D"), [null, null, null]);
+        xassert_eqq(SettingParser::parse_duration_yms("P1DT2D"), [null, null, null]);
+        xassert_eqq(SettingParser::parse_duration_yms("P1D T2H"), [0, 0, 93600.0]);
+    }
+
+    function test_parse_relative_time() {
+        $t = (new DateTimeImmutable("2024-02-28T00:00:00+00:00"))->getTimestamp();
+        xassert_eqq($t, 1709078400);
+        $t1 = (new DateTimeImmutable("2023-02-28T00:00:00+00:00"))->getTimestamp();
+        $t2 = (new DateTimeImmutable("2020-02-28T00:00:00+00:00"))->getTimestamp();
+        xassert_neqq($t2, $t - ($t - $t1) * 4);
+        xassert_eq($this->conf->parse_time("1 hour ago", $t), $t - 3600);
+        xassert_eq($this->conf->parse_time("1 week ago", $t), $t - 86400 * 7);
+        xassert_eq($this->conf->parse_time("1 year ago", $t), $t1);
+        xassert_eq($this->conf->parse_time("4y ago", $t), $t2);
+    }
+
+    function test_time_search_deadlines() {
+        $conf = $this->conf;
+        $old_sub = $conf->setting("sub_sub");
+        $old_resub = $conf->setting("sub_resub");
+        $old_grace = $conf->setting("sub_grace");
+        $conf->save_setting("sub_sub", Conf::$now - 1000);
+        $conf->save_setting("sub_resub", Conf::$now - 100);
+        $conf->save_refresh_setting("sub_grace", 50);
+
+        $prow = $conf->checked_paper_by_id(1);
+        xassert($prow->timeSubmitted > 0);
+        $sr = $prow->submission_round();
+        xassert_eqq($sr->resubmit, Conf::$now - 100);
+
+        $test = function ($q) use (&$prow) {
+            $srch = new PaperSearch($this->u_root, $q);
+            xassert_eqq($srch->message_list(), []);
+            return $srch->full_term()->test($prow, null);
+        };
+        $closing = function ($q) use (&$prow) {
+            $srch = new PaperSearch($this->u_root, $q);
+            return Time_SearchTerm::closing_time($srch->full_term(), $prow);
+        };
+        $has_time = function ($q) {
+            $srch = new PaperSearch($this->u_root, $q);
+            return Time_SearchTerm::has_time_term($srch->full_term());
+        };
+
+        // resubmit deadline passed, even counting grace
+        xassert_eqq($test("before:resubmit"), false);
+        xassert_eqq($test("after:resubmit"), true);
+        xassert_eqq($test("before:resubmit+1m"), true);
+        xassert_eqq($test("before:resubmit+49s"), false);
+        xassert_eqq($test("before:resubmit+51s"), true);
+        xassert_eqq($test("before:resubmit-1h"), false);
+        xassert_eqq($test("before:submit+15m"), false);
+        xassert_eqq($test("before:submit+1h"), true);
+        xassert_eqq($test("after:submit before:resubmit+1d"), true);
+        xassert_eqq($test("before:2000"), false);
+        xassert_eqq($test("after:2000"), true);
+
+        // a draft’s resubmission window ends at its submission deadline
+        $draft = PaperInfo::make_placeholder($conf, -1);
+        xassert_le($draft->timeSubmitted, 0);
+        $srch = new PaperSearch($this->u_root, "before:resubmit+1w");
+        xassert_eqq($srch->full_term()->test($draft, null), false);
+        xassert_eqq(Time_SearchTerm::closing_time($srch->full_term(), $draft), Conf::$now - 1000);
+        $srch = new PaperSearch($this->u_root, "before:resubmit-20m");
+        xassert_eqq(Time_SearchTerm::closing_time($srch->full_term(), $draft), Conf::$now - 1300);
+        $srch = new PaperSearch($this->u_root, "before:submit+1h");
+        xassert_eqq($srch->full_term()->test($draft, null), true);
+
+        // display times exclude grace
+        xassert_eqq($closing("before:resubmit"), Conf::$now - 100);
+        xassert_eqq($closing("before:resubmit+1w"), Conf::$now - 100 + 86400 * 7);
+        xassert_eqq($closing("before:submit+1h before:resubmit+1h"), Conf::$now - 1000 + 3600);
+        xassert_eqq($closing("before:submit+1h OR before:resubmit+1h"), Conf::$now - 100 + 3600);
+        xassert_eqq($closing("before:submit+1h OR #foo"), null);
+        xassert_eqq($closing("after:submit"), null);
+        xassert_eqq($closing("before:final"), null);
+
+        // time-term structure
+        xassert_eqq($has_time("before:resubmit"), true);
+        xassert_eqq($has_time("after:submit"), true);
+        xassert_eqq($has_time("before:2030 OR #extension"), true);
+        xassert_eqq($has_time("NOT after:2030"), true);
+        xassert_eqq($has_time("#foo OR (#bar #baz)"), false);
+
+        // bad durations
+        $srch = new PaperSearch($this->u_root, "before:resubmit+3x");
+        xassert_neqq($srch->message_list(), []);
+        xassert($srch->full_term() instanceof False_SearchTerm);
+
+        // unset deadline: `before` is always true, `after` never
+        $conf->save_setting("sub_sub", null);
+        $conf->save_refresh_setting("sub_resub", null);
+        $prow = $conf->checked_paper_by_id(1);
+        xassert_eqq($test("before:resubmit"), true);
+        xassert_eqq($test("after:resubmit"), false);
+        xassert_eqq($closing("before:resubmit"), null);
+
+        $conf->save_setting("sub_sub", $old_sub);
+        $conf->save_setting("sub_resub", $old_resub);
+        $conf->save_refresh_setting("sub_grace", $old_grace);
     }
 
     function test_parse_preference() {
@@ -853,13 +1705,42 @@ class Unit_Tester {
         xassert_eqq($x, "(b(c(d(e) ) ) )");
     }
 
+    function test_span_balanced_parens_quotes() {
+        // a backslash escapes the next byte inside a quote, so an escaped `\"`
+        // must not be read as the closing quote
+        xassert_eqq(SearchParser::span_balanced_parens('"a\"b" c'), 6);
+        xassert_eqq(SearchParser::span_balanced_parens('"a\"b c'), 7);
+        // escaped backslash, then the quote really does close
+        xassert_eqq(SearchParser::span_balanced_parens('"a\\\\" b'), 5);
+        // brackets inside a quote are literal, not stack operations
+        xassert_eqq(SearchParser::span_balanced_parens('a("x)y")b c'), 9);
+        // a curly quote is translated to `"` and closes the quote
+        xassert_eqq(SearchParser::span_balanced_parens("\"a\u{201C}b\" c"), 9);
+        // a backslash outside a quote is an ordinary character
+        xassert_eqq(SearchParser::span_balanced_parens('a(b\)c) d'), 6);
+
+        xassert_array_eqq(SearchParser::split_balanced_parens('"a\"b" cd'), ['"a\"b"', "cd"]);
+        xassert_array_eqq(SearchParser::split_balanced_parens('a(b\)c) d'), ['a(b\)c', ")", "d"]);
+    }
+
     function test_safe_parenthesize() {
         xassert_eqq(SearchParser::safe_parenthesize(""), "(*)");
-        xassert_eqq(SearchParser::safe_parenthesize("("), "(())");
-        xassert_eqq(SearchParser::safe_parenthesize("(hi"), "((hi))");
+        xassert_eqq(SearchParser::safe_parenthesize("("), "()");
+        xassert_eqq(SearchParser::safe_parenthesize("(hi"), "(hi)");
         xassert_eqq(SearchParser::safe_parenthesize("fart[barf"), "(fart[barf])");
         xassert_eqq(SearchParser::safe_parenthesize("“\\"), "(“\\\\\")");
         xassert_eqq(SearchParser::safe_parenthesize(") fooled you ("), "( fooled you ())");
+        xassert_eqq(SearchParser::safe_parenthesize("(a)"), "(a)");
+        xassert_eqq(SearchParser::safe_parenthesize("(a (b))"), "(a (b))");
+        xassert_eqq(SearchParser::safe_parenthesize(")(a)"), "(a)");
+        xassert_eqq(SearchParser::safe_parenthesize("(a)(b)"), "((a)(b))");
+        xassert_eqq(SearchParser::safe_parenthesize("(a) b)"), "((a) b)");
+        xassert_eqq(SearchParser::safe_parenthesize("[(a)]"), "([(a)])");
+        xassert_eqq(SearchParser::safe_parenthesize("[a] (b)"), "([a] (b))");
+        xassert_eqq(SearchParser::safe_parenthesize("(a))b)"), "((a)b)");
+        xassert_eqq(SearchParser::safe_parenthesize("ab)cd)ef)"), "(abcdef)");
+        xassert_eqq(SearchParser::safe_parenthesize("x(y]z)"), "(x(y)z)");
+        xassert_eqq(SearchParser::safe_parenthesize("x)\"y\\"), "(x\"y\\\\\")");
     }
 
     function test_unpack_comparison() {
@@ -903,6 +1784,8 @@ class Unit_Tester {
         xassert_eqq(UnicodeHelper::utf8_prefix("a̓a̓a̓a̓a̓a̓a̓a̓", 7), "a̓a̓a̓a̓a̓a̓a̓");
         xassert_eqq(UnicodeHelper::utf8_prefix("a̓a̓a̓a̓a̓a̓a̓a̓", 8), "a̓a̓a̓a̓a̓a̓a̓a̓");
         xassert_eqq(UnicodeHelper::utf8_prefix("a̓a̓a̓a̓a̓a̓a̓a̓", 9), "a̓a̓a̓a̓a̓a̓a̓a̓");
+        // leading combining marks form a cluster of their own
+        xassert_eqq(UnicodeHelper::utf8_prefix("\u{0301}abc", 2), "\u{0301}a");
 
         xassert_eqq(UnicodeHelper::utf8_word_prefix("a aaaaaaabbb", 7), "a");
         xassert_eqq(UnicodeHelper::utf8_word_prefix("aaaaaaaa bbb", 7), "aaaaaaaa");
@@ -911,6 +1794,208 @@ class Unit_Tester {
         xassert_eqq(UnicodeHelper::utf8_word_prefix("aaaaaaaa bbb", 10), "aaaaaaaa");
         xassert_eqq(UnicodeHelper::utf8_word_prefix("\xCC\x90_\xCC\x8E", 1), "\xCC\x90_\xCC\x8E");
         xassert_eqq(UnicodeHelper::utf8_word_prefix("\xCC\x90_ \xCC\x8E", 1), "\xCC\x90_");
+        xassert_eqq(UnicodeHelper::utf8_word_prefix("ab ç", 4), "ab ç");
+        xassert_eqq(UnicodeHelper::utf8_word_prefix("ab çd", 4), "ab");
+        xassert_eqq(UnicodeHelper::utf8_word_abbreviate("Uber cote", 9), "Uber cote");
+        xassert_eqq(UnicodeHelper::utf8_word_abbreviate("Über côté", 9), "Über côté");
+        xassert_eqq(UnicodeHelper::utf8_word_abbreviate("Über côté x", 9), "Über côté...");
+        xassert_eqq(UnicodeHelper::utf8_word_abbreviate("Über côtés", 9), "Über...");
+        xassert_eqq(prefix_word_wrap("", "hello world", 0, 11), "hello world\n");
+        xassert_eqq(prefix_word_wrap("", "héllo wörld", 0, 11), "héllo wörld\n");
+        xassert_eqq(prefix_word_wrap("", "héllo wörld again", 0, 11), "héllo wörld\nagain\n");
+    }
+
+    function test_utf8_word_prefix_long() {
+        // utf8_word_prefix must accept large `$len` and stay roughly
+        // linear on long clusters and long words
+
+        // large `$len`
+        $w = str_repeat("mot ", 17000);
+        xassert(UnicodeHelper::utf8_word_prefix($w, 300) === substr($w, 0, 299));
+        xassert(UnicodeHelper::utf8_word_prefix($w, 10000) === substr($w, 0, 9999));
+        xassert(UnicodeHelper::utf8_word_prefix($w, 65535) === substr($w, 0, 65535));
+        xassert(prefix_word_wrap("", substr($w, 0, 19999), 0, 10000)
+                === substr($w, 0, 9999) . "\n" . substr($w, 0, 9999) . "\n");
+
+        // ordinary text
+        $tw = INF;
+        for ($i = 0; $i !== 3; ++$i) {
+            $t0 = microtime(true);
+            $a = str_repeat("mot ", 16000);
+            xassert_eqq(UnicodeHelper::utf8_word_abbreviate($a, 300), substr($a, 0, 299) . "...");
+            xassert_eqq(UnicodeHelper::utf8_word_abbreviate("{$a}x", 300), substr($a, 0, 299) . "...");
+            xassert_eqq(UnicodeHelper::utf8_word_abbreviate("x {$a} y", 1), "x...");
+            xassert(UnicodeHelper::utf8_line_break_parts("{$a}x y", 70) === [substr($a, 0, 67), substr($a, 68) . "x y"]);
+            $a = str_repeat("\xE1\xB8\x81 bcd, ", 16000);
+            xassert_eqq(UnicodeHelper::utf8_word_abbreviate($a, 300), substr($a, 0, 386) . "...");
+            xassert_eqq(UnicodeHelper::utf8_word_abbreviate("x {$a} y", 1), "x...");
+            xassert(UnicodeHelper::utf8_line_break_parts($a, 70) === [substr($a, 0, 89), substr($a, 90)]);
+            $tw = min($tw, microtime(true) - $t0);
+        }
+
+        // unusual text of the same size -- a long word, long runs of
+        // combining marks, regional indicators, emoji ZWJ sequences --
+        // takes not much longer
+        $t0 = microtime(true);
+        $a = "a" . str_repeat("bcde", 32000);
+        xassert(UnicodeHelper::utf8_word_abbreviate($a, 300) === $a);
+        xassert(UnicodeHelper::utf8_word_abbreviate("{$a} x", 300) === "{$a}...");
+        $a = str_repeat("\xCC\x80", 32000);
+        xassert(UnicodeHelper::utf8_word_abbreviate($a, 300) === $a);
+        xassert(UnicodeHelper::utf8_word_abbreviate("{$a}x", 300) === "{$a}x");
+        xassert(UnicodeHelper::utf8_word_abbreviate("a{$a}", 300) === "a{$a}");
+        xassert_eqq(UnicodeHelper::utf8_word_abbreviate("x {$a} y", 1), "x...");
+        xassert(UnicodeHelper::utf8_line_break_parts("{$a}x y", 70) === ["{$a}x y", ""]);
+        $b = str_repeat("y", 100);
+        xassert(UnicodeHelper::utf8_line_break_parts("{$a}x {$b}", 70) === ["{$a}x", $b]);
+        $a = "a" . str_repeat("\xF0\x9F\x87\xA6", 32000);
+        xassert(UnicodeHelper::utf8_word_abbreviate($a, 300) === $a);
+        xassert(UnicodeHelper::utf8_word_abbreviate("{$a} x", 300) === "{$a}...");
+        $a = "a" . str_repeat("\xF0\x9F\x91\xA9\xE2\x80\x8D", 16000);
+        xassert(UnicodeHelper::utf8_word_abbreviate($a, 300) === $a);
+        xassert_eqq(UnicodeHelper::utf8_word_abbreviate("x {$a} y", 1), "x...");
+        xassert_lt(microtime(true) - $t0, max(2.0, 50 * $tw));
+    }
+
+    /** Check `Ht::make_mark_substring($s, $pos1, $pos2)`. The mark must
+     * cover the same text; the context must be source text that, on each
+     * side, either reaches a line boundary or holds at least `$minctx` glyphs
+     * before an ellipsis; and the context must total at most `$maxctx` glyphs.
+     * @param string $s
+     * @param int $pos1
+     * @param int $pos2
+     * @param int $minctx
+     * @param int $maxctx
+     * @return array{string,int,int} */
+    private function check_mark_substring($s, $pos1, $pos2, $minctx = 12, $maxctx = 80) {
+        $r = Ht::make_mark_substring($s, $pos1, $pos2);
+        [$t, $q1, $q2] = $r;
+        xassert(is_valid_utf8($t));
+        xassert(0 <= $q1 && $q1 <= $q2 && $q2 <= strlen($t));
+        $unnl = function ($x) {
+            return str_replace("⏎", "\n", $x);
+        };
+        xassert_eqq($unnl(substr($t, $q1, $q2 - $q1)), substr($s, $pos1, $pos2 - $pos1));
+
+        $pre = $unnl(substr($t, 0, $q1));
+        $predots = str_starts_with($pre, "…");
+        if ($predots) {
+            $pre = substr($pre, 3);
+        }
+        xassert_le(strlen($pre), $pos1);
+        xassert_eqq(substr($s, $pos1 - strlen($pre), strlen($pre)), $pre);
+        $prestart = $pos1 - strlen($pre);
+        if ($predots) {
+            xassert_ge(UnicodeHelper::utf8_glyphlen($pre), $minctx);
+        } else {
+            xassert($prestart === 0 || $s[$prestart - 1] === "\n");
+        }
+
+        $post = $unnl(substr($t, $q2));
+        $postdots = str_ends_with($post, "…");
+        if ($postdots) {
+            $post = substr($post, 0, -3);
+        }
+        xassert_eqq(substr($s, $pos2, strlen($post)), $post);
+        $postend = $pos2 + strlen($post);
+        if ($postdots) {
+            xassert_ge(UnicodeHelper::utf8_glyphlen($post), $minctx);
+        } else {
+            xassert($postend === strlen($s) || $s[$postend] === "\n");
+        }
+
+        xassert_le(UnicodeHelper::utf8_glyphlen($pre) + UnicodeHelper::utf8_glyphlen($post), $maxctx);
+        return $r;
+    }
+
+    function test_make_mark_substring() {
+        xassert_eqq(Ht::make_mark_substring("hello world", 6, 11), ["hello world", 6, 11]);
+        xassert_eqq(Ht::make_mark_substring("hello", -1, 0), ["hello", -1, 0]);
+        xassert_eqq(Ht::make_mark_substring("hello", 3, 1), ["hello", 3, 3]);
+
+        // long lines are trimmed around the mark, at either end or both
+        $a = str_repeat("abcdefghij", 10);
+        foreach ([[80, 83], [5, 8], [45, 55], [30, 90], [0, 0], [100, 100]] as $pp) {
+            [$t] = $this->check_mark_substring($a, $pp[0], $pp[1]);
+            xassert(str_contains($t, "…"));
+        }
+        $b = $a . $a;
+        foreach ([[100, 104], [30, 60], [20, 170]] as $pp) {
+            [$t] = $this->check_mark_substring($b, $pp[0], $pp[1]);
+            xassert(str_contains($t, "…"));
+        }
+
+        // a distant newline, or any newline near a long mark, limits the
+        // context to one line
+        [$t] = $this->check_mark_substring("first line\n{$a}\nlast", 40, 44);
+        xassert(!str_contains($t, "⏎") && !str_contains($t, "first") && !str_contains($t, "last"));
+        [$t] = $this->check_mark_substring("first line\n{$a}\nlast", 11, 40);
+        xassert(!str_contains($t, "⏎") && !str_contains($t, "first"));
+        [$t] = $this->check_mark_substring("first line\n{$a}\nlast", 80, 108);
+        xassert(!str_contains($t, "⏎") && !str_contains($t, "last"));
+
+        // a newline near a short mark is shown as ⏎
+        xassert_eqq(Ht::make_mark_substring("ab\ncd ef", 3, 5), ["ab⏎cd ef", 5, 7]);
+        [$t] = $this->check_mark_substring("{$a}\nzz", 97, 100);
+        xassert(str_ends_with($t, "⏎zz"));
+        [$t] = $this->check_mark_substring("zz\n{$a}", 3, 6);
+        xassert(str_starts_with($t, "zz⏎"));
+
+        // glyphs, not bytes, are counted
+        $e = str_repeat("é", 60);
+        [$t] = $this->check_mark_substring("{$e}XYZ{$e}", 120, 123);
+        xassert(str_starts_with($t, "…") && str_ends_with($t, "…"));
+        $z = str_repeat("👩‍👩‍👧", 100);
+        [$t] = $this->check_mark_substring("{$z}KEY{$z}", strlen($z), strlen($z) + 3);
+        xassert(str_starts_with($t, "…") && str_ends_with($t, "…"));
+        $c = str_repeat("e\u{0301}", 60);
+        $this->check_mark_substring("{$c}\r\n{$c}KEY{$c}", 2 * strlen($c) + 2, 2 * strlen($c) + 5);
+    }
+
+    function test_make_mark_substring_long_clusters() {
+        // widening the context around a mark stays roughly linear on long
+        // runs of combining marks, which are single glyphs
+        $tw = INF;
+        for ($i = 0; $i !== 3; ++$i) {
+            $t0 = microtime(true);
+            $a = str_repeat("ab ", 21000);
+            foreach (["{$a}key", "key{$a}", "{$a}key{$a}"] as $s) {
+                $p1 = strpos($s, "key");
+                $this->check_mark_substring($s, $p1, $p1 + 3);
+            }
+            $tw = min($tw, microtime(true) - $t0);
+        }
+
+        $m = str_repeat("\xCC\x81", 32000);
+        $t0 = microtime(true);
+        foreach (["a{$m}key", "key{$m}", "a{$m}key{$m}", "a{$m}key x{$m}", "key a{$m} z"] as $s) {
+            $p1 = strpos($s, "key");
+            // a long cluster near the mark is cut, not copied whole
+            [$t] = $this->check_mark_substring($s, $p1, $p1 + 3, 0);
+            xassert_lt(strlen($t), 8000);
+        }
+        xassert_lt(microtime(true) - $t0, max(2.0, 50 * $tw));
+    }
+
+    function test_make_mark_substring_long_line() {
+        // work is bounded by a window around the mark, however long the
+        // context line
+        $t0 = microtime(true);
+        for ($i = 0; $i !== 2000; ++$i) {
+            Ht::make_mark_substring("aaa KEY bbb", 4, 7);
+        }
+        $tw = microtime(true) - $t0;
+
+        $pad = str_repeat("w", 1 << 20);
+        $t0 = microtime(true);
+        foreach (["{$pad} KEY", "KEY {$pad}", "{$pad} KEY {$pad}", "{$pad}\nKEY {$pad}"] as $s) {
+            $p = strpos($s, "KEY");
+            for ($i = 0; $i !== 2000; ++$i) {
+                Ht::make_mark_substring($s, $p, $p + 3);
+            }
+            $this->check_mark_substring($s, $p, $p + 3);
+        }
+        xassert_lt(microtime(true) - $t0, max(1.0, 200 * $tw));
     }
 
     function test_utf8_char_abbreviate() {
@@ -924,6 +2009,12 @@ class Unit_Tester {
         xassert_eqq(UnicodeHelper::utf8_char_abbreviate("aça123caa", 4, 3), "...a");
         xassert_eqq(UnicodeHelper::utf8_char_abbreviate("aça123caa", 3, 3), "...");
         xassert_eqq(UnicodeHelper::utf8_char_abbreviate("aça123caa", 2, 3), "..");
+        // suffixes are whole grapheme clusters, on any line
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("ééééééééééééé", 8, 2), "ééé...éé");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("漢字漢字漢字漢字漢字", 8, 2), "漢字漢...漢字");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("line one\nline two and more", 12, 3), "line o...ore");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("👩‍👩‍👧x👩‍👩‍👧y👩‍👩‍👧z👩‍👩‍👧", 6, 2), "👩‍👩‍👧...z👩‍👩‍👧");
+        xassert_eqq(UnicodeHelper::utf8_char_abbreviate("abcdefghe\u{0301}", 6, 1), "ab...e\u{0301}");
     }
 
     function test_utf8_line_break() {
@@ -939,6 +2030,21 @@ class Unit_Tester {
         xassert_eqq(UnicodeHelper::utf8_line_break_parts("aaaaaaaa   bbb", 9, true), ["aaaaaaaa   ", "bbb"]);
         xassert_eqq(UnicodeHelper::utf8_line_break_parts("aaaaaaaa bbb", 10, true), ["aaaaaaaa ", "bbb"]);
         xassert_eqq(UnicodeHelper::utf8_line_break_parts("a\naaaaaa bbb", 10), ["a", "aaaaaa bbb"]);
+    }
+
+    function test_utf8_hard_line_break() {
+        // breaks at word boundaries just like utf8_line_break...
+        xassert_eqq(UnicodeHelper::utf8_hard_line_break_parts("a aaaaaaabbb", 7), ["a", "aaaaaaabbb"]);
+        xassert_eqq(UnicodeHelper::utf8_hard_line_break_parts("the quick brown", 9), ["the quick", "brown"]);
+        xassert_eqq(UnicodeHelper::utf8_hard_line_break_parts("abc def", 4), ["abc", "def"]);
+        xassert_eqq(UnicodeHelper::utf8_hard_line_break_parts("ab   cd", 4), ["ab", "cd"]);
+        // ...but a word longer than the width is broken instead of overflowing
+        xassert_eqq(UnicodeHelper::utf8_hard_line_break_parts("aaaaaaaa bbb", 7), ["aaaaaaa", "a bbb"]);
+        xassert_eqq(UnicodeHelper::utf8_hard_line_break_parts("abcdefghijklmnop", 10), ["abcdefghij", "klmnop"]);
+        // whole string fits; newline cuts; preserve_space keeps the break space
+        xassert_eqq(UnicodeHelper::utf8_hard_line_break_parts("the quick", 9), ["the quick", ""]);
+        xassert_eqq(UnicodeHelper::utf8_hard_line_break_parts("a\nbcd", 10), ["a", "bcd"]);
+        xassert_eqq(UnicodeHelper::utf8_hard_line_break_parts("the quick brown", 9, true), ["the quick ", "brown"]);
     }
 
     function test_utf8_glyphlen() {
@@ -997,19 +2103,323 @@ class Unit_Tester {
     function test_utf8_deaccent() {
         xassert_eqq(UnicodeHelper::deaccent("Á é î ç ø U"), "A e i c o U");
         $do = UnicodeHelper::deaccent_offsets("Á é î ç ø U .\xE2\x84\xAA");
-        xassert_eqq($do[0], "A e i c o U .K");
-        xassert_eqq(json_encode($do[1]), "[0,0,1,2,3,5,5,8,7,11,9,14,14,21]");
-        xassert_eqq(UnicodeHelper::deaccent_translate_offset($do[1], 4), 6);
-        $regex = new TextPregexes(Text::word_regex("foo"), Text::utf8_word_regex("foo"));
+        xassert_eqq($do->out, "A e i c o U .K");
+        xassert_array_eqq($do->offsets, [0,0,1,2,3,5,5,8,7,11,9,14,14,21,PHP_INT_MAX]);
+        xassert_eqq($do->reverse(4), 6);
+        $regex = Text::star_text_pregexes("foo");
         xassert_eqq(Text::highlight("Is foo bar føo bar fóó bar highlit right? foö", $regex),
                     "Is <em class=\"match\">foo</em> bar <em class=\"match\">føo</em> bar <em class=\"match\">fóó</em> bar highlit right? <em class=\"match\">foö</em>");
         xassert_eqq(UnicodeHelper::remove_f_ligatures("Héllo ﬀ,ﬁ:fi;ﬂ,ﬃ:ﬄ-ﬅ"), "Héllo ff,fi:fi;fl,ffi:ffl-ﬅ");
+    }
+
+    function test_utf8_deaccent_table() {
+        xassert_eqq(UnicodeHelper::deaccent("Łódź Ærø Gúðrún ß ẞ"), "Lodz AEro Gudrun ss SS");
+        xassert_eqq(UnicodeHelper::deaccent("Işıl Ŧ ƀ ‐–"), "Isil T b --");
+        xassert_eqq(UnicodeHelper::deaccent("ｆｕｌｌ（ｗｉｄｔｈ）［ｘ］｛ｙ｝ ① ² ﬁ ㎒"), "full(width)[x]{y} 1 2 fi ㎒");
+        xassert_eqq(UnicodeHelper::deaccent("ᴬᴭ™ ǲ ŀ ´"), "AAETM Dz l ´");
+        xassert_eqq(UnicodeHelper::deaccent("pro\u{AD}cess Jean\u{A0}Dupont e\u{301}cole"), "process Jean Dupont ecole");
+        // non-Latin scripts and negated symbols are unchanged
+        xassert_eqq(UnicodeHelper::deaccent("Ἀθῆναι Ёлка カタカナ a≠b"), "Ἀθῆναι Ёлка カタカナ a≠b");
+        $do = UnicodeHelper::deaccent_offsets("a\u{AD}b é");
+        xassert_eqq($do->out, "ab e");
+        xassert_eqq($do->reverse(1), 3);
+        xassert_eqq($do->reverse(3), 5);
+        foreach (UTF8_DEACCENT_MAP as $k => $v) {
+            xassert_eqq(strcspn($k, UTF8_DEACCENT_LEAD), 0);
+            xassert(strlen($v) <= strlen($k));
+            xassert_eqq(UnicodeHelper::deaccent($v), $v);
+        }
     }
 
     function test_utf16_to_utf8() {
         xassert_eqq(UnicodeHelper::to_utf8("UTF-16BE", "\x00A\x00B\x00C"), "ABC");
         xassert_eqq(UnicodeHelper::to_utf8("UTF-16BE", "\x00A\x00B\x00C\xD8\x3D\xDE\x0A"), "ABC😊");
         xassert_eqq(UnicodeHelper::to_utf8("UTF-16BE", "\x00A\x00B\x00C\xD8\x3D\xDE"), "ABC�");
+    }
+
+    function test_paperidset_empty() {
+        $set = new PaperIDSet;
+        xassert($set->is_empty());
+        xassert_eqq($set->count(), 0);
+        xassert_eqq($set->ids(), []);
+        xassert(!$set->contains(1));
+        xassert_eqq($set->sql_predicate("paperId"), "false");
+        xassert_eqq($set->unparse(), "");
+        xassert($set->equal_contents([]));
+        xassert($set->equal_contents(new PaperIDSet));
+    }
+
+    function test_paperidset_order() {
+        // sequential additions coalesce; `explicit` additions unparse as lists
+        $set = (new PaperIDSet)->add(1)->add(2)->add(3);
+        xassert_eqq($set->unparse(), "1-3");
+        xassert($set->is_sorted());
+        $set = (new PaperIDSet)->add_list([1, 2, 3], true);
+        xassert_eqq($set->unparse(), "1 2 3");
+        $set->add_range(4, 6)->add(9);
+        xassert($set->is_sorted());
+        xassert_eqq($set->unparse(), "1 2 3 4-6 9");
+        xassert_eqq($set->count(), 7);
+        xassert_eqq($set->ids(), [1, 2, 3, 4, 5, 6, 9]);
+        xassert_eqq($set->sql_predicate("paperId"), "paperId in (1, 2, 3, 4, 5, 6, 9)");
+        $set->add(10);
+        xassert_eqq($set->unparse(), "1 2 3 4-6 9-10");
+        xassert_eqq($set->count(), 8);
+        $set = (new PaperIDSet)->add(5)->add(4)->add(3);
+        xassert_eqq($set->unparse(), "5-3");
+        xassert(!$set->is_sorted());
+
+        // order of first addition
+        $set = (new PaperIDSet)->add_list([5, 3, 9, 1]);
+        xassert_eqq($set->ids(), [1, 3, 5, 9]);
+        xassert_eqq($set->unparse(), "5 3 9 1");
+        xassert(!$set->is_sorted());
+        xassert_eqq($set->compare(5, 3), -1);
+        xassert_eqq($set->compare(9, 1), -1);
+        xassert_eqq($set->compare(1, 5), 1);
+        xassert_eqq($set->compare(3, 3), 0);
+        // IDs not in the set sort last, by value
+        xassert_eqq($set->compare(1, 2), -1);
+        xassert_eqq($set->compare(7, 2), 1);
+        $ids = [9, 2, 1, 3, 7, 5];
+        usort($ids, [$set, "compare"]);
+        xassert_eqq($ids, [5, 3, 9, 1, 2, 7]);
+
+        // within a descending range, larger IDs come first
+        $set = (new PaperIDSet)->add_range(10, 1);
+        xassert_eqq($set->compare(10, 1), -1);
+        xassert_eqq($set->compare(2, 3), 1);
+        xassert_eqq($set->unparse(), "10-1");
+
+        // `sorted` forgets the order
+        $set = (new PaperIDSet)->add_list([5, 3, 9, 1])->sorted();
+        xassert($set->is_sorted());
+        xassert_eqq($set->unparse(), "1 3 5 9");
+        xassert_eqq($set->compare(5, 3), 1);
+    }
+
+    function test_paperidset_overlap() {
+        // an ascending range that overlaps the last one extends it
+        $set = (new PaperIDSet)->add_range(1, 10)->add_range(5, 15);
+        xassert_eqq($set->count(), 15);
+        xassert_eqq($set->unparse(), "1-15");
+        // otherwise, overlapping IDs belong to the range that added them first
+        $set = (new PaperIDSet)->add_range(1, 10)->add(20)->add_range(5, 15);
+        xassert_eqq($set->count(), 16);
+        xassert_eqq($set->unparse(), "1-10 20 11-15");
+        xassert_eqq($set->compare(7, 20), -1);
+        xassert_eqq($set->compare(12, 20), 1);
+        xassert_eqq($set->compare(12, 3), 1);
+        $set = (new PaperIDSet)->add_range(5, 15)->add_range(1, 10);
+        xassert_eqq($set->count(), 15);
+        xassert_eqq($set->unparse(), "5-15 1-4");
+        xassert_eqq($set->compare(7, 2), -1);
+
+        // duplicates count once
+        $set = (new PaperIDSet)->add_list([3, 1, 3, 2, 1]);
+        xassert_eqq($set->count(), 3);
+        xassert_eqq($set->ids(), [1, 2, 3]);
+        xassert_eqq($set->compare(3, 1), -1);
+        xassert_eqq($set->compare(1, 2), -1);
+    }
+
+    function test_paperidset_large_and_open() {
+        $set = (new PaperIDSet)->add_range(1, 2000);
+        xassert_eqq($set->count(), 2000);
+        xassert_eqq($set->ids(), null);
+        xassert_eqq(count($set->ids(2000)), 2000);
+        xassert($set->contains(2000));
+        xassert(!$set->contains(2001));
+
+        // ranges are never expanded
+        $set = (new PaperIDSet)->add_range(1, 99999999999);
+        xassert_eqq($set->count(), 99999999999);
+        xassert_eqq($set->ids(100000), null);
+        xassert($set->contains(99999999999));
+
+        $set = (new PaperIDSet)->add(3)->add_range(20, PHP_INT_MAX);
+        xassert_eqq($set->count(), PHP_INT_MAX);
+        xassert($set->contains(PHP_INT_MAX - 1));
+        xassert(!$set->contains(19));
+        xassert_eqq($set->unparse(), "3 20-");
+        xassert_eqq($set->encode_ids(), null);
+    }
+
+    function test_paperidset_sql_predicate() {
+        xassert_eqq((new PaperIDSet)->add(7)->sql_predicate("paperId"), "paperId=7");
+        xassert_eqq((new PaperIDSet)->add_list([5, 3, 9])->sql_predicate("paperId"),
+                    "paperId in (3, 5, 9)");
+        xassert_eqq((new PaperIDSet)->add_range(1, 100)->sql_predicate("paperId"),
+                    "paperId between 1 and 100");
+        // adjacent pieces merge, whatever their order
+        xassert_eqq((new PaperIDSet)->add_range(51, 100)->add_range(1, 50)->sql_predicate("paperId"),
+                    "paperId between 1 and 100");
+        xassert_eqq((new PaperIDSet)->add_range(1, 100)->add(200)->add(250)
+                        ->add_range(300, PHP_INT_MAX)->sql_predicate("paperId"),
+                    "(paperId between 1 and 100 or paperId>=300 or paperId in (200, 250))");
+        // IDs inside a later open range fold into it
+        xassert_eqq((new PaperIDSet)->add(400)->add_range(300, PHP_INT_MAX)->sql_predicate("paperId"),
+                    "paperId>=300");
+        xassert_eqq((new PaperIDSet)->add_range(1, 99999999999)->sql_predicate("contactId"),
+                    "contactId between 1 and 99999999999");
+    }
+
+    function test_paperidset_requires_integers() {
+        // `sql_predicate` interpolates IDs, so non-integers are ignored
+        $set = (new PaperIDSet)->add_range("1 or 1=1", 100)->add_range(1, "5 or 1=1")
+            ->add("2")->add_list([3, "4 or 1=1"]);
+        xassert_eqq($set->ids(), [3]);
+        xassert_eqq($set->sql_predicate("paperId"), "paperId=3");
+    }
+
+    function test_paperidset_max_int() {
+        // PHP_INT_MAX can't be an ID: `last === PHP_INT_MAX` means open-ended
+        $set = (new PaperIDSet)->add_list([1, 2, 3])->add(PHP_INT_MAX);
+        xassert($set->is_sorted());
+        xassert_eqq($set->count(), 3);
+        xassert_eqq($set->ids(), [1, 2, 3]);
+        xassert_eqq($set->sql_predicate("x"), "x in (1, 2, 3)");
+        $set = (new PaperIDSet)->add_list([3, 1])->add(PHP_INT_MAX);
+        xassert(!$set->is_sorted());
+        xassert_eqq($set->count(), 2);
+        xassert_eqq($set->ids(), [1, 3]);
+        xassert((new PaperIDSet)->add(PHP_INT_MAX)->is_empty());
+
+        // an open-ended run is open-ended wherever it starts
+        $set = (new PaperIDSet)->add_range(PHP_INT_MAX - 1, PHP_INT_MAX);
+        xassert_eqq($set->sql_predicate("x"), "x>=" . (PHP_INT_MAX - 1));
+        $set = (new PaperIDSet)->add(1)->add_range(PHP_INT_MAX - 1, PHP_INT_MAX);
+        xassert_eqq($set->sql_predicate("x"), "(x>=" . (PHP_INT_MAX - 1) . " or x=1)");
+    }
+
+    function test_paperidset_imprecise_sql_predicate() {
+        $max = PaperIDSet::MAX_SQL_RANGES;
+        $count_in = function ($sql) {
+            return preg_match('/ in \(([^)]*)\)/', $sql, $m) ? count(explode(",", $m[1])) : 0;
+        };
+
+        // `$max` isolated IDs: one IN list
+        $set = (new PaperIDSet)->add_list(range(1, 2 * $max - 1, 2));
+        xassert($set->is_sql_predicate_precise());
+        $sql = $set->sql_predicate("paperId");
+        xassert_str_starts_with($sql, "paperId in (1, 3, 5,");
+        xassert_eqq($count_in($sql), $max);
+
+        // `$max` runs, mixed: ranges plus one IN list
+        $set = (new PaperIDSet)->add_list(range(1, 2 * $max - 3, 2))->add_range(100000, 100010);
+        xassert($set->is_sql_predicate_precise());
+        $sql = $set->sql_predicate("paperId");
+        xassert_str_starts_with($sql, "(paperId between 100000 and 100010 or paperId in (1, 3,");
+        xassert_eqq($count_in($sql), $max - 1);
+
+        // the IN list counts as one range
+        $set->add(200001);
+        xassert($set->is_sql_predicate_precise());
+        xassert_eqq($count_in($set->sql_predicate("paperId")), $max);
+
+        // too many isolated IDs: a superset
+        $set->add(200003);
+        xassert(!$set->is_sql_predicate_precise());
+        xassert_eqq($set->sql_predicate("paperId"), "paperId between 1 and 200003");
+        xassert($set->contains(1) && !$set->contains(2));
+        $set->add_range(300000, PHP_INT_MAX);
+        xassert(!$set->is_sql_predicate_precise());
+        xassert_eqq($set->sql_predicate("paperId"), "paperId>=1");
+
+        // too many ranges: a superset
+        $set = new PaperIDSet;
+        for ($i = 0; $i !== $max; ++$i) {
+            $set->add_range(3 * $i + 1, 3 * $i + 2);
+        }
+        xassert($set->is_sql_predicate_precise());
+        $set->add(100000);
+        xassert(!$set->is_sql_predicate_precise());
+        xassert_eqq($set->sql_predicate("paperId"), "paperId between 1 and 100000");
+
+        // runs are counted after adjacent pieces merge
+        $set = (new PaperIDSet)->add_list(range(1, 2 * $max + 1, 2))->add_range(1, 2 * $max + 1);
+        xassert($set->is_sql_predicate_precise());
+        xassert_eqq($set->sql_predicate("paperId"), "paperId between 1 and " . (2 * $max + 1));
+
+        // the count of runs decides, not the count of IDs
+        $set = (new PaperIDSet)->add_range(1, 99999999999)->add_range(200000000000, 300000000000);
+        xassert($set->is_sql_predicate_precise());
+        xassert_eqq($set->sql_predicate("paperId"),
+                    "(paperId between 1 and 99999999999 or paperId between 200000000000 and 300000000000)");
+    }
+
+    function test_paperidset_equal_contents() {
+        $set = (new PaperIDSet)->add_range(1, 5);
+        xassert($set->equal_contents([3, 1, 2, 5, 4]));
+        xassert(!$set->equal_contents([1, 2, 3, 4]));
+        xassert(!$set->equal_contents([1, 2, 3, 4, 6]));
+        xassert($set->equal_contents((new PaperIDSet)->add_list([5, 4, 3, 2, 1])));
+        xassert($set->equal_contents((new PaperIDSet)->add_range(4, 5)->add_range(1, 3)));
+        xassert(!$set->equal_contents((new PaperIDSet)->add_range(2, 6)));
+        xassert(!$set->equal_contents((new PaperIDSet)->add_list([1, 2, 3, 4, 6])));
+    }
+
+    function test_paperidset_merge() {
+        $a = (new PaperIDSet)->add_range(1, 3);
+        $b = (new PaperIDSet)->add(10)->add(2)->add_range(20, 15);
+        $a->merge($b);
+        xassert_eqq($a->count(), 10);
+        xassert_eqq($a->unparse(), "1-3 10 20-15");
+        xassert_eqq($a->compare(3, 10), -1);
+        xassert_eqq($a->compare(20, 15), -1);
+        // the merged-in set is unchanged
+        xassert_eqq($b->unparse(), "10 2 20-15");
+    }
+
+    function test_paperidset_encode_round_trip() {
+        foreach ([[1, 2, 3, 4, 5], [5, 3, 9, 1], [30, 29, 28, 27, 1, 2, 100],
+                  [7], range(100, 1, -1), array_merge(range(1, 50), [200], range(80, 60, -1))] as $ids) {
+            $set = (new PaperIDSet)->add_list($ids);
+            $enc = $set->encode_ids();
+            $dec = SessionList::decode_ids($enc, true);
+            $set2 = new PaperIDSet;
+            foreach ($dec as $x) {
+                is_array($x) ? $set2->add_range($x[0], $x[1]) : $set2->add($x);
+            }
+            xassert($set2->equal_contents($set));
+            xassert_eqq($set2->unparse(), $set->unparse());
+        }
+    }
+
+    function test_paperidset_clamped() {
+        $set = (new PaperIDSet)->add_range(10, 1)->add(50)->add_range(100, 200)
+            ->add_range(-5, 3)->add_range(5000, 6000);
+        xassert_eqq($set->clamped(1, 120)->unparse(), "10-1 50 100-120");
+        xassert_eqq($set->clamped(1, 120)->count(), 32);
+        xassert_eqq($set->clamped(4, 7)->unparse(), "7-4");
+        xassert_eqq($set->clamped(-2, 0)->count(), 3);
+        xassert($set->clamped(7000, 8000)->is_empty());
+        // order of first addition survives
+        $c = $set->clamped(1, 120);
+        xassert_eqq($c->compare(10, 1), -1);
+        xassert_eqq($c->compare(1, 50), -1);
+        xassert_eqq($c->compare(50, 100), -1);
+        // open-ended ranges are closed
+        $set = (new PaperIDSet)->add(3)->add_range(20, PHP_INT_MAX);
+        xassert_eqq($set->clamped(1, 25)->unparse(), "3 20-25");
+        xassert_eqq($set->clamped(1, 25)->count(), 7);
+    }
+
+    function test_uconverter_shim_utf16() {
+        require_once(SiteLoader::$root . "/lib/uconvertershim.php");
+        $t = function ($from, $s) {
+            return UConverterShim::transcode($s, "UTF-8", $from);
+        };
+        xassert_eqq($t("UTF-16BE", "\x00A\x00B\x00C\xD8\x3D\xDE\x0A"), "ABC😊");
+        xassert_eqq($t("UTF-16LE", "A\x00=\xD8\x0A\xDE"), "A😊");
+        // surrogate pairs above plane 1
+        xassert_eqq($t("UTF-16BE", "\xD8\x40\xDC\x00"), "\u{20000}");
+        xassert_eqq($t("UTF-16BE", "\xD8\x7E\xDC\x01"), "\u{2F801}");
+        xassert_eqq($t("UTF-16BE", "\xDB\xFF\xDF\xFF"), "\u{10FFFF}");
+        // unpaired surrogates
+        xassert_eqq($t("UTF-16BE", "\x00A\xD8\x3D"), "A\u{FFFD}");
+        xassert_eqq($t("UTF-16BE", "\xDE\x0A\x00A"), "\u{FFFD}A");
+        xassert_eqq($t("UTF-16BE", "\xD8\x3D\x00A"), "\u{FFFD}A");
     }
 
     function test_prefix_word_wrap() {
@@ -1053,6 +2463,54 @@ class Unit_Tester {
         xassert($pregex->match_da("it's foo@butt.com and friends", null));
         xassert($pregex->match_da("it's foo@butt.com and friends", "it's foo@butt.com and friends"));
         xassert($pregex->match_da("it's fóo@butt.com and friends", "it's foo@butt.com and friends"));
+
+        $pregex = Text::star_text_pregexes("a*a");
+        xassert($pregex->match("aa"));
+        xassert($pregex->match("aba"));
+        xassert(!$pregex->match("a a"));
+        xassert(!$pregex->match("ab ba"));
+        xassert($pregex->match("a*a"));
+        xassert(!$pregex->match("b*b *"));
+
+        $pregex = Text::star_text_pregexes("a\\*a");
+        xassert(!$pregex->match("aa"));
+        xassert(!$pregex->match("aba"));
+        xassert(!$pregex->match("a a"));
+        xassert(!$pregex->match("ab ba"));
+        xassert($pregex->match("a*a"));
+        xassert(!$pregex->match("b*b *"));
+
+        $pregex = Text::star_text_pregexes("*");
+        xassert($pregex->match("aa"));
+        xassert($pregex->match("aba"));
+        xassert($pregex->match("a a"));
+        xassert($pregex->match("ab ba"));
+        xassert($pregex->match("a*a"));
+        xassert($pregex->match("b*b *"));
+
+        $pregex = Text::star_text_pregexes("*ab");
+        xassert(!$pregex->match("aa"));
+        xassert($pregex->match("ab"));
+        xassert(!$pregex->match("aba"));
+        xassert($pregex->match("ab ba"));
+        xassert(!$pregex->match("aba ba"));
+        xassert($pregex->match("aba bab"));
+
+        $pregex = Text::star_text_pregexes("ab*");
+        xassert(!$pregex->match("aa"));
+        xassert($pregex->match("ab"));
+        xassert($pregex->match("aba"));
+        xassert($pregex->match("ab ba"));
+        xassert($pregex->match("aba ba"));
+        xassert(!$pregex->match("bab"));
+
+        $pregex = Text::star_text_pregexes("*ab*");
+        xassert(!$pregex->match("aa"));
+        xassert($pregex->match("ab"));
+        xassert($pregex->match("aba"));
+        xassert($pregex->match("ab ba"));
+        xassert($pregex->match("aba ba"));
+        xassert($pregex->match("aba bab"));
     }
 
     function test_simple_search() {
@@ -1071,14 +2529,39 @@ class Unit_Tester {
     }
 
     function test_review_search_split() {
-        xassert_eqq(Review_SearchTerm::split("butt>2:foo:3"), ["butt", ">2", "foo", "3"]);
-        xassert_eqq(Review_SearchTerm::split("butt>2:foo:3>=2"), ["butt", ">2", "foo", "3", ">=2"]);
+        $words = function ($s) {
+            $sw = SearchWord::make_kwarg($s, 0, 0, strlen($s), null);
+            return array_map(function ($w) { return $w->qword; }, $sw->split());
+        };
+        xassert_eqq($words("butt>2:foo:3"), ["butt", ">2", "foo", "3"]);
+        xassert_eqq($words("butt>2:foo:3>=2"), ["butt", ">2", "foo", "3", ">=2"]);
+        xassert_eqq($words("lixia≥1"), ["lixia", "≥1"]);
+        xassert_eqq($words("ovemer:lixia≥1:5"), ["ovemer", "lixia", "≥1", "5"]);
+        xassert_eqq($words("Cal≠1040"), ["Cal", "≠1040"]);
+        xassert_eqq($words("Café≤2"), ["Café", "≤2"]);
+        xassert_eqq($words("“Lixia Zhang”≥1"), ["“Lixia Zhang”", "≥1"]);
+        xassert_eqq($words("a—b≤2"), ["a—b", "≤2"]);
+        // components keep quotes, and positions point into the source string
+        xassert_eqq($words("pri:\"Deborah Estrin\">2"), ["pri", "\"Deborah Estrin\"", ">2"]);
+        $sw = SearchWord::make_kwarg("butt>2:foo", 0, 3, 13, null);
+        $parts = $sw->split();
+        xassert_eqq(count($parts), 3);
+        xassert_eqq([$parts[1]->qword, $parts[1]->pos1, $parts[1]->pos2], [">2", 7, 9]);
+        xassert_eqq([$parts[2]->qword, $parts[2]->pos1, $parts[2]->pos2], ["foo", 10, 13]);
     }
 
     function test_count_matcher() {
         xassert_eqq(CountMatcher::filter_using([0, 1, 2, 3], ">0"), [1 => 1, 2 => 2, 3 => 3]);
         xassert_eqq(CountMatcher::filter_using([3, 2, 1, 0], [1]), [2 => 1]);
         xassert_eqq(CountMatcher::filter_using([10, 11, -10], "≤10"), [0 => 10, 2 => -10]);
+    }
+
+    function test_client_option_file_quotes_password() {
+        $cp = new Dbl_ConnectionParams;
+        $cp->password = "pa#ss";
+        xassert_eqq($cp->client_option_file(), "[client]\npassword=\"pa#ss\"\n");
+        $cp->password = "a\"b\\c\nd ";
+        xassert_eqq($cp->client_option_file(), "[client]\npassword=\"a\\\"b\\\\c\\nd \"\n");
     }
 
     function test_qrequest() {
@@ -1094,7 +2577,6 @@ class Unit_Tester {
         xassert_eqq(json_encode($q->d), "null");
         xassert_eqq(count($q), 3);
         xassert_eqq(json_encode($q), "{\"a\":1,\"b\":2,\"c\":\"s\"}");
-        xassert_eqq(Json::encode($q), "{\"a\":1,\"b\":2,\"c\":\"s\"}");
 
         $q->set_path("");
         xassert_eqq($q->path_component(0), null);
@@ -1112,6 +2594,38 @@ class Unit_Tester {
         xassert_eqq($q->path_component(0), "a");
         xassert_eqq($q->path_component(1), "b");
         xassert_eqq($q->path_component(2), null);
+    }
+
+    function test_qrequest_mangle_key() {
+        xassert_eqq(Qrequest::mangle_key("paper.pdf"), "paper_pdf");
+        xassert_eqq(Qrequest::mangle_key("a b"), "a_b");
+        xassert_eqq(Qrequest::mangle_key("  a.b"), "a_b");
+        xassert_eqq(Qrequest::mangle_key("a[b"), "a_b");
+        xassert_eqq(Qrequest::mangle_key("a[b.c"), "a_b_c");
+        xassert_eqq(Qrequest::mangle_key("a[ b"), "a__b");
+        xassert_eqq(Qrequest::mangle_key("a[[b"), "a__b");
+        xassert_eqq(Qrequest::mangle_key("a]b"), "a]b");
+        xassert_eqq(Qrequest::mangle_key("a\x80b"), "a\x80b");
+    }
+
+    function test_qrequest_nested_file_array() {
+        $saved = [$_GET, $_POST, $_FILES];
+        $_GET = $_POST = [];
+        $_FILES = ["x" => [
+            "name" => ["a" => ["b" => "f.txt"]], "type" => ["a" => ["b" => "text/plain"]],
+            "size" => ["a" => ["b" => 3]], "tmp_name" => ["a" => ["b" => "/nonexistent"]],
+            "error" => ["a" => ["b" => UPLOAD_ERR_OK]]
+        ]];
+        try {
+            $qreq = Qrequest::make_global();
+        } finally {
+            [$_GET, $_POST, $_FILES] = $saved;
+        }
+        xassert(!$qreq->has_files());
+        $errors = $qreq->annex("upload_errors") ?? [];
+        xassert_eqq(count($errors), 1);
+        xassert_eqq($errors[0]->landmark, "x");
+        xassert_str_contains(Ht::fmt_feedback_msg($this->conf, $errors), "Error uploading file");
     }
 
     function test_is_anonymous_email() {
@@ -1209,7 +2723,7 @@ class Unit_Tester {
     }
 
     function test_mailer_expand_percent() {
-        $mailer = new HotCRPMailer($this->conf, null, ["width" => false]);
+        $mailer = new HotCRPMailer($this->u_root, null, ["width" => 0]);
         xassert_eqq($mailer->expand("%CONFNAME%//%CONFLONGNAME%//%CONFSHORTNAME%"),
             "Test Conference I (Testconf I)//Test Conference I//Testconf I\n");
         xassert_eqq($mailer->expand("%SITECONTACT%//%ADMINEMAIL%"),
@@ -1243,7 +2757,7 @@ class Unit_Tester {
     }
 
     function test_mailer_expand_brace() {
-        $mailer = new HotCRPMailer($this->conf, null, ["width" => false]);
+        $mailer = new HotCRPMailer($this->u_root, null, ["width" => 0]);
         xassert_eqq($mailer->expand("{{CONFNAME}}//{{CONFLONGNAME}}//{{CONFSHORTNAME}}"),
             "Test Conference I (Testconf I)//Test Conference I//Testconf I\n");
         xassert_eqq($mailer->expand("{{SITECONTACT}}//{{ADMINEMAIL}}"),
@@ -1282,14 +2796,47 @@ class Unit_Tester {
         xassert_eqq($mailer->expand(" {{IF(NULL)}}A{{ELIF(UNKNOWN)}}Y{{ENDIF}}"), " {{IF(UNKNOWN)}}Y{{ENDIF}}\n");
     }
 
+    function test_mailer_expand_no_reexpansion() {
+        // keywords in an expansion's value are text, even on `* {{KW}}: ...` lines
+        $mailer = new HotCRPMailer($this->u_root, null, [
+            "width" => 0,
+            "requester_contact" => Author::make_tabbed("{{CONFSHORTNAME}}\t%CONFSHORTNAME%\tbobjones@a.com")
+        ]);
+        $n = "{{CONFSHORTNAME}} %CONFSHORTNAME%";
+        xassert_eqq($mailer->expand("{{REQUESTERNAME}}"), "{$n}\n");
+        xassert_eqq($mailer->expand("{{REQUESTERNAME}}: {{CONFSHORTNAME}}"), "{$n}: Testconf I\n");
+        xassert_eqq($mailer->expand("* Name: {{REQUESTERNAME}}"), "* Name: {$n}\n");
+        xassert_eqq($mailer->expand("* {{REQUESTERNAME}}: Hello"), "* {$n}: Hello\n");
+        xassert_eqq($mailer->expand("* {{REQUESTERNAME}}: {{CONFSHORTNAME}}"), "* {$n}: Testconf I\n");
+        xassert_eqq($mailer->expand("* {{REQUESTERNAME}}: %CONFSHORTNAME% {{CONFSHORTNAME}}!"), "* {$n}: Testconf I Testconf I!\n");
+        xassert_eqq($mailer->expand("  %REQUESTERNAME%: {{REQUESTERNAME}}"), "  {$n}: {$n}\n");
+        xassert_eqq($mailer->expand("* {{CONFSHORTNAME}}: {{REQUESTERNAME}}"), "* Testconf I: {$n}\n");
+    }
+
+    function test_mailer_expand_bullet_keeps_unexpanded() {
+        // a bulleted keyword that cannot expand stays; the rest of the line expands
+        $mailer = new HotCRPMailer($this->u_root, null, ["width" => 0]);
+        xassert_eqq($mailer->expand("* {{TITLE}}: hello"), "* {{TITLE}}: hello\n");
+        xassert_eqq($mailer->expand("* {{TITLE}}: {{CONFSHORTNAME}}"), "* {{TITLE}}: Testconf I\n");
+        xassert_eqq($mailer->expand("  {{NAME}}: %CONFSHORTNAME% {{AUTHORS}}!"), "  {{NAME}}: Testconf I {{AUTHORS}}!\n");
+        // ...with the same hanging indent an expanded keyword would get
+        $mailer = new HotCRPMailer($this->u_root, null, [
+            "width" => 20,
+            "requester_contact" => Author::make_tabbed("Robert\tJones\tbobjones@a.com")
+        ]);
+        xassert_eqq($mailer->expand("* {{REQUESTERNAME}}: {{CONFLONGNAME}}"), "* Robert Jones: Test\n  Conference I\n");
+        xassert_eqq($mailer->expand("* {{TITLE}}: {{CONFLONGNAME}}"), "* {{TITLE}}: Test\n  Conference I\n");
+        xassert_eqq($mailer->expand("  {{NAME}}: {{CONFLONGNAME}}"), "  {{NAME}}: Test\n            Conference\n            I\n");
+    }
+
     function test_mailer_expand_halfbrace() {
-        $mailer = new HotCRPMailer($this->conf, null, ["width" => false]);
+        $mailer = new HotCRPMailer($this->u_root, null, ["width" => 0]);
         xassert_eqq($mailer->expand("{{CONFNAME%//%CONFLONGNAME}}"),
             "{{CONFNAME%//%CONFLONGNAME}}\n");
     }
 
     function test_mailer_expand_merge_space() {
-        $mailer = new HotCRPMailer($this->conf, null, ["width" => false, "reason" => ""]);
+        $mailer = new HotCRPMailer($this->u_root, null, ["width" => 0, "reason" => ""]);
         xassert_eqq($mailer->expand("Hello\n\n{{OPT(REASON)}}\n\nGoodbye\n"),
             "Hello\n\nGoodbye\n");
         xassert_eqq($mailer->expand("Hello\n\n\n{{OPT(REASON)}}\n\nGoodbye\n"),
@@ -1356,6 +2903,16 @@ class Unit_Tester {
         xassert_eqq((Text::split_name("Kennedy, Bob (Butt Pants)"))[1], "Kennedy");
     }
 
+    function test_split_name_long_suffixes() {
+        // long separator and suffix runs split in linear time
+        $jrs = str_repeat(", Jr", 20000);
+        xassert_eqq(Text::split_name("A{$jrs}"), ["A", $jrs, null]);
+        xassert_eqq(Text::split_name("A{$jrs} Smith"), ["Jr Smith", "A" . substr($jrs, 4), null]);
+        xassert_eqq(Text::split_name("A" . str_repeat(" I", 20000) . " Smith"), ["A" . str_repeat(" I", 20000), "Smith", null]);
+        $commas = str_repeat(",", 50000);
+        xassert_eqq(Text::split_name("{$commas}!"), ["!", substr($commas, 1), null]);
+    }
+
     function test_le_von() {
         xassert_eqq((Text::split_name("Claire Le Goues"))[1], "Le Goues");
         xassert_eqq((Text::split_name("Claire Von La Le Goues"))[1], "Von La Le Goues");
@@ -1385,6 +2942,436 @@ class Unit_Tester {
         xassert_eqq(Text::name("Bob", "Ferreira Costa", "", 0), "Bob Ferreira Costa");
         xassert_eqq(Text::name("Bob", "Ferreira Costa", "", NAME_L), "Ferreira Costa, Bob");
         xassert_eqq(Text::name("Bob", "Ferreira Costa", "", NAME_PARSABLE), "Ferreira Costa, Bob");
+    }
+
+    /** Unfold a To: header and remove its display names (quoted-strings
+     * and encoded-words), leaving the mailbox skeleton.
+     * @param string $hdr
+     * @return string */
+    static function mail_header_skeleton($hdr) {
+        xassert_str_starts_with($hdr, "To: ");
+        $s = preg_replace('/\r\n[ \t]/', " ", substr($hdr, 4));
+        $s = preg_replace('/"(?:[^"\\\\]|\\\\.)*"|=\?utf-8\?q\?[^?\s]*\?=/i', "", $s);
+        $s = preg_replace('/(?:[^\s<>@,;"]+\s+)+(?=<)/', "", $s);
+        return "To: " . simplify_whitespace($s);
+    }
+
+    /** @param string $hdr */
+    static function xassert_clean_wire($hdr) {
+        xassert(is_string($hdr));
+        // folds are `CRLF SP`; nothing else outside printable ASCII
+        xassert(!preg_match('/\r(?!\n )|(?<!\r)\n/', $hdr));
+        xassert(!preg_match('/[^\x20-\x7E\r\n]/', $hdr));
+    }
+
+    function test_mailquote_name() {
+        // `NAME_MAILQUOTE` output is joined into an address list that
+        // `MimeText::encode_email_header` parses again, so a name must survive
+        // that parse as one mailbox with its display name intact.
+        $email = "bob@example.com";
+        $mt = new MimeText("\r\n");
+        foreach ([["Bob", "Jones"], ["Bob", "Jones Jr."], ["Bob", "Jones, Jr."],
+                  ["Bob \"Bobby\"", "Jones"], ["Bob “Bobby”", "Jones"],
+                  ["Bob", "Jones <other@example.com>"],
+                  ["Bob", "Jones” <other@example.com>, “Bob"],
+                  ["Bob", "\" <other@example.com>, \""],
+                  ["Bob", "\\\" <other@example.com>, \\\""],
+                  ["Bob\\", "Jones"],
+                  ["Bob", "=?utf-8?q?Jones?="],
+                  ["Bob \"Bobby\"", "Kö"],
+                  ["Bob\\", "Kö"],
+                  ["Bob \"Bobby\"", "Jones” <other@example.com>, “Bob"]] as $fl) {
+            $n = Text::name($fl[0], $fl[1], $email, NAME_MAILQUOTE | NAME_E);
+            xassert_str_ends_with($n, " <{$email}>");
+            $hdr = $mt->encode_email_header("To", $n);
+            self::xassert_clean_wire($hdr);
+            xassert_eqq(self::mail_header_skeleton($hdr), "To: <{$email}>");
+            // the display name round-trips, whatever form it took
+            $name = substr($hdr, 4, -strlen(" <{$email}>"));
+            $plain = "{$fl[0]} {$fl[1]}";
+            if ($name[0] === "\"") {
+                xassert_eqq(stripcslashes(substr($name, 1, -1)), $plain);
+            } else if (str_starts_with($name, "=?")) {
+                $d = MimeText::decode_email_header($name);
+                if (str_starts_with($d, "\"")) {
+                    $d = preg_replace('/\\\\(.)/s', '$1', substr($d, 1, -1));
+                }
+                xassert_eqq($d, $plain);
+            } else {
+                xassert_eqq($name, $plain);
+            }
+        }
+        // ASCII names without specials are not quoted at all
+        xassert_eqq($mt->encode_email_header("To", Text::name("Bob", "Jones", $email, NAME_MAILQUOTE | NAME_E)),
+                    "To: Bob Jones <{$email}>");
+    }
+
+    function test_mailquote_injection() {
+        // A display name chosen by someone else must never add, split, or
+        // extend a recipient, even when merged with other recipients.
+        $evil = "evil@attacker.net";
+        $mt = new MimeText("\r\n");
+        foreach (["” <{$evil}>, “Christian",
+                  "\" <{$evil}>, \"",
+                  "\\\" <{$evil}>, \\\"",
+                  "\\\\\" <{$evil}>, \\\\\"",
+                  "\\",
+                  "<{$evil}>",
+                  ", {$evil}",
+                  "; {$evil}",
+                  "“{$evil}”",
+                  "\r\nBcc: {$evil}",
+                  "\nBcc: {$evil}",
+                  "=?utf-8?q?V=0D=0ABcc=3A_evil=40attacker=2Enet?=",
+                  "=?utf-8?q?=22_=3C{$evil}=3E=2C_=22?=",
+                  "Bob =?utf-8?q?x?= Jones",
+                  "Bob\x7FJones",
+                  "Bob\x00Jones",
+                  "Bob\tJones",
+                  "none", "hidden", "<none>",
+                  str_repeat("a”", 100) . " <{$evil}>, “x"] as $last) {
+            foreach ([["Eve", $last], ["", $last], [$last, "Eve"]] as $fl) {
+                $a1 = Text::name($fl[0], $fl[1], "victim@_.com", NAME_MAILQUOTE | NAME_E);
+                $a2 = Text::name($fl[0], $fl[1], "second@_.com", NAME_MAILQUOTE | NAME_E);
+                $hdr = $mt->encode_email_header("To", "{$a1}, {$a2}, Bob <third@_.com>");
+                self::xassert_clean_wire($hdr);
+                xassert_eqq(self::mail_header_skeleton($hdr),
+                            "To: <victim@_.com>, <second@_.com>, <third@_.com>");
+            }
+        }
+    }
+
+    function test_mime_quote() {
+        xassert_eqq(mime_quote_string("Bob"), "\"Bob\"");
+        xassert_eqq(mime_quote_string("a\"b"), "\"a\\\"b\"");
+        xassert_eqq(mime_quote_string("a\\b"), "\"a\\\\b\"");
+        xassert_eqq(mime_quote_string("a\\\"b"), "\"a\\\\\\\"b\"");
+        xassert_eqq(mime_quote_string("\\"), "\"\\\\\"");
+        // control characters are dropped, tabs kept, folds unfolded
+        xassert_eqq(mime_quote_string("a\x01b"), "\"ab\"");
+        xassert_eqq(mime_quote_string("a\tb"), "\"a\tb\"");
+        xassert_eqq(mime_quote_string("a\rb\nc"), "\"abc\"");
+        xassert_eqq(mime_quote_string("Bob\r\n Jones"), "\"Bob Jones\"");
+        xassert_eqq(mime_quote_string("Bob\n\tJones"), "\"Bob\tJones\"");
+
+        xassert_eqq(mime_token_quote("plain-token_1.pdf"), "plain-token_1.pdf");
+        xassert_eqq(mime_token_quote("a b"), "\"a b\"");
+        xassert_eqq(mime_token_quote("a\\b"), "\"a\\\\b\"");
+        xassert_eqq(mime_token_quote("a\"b"), "\"a\\\"b\"");
+        xassert_eqq(mime_token_quote("a[b]"), "\"a[b]\"");
+        xassert_eqq(mime_token_quote("a=b"), "\"a=b\"");
+        xassert_eqq(mime_token_quote("Kö"), "\"Kö\"");
+        xassert_eqq(mime_token_quote(""), "\"\"");
+
+        xassert_eqq(rfc2822_words_quote("Bob Jones"), "Bob Jones");
+        xassert_eqq(rfc2822_words_quote("O'Brien"), "\"O'Brien\"");
+        xassert_eqq(rfc2822_words_quote("J. R. Jones"), "\"J. R. Jones\"");
+        xassert_eqq(rfc2822_words_quote("a\\\"b"), "\"a\\\\\\\"b\"");
+    }
+
+    function test_encode_email_header() {
+        $mt = new MimeText("\r\n");
+        $enc = function ($s) use ($mt) {
+            $r = $mt->encode_email_header("To", $s);
+            xassert(($r === false) === ($mt->mi !== null));
+            return $r === false ? $mt->mi->message : $r;
+        };
+
+        // mailbox forms
+        xassert_eqq($enc("a@b.com"), "To: a@b.com");
+        xassert_eqq($enc("<a@b.com>"), "To: a@b.com");
+        xassert_eqq($enc("Bob Jones <a@b.com>"), "To: Bob Jones <a@b.com>");
+        xassert_eqq($enc("Bob < a@b.com >"), "To: Bob <a@b.com>");
+        xassert_eqq($enc("\"Jones, Bob\" <a@b.com>"), "To: \"Jones, Bob\" <a@b.com>");
+        xassert_eqq($enc("J.R. Jones <a@b.com>"), "To: \"J.R. Jones\" <a@b.com>");
+        xassert_eqq($enc("O'Brien <a@b.com>"), "To: \"O'Brien\" <a@b.com>");
+        xassert_eqq($enc("Bob\\'s <a@b.com>"), "To: \"Bob's\" <a@b.com>");
+        xassert_eqq($enc("Bob a@b.com"), "To: Bob <a@b.com>");
+        xassert_eqq($enc("Bob Jones a@b.com, Eve c@d.com"), "To: Bob Jones <a@b.com>, Eve <c@d.com>");
+        xassert_eqq($enc("a@b.com,\r\n c@d.com;e@f.com"), "To: a@b.com, c@d.com, e@f.com");
+
+        // curly quotes typed as delimiters are straightened
+        xassert_eqq($enc("“Jones, Bob” <a@b.com>"), "To: \"Jones, Bob\" <a@b.com>");
+        xassert_eqq($enc("“Bob\" <a@b.com>"), "To: \"Bob\" <a@b.com>");
+        // but curly quotes inside a quoted-string are content
+        xassert_eqq($enc("\"a”b\" <a@b.com>"), "To: =?utf-8?q?a=E2=80=9Db?= <a@b.com>");
+
+        // unquoted encoded-words are decoded; text that still looks like
+        // one is re-encoded rather than quoted
+        xassert_eqq($enc("=?utf-8?q?Bob?= <a@b.com>"), "To: Bob <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?K=C3=B6?= <a@b.com>"), "To: =?utf-8?q?K=C3=B6?= <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?V=0D=0ABcc=3A_x?= <a@b.com>"), "To: =?utf-8?q?V=0D=0ABcc=3A_x?= <a@b.com>");
+        $hdr = $enc("\"=?utf-8?q?V=0D=0A?=\" <a@b.com>");
+        self::xassert_clean_wire($hdr);
+        xassert_not_str_contains($hdr, "\"=?");
+        xassert_eqq(MimeText::decode_email_header(substr($hdr, 4, -strlen(" <a@b.com>"))), "\"=?utf-8?q?V=0D=0A?=\"");
+        xassert_eqq($enc("\"a =? b\" <a@b.com>"), "To: =?utf-8?q?a_=3D=3F_b?= <a@b.com>");
+
+        // control characters and DEL never reach the wire
+        foreach (["Bob\x7FJones", "\"Bob\x01Jones\"", "\"Bob\x7FJones\""] as $name) {
+            $hdr = $enc("{$name} <a@b.com>");
+            self::xassert_clean_wire($hdr);
+            xassert_str_starts_with($hdr, "To: =?utf-8?q?");
+        }
+        // whitespace runs collapse; a whitespace-only name is no name
+        xassert_eqq($enc("\"Bob\tJones\" <a@b.com>"), "To: \"Bob Jones\" <a@b.com>");
+        xassert_eqq($enc("Bob \t Jones <a@b.com>"), "To: Bob Jones <a@b.com>");
+        xassert_eqq($enc("\"  Bob  \" <a@b.com>"), "To: \"Bob\" <a@b.com>");
+        xassert_eqq($enc("\" \" <a@b.com>"), "To: a@b.com");
+        xassert_eqq($enc("=?utf-8?q?_?= <a@b.com>"), "To: a@b.com");
+        xassert_eqq($enc("=?utf-8?q?_Bob_?= <a@b.com>"), "To: Bob <a@b.com>");
+
+        // a quoted name is Q-encoded with its quoted-pairs undone, so the
+        // recipient sees the name, not its escaping
+        xassert_eqq($enc("\"K\xC3\xB6 \\\"x\\\"\" <a@b.com>"), "To: =?utf-8?q?K=C3=B6_=22x=22?= <a@b.com>");
+        xassert_eqq($enc("\"a\\\\b K\xC3\xB6\" <a@b.com>"), "To: =?utf-8?q?a=5Cb_K=C3=B6?= <a@b.com>");
+        xassert_eqq($enc("\"=? \\\"q\\\"\" <a@b.com>"), "To: =?utf-8?q?=3D=3F_=22q=22?= <a@b.com>");
+        xassert_eqq($enc("\"a\\\"b\" <a@b.com>"), "To: \"a\\\"b\" <a@b.com>");
+        // a truncated UTF-8 sequence at the end of a name is not a curly quote
+        xassert_eqq($enc("\"=? \xE2\x80\" <a@b.com>"), "To: =?utf-8?q?=3D=3F_=E2=80?= <a@b.com>");
+        xassert_eqq($enc("Bob\x01Jones <a@b.com>"), "<0>Invalid destination (possible quoting problem)");
+
+        // none/hidden
+        xassert_eqq($enc("none"), "To: ");
+        xassert_eqq($enc("Bob <NONE>, a@b.com, Eve <Hidden>"), "To: a@b.com");
+        xassert_eqq($enc("nonea@b.com"), "To: nonea@b.com");
+
+        // whitespace-separated addresses are accepted only when unambiguous
+        xassert_eqq($enc("<a@b.com> <c@d.com>"), "To: a@b.com, c@d.com");
+        xassert_eqq($enc("a@b.com c@d.com"), "To: a@b.com, c@d.com");
+        xassert_eqq($enc("a@b.com <c@d.com>"), "<0>Destinations must be separated with commas");
+        xassert_eqq($enc("Bob <a@b.com> <c@d.com>"), "<0>Destinations must be separated with commas");
+        xassert_eqq($enc("Bob a@b.com <c@d.com>"), "<0>Destinations must be separated with commas");
+        xassert_eqq($enc("Bob <a@b.com> Eve <c@d.com>"), "<0>Destinations must be separated with commas");
+        xassert_eqq($enc("Bob <a@b.com> c@d.com"), "<0>Destinations must be separated with commas");
+
+        // errors
+        xassert_eqq($enc("<a@b.com"), "<0>Invalid destination (possible quoting problem)");
+        xassert_eqq($enc("Bob (x) <a@b.com>"), "<0>Invalid destination (possible quoting problem)");
+        xassert_eqq($enc("Bob"), "<0>Invalid email address");
+        xassert_eqq($enc("\"unterminated <a@b.com>"), "<0>Invalid destination (possible quoting problem)");
+        xassert_eqq($enc("<bad>"), "<0>Invalid email address");
+        xassert_eqq($enc("bad@"), "<0>Invalid email address");
+        xassert_eqq($enc("Bob <a@b>"), "<0>Invalid email address");
+    }
+
+    function test_encode_email_header_encoded_words() {
+        // Unquoted encoded-words are decoded anywhere in a display name;
+        // adjacent ones join without the whitespace between them
+        // (RFC 2047 §6.2); decoded bytes are text, never syntax.
+        $mt = new MimeText("\r\n");
+        $enc = function ($s) use ($mt) {
+            $r = $mt->encode_email_header("To", $s);
+            return $r === false ? $mt->mi->message : $r;
+        };
+
+        // position in the phrase
+        xassert_eqq($enc("=?utf-8?q?Bob?= <a@b.com>"), "To: Bob <a@b.com>");
+        xassert_eqq($enc("=?UTF-8?Q?Bob?= Jones <a@b.com>"), "To: Bob Jones <a@b.com>");
+        xassert_eqq($enc("Bob =?utf-8?q?Jones?= <a@b.com>"), "To: Bob Jones <a@b.com>");
+        xassert_eqq($enc("Bob =?utf-8?q?K=C3=B6?= Jones <a@b.com>"), "To: =?utf-8?q?Bob_K=C3=B6_Jones?= <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?Bob?= <a@b.com>, Eve =?utf-8?q?K=C3=B6?= <c@d.com>"),
+                    "To: Bob <a@b.com>, =?utf-8?q?Eve_K=C3=B6?= <c@d.com>");
+
+        // adjacent encoded-words: separating whitespace is dropped
+        xassert_eqq($enc("=?utf-8?q?K=C3=B6?= =?utf-8?q?hler?= <a@b.com>"), "To: =?utf-8?q?K=C3=B6hler?= <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?K=C3=B6?=\r\n =?utf-8?q?hler?= <a@b.com>"), "To: =?utf-8?q?K=C3=B6hler?= <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?K=C3=B6?=\t \t=?utf-8?q?hler?= <a@b.com>"), "To: =?utf-8?q?K=C3=B6hler?= <a@b.com>");
+        xassert_eqq($enc("Eddie =?utf-8?q?K=C3=B6?= =?utf-8?q?hler?= Jr <a@b.com>"), "To: =?utf-8?q?Eddie_K=C3=B6hler_Jr?= <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?a?= =?utf-8?q?_b?= <a@b.com>"), "To: a b <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?a?= b =?utf-8?q?c?= <a@b.com>"), "To: a b c <a@b.com>");
+        // a long folded name, as produced by the encoder itself
+        $long = str_repeat("Ünï ", 30) . "Jones";
+        $hdr = $mt->encode_email_header("To", "{$long} <a@b.com>");
+        xassert_str_contains($hdr, "?=\r\n =?");
+        xassert_eqq($enc(substr($hdr, 4)), $hdr);
+
+        // decoded bytes are text: quotes, address syntax, separators, and
+        // keywords inside an encoded-word do not become syntax
+        xassert_eqq($enc("=?utf-8?q?=22Bob=22?= <a@b.com>"), "To: \"\\\"Bob\\\"\" <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?Bob_=3Cx=40y=3E?= <a@b.com>"), "To: \"Bob <x@y>\" <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?a=2C_b?= <a@b.com>, c@d.com"), "To: \"a, b\" <a@b.com>, c@d.com");
+        xassert_eqq($enc("=?utf-8?q?a=40b=2Ecom?= <c@d.com>"), "To: \"a@b.com\" <c@d.com>");
+        xassert_eqq($enc("=?utf-8?q?none?= <a@b.com>"), "To: none <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?=3Cnone=3E?= <a@b.com>"), "To: \"<none>\" <a@b.com>");
+        xassert_eqq($enc("=?utf-8?Q?=22x=0Ay=3A=22?= <a@b.com>"), "To: =?utf-8?q?=22x=0Ay=3A=22?= <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?V=0D=0ABcc=3A_x?= <a@b.com>"), "To: =?utf-8?q?V=0D=0ABcc=3A_x?= <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?a?= =?utf-8?q?=3D=3Futf-8=3Fq=3Fb=3F=3D?= <a@b.com>"),
+                    "To: =?utf-8?q?a=3D=3Futf-8=3Fq=3Fb=3F=3D?= <a@b.com>");
+
+        // things that are not utf-8 Q encoded-words stay literal text
+        xassert_eqq($enc("=?iso-8859-1?q?Andr=E9?= <a@b.com>"), "To: =?utf-8?q?=3D=3Fiso-8859-1=3Fq=3FAndr=3DE9=3F=3D?= <a@b.com>");
+        xassert_eqq($enc("=?utf-8?b?Qm9i?= <a@b.com>"), "To: =?utf-8?q?=3D=3Futf-8=3Fb=3FQm9i=3F=3D?= <a@b.com>");
+        xassert_eqq($enc("=?utf-8?q?unterminated <a@b.com>"), "To: =?utf-8?q?=3D=3Futf-8=3Fq=3Funterminated?= <a@b.com>");
+        xassert_eqq($enc("\"=?utf-8?q?Bob?=\" <a@b.com>"), "To: =?utf-8?q?=3D=3Futf-8=3Fq=3FBob=3F=3D?= <a@b.com>");
+        xassert_eqq($enc("Bob=?utf-8?q?x?= <a@b.com>"), "To: =?utf-8?q?Bob=3D=3Futf-8=3Fq=3Fx=3F=3D?= <a@b.com>");
+    }
+
+    function test_decode_email_header() {
+        $mt = new MimeText("\r\n");
+        $dec = "MimeText::decode_email_header";
+
+        // adjacent encoded-words join without the whitespace between them;
+        // other whitespace after an encoded-word becomes one space
+        xassert_eqq($dec(""), "");
+        xassert_eqq($dec("Bob Jones <a@b.com>"), "Bob Jones <a@b.com>");
+        xassert_eqq($dec("=?utf-8?q?K=C3=B6hler?="), "Köhler");
+        xassert_eqq($dec("Eddie =?utf-8?q?K=C3=B6hler?= <a@b.com>"), "Eddie Köhler <a@b.com>");
+        xassert_eqq($dec("=?utf-8?q?K=C3=B6?= =?utf-8?q?hler?= <a@b.com>"), "Köhler <a@b.com>");
+        xassert_eqq($dec("=?utf-8?q?K=C3=B6?=\r\n =?utf-8?q?hler?=\r\n <a@b.com>"), "Köhler <a@b.com>");
+        xassert_eqq($dec("=?utf-8?q?K=C3=B6?= \t \r\n\t=?utf-8?q?hler?="), "Köhler");
+        xassert_eqq($dec("=?utf-8?q?K=C3=B6?=\r\n <a@b.com>"), "Kö <a@b.com>");
+        xassert_eqq($dec("=?utf-8?q?K=C3=B6?=  \t<a@b.com>"), "Kö <a@b.com>");
+        xassert_eqq($dec("=?utf-8?q?a?= "), "a");
+        xassert_eqq($dec("=?utf-8?q?a?= =?utf-8?q?_b?="), "a b");
+        // decoded text that would not re-parse as a phrase is quoted
+        xassert_eqq($dec("=?utf-8?q?a=3D=3F_=5F?="), "\"a=? _\"");
+        xassert_eqq($dec("=?utf-8?q?Jones=2C_K=C3=B6?= <a@b.com>"), "\"Jones, Kö\" <a@b.com>");
+        xassert_eqq($dec("=?utf-8?q?K=C3=B6_=22x=22?= <a@b.com>"), "\"Kö \\\"x\\\"\" <a@b.com>");
+        xassert_eqq($dec("=?UTF-8?Q?K=C3=B6?="), "Kö");
+        xassert_eqq($dec("=?utf-8?q?K=c3=b6?="), "Kö");
+        // and text that decodes to control characters stays encoded
+        xassert_eqq($dec("=?utf-8?q?V=0D=0ABcc=3A_x?="), "=?utf-8?q?V=0D=0ABcc=3A_x?=");
+        xassert_eqq($dec("=?utf-8?q?a?= =?utf-8?q?=7F?= <a@b.com>"), "=?utf-8?q?a?= =?utf-8?q?=7F?= <a@b.com>");
+        xassert_eqq($dec("=?utf-8?q?a=3F?=b?= c"), "\"a?\"b?= c");
+
+        // not decoded: inside quoted-strings, other charsets or encodings,
+        // unterminated words, and a word glued to other text
+        xassert_eqq($dec("\"=?utf-8?q?Bob?=\" <a@b.com>"), "\"=?utf-8?q?Bob?=\" <a@b.com>");
+        xassert_eqq($dec("\"a =?utf-8?q?b?= c\" =?utf-8?q?d?="), "\"a =?utf-8?q?b?= c\" d");
+        xassert_eqq($dec("=?iso-8859-1?q?Andr=E9?= <a@b.com>"), "=?iso-8859-1?q?Andr=E9?= <a@b.com>");
+        xassert_eqq($dec("=?utf-8?b?Qm9i?="), "=?utf-8?b?Qm9i?=");
+        xassert_eqq($dec("Re: =?utf-8?q?unterminated"), "Re: =?utf-8?q?unterminated");
+        xassert_eqq($dec("=?utf-8?q?a?= =?bad?= =?utf-8?q?b?="), "a =?bad?= b");
+        xassert_eqq($dec("Re: 50=? =?x =?utf-8?q?y?="), "Re: 50=? =?x y");
+        xassert_eqq($dec("x=?utf-8?q?y?="), "x=?utf-8?q?y?=");
+        xassert_eqq($dec("\"unterminated <a@b.com>"), "\"unterminated <a@b.com>");
+
+        // decoded text containing a curly quote anywhere is quoted, since an
+        // unquoted curly quote would start a quoted-string on re-parse
+        xassert_eqq($dec("=?utf-8?q?Jane_=E2=80=9CJJ_Doe?= <j@x.com>"), "\"Jane “JJ Doe\" <j@x.com>");
+        xassert_eqq($dec("=?utf-8?q?Jane_JJ=E2=80=9D_Doe?= <j@x.com>"), "\"Jane JJ” Doe\" <j@x.com>");
+        xassert_eqq($dec("=?utf-8?q?=E2=80=9CJJ=E2=80=9D?= <j@x.com>"), "\"“JJ”\" <j@x.com>");
+        xassert_eqq($dec("=?utf-8?q?Jane_=E2=80=94_Doe?= <j@x.com>"), "Jane — Doe <j@x.com>");
+        xassert_eqq($dec("=?utf-8?q??= <j@x.com>"), "\"\" <j@x.com>");
+        foreach (["\"Jane “JJ Doe\" <j@x.com>", "\"Jane JJ” Doe\" <j@x.com>", "\"“JJ”\" <j@x.com>"] as $h) {
+            $dec1 = $dec(substr($mt->encode_email_header("Cc", $h), 4));
+            xassert_eqq($dec1, $h);
+            xassert_neqq($mt->encode_email_header("Cc", $dec1), false);
+        }
+
+        // round trip through the address encoder
+        foreach (["Kö <a@b.com>", "Kö <a@b.com>, " . str_repeat("Ünï ", 20) . "Jr <c@d.com>"] as $to) {
+            $hdr = $mt->encode_email_header("To", $to);
+            $dec1 = $dec(substr($hdr, 4));
+            xassert_not_str_contains($dec1, "=?");
+            xassert_eqq($mt->encode_email_header("To", $dec1), $hdr);
+        }
+    }
+
+    function test_text_header() {
+        $mt = new MimeText("\r\n");
+        $enc = function ($s) use ($mt) {
+            $hdr = $mt->encode_text_header("Subject", $s);
+            xassert_str_starts_with($hdr, "Subject: ");
+            xassert(!preg_match('/[^\x20-\x7E\t\r\n]/', $hdr));
+            return substr($hdr, 9);
+        };
+        $dec = "MimeText::decode_text_header";
+
+        // encoding: plain text stays plain, tab included (it is legal
+        // whitespace in an unstructured header); non-ASCII, `=?`, and other
+        // control characters are Q-encoded, tabs along with them
+        xassert_eqq($enc("plain ascii"), "plain ascii");
+        xassert_eqq($enc("Re: Kö"), "=?utf-8?q?Re:_K=C3=B6?=");
+        xassert_eqq($enc("Re: =?utf-8?q?x?="), "=?utf-8?q?Re:_=3D=3Futf-8=3Fq=3Fx=3F=3D?=");
+        xassert_eqq($enc("tab\there"), "tab\there");
+        xassert_eqq($enc("Kö\tx"), "=?utf-8?q?K=C3=B6=09x?=");
+        xassert_eqq($enc("a\x01b"), "=?utf-8?q?a=01b?=");
+        xassert_eqq($enc("a\x7Fb"), "=?utf-8?q?a=7Fb?=");
+        xassert_eqq($enc("line\r\nbreak"), "line break");
+
+        // decoding is the display form: it never quotes or re-parses
+        xassert_eqq($dec("plain ascii"), "plain ascii");
+        xassert_eqq($dec("=?utf-8?q?Re:_K=C3=B6?="), "Re: Kö");
+        xassert_eqq($dec("=?utf-8?q?K=C3=B6?= =?utf-8?q?hler?="), "Köhler");
+        xassert_eqq($dec("=?utf-8?q?K=C3=B6?=\r\n =?utf-8?q?hler?= x"), "Köhler x");
+        xassert_eqq($dec("=?utf-8?q?=22Jones=2C_Bob=22?="), "\"Jones, Bob\"");
+        xassert_eqq($dec("\"=?utf-8?q?x?=\""), "\"=?utf-8?q?x?=\"");
+        xassert_eqq($dec("=?iso-8859-1?q?Andr=E9?="), "=?iso-8859-1?q?Andr=E9?=");
+        xassert_eqq($dec("Re: 50=?"), "Re: 50=?");
+        foreach (["Re: Kö", "Re: " . str_repeat("Ünï ", 40) . "end", "plain ascii =? subject",
+                  "Re: 100% =?utf-8?q?not_encoded?=", "\"Jones, Kö\" <a@b.com>", "tab\there"] as $subj) {
+            xassert_eqq($dec($enc($subj)), $subj);
+        }
+    }
+
+    function test_expand_email_header_macros() {
+        $conf = $this->conf;
+        $save = [$conf->short_name, $conf->confid];
+        $conf->confid = "osdi26";
+        $mt = new MimeText("\r\n");
+        // encode the expansion and return [display name, email] of its
+        // one mailbox
+        $one = function ($tpl, $email) use ($conf, $mt) {
+            $x = $mt->expand_email_header_macros($conf, $tpl);
+            $h = $mt->encode_email_header("To", $x);
+            xassert(is_string($h), $x);
+            self::xassert_clean_wire($h);
+            xassert_eqq(self::mail_header_skeleton($h), "To: <{$email}>");
+            $d = MimeText::decode_email_header(substr($h, 4, -strlen(" <{$email}>")));
+            return str_starts_with($d, "\"") ? preg_replace('/\\\\(.)/s', '$1', substr($d, 1, -1)) : $d;
+        };
+        $tpl = '"${confshortname} Chairs" <noreply-${confid}@usenix.org>';
+        $bare = '${confshortname} <pc@x.org>';
+        $curly = '“${confshortname}” <pc@x.org>';
+
+        // the deployed shape, with every kind of short name, which always
+        // comes through intact
+        foreach (["OSDI", "OSDI '26", "Kö", "Kö, Conf", "Conf \"26", "A\\B", "Conf: 2026",
+                  "Conf (Fall)", "Conf@Home", "Conf <x@y.org>", "Conf “X”", "Conf “X", "=?utf-8?q?Evil?=",
+                  "Conf $1 \\1", "\" <evil@attacker.net>, \"", "” <evil@attacker.net>, “",
+                  "\\\" <evil@attacker.net>, \\\""] as $sn) {
+            $conf->short_name = $sn;
+            xassert_eqq($one($tpl, "noreply-osdi26@usenix.org"), "{$sn} Chairs");
+            xassert_eqq($one($bare, "pc@x.org"), $sn);
+            xassert_eqq($one($curly, "pc@x.org"), $sn);
+        }
+
+        // no macro, nothing changes
+        $conf->short_name = "OSDI";
+        foreach (['"$5 Club" <pc@x.org>', '“$5” <pc@x.org>', 'PC <pc@x.org>', '$confshortnames <pc@x.org>'] as $s) {
+            xassert_eqq($mt->expand_email_header_macros($conf, $s), $s);
+        }
+        // forms and positions
+        xassert_eqq($mt->expand_email_header_macros($conf, '$confshortname <pc@x.org>'), "OSDI <pc@x.org>");
+        xassert_eqq($mt->expand_email_header_macros($conf, 'x${confshortname}y ${confid} <pc@x.org>'), "xOSDIy osdi26 <pc@x.org>");
+        xassert_eqq($mt->expand_email_header_macros($conf, '${confshortname}${confshortname} <pc@x.org>'), "OSDIOSDI <pc@x.org>");
+        xassert_eqq($mt->expand_email_header_macros($conf, 'A <a@x.org>, ${confshortname} <b@x.org>'), "A <a@x.org>, OSDI <b@x.org>");
+        // inside an address, a macro expands only to something that can be
+        // part of an address
+        xassert_eqq($mt->expand_email_header_macros($conf, 'PC <pc-${confid}@x.org>'), "PC <pc-osdi26@x.org>");
+        xassert_eqq($mt->expand_email_header_macros($conf, '${confshortname}@x.org'), "OSDI@x.org");
+        $conf->short_name = "OSDI '26";
+        xassert_eqq($mt->expand_email_header_macros($conf, 'PC <${confshortname}@x.org>'), 'PC <${confshortname}@x.org>');
+        $conf->short_name = "OSDI";
+        // a bare word is quoted only when the expansion needs it
+        $conf->short_name = "Kö, Conf";
+        xassert_eqq($mt->expand_email_header_macros($conf, $bare), "\"Kö, Conf\" <pc@x.org>");
+        $conf->short_name = "Conf@Home";
+        xassert_eqq($mt->expand_email_header_macros($conf, $bare), "\"Conf@Home\" <pc@x.org>");
+        $conf->short_name = "OSDI '26";
+        xassert_eqq($mt->expand_email_header_macros($conf, $bare), "OSDI '26 <pc@x.org>");
+        xassert_eqq($mt->expand_email_header_macros($conf, 'O\'Brien\\\'s ${confshortname} <pc@x.org>'), "O'Brien\\'s OSDI '26 <pc@x.org>");
+        // inside quotes the expansion is escaped; a curly-delimited word
+        // that receives a curly quote is straightened so the quote is content
+        $conf->short_name = "Conf \"26 \\ ”";
+        xassert_eqq($mt->expand_email_header_macros($conf, $tpl), "\"Conf \\\"26 \\\\ ” Chairs\" <noreply-osdi26@usenix.org>");
+        xassert_eqq($mt->expand_email_header_macros($conf, $curly), "\"Conf \\\"26 \\\\ ”\" <pc@x.org>");
+        $conf->short_name = "Kö";
+        xassert_eqq($mt->expand_email_header_macros($conf, $curly), "“Kö” <pc@x.org>");
+
+        [$conf->short_name, $conf->confid] = $save;
     }
 
     function test_score_sort_counts() {
@@ -1498,6 +3485,14 @@ class Unit_Tester {
         xassert_eqq(friendly_boolean(""), false);
         xassert_eqq(friendly_boolean("0"), false);
         xassert_eqq(friendly_boolean("1"), true);
+        xassert_eqq(friendly_boolean("ON"), true);      // case-insensitive
+        xassert_eqq(friendly_boolean("No"), false);
+        xassert_eqq(friendly_boolean(" "), null);        // no longer trims
+        xassert_eqq(friendly_boolean(" 1 "), null);      // no longer trims
+        xassert_eqq(friendly_boolean("00"), null);
+        xassert_eqq(friendly_boolean("2"), null);
+        xassert_eqq(friendly_boolean(1), true);
+        xassert_eqq(friendly_boolean(0), false);
         xassert_eqq(friendly_boolean("!#($!"), null);
     }
 
@@ -1524,6 +3519,8 @@ class Unit_Tester {
         xassert_eqq(SearchWord::unquote("\"abc“"), "abc");
         xassert_eqq(SearchWord::unquote("\"abc\\\"def\""), "abc\"def");
         xassert_eqq(SearchWord::quote("abc\"def"), "\"abc\\\"def\"");
+        xassert_eqq(SearchWord::quote("abcdef\\"), "\"abcdef\\\\\"");
+        xassert_eqq(SearchWord::quote("abcdef\\\""), "\"abcdef\\\"\"");
     }
 
     function test_view_option_schema() {
@@ -1558,6 +3555,28 @@ class Unit_Tester {
         $vos->define("display=row|col,column^");
         $vos->define("sort={$sort_schema}^");
         xassert_eqq($vos->validate("reverse", true), ["sort", "reverse"]);
+
+        // extensible enum: `$` accepts arbitrary values, but does not lift
+        $dt_schema = "final|paper,submission|\$";
+        xassert_eqq(ViewOptionType::parse_enum("final", $dt_schema), "final");
+        xassert_eqq(ViewOptionType::parse_enum("submission", $dt_schema), "paper");
+        xassert_eqq(ViewOptionType::parse_enum("thingie", $dt_schema), "thingie");
+        xassert_eqq(ViewOptionType::parse_enum("thingie", $dt_schema, true), null);
+        xassert_eqq(ViewOptionType::parse_enum("thingie", "final|paper"), null);
+
+        $vos = new ViewOptionSchema;
+        xassert_eqq($vos->define_check("dt=final|paper,submission|\$^"), true);
+        xassert_eqq($vos->validate("dt", "final"), ["dt", "final"]);
+        xassert_eqq($vos->validate("dt", "paper"), ["dt", "paper"]);
+        xassert_eqq($vos->validate("dt", "submission"), ["dt", "paper"]);
+        xassert_eqq($vos->validate("dt", "thingie"), ["dt", "thingie"]);
+        xassert_eqq($vos->validate("final", true), ["dt", "final"]);
+        xassert_eqq($vos->validate("submission", true), ["dt", "paper"]);
+        xassert_eqq($vos->validate("thingie", true), null);
+
+        $dtx = ViewOptionType::make("dt=final|paper,submission|\$^")->unparse_export();
+        xassert_eqq($dtx["enum"], ["final", "paper"]);
+        xassert_eqq($dtx["extensible"] ?? null, true);
     }
 
     function test_utf16_incomplete_suffix_length() {

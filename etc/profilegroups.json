@@ -13,19 +13,35 @@
         "name": "__crosscheck/alerts", "order": 150,
         "crosscheck_function": "UserStatus::crosscheck_alerts"
     },
-    {   "name": "__field/firstName", "label": "First name", "page": "main"   },
-    {   "name": "__field/lastName", "label": "Last name", "page": "main"   },
-    {   "name": "__field/email", "label": "Email", "page": "main"   },
-    {   "name": "__field/uemail", "label": "Email", "page": "main"   },
-    {   "name": "__field/affiliation", "label": "Affiliation", "page": "main"   },
-    {   "name": "__field/collaborators", "label": "Collaborators", "page": "main"   },
-    {   "name": "__field/topics", "label": "Topics", "page": "main"   },
+    {   "name": "__field/firstName", "label": "First name", "topic": "main"   },
+    {   "name": "__field/lastName", "label": "Last name", "topic": "main"   },
+    {   "name": "__field/email", "label": "Email", "topic": "main"   },
+    {   "name": "__field/uemail", "label": "Email", "topic": "main"   },
+    {   "name": "__field/affiliation", "label": "Affiliation", "topic": "main"   },
+    {   "name": "__field/collaborators", "label": "Collaborators", "topic": "main"   },
+    {   "name": "__field/topics", "label": "Topics", "topic": "main"   },
 
     {
         "name": "__reauthenticate", "autosection": false,
         "print_function": "Security_UserInfo::print_reauthenticate"
     },
 
+    {
+        "name": "__mode/new",
+        "title": "New account", "heading": "New account",
+        "save_button_label": "Create account",
+        "order": 100
+    },
+    {
+        "name": "__mode/bulk", "title": "Bulk update",
+        "order": 200, "print_group": "__bulk"
+    },
+    {
+        "name": "__mode/profile", "title": "Your profile",
+        "order": 1000
+    },
+
+    [   "main/email", 500, "*UserStatus::print_email"   ],
     [   "main/main", 1000, "UserStatus::print_main"   ],
     [   "main/country", 3000, "UserStatus::print_country"   ],
     [   "main/roles", 5000, "UserStatus::print_roles"   ],
@@ -64,6 +80,10 @@
 
     {   "name": "preferences", "title": "Preferences", "order": 300   },
     {
+        "name": "preferences/theme", "title": "Theme", "order": 1000,
+        "print_function": "UserStatus::print_theme"
+    },
+    {
         "name": "preferences/follow", "title": "Email notification", "order": 4000,
         "print_function": "UserStatus::print_follow"
     },
@@ -85,6 +105,11 @@
         "request_function": "*Developer_UserInfo::request_new_bearer_token",
         "save_function": "*Developer_UserInfo::save_new_bearer_token",
         "inputs": false   },
+    {   "name": "developer/grants", "order": 30,
+        "print_function": "*Developer_UserInfo::print_grants",
+        "request_function": "*Developer_UserInfo::request_delete_grants",
+        "save_function": "*Developer_UserInfo::save_delete_grants",
+        "inputs": false   },
     {   "name": "developer/currenttokens", "order": 20,
         "print_function": "*Developer_UserInfo::print_current_bearer_tokens",
         "request_function": "*Developer_UserInfo::request_delete_bearer_tokens",
@@ -102,11 +127,12 @@
     {   "name": "__bulk/help/f/affiliation", "order": -83, "description_html": "Affiliation"   },
     {   "name": "__bulk/help/f/collaborators", "order": -82, "description_html": "Collaborators"   },
     {   "name": "__bulk/help/f/user_override", "order": -81, "description_html": "If “<code>yes</code>”, then override existing user profile information (name, affiliation, collaborators)"   },
-    {   "name": "__bulk/help/f/roles", "order": -80, "description_html": "Roles: “<code>pc</code>”, “<code>chair</code>”, “<code>sysadmin</code>”, “<code>none</code>”"   },
+    {   "name": "__bulk/help/f/roles", "order": -80, "description_html": "Roles: “<code>pc</code>”, “<code>unlistedpc</code>”, “<code>chair</code>”, “<code>sysadmin</code>”, “<code>none</code>”"   },
     {   "name": "__bulk/help/f/tags", "order": -70, "description_html": "PC tags (space-separated)"   },
     {   "name": "__bulk/help/f/add_tags", "order": -65, "description_html": "PC tags to add"   },
     {   "name": "__bulk/help/f/remove_tags", "order": -65, "description_html": "PC tags to remove"   },
     {   "name": "__bulk/help/f/follow", "description_html": "Event notification: blank, “<code>review</code>”, “<code>anyreview</code>”, “<code>none</code>”"   },
+    {   "name": "__bulk/help/f/theme", "description_html": "Theme: blank, “<code>auto</code>”, “<code>light</code>”, “<code>dark</code>”"   },
     {   "name": "__bulk/help/f/topics", "field": "topic:<TOPICNAME>", "description_html": "Topic interest: blank, “<code>low</code>”, “<code>medium-low</code>”, “<code>medium-high</code>”, or “<code>high</code>”, or numeric (-2 to 2)", "allow_if": "conf.has_topics", "order": 1   },
     {   "name": "__bulk/help/f/topic_override", "field": "topic_override", "description_html": "If “<code>no</code>”, then do not overwrite existing topic interests", "allow_if": "conf.has_topics", "order": 1.2   },
     {   "name": "__bulk/help/f/notify", "description_html": "Notify new accounts (default <code>yes</code>)", "order": 100   }

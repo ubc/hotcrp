@@ -56,9 +56,8 @@ class Review_SettingParser extends SettingParser {
         if ($si->name0 === "review/" && $si->name2 === "/name") {
             $idv = $sv->vstr("review/{$si->name1}/id");
             return ctype_digit($idv) && $idv !== "0" ? "unnamed" : "(new round)";
-        } else {
-            return null;
         }
+        return null;
     }
 
     function set_oldv(Si $si, SettingValues $sv) {
@@ -136,7 +135,7 @@ class Review_SettingParser extends SettingParser {
         echo $sv->label($namesi->name, "Review round"), " ",
             $sv->entry($namesi->name, ["class" => "ml-1 uii uich js-settings-review-round-name want-delete-marker"]);
         if ($id > 1 || count($sv->conf->defined_rounds()) > 1) {
-            echo Ht::button(Icons::ui_use("trash"), ["id" => "review/{$ctr}/deleter", "class" => "ui js-settings-review-round-delete ml-2 btn-licon-s need-tooltip", "aria-label" => "Delete review round", "tabindex" => -1]);
+            echo Ht::button(Ht::make_licon("trash", "s"), ["id" => "review/{$ctr}/deleter", "class" => "ui js-settings-review-round-delete ml-2 btn-licon-s need-tooltip", "aria-label" => "Delete review round", "tabindex" => -1]);
         }
         if ($id > 0 && ($round_map[$id - 1] ?? 0) > 0) {
             echo '<span class="ml-3 d-inline-block">',
@@ -165,11 +164,9 @@ class Review_SettingParser extends SettingParser {
     }
 
     static function print_rounds(SettingValues $sv) {
-        Icons::stash_defs("trash");
         echo '<p>Reviews are due by the deadline, but <em>cannot be modified</em> after the hard deadline. Most programs don’t use hard deadlines for reviews.</p>',
             '<p class="f-d">', $sv->type_hint("date"), '</p>',
-            Ht::hidden("has_review", 1),
-            Ht::unstash();
+            Ht::hidden("has_review", 1);
 
         // prepare round selector
         $sv->set_oldv("rev_roundtag", $sv->conf->setting_data("rev_roundtag") ?? "");
@@ -432,12 +429,12 @@ class Review_SettingParser extends SettingParser {
             if ($nrs->id <= 0
                 || $nrs->soft !== $ors->soft
                 || $nrs->done !== $ors->done) {
-                $sv->check_date_before("review/{$ctr}/soft", "review/{$ctr}/done", false);
+                $sv->check_date_before("review/{$ctr}/soft", "review/{$ctr}/done");
             }
             if ($nrs->id <= 0
                 || $nrs->external_soft !== $ors->external_soft
                 || $nrs->external_done !== $ors->external_done) {
-                $sv->check_date_before("review/{$ctr}/external_soft", "review/{$ctr}/external_done", false);
+                $sv->check_date_before("review/{$ctr}/external_soft", "review/{$ctr}/external_done");
             }
             $rss[] = $nrs;
             if ($nrs->id > 0) {

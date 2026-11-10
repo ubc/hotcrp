@@ -38,38 +38,61 @@ final class TokenScope {
     const S_CMT_READ = 0x10000;
     const S_CMT_WRITE = 0x20000;
     const S_CMT_ADMIN = 0x40000;
-    const S_OTH_READ = 0x100000;
-    const S_OTH_WRITE = 0x200000;
-    const S_OTH_ADMIN = 0x400000;
+    const S_PREF_READ = 0x100000;
+    const S_PREF_WRITE = 0x200000;
+    const S_PREF_ADMIN = 0x400000;
+    const S_REACT_READ = 0x1000000;
+    const S_REACT_WRITE = 0x2000000;
+    const S_REACT_ADMIN = 0x4000000;
+    const S_PAPER_ADMIN = 0x7777777; // {SUB+DOC+REV+TAG+CMT+PREF+REACT}_ADMIN
+    const S_OTH_READ = 0x10000000;
+    const S_OTH_WRITE = 0x20000000;
+    const S_OTH_ADMIN = 0x40000000;
+    const S_SETTINGS_READ = 0x100000000;
+    const S_SETTINGS_WRITE = 0x200000000;
+    const S_SETTINGS_ADMIN = 0x400000000;
+
+    const OIDC_OPENID = 1;
+    const OIDC_EMAIL = 2;
+    const OIDC_PROFILE = 4;
+    const OIDC_ADDRESS = 8;
+    const OIDC_PHONE = 16;
 
     /** @var int */
     private $_all_bits;
     /** @var int */
     private $_any_bits;
+    /** @var int */
+    private $_oidc_bits;
     /** @var ?list<TokenSubsetScope> */
     private $_rest;
     /** @var Contact */
     private $_user;
 
     /** @var array<string,int> */
-    static public $scopes = [
+    static private $scopes = [
         "*" => -1, "all" => -1, "none" => 0,
-        "openid" => -2, "email" => -2, "profile" => -2, "address" => -2, "phone" => -2,
-        "write" => 0x33333333, "read" => 0x11111111, "admin" => -1,
-        "paper:admin" => 0x77777, "paper:write" => 0x33333, "paper:read" => 0x11111,
+        "openid" => -2, "email" => -3, "profile" => -5, "address" => -9, "phone" => -17,
+        "write" => 0x333333333, "read" => 0x111111111, "admin" => -1,
+        "paper:admin" => 0x7777777, "paper:write" => 0x3333333, "paper:read" => 0x1111111,
         "submission:admin" => 0x77, "submission:write" => 0x33, "submission:read" => 0x11,
         "document:admin" => 0x73, "document:write" => 0x33, "document:read" => 0x11,
         "review:admin" => 0x701, "review:write" => 0x301, "review:read" => 0x101,
         "tag:admin" => 0x7001, "tag:write" => 0x3001, "tag:read" => 0x1001,
         "comment:admin" => 0x70001, "comment:write" => 0x30001, "comment:read" => 0x10001,
-        "other:admin" => 0x700000, "other:write" => 0x300000, "other:read" => 0x100000,
-        "submeta:admin" => 0x7, "submeta:write" => 0x3, "submeta:read" => 0x1
+        "preference:admin" => 0x700001, "preference:write" => 0x300001, "preference:read" => 0x100001,
+        "reaction:admin" => 0x7000001, "reaction:write" => 0x3000001, "reaction:read" => 0x1000001,
+        "other:admin" => 0x70000000, "other:write" => 0x30000000, "other:read" => 0x10000000,
+        "submeta:admin" => 0x7, "submeta:write" => 0x3, "submeta:read" => 0x1,
+        "settings:admin" => 0x700000000, "settings:write" => 0x300000000, "settings:read" => 0x100000000
     ];
+    static private $oidc_names = ["openid", "email", "profile", "address", "phone"];
 
     /** @param int $all_bits
      * @param ?list<TokenSubsetScope> $rest
-     * @param ?Contact $user */
-    function __construct($all_bits, $rest = null, $user = null) {
+     * @param ?Contact $user
+     * @param int $oidc */
+    function __construct($all_bits, $rest = null, $user = null, $oidc = 0) {
         $this->_all_bits = $this->_any_bits = $all_bits;
         foreach ($rest ?? [] as $tss) {
             if (($this->_all_bits & $tss->bits) === $tss->bits) {
@@ -86,13 +109,20 @@ final class TokenScope {
             $this->_rest[] = clone $tss;
         }
         $this->_user = $user;
+        $this->_oidc_bits = $oidc;
+    }
+
+    /** @param string $s
+     * @return int */
+    static function parse_basic($s) {
+        return self::$scopes[$s] ?? 0;
     }
 
     /** @param string $s
      * @param ?Contact $user
      * @return ?TokenScope */
     static function parse($s, $user) {
-        $all_bits = 0;
+        $all_bits = $oidc_bits = 0;
         $any = false;
         $rest = null;
         '@phan-var-force ?list $rest';
@@ -101,15 +131,14 @@ final class TokenScope {
                 continue;
             }
             $b = self::$scopes[$w] ?? 0;
-            if ($b === -1) {
-                return null;
-            }
-            if ($b === -2) {
+            if ($b <= -2) {
+                $any = true; // OIDC scope only, no explicit API access
+                $oidc_bits |= -$b - 1;
                 continue;
             }
-            if ($b > 0) {
-                $all_bits |= $b;
+            if ($b !== 0) {
                 $any = true;
+                $all_bits |= $b;
                 continue;
             }
             $q = strpos($w, "?");
@@ -139,15 +168,16 @@ final class TokenScope {
                     $b = self::$scopes[substr($w, 0, $h)] ?? 0;
                 }
             }
-            if ($b !== 0 && $lt !== 0 && $ld !== null) {
+            // `none`, OpenID scopes, and errors don’t add subsets
+            if ($b !== 0 && $b >= -1 && $lt !== 0 && $ld !== null) {
                 $rest[] = new TokenSubsetScope($b, $lt, $ld);
             }
             $any = true;
         }
-        if (!$any) {
+        if (!$any || ($all_bits === -1 && $oidc_bits === 0)) {
             return null;
         }
-        return new TokenScope($all_bits, $rest, $user);
+        return new TokenScope($all_bits, $rest, $user, $oidc_bits);
     }
 
 
@@ -224,6 +254,12 @@ final class TokenScope {
         return ($this->_any_bits & $bit) === $bit;
     }
 
+    /** @param int $bit
+     * @return bool */
+    function allows_oidc($bit) {
+        return ($this->_oidc_bits & $bit) === $bit;
+    }
+
     /** @param ?TokenScope $tsa
      * @param null|TokenScope|string $tsb
      * @return ?TokenScope */
@@ -262,7 +298,35 @@ final class TokenScope {
                 $rest[] = new TokenSubsetScope($b, $atss->type, $atss->selector);
             }
         }
-        return new TokenScope($all, $rest, $tsa->_user ?? $tsb->_user);
+        // OIDC (identity) scopes come from the left operand only
+        return new TokenScope($all, $rest, $tsa->_user ?? $tsb->_user, $tsa->_oidc_bits);
+    }
+
+    /** Return true if this scope grants rights on a selected subset of
+     * submissions (`#12`, `#tag`, `?q=…`) beyond what it grants generally.
+     * @return bool */
+    function has_selector() {
+        return $this->_rest !== null;
+    }
+
+    /** Return this scope with its subset scopes removed. The result grants no
+     * more than this one does.
+     * @return TokenScope */
+    function without_selectors() {
+        if ($this->_rest !== null) {
+            return new TokenScope($this->_all_bits, null, $this->_user, $this->_oidc_bits);
+        }
+        return $this;
+    }
+
+    /** Return this scope with its OIDC (identity) scopes removed. An access
+     * token conveys API permissions only, so its scope carries no OIDC scopes.
+     * @return TokenScope */
+    function without_oidc() {
+        if ($this->_oidc_bits !== 0) {
+            return new TokenScope($this->_all_bits, $this->_rest, $this->_user, 0);
+        }
+        return $this;
     }
 
     /** @param int $bits
@@ -315,10 +379,19 @@ final class TokenScope {
 
     /** @return string */
     static function unparse(?TokenScope $ts) {
-        if (!$ts || $ts->_all_bits === ~0) {
+        if (!$ts) {
             return "all";
         }
-        $a = $ts->_all_bits !== 0 ? self::unparse_bits($ts->_all_bits) : [];
+        $a = [];
+        if ($ts->_oidc_bits > 0) {
+            for ($i = 0, $b = 1; $b <= $ts->_oidc_bits; ++$i, $b <<= 1) {
+                if (($ts->_oidc_bits & $b) !== 0)
+                    $a[] = self::$oidc_names[$i];
+            }
+        }
+        if ($ts->_all_bits !== 0) {
+            array_push($a, ...self::unparse_bits($ts->_all_bits));
+        }
         foreach ($ts->_rest ?? [] as $tss) {
             if ($tss->type === 1) {
                 $sfx = "#{$tss->selector}";
@@ -327,8 +400,13 @@ final class TokenScope {
             } else /* $lt === 3 */ {
                 $sfx = "?q=" . urlencode($tss->selector);
             }
-            foreach (self::unparse_bits($tss->bits) as $pfx) {
-                $a[] = $pfx . $sfx;
+            // name the selector's rights as whole scopes, leaving out those
+            // the general rights already grant
+            foreach (self::unparse_bits($tss->bits | $ts->_all_bits) as $pfx) {
+                $mask = self::$scopes[$pfx] ?? null;
+                if ($mask === null || ($mask & ~$ts->_all_bits) !== 0) {
+                    $a[] = $pfx . $sfx;
+                }
             }
         }
         return empty($a) ? "none" : join(" ", $a);
@@ -357,22 +435,28 @@ final class TokenScope {
         }
     }
 
+    /** Split `$scope` into OpenID scopes and other scopes, and return
+     * `[$openid_subset, $rest]`.
+     * @param ?string $scope
+     * @return array{string,string} */
+    static function scope_str_split_openid($scope) {
+        $x = ["", ""];
+        if ($scope !== null && $scope !== "") {
+            foreach (explode(" ", $scope) as $w) {
+                if ($w === "") {
+                    continue;
+                }
+                $m = &$x[(self::$scopes[$w] ?? 0) < -1 ? 0 : 1];
+                $m .= ($m === "" ? $w : " " . $w);
+            }
+        }
+        return $x;
+    }
+
     /** @param ?string $scope
      * @return bool */
     static function scope_str_all_openid($scope) {
-        if ($scope === null || $scope === "") {
-            return false;
-        }
-        $any = false;
-        foreach (explode(" ", $scope) as $w) {
-            if ($w === "") {
-                continue;
-            }
-            $any = true;
-            if ((self::$scopes[$w] ?? null) !== -2) {
-                return false;
-            }
-        }
-        return $any;
+        $x = self::scope_str_split_openid($scope);
+        return $x[0] !== "" && $x[1] === "";
     }
 }

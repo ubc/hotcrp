@@ -14,14 +14,14 @@ class Multiconference {
         if ($confid === null && PHP_SAPI !== "cli") {
             $nav = Navigation::get();
             if (($max = $Opt["multiconferenceAnalyzer"] ?? null)) {
-                if (is_string($max)) {
-                    $confid = self::test_multiconference_analyzer($max, $nav);
-                } else {
+                if (is_array($max)) {
                     foreach ($max as $ma) {
-                        if (($confid = self::test_multiconference_analyzer($ma, $nav))) {
-                            break;
+                        if (self::test_multiconference_analyzer($ma, $nav)) {
+                            return;
                         }
                     }
+                } else if (self::test_multiconference_analyzer($max, $nav)) {
+                    return;
                 }
             } else if ($nav->base_path !== "/") {
                 $slash = strrpos($nav->base_path, "/", -2);
@@ -30,7 +30,7 @@ class Multiconference {
         }
 
         if (!$confid) {
-            $Opt["confid"] = "__nonexistent__";
+            $Opt["confid"] = "__unspecified__";
         } else if (preg_match('/\A[a-zA-Z0-9_][-a-zA-Z0-9_.]*\z/', $confid)) {
             $Opt["confid"] = $confid;
         } else {
@@ -39,21 +39,30 @@ class Multiconference {
         }
     }
 
-    /** @param string $ma
+    /** @param mixed $ma
      * @param NavigationState $nav
-     * @return ?string */
+     * @return bool */
     static private function test_multiconference_analyzer($ma, $nav) {
-        $sp = strpos($ma, " ");
-        $p = 0;
-        if ($sp === 1 && $ma[0] !== "/") {
-            $t = $ma[0];
-            $p = 2;
-            $sp = strpos($ma, " ", $p);
+        if (is_object($ma)) {
+            $mao = $ma;
+            $t = $ma->type;
+            $match = $ma->match;
+            $p = null;
         } else {
-            $t = "b";
-        }
-        if ($sp === false) {
-            return null;
+            $mao = null;
+            $sp = strpos($ma, " ");
+            $p = 0;
+            if ($sp === 1 && $ma[0] !== "/") {
+                $t = $ma[0];
+                $p = 2;
+                $sp = strpos($ma, " ", $p);
+            } else {
+                $t = "b";
+            }
+            if ($sp === false) {
+                return false;
+            }
+            $match = substr($ma, $p, $sp - $p);
         }
         if ($t === "b") {
             $subject = $nav->base_absolute(true);
@@ -61,39 +70,37 @@ class Multiconference {
             $subject = strtolower($nav->host);
         } else if ($t === "p") {
             $subject = $nav->base_path;
+        } else if ($t === "P") {
+            $subject = $nav->base_path . $nav->raw_page . $nav->path;
         } else if ($t === "a") {
             $subject = $nav->site_absolute(true) . $nav->raw_page . $nav->path;
         } else {
-            return null;
+            return false;
         }
-        if (!preg_match("\1\\A" . substr($ma, $p, $sp - $p) . "\1", $subject, $m)) {
-            return null;
+        if (!preg_match("\1\\A{$match}\1", $subject, $m)) {
+            return false;
         }
-        $confid = substr($ma, $sp + 1);
-        for ($i = 1; isset($m[$i]); ++$i) {
-            $confid = str_replace("\${$i}", $m[$i], $confid);
-        }
-        return $confid;
-    }
-
-
-    /** @param ?string $root
-     * @param string $confid
-     * @return ?Conf */
-    static function get_conf($root, $confid) {
-        if (self::$conf_cache === null) {
-            self::$conf_cache = [];
-            if (Conf::$main && ($xconfid = Conf::$main->opt("confid"))) {
-                self::$conf_cache[SiteLoader::$root . "\0{$xconfid}"] = Conf::$main;
+        $confid = $mao ? $mao->confid ?? "\$1" : substr($ma, $sp + 1);
+        if ($confid === "\$1") {
+            $confid = $m[1] ?? "\$1";
+        } else {
+            for ($i = 1; isset($m[$i]); ++$i) {
+                $confid = str_replace("\${$i}", $m[$i], $confid);
             }
         }
-        $root = $root ?? SiteLoader::$root;
-        $key = "{$root}\0{$confid}";
-        if (!array_key_exists($key, self::$conf_cache)) {
-            self::$conf_cache[$key] = self::load_conf($root, $confid);
+        if (!preg_match('/\A[a-zA-Z0-9_][-a-zA-Z0-9_.]*\z/', $confid)) {
+            return false;
         }
-        return self::$conf_cache[$key];
+        global $Opt;
+        $Opt["confid"] = $confid;
+        if ($mao && isset($mao->opt)) {
+            foreach ($mao->opt as $k => $v) {
+                $Opt[$k] = $v;
+            }
+        }
+        return true;
     }
+
 
     /** @param ?string $root
      * @param string $confid
@@ -113,6 +120,31 @@ class Multiconference {
         $Opt = $save_opt;
         return $newconf;
     }
+
+    /** @param ?string $root
+     * @param string $confid
+     * @return ?Conf */
+    static function get_conf($root, $confid) {
+        if (self::$conf_cache === null) {
+            self::$conf_cache = [];
+            if (Conf::$main && ($xconfid = Conf::$main->confid)) {
+                self::$conf_cache[SiteLoader::$root . "\0{$xconfid}"] = Conf::$main;
+            }
+        }
+        $root = $root ?? SiteLoader::$root;
+        $key = "{$root}\0{$confid}";
+        if (!array_key_exists($key, self::$conf_cache)) {
+            self::$conf_cache[$key] = self::load_conf($root, $confid);
+        }
+        return self::$conf_cache[$key];
+    }
+
+    static function trim_conf_cache() {
+        if (!empty(self::$conf_cache) && count(self::$conf_cache) > 400) {
+            self::$conf_cache = null;
+        }
+    }
+
 
     /** @param 401|403|404|array{title?:string,link?:bool,action_bar?:string}|Qrequest|MessageItem|FailureReason|string|null ...$arg
      * @return never */
@@ -164,7 +196,8 @@ class Multiconference {
 
         $qreq = $qreq ?? Qrequest::$main_request ?? Qrequest::make_minimal();
         if (!$qreq->conf) {
-            $qreq->set_conf(Conf::$main ?? new Conf($Opt, false));
+            Conf::set_main_instance(Conf::$main ?? new Conf($Opt, false));
+            $qreq->set_conf(Conf::$main);
         }
         if ($link === false) {
             $qreq->set_user(null);
@@ -183,7 +216,7 @@ class Multiconference {
             if ($maintenance && $status === 503) {
                 $j["maintenance"] = true;
             }
-            echo json_encode_browser($j), "\n";
+            echo json_encode_db($j), "\n";
             Navigation::complete();
         }
 
@@ -194,7 +227,7 @@ class Multiconference {
         $mis[0] = $mis[0] ?? MessageItem::error("<0>Internal error");
         if ($link && $mis[0]->status >= 2 && $qreq->page() !== "index") {
             if (!is_string($link)) {
-                $link = Conf::$main->hoturl_raw("index");
+                $link = Conf::$main->hoturl("index");
             }
             $mis[] = MessageItem::plain("<5><a href=\"" . htmlspecialchars($link) . "\">" . htmlspecialchars(Conf::$main->short_name) . " main site</a>");
         }
@@ -215,7 +248,7 @@ class Multiconference {
         } else if ($user->is_empty()) {
             $e = "signin_required";
             $t = "";
-            $args[] = new FmtArg("url", $user->conf->hoturl_raw("signin"), 0);
+            $args[] = new FmtArg("url", $user->conf->hoturl("signin"), 0);
             $args[] = new FmtArg("expand", true);
         } else {
             $e = "account_disabled";
@@ -235,7 +268,6 @@ class Multiconference {
         }
     }
 
-    /** @return never */
     static function fail_bad_options() {
         global $Opt;
         $qreq = null;
@@ -253,7 +285,7 @@ class Multiconference {
         foreach ($Opt["missing"] ?? [] as $x) {
             if (strpos($x, "__invalid__") !== false) {
                 $invalid = true;
-            } else if (strpos($x, "__nonexistent__") === false) {
+            } else if (strpos($x, "__unspecified__") === false) {
                 $missing[] = $x;
             }
         }
@@ -269,7 +301,10 @@ class Multiconference {
                 }, $missing));
             } else if ($invalid) {
                 $errors[] = "Invalid conference specified with `-n`";
-            } else if ($multiconference && $confid === "__nonexistent__") {
+            } else if ($multiconference && $confid === "__unspecified__") {
+                if ($Opt["__no_main"] ?? false) {
+                    return; // not necessarily an error
+                }
                 $errors[] = self::nonexistence_error();
             } else {
                 $errors[] = "Unable to load HotCRP";
@@ -282,7 +317,7 @@ class Multiconference {
                 } else {
                     $errors[] = "HotCRP was unable to load. A system administrator must fix this problem.";
                 }
-            } else if ($multiconference && $confid === "__nonexistent__") {
+            } else if ($multiconference && $confid === "__unspecified__") {
                 $errors[] = self::nonexistence_error();
             } else {
                 if ($multiconference) {
@@ -297,33 +332,46 @@ class Multiconference {
     }
 
     /** @return never */
-    static function fail_bad_database() {
-        global $Opt;
+    static function fail_bad_database(Conf $conf) {
         $qreq = null;
-        if (isset($Opt["multiconferenceFailureCallback"])
+        if (($mfc = $conf->opt("multiconferenceFailureCallback"))
             && PHP_SAPI !== "cli") {
             $qreq = Qrequest::make_minimal();
-            call_user_func($Opt["multiconferenceFailureCallback"], "database", $qreq);
+            call_user_func($mfc, "database", $qreq);
         }
+        $confid = $conf->opt("confid");
+        $multiconference = $conf->opt("multiconference");
+        $cp = $conf->dbparams;
+        // A missing conference is 404 and unremarkable; anything else is a
+        // server problem (503), and logged so someone notices
+        $nonexistent = $multiconference
+            && ($confid === "__unspecified__"
+                || !$cp
+                || $cp->missing());
         $errors = [];
-        $confid = $Opt["confid"] ?? null;
-        $multiconference = $Opt["multiconference"] ?? null;
-        if ($multiconference && $confid === "__nonexistent__") {
-            $errors[] = self::nonexistence_error();
-        } else if ($multiconference) {
-            $errors[] = "The “{$confid}” conference does not exist. Check your URL to make sure you spelled it correctly.";
+        if ($nonexistent) {
+            $status = 404;
+            $errors[] = $confid === "__unspecified__"
+                ? self::nonexistence_error()
+                : "The “{$confid}” conference does not exist. Check your URL to make sure you spelled it correctly.";
         } else {
-            $errors[] = "HotCRP was unable to connect to its database. A system administrator must fix this problem.";
-            if (defined("HOTCRP_TESTHARNESS")) {
-                $errors[] = "You may need to run `lib/createdb.sh -c test/options.php` to create the database.";
-            }
-            if (($cp = Dbl::parse_connection_params($Opt))) {
-                error_log("Unable to connect to database " . $cp->sanitized_dsn());
+            $status = 503;
+            if ($cp && $cp->transient()) {
+                $errors[] = "The site is temporarily unavailable. Please try again in a few minutes.";
             } else {
-                error_log("Unable to connect to database");
+                $errors[] = "HotCRP was unable to connect to its database. A system administrator must fix this problem.";
+                if (defined("HOTCRP_TESTHARNESS")) {
+                    $errors[] = "You may need to run `lib/createdb.sh -c test/options.php` to create the database.";
+                }
+            }
+            if (!$cp) {
+                error_log("Unable to connect to database: no database configuration");
+            } else {
+                $error = $cp->connect_error !== "" ? $cp->connect_error : "(unknown)";
+                error_log("Unable to connect to database {$cp->sanitized_dsn()}: {$cp->connect_errno} {$error}");
             }
         }
-        Multiconference::fail($qreq, ["link" => false], ...$errors);
+        Multiconference::fail($qreq, $status, ["link" => false], ...$errors);
     }
 
     /** @param Throwable $ex

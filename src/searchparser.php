@@ -3,6 +3,9 @@
 // Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class SearchParser {
+    /** Maximum number of operators (including implicit spaces) in one
+     * expression; sized to match PaperSearch::MAX_COST */
+    const MAX_OPS = 20000;
     /** @var string */
     private $str;
     /** @var int */
@@ -11,6 +14,9 @@ class SearchParser {
     private $len;
     /** @var int */
     public $last_pos = 0;
+    /** @var bool
+     * @readonly */
+    public $overflow = false;
 
     /** @param string $str
      * @param int $pos1
@@ -116,7 +122,7 @@ class SearchParser {
 
     /** @return string */
     function shift_keyword() {
-        if (preg_match('/\G[_a-zA-Z0-9][-_.a-zA-Z0-9]*(?=:)/s', $this->str, $m, 0, $this->pos)
+        if (preg_match('/\G[_a-zA-Z0-9][-_.a-zA-Z0-9]*+(?=:)/s', $this->str, $m, 0, $this->pos)
             && $this->pos + strlen($m[0]) < $this->len) {
             $this->set_span_and_pos(strlen($m[0]) + 1);
             return $m[0];
@@ -190,16 +196,22 @@ class SearchParser {
      * @param bool $allow_empty
      * @return int */
     static function span_balanced_parens($str, $pos = 0, $endchars = null, $allow_empty = false) {
-        $pstack = "";
-        $plast = "";
+        $pstack = []; // expected close brackets, innermost last
         $quote = false;
         $startpos = $allow_empty ? -1 : $pos;
         $len = strlen($str);
         $endsp = $endchars === null || strpos($endchars, " ") !== false;
-        while ($pos < $len) {
+        // `$cspnch` lets us skip to the next character that can change parser state
+        $cspnch = ($endsp ? "\x09\x0A\x0B\x0C\x0D\x20\xC2\xE1\xE3" : "")
+            . "\xE2\"([{}])\\" . ($endchars ?? "");
+        while (true) {
+            $pos += strcspn($str, $cspnch, $pos);
+            if ($pos >= $len) {
+                break;
+            }
             $ch = $str[$pos];
             // stop when done
-            if ($plast === ""
+            if (empty($pstack)
                 && !$quote
                 && (($endsp && self::space_len($str, $pos, $len) > 0)
                     || ($endchars !== null && strpos($endchars, $ch) !== false))) {
@@ -220,22 +232,17 @@ class SearchParser {
                     $quote = false;
                 }
             } else if ($ch === "(") {
-                $pstack .= $plast;
-                $plast = ")";
+                $pstack[] = ")";
             } else if ($ch === "[") {
-                $pstack .= $plast;
-                $plast = "]";
+                $pstack[] = "]";
             } else if ($ch === "{") {
-                $pstack .= $plast;
-                $plast = "}";
+                $pstack[] = "}";
             } else if ($ch === ")" || $ch === "]" || $ch === "}") {
                 if ($pos === $startpos) {
                     ++$startpos;
                 } else {
                     do {
-                        $pcleared = $plast;
-                        $plast = (string) substr($pstack, -1);
-                        $pstack = (string) substr($pstack, 0, -1);
+                        $pcleared = array_pop($pstack) ?? "";
                     } while ($ch !== $pcleared && $pcleared !== "");
                     if ($pcleared === "") {
                         break;
@@ -269,13 +276,16 @@ class SearchParser {
     /** @param string $str
      * @return string */
     static function safe_parenthesize($str) {
-        $pstack = "";
-        $plast = "";
+        $pstack = []; // expected close brackets, innermost last
         $quote = false;
-        $pos = $startpos = 0;
+        $pos = $startpos = $ntopopen = 0;
         $len = strlen($str);
         $out = "";
-        while ($pos < $len) {
+        while (true) {
+            $pos += strcspn($str, "\xE2\\\"([{}])", $pos);
+            if ($pos >= $len) {
+                break;
+            }
             $ch = $str[$pos];
             // translate “” -> "
             if ($ch === "\xE2"
@@ -290,50 +300,50 @@ class SearchParser {
                     if ($pos + 1 < $len) {
                         ++$pos;
                     } else {
-                        $out .= substr($str, $startpos, $pos) . "\\";
+                        $out .= substr($str, $startpos, $pos - $startpos) . "\\";
                         $startpos = $pos;
                     }
                 } else if ($ch === "\"") {
                     $quote = false;
                 }
             } else if ($ch === "(") {
-                $pstack .= $plast;
-                $plast = ")";
-            } else if ($ch === "[") {
-                $pstack .= $plast;
-                $plast = "]";
-            } else if ($ch === "{") {
-                $pstack .= $plast;
-                $plast = "}";
-            } else if ($ch === ")" || $ch === "]" || $ch === "}") {
-                while ($plast !== "" && $plast !== $ch) {
-                    $out .= substr($str, $startpos, $pos) . $plast;
-                    $startpos = $pos;
-                    $plast = (string) substr($pstack, -1);
-                    $pstack = (string) substr($pstack, 0, -1);
+                if (empty($pstack)) {
+                    ++$ntopopen;
                 }
-                if ($plast === $ch) {
-                    // include this character in output
-                } else {
-                    $out .= substr($str, $startpos, $pos);
+                $pstack[] = ")";
+            } else if ($ch === "[") {
+                $pstack[] = "]";
+            } else if ($ch === "{") {
+                $pstack[] = "}";
+            } else if ($ch === ")" || $ch === "]" || $ch === "}") {
+                // close unmatched inner brackets, drop unmatched close brackets
+                while (!empty($pstack) && $pstack[count($pstack) - 1] !== $ch) {
+                    $out .= substr($str, $startpos, $pos - $startpos) . array_pop($pstack);
+                    $startpos = $pos;
+                }
+                if (empty($pstack)) {
+                    $out .= substr($str, $startpos, $pos - $startpos);
                     $startpos = $pos + 1;
+                } else {
+                    array_pop($pstack);
                 }
             } else if ($ch === "\"") {
                 $quote = true;
             }
             ++$pos;
         }
-        $out .= substr($str, $startpos, $pos);
+        $out .= substr($str, $startpos);
         if ($quote) {
             $out .= "\"";
         }
-        while ($plast !== "") {
-            $out .= $plast;
-            $plast = (string) substr($pstack, -1);
-            $pstack = (string) substr($pstack, 0, -1);
+        while (!empty($pstack)) {
+            $out .= array_pop($pstack);
         }
         if ($out === "") {
             $out = "*";
+        }
+        if ($ntopopen === 1 && str_starts_with($out, "(") && str_ends_with($out, ")")) {
+            return $out;
         }
         return "({$out})";
     }
@@ -342,7 +352,7 @@ class SearchParser {
      * @param 'SPACE'|'SPACEOR' $spaceop
      * @param int $max_ops
      * @return ?SearchExpr */
-    function parse_expression($opset = null, $spaceop = "SPACE", $max_ops = 2048) {
+    function parse_expression($opset = null, $spaceop = "SPACE", $max_ops = self::MAX_OPS) {
         $opset = $opset ?? SearchOperatorSet::paper_search_operators();
         $cura = null;
         '@phan-var-force ?SearchExpr $cura';
@@ -356,7 +366,25 @@ class SearchParser {
                 $kwpos1 = $this->pos;
                 $kw = $this->shift_keyword();
                 $pos1 = $this->pos;
-                $text = $this->shift_balanced_parens(null, true);
+                if ($kw !== "" && $this->starts_with("(")) {
+                    // `kw:(...)`: parse the parenthesized expression in place.
+                    // The `(` expression carries the keyword until it completes;
+                    // see SearchExpr::complete_paren().
+                    if ($nops >= $max_ops) {
+                        $this->overflow = true;
+                        return null;
+                    }
+                    $this->shift_past("(");
+                    $cura = SearchExpr::make_op_start($opset->lookup("("), $pos1, $this->last_pos, $cura);
+                    $cura->kword = $kw;
+                    $cura->kwpos1 = $kwpos1;
+                    ++$parens;
+                    ++$nops;
+                    continue;
+                }
+                // ensure we don't spin on `]}`
+                $allow_empty = $kw !== "" || (!$this->starts_with("]") && !$this->starts_with("}"));
+                $text = $this->shift_balanced_parens(null, $allow_empty);
                 $pos2 = $this->last_pos;
                 $cura = SearchExpr::make_keyword($kw, $text, $kwpos1, $pos1, $pos2, $cura);
                 continue;
@@ -366,7 +394,7 @@ class SearchParser {
                 if ($parens === 0) {
                     continue;
                 }
-                $cura = $cura->complete_paren($pos1, $pos2);
+                $cura = $cura->complete_paren($this->str, $pos1, $pos2);
                 --$parens;
                 continue;
             }
@@ -381,12 +409,11 @@ class SearchParser {
                 if (!$cura || $cura->is_incomplete_paren()) {
                     $cura = SearchExpr::make_simple("", $pos1, $cura);
                 }
-                while ($cura->parent && $cura->parent->op->precedence >= $op->precedence) {
-                    $cura = $cura->complete($pos1);
-                }
+                $cura = $cura->complete_by_precedence($this->str, $pos1, $op);
             }
 
             if ($nops >= $max_ops) {
+                $this->overflow = true;
                 return null;
             }
 
@@ -397,7 +424,7 @@ class SearchParser {
             ++$nops;
         }
         if ($cura) {
-            while (($nexta = $cura->complete($this->last_pos)) !== $cura) {
+            while (($nexta = $cura->complete($this->str, $this->last_pos)) !== $cura) {
                 $cura = $nexta;
             }
         }

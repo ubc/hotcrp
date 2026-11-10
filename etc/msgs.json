@@ -8,21 +8,21 @@
     ["average {0} score {1}", "{0} score {1}", ["{2}=1"]],
 
     {
-        "in": "You have submitted {n} of <a href=\"{url}\">{na} reviews</a> with {scores:list}.",
+        "in": "<5>You have submitted {n} of <a href=\"{url}\">{na} reviews</a> with {scores:list}.",
         "m": [
-            ["You have submitted {n} of <a href=\"{url}\">{na} reviews</a>.", ["!#{scores}"]],
-            ["You have submitted <a href=\"{url}\">{na} review</a>.", ["!#{scores}", "{n}=1", "{na}=1"]],
-            ["You have submitted <a href=\"{url}\">{na} review</a> with {scores:list}.", ["{n}=1", "{na}=1"]],
-            ["You have submitted <a href=\"{url}\">{na} reviews</a>.", ["!#{scores}", "{n}={na}"]],
-            ["You have submitted <a href=\"{url}\">{na} reviews</a> with {scores:list}.", ["{n}={na}"]]
+            ["<5>You have submitted {n} of <a href=\"{url}\">{na} reviews</a>.", ["!#{scores}"]],
+            ["<5>You have submitted <a href=\"{url}\">{na} review</a>.", ["!#{scores}", "{n}=1", "{na}=1"]],
+            ["<5>You have submitted <a href=\"{url}\">{na} review</a> with {scores:list}.", ["{n}=1", "{na}=1"]],
+            ["<5>You have submitted <a href=\"{url}\">{na} reviews</a>.", ["!#{scores}", "{n}={na}"]],
+            ["<5>You have submitted <a href=\"{url}\">{na} reviews</a> with {scores:list}.", ["{n}={na}"]]
         ]
     },
     {
-        "in": "The average PC member has submitted {n:.1f} reviews with {scores:list}.",
+        "in": "<5>The average PC member has submitted {n:.1f} reviews with {scores:list}.",
         "m": [
-            ["The average PC member has submitted {n:.1f} reviews.", ["!#{scores}"]],
-            ["The average PC member has submitted {n:.1f} review with {scores:list}.", ["{n}=1"]],
-            ["The average PC member has submitted {n:.1f} review.", ["{n}=1", "!#{scores}"]]
+            ["<5>The average PC member has submitted {n:.1f} reviews.", ["!#{scores}"]],
+            ["<5>The average PC member has submitted {n:.1f} review with {scores:list}.", ["{n}=1"]],
+            ["<5>The average PC member has submitted {n:.1f} review.", ["{n}=1", "!#{scores}"]]
         ]
     },
 
@@ -40,11 +40,11 @@
 
     ["<5>{sclass} registration deadline", "<5>Registration deadline", ["!{sclass}"]],
     ["<5>You can register new {sclass} {submissions} until this deadline.", "<5>You can register new {submissions} until this deadline.", ["!{sclass}"]],
-    ["<5>{sclass} update deadline", "<5>Update deadline", ["!{sclass}"]],
-    ["<5>You can update {sclass} {submissions} and upload new versions until this deadline.", "<5>You can update {submissions} and upload new versions until this deadline.", ["!{sclass}"]],
     ["<5>{sclass} submission deadline", "<5>Submission deadline", ["!{sclass}"]],
     ["<5>{sclass} deadline", "<5>Deadline", ["!{sclass}"]],
-    ["<5>{sclass} {submissions} must be ready by this deadline to be reviewed.", "<5>{Submissions} must be ready by this deadline to be reviewed.", ["!{sclass}"]],
+    ["<5>{sclass} {submissions} must be completed by this deadline to be reviewed.", "<5>{Submissions} must be completed by this deadline to be reviewed.", ["!{sclass}"]],
+    ["<5>{sclass} resubmission deadline", "<5>Resubmission deadline", ["!{sclass}"]],
+    ["<5>Completed {sclass} {submissions} may be updated until this deadline.", "<5>Completed {submissions} may be updated until this deadline.", ["!{sclass}"]],
     ["<5>{respround} response deadline", "<5>Response deadline", ["!{respround}"]],
     ["<5>You can submit {respround} responses to the reviews until this deadline.", "<5>You can submit responses to the reviews until this deadline.", ["!{respround}"]],
     ["<5>{round} review deadline", "<5>Review deadline", ["!{round}"]],
@@ -54,6 +54,16 @@
     ["<5>{round} external review deadline", "<5>External review deadline", ["!{round}"]],
     ["<5>{round} external review hard deadline", "<5>External review hard deadline", ["!{round}"]],
 
+    {
+        "in": "<5>This {submission} is under review. You can still edit its {fields:list or}, but other fields can’t be changed.",
+        "m": [
+            ["<5>This {submission} is under review. You can still edit its {fields:list or} or withdraw it from consideration, but other fields can’t be changed.", ["{can_withdraw}"]],
+            ["<5>This {submission} is under review and can’t be changed, but you can still withdraw it from consideration.", ["!#{fields}", "{can_withdraw}"]],
+            ["<5>This {submission} is under review and can’t be changed or withdrawn.", ["!#{fields}"]],
+            ["<5>The deadline for updating final versions has passed. You can still edit its {fields:list or}, but other fields can’t be changed.", ["{phase}=final"]],
+            ["<5>The deadline for updating final versions has passed. This {submission} can’t be changed.", ["{phase}=final", "!#{fields}"]]
+        ]
+    },
     ["<0>Updated {submission} (changed {:list})", "<0>Updated {submission}", ["#{0}=0"]],
     ["<0>Updated {submission} (changed {:list})", "<0>Updated final version (changed {:list})", ["{phase}=final"]],
     ["<0>Updated {submission} (changed {:list})", "<0>Updated final version", ["{phase}=final", "#{0}=0"]],
@@ -66,7 +76,7 @@
     ["<0>Options {:list} not found", "<0>Topics {:list} not found", ["{type}=topics"]],
     ["<0>Options {:list} not found", "<0>Option ‘{:list}’ not found", ["#{0}=1"]],
     ["<0>Ignoring unknown fields {:list}", "<0>Ignoring unknown field {:list}", ["#{0}=1"]],
-    ["<5>Notified mentioned users {:nblist}", "<5>Notified mentioned user {:nblist}", ["#{0}=1"]],
+    ["<5>Mentioned users {:nblist}", "<5>Mentioned user {:nblist}", ["#{0}=1"]],
     ["<5>Notified {submission} contacts {:nblist}", "<5>Notified {submission} contact {:nblist}", ["#{0}=1"]],
 
     ["sf_submission", "Draft submission", ["{draft}"]],
@@ -118,7 +128,6 @@
     ["paper_edit", "<0>Edit {sclass} {submission}", "<0>Edit draft {sclass} {submission}", ["{draft}"]],
     ["paper_edit", "<0>Edit {sclass} {submission}", "<0>Edit draft {submission}", ["{sclass}=", "{draft}"]],
     ["paper_edit", "<0>Incomplete {submissions} will not be evaluated.", "<0>{Submissions} incomplete as of {deadline:time} will not be evaluated.", ["{deadline}>0"]],
-    ["paper_edit", "<5>{Submissions} marked ready for review as of {:expandedtime} will be evaluated.", "<5>Only {submissions} marked ready for review will be evaluated.", ["{0}={1}"]],
     ["paper_edit", "<5>Please check {:list} for potential issues.", "<5>Please check the potential issues highlighted below.", ["!#{0}"]],
     ["<5>This {submission} is not ready for review. Required fields {:list} are incomplete.", "<5>This {submission} is not ready for review. Required field {:list} is incomplete.", ["#{0}=1"]],
 
@@ -131,27 +140,12 @@
 
     {
         "context": "search_type", "m": [
-            ["a", "Your {submissions}"],
-            ["accepted", "Accepted"],
-            ["accepted", "Accepted {submissions}", ["{full}"]],
-            ["active", "Active"],
-            ["active", "Active {submissions}", ["{full}"]],
-            ["admin", "{Submissions} you administer"],
-            ["all", "All"],
-            ["all", "All {submissions}", ["{full}"]],
-            ["alladmin", "{Submissions} you’re allowed to administer"],
-            ["lead", "Your discussion leads"],
-            ["r", "Your reviews"],
-            ["reviewable", "Reviewable"],
-            ["reviewable", "Reviewable {submissions}", ["{full}"]],
-            ["req", "Your review requests"],
-            ["rout", "Your incomplete reviews"],
-            ["s", "Submitted"],
-            ["s", "Ready {submissions}", ["{full}"]],
-            ["undecided", "Undecided"],
-            ["undecided", "Undecided {submissions}", ["{full}"]],
-            ["unsub", "Draft {submissions}"],
-            ["viewable", "{Submissions} you can view"]
+            ["Accepted", "Accepted {submissions}", ["{full}"]],
+            ["Active", "Active {submissions}", ["{full}"]],
+            ["All", "All {submissions}", ["{full}"]],
+            ["Reviewable", "Reviewable {submissions}", ["{full}"]],
+            ["Submitted", "Ready {submissions}", ["{full}"]],
+            ["Undecided", "Undecided {submissions}", ["{full}"]]
         ]
     },
 
@@ -190,9 +184,12 @@
     ["<0>“{}” in global profile", "<0>Differs in global profile", ["{field}=collaborators"]],
 
     ["permission_error", "<0>Permission error"],
+    ["permission_error", "<0>{Submission} does not exist, or you’re not allowed to view it", ["{action}=paper:view", "{not_found}"]],
+    ["permission_error", "<0>{Submission} #{pid} does not exist, or you’re not allowed to view it", ["{action}=paper:view", "{not_found}", "{pid}"]],
     ["permission_error", "<0>You aren’t allowed to view {submission} #{pid}", ["{action}=paper:view"]],
     ["permission_error", "<0>You aren’t allowed to view {submission} #{pid}’s documents", ["{action}=document:view"]],
     ["permission_error", "<0>You aren’t allowed to view reviews for {submission} #{pid}", ["{action}=review:view"]],
+    ["permission_error", "<0>Review does not exist, or you’re not allowed to view it", ["{action}=review:view", "{not_found}"]],
     ["permission_error", "<0>You aren’t allowed to withdraw {submission} #{pid}", ["{action}=paper:withdraw"]],
     ["permission_error", "<0>You aren’t allowed to request reviews for {submission} #{pid}", ["{action}=review:request"]],
     ["permission_error", "<0>You aren’t allowed to review {submission} #{pid}", ["{action}=review:edit"]],
@@ -203,6 +200,8 @@
     ["permission_error", "<0>You aren’t allowed to change tags for {submission} #{pid}", ["{action}=tag:edit"]],
     ["permission_error", "<0>You aren’t allowed to view the {field} field for {submission} #{pid}", ["{action}=field:view"]],
     ["permission_error", "<0>You aren’t allowed to view the {field} field", ["{action}=field:view", "!{pid}"]],
+    ["permission_error", "<0>You aren’t allowed to edit the {field} field for {submission} #{pid}", ["{action}=field:edit"]],
+    ["permission_error", "<0>You aren’t allowed to edit the {field} field", ["{action}=field:edit", "!{pid}"]],
 
     ["signin_required", "<0>You must sign in to access this page"],
     ["signin_required", "<5>You must <a href=\"{url}\">sign in</a> to access this page", ["{expand}", "{url}"]],
@@ -229,8 +228,6 @@
         "context": "deadline_error", "in": "<0>Deadline passed", "m": [
             ["<0>The deadline for registering {sclass_prefix}{submissions} has passed. The deadline was {time:time}.", ["{deadline}^=sub_reg"]],
             ["<5>The <a href=\"{deadlineurl}\">deadline</a> for registering {sclass_prefix}{submissions} has passed. The deadline was {time:expandedtime}", ["{deadline}^=sub_reg", "{expand}"]],
-            ["<0>The {sclass_prefix}{submission} update deadline has passed. The deadline was {time:time}", ["{deadline}^=sub_update"]],
-            ["<5>The <a href=\"{deadlineurl}\">{sclass_prefix}{submission} update deadline</a> has passed. The deadline was {time:expandedtime}", ["{deadline}^=sub_update", "{expand}"]],
             ["<0>The {sclass_prefix}resubmission deadline has passed. The deadline was {time:time}", ["{deadline}^=sub_resub"]],
             ["<5>The <a href=\"{deadlineurl}\">{sclass_prefix}resubmission deadline</a> has passed. The deadline was {time:expandedtime}", ["{deadline}^=sub_resub", "{expand}"]],
             ["<0>The {sclass_prefix}{submission} deadline has passed. The deadline was {time:time}", ["{deadline}^=sub_sub"]],

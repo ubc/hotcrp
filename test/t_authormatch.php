@@ -114,6 +114,19 @@ class AuthorMatch_Tester {
         xassert_eqq(!!$aum->test("Lon Deutsch"), true);
     }
 
+    function test_initials_no_redos() {
+        // the initials first-name regex must not backtrack quadratically on a
+        // run of one letter followed by a non-boundary (HC-107); each match is
+        // cheap, so repeat as the per-line collaborator loop does
+        $aum = AuthorMatcher::make_string_guess("J. J. Garcia-Luna-Aceves");
+        $subj = Author::make_string_guess("J" . str_repeat("j", 900) . "0 Garcia-Luna-Aceves");
+        $t0 = microtime(true);
+        for ($i = 0; $i !== 2000; ++$i) {
+            xassert_eqq(!!$aum->test($subj), false);
+        }
+        xassert_lt(microtime(true) - $t0, 1.0);
+    }
+
     function test_affiliation_alternates() {
         $aum = AuthorMatcher::make_string_guess("IBM Watson");
         xassert_eqq(!!$aum->test("Fart (IBM Watson)"), true);
@@ -219,6 +232,24 @@ class AuthorMatch_Tester {
         //xassert_eqq(!!$aum->test("All (University of Illinois)", true), true);
         xassert_eqq(!!$aum->test("All (University of Illinois Chicago)", false), true);
         xassert_eqq(!!$aum->test("All (University of Illinois Chicago)", true), true);
+    }
+
+    function test_author_keyed_round_trip() {
+        // the JSON form an export writes (`given_name`, `family_name`) reads
+        // back as the same author
+        foreach ([Author::make_string("Ada Lovelace (Analytical Engines Ltd.)"),
+                  Author::make_string("Grace Hopper <grace@navy.mil>"),
+                  Author::make_keyed(["firstName" => "Jean", "lastName" => "van der Berg"])] as $au) {
+            $j = Author::unparse_nea_json_for($au);
+            $au2 = Author::make_keyed($j);
+            xassert_eqq($au2->firstName, $au->firstName);
+            xassert_eqq($au2->lastName, $au->lastName);
+            xassert_eqq($au2->email, $au->email);
+            xassert_eqq($au2->affiliation, $au->affiliation);
+            $au3 = Author::make_keyed((object) $j);
+            xassert_eqq($au3->firstName, $au->firstName);
+            xassert_eqq($au3->lastName, $au->lastName);
+        }
     }
 
     function test_author_parentheses() {

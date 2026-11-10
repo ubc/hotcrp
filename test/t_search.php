@@ -1,6 +1,6 @@
 <?php
 // t_search.php -- HotCRP tests
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Search_Tester {
     /** @var Conf
@@ -13,6 +13,29 @@ class Search_Tester {
     function __construct(Conf $conf) {
         $this->conf = $conf;
         $this->u_root = $conf->root_user();
+    }
+
+    function test_invalid_utf8_query_is_sanitized() {
+        $ps = new PaperSearch($this->u_root, ["q" => "zzunknown1:x \xFF zzunknown2:x"]);
+        $ps->paper_ids();
+        xassert(is_valid_utf8($ps->q));
+        $ncontext = 0;
+        foreach ($ps->message_list() as $mi) {
+            if ($mi->context !== null) {
+                xassert(is_valid_utf8($mi->context));
+                ++$ncontext;
+            }
+        }
+        xassert_gt($ncontext, 0);
+    }
+
+    function test_wildcard_search_word_with_slash() {
+        // a `/` in a wildcard word must not terminate the regex delimiter
+        xassert_search($this->u_root, "round:x/*", "");
+        xassert_int_list_eqq(array_keys(search_json($this->u_root, "rate:x/*")),
+                             array_keys(search_json($this->u_root, "rate:x*")));
+        xassert_int_list_eqq(array_keys(search_json($this->u_root, "round:R1*")),
+                             array_keys(search_json($this->u_root, "round:R1")));
     }
 
     function test_canonical_query() {
@@ -44,6 +67,10 @@ class Search_Tester {
                     "ti:foo OR (#bar ti:(foo bar))");
         xassert_eqq(PaperSearch::canonical_query("ti:foo OR bar ti:(ab:foo)", "", "", "tag", $this->conf),
                     "ti:foo OR (#bar ti:(ab:foo))");
+        xassert_eqq(PaperSearch::canonical_query("", "", "ti:(a b)", "", $this->conf),
+                    "NOT ti:(a b)");
+        xassert_eqq(PaperSearch::canonical_query("ti:(a)b", "", "", "", $this->conf),
+                    "ti:(a) b");
     }
 
     function test_sort_etag() {
@@ -75,6 +102,20 @@ class Search_Tester {
         xassert(!array_key_exists(11, $h ?? []));
     }
 
+    function test_highlight_then_does_not_define_groups() {
+        // A THEN inside a highlight search is not a group expression:
+        // `1 HIGHLIGHT 1 THEN 2` parses as `1 HIGHLIGHT (1 THEN 2)` and has
+        // one group.
+        $srch = new PaperSearch($this->u_root, "1 HIGHLIGHT 1 THEN 2");
+        xassert_eqq($srch->ngroups(), 1);
+        xassert_eqq($srch->groups_by_paper_id(), [1 => 0]);
+        xassert_eqq($srch->highlights_by_paper_id(), [1 => [""]]);
+
+        $srch = new PaperSearch($this->u_root, "1 THEN 2 HIGHLIGHT 3");
+        xassert_eqq($srch->ngroups(), 2);
+        xassert_eqq($srch->groups_by_paper_id(), [1 => 0, 2 => 1]);
+    }
+
     function test_nested_highlight() {
         $srch = new PaperSearch($this->u_root, "(1-10 AND Scalable HIGHLIGHT:pink) OR (2 4 6 8 10 HIGHLIGHT:blue)");
         $h = $srch->highlights_by_paper_id();
@@ -92,6 +133,221 @@ class Search_Tester {
         xassert(!array_key_exists(11, $h ?? []));
     }
 
+    /** @return ?TextPregexes */
+    private function field_highlighter($q, $field = "ti") {
+        return (new PaperSearch($this->u_root, $q))->field_highlighter($field);
+    }
+
+    /** @return list<string> */
+    private function highlighted_words($q, $words, $field = "ti") {
+        $hl = $this->field_highlighter($q, $field);
+        $m = [];
+        foreach ($words as $w) {
+            if ($hl && $hl->match("x {$w} y"))
+                $m[] = $w;
+        }
+        return $m;
+    }
+
+    function test_field_highlighters() {
+        $w = ["alpha", "beta", "gamma"];
+        xassert_eqq($this->highlighted_words("ti:alpha", $w), ["alpha"]);
+        xassert_eqq($this->highlighted_words("ti:alpha ti:beta", $w), ["alpha", "beta"]);
+        xassert_eqq($this->highlighted_words("ti:alpha OR ti:beta", $w), ["alpha", "beta"]);
+        xassert_eqq($this->highlighted_words("(ti:alpha (ti:beta (ti:gamma)))", $w), $w);
+        xassert_eqq($this->highlighted_words("ti:alpha au:beta", $w), ["alpha"]);
+        xassert_eqq($this->highlighted_words("ti:alpha au:beta", $w, "au"), ["beta"]);
+        xassert((new PaperSearch($this->u_root, "ti:alpha"))->has_field_highlighter("ti"));
+        xassert(!(new PaperSearch($this->u_root, "ti:alpha"))->has_field_highlighter("au"));
+
+        // negated terms are not highlighted
+        xassert_eqq($this->highlighted_words("ti:alpha -ti:beta", $w), ["alpha"]);
+        xassert_eqq($this->highlighted_words("ti:alpha NOT (ti:beta OR ti:gamma)", $w), ["alpha"]);
+        xassert_eqq($this->highlighted_words("NOT (ti:alpha ti:beta)", $w), []);
+        xassert(!(new PaperSearch($this->u_root, "-ti:alpha"))->has_field_highlighter("ti"));
+
+        // annotations and double negation keep a term's highlighters
+        xassert_eqq($this->highlighted_words("ti:alpha show:abstract", $w), ["alpha"]);
+        xassert_eqq($this->highlighted_words("ti:alpha sort:id", $w), ["alpha"]);
+        xassert_eqq($this->highlighted_words("ti:alpha legend:Alpha", $w), ["alpha"]);
+        xassert_eqq($this->highlighted_words("NOT (NOT ti:alpha)", $w), ["alpha"]);
+    }
+
+    /** @return list<string> */
+    private function highlight_tags($q) {
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        return (new PaperSearch($chair, $q))->highlight_tags();
+    }
+
+    function test_highlight_tags() {
+        xassert_eqq($this->highlight_tags("#red"), ["red"]);
+        xassert_eqq($this->highlight_tags("#red #blue"), ["red", "blue"]);
+        xassert_eqq($this->highlight_tags("#red OR #blue"), ["red", "blue"]);
+        xassert_eqq($this->highlight_tags("#red XOR #blue"), ["red", "blue"]);
+        xassert_eqq($this->highlight_tags("(#red (#blue (#green)))"), ["red", "blue", "green"]);
+        xassert_eqq($this->highlight_tags("#red THEN #blue"), ["red", "blue"]);
+        xassert_eqq($this->highlight_tags("#red #RED"), ["red"]);
+        xassert_eqq($this->highlight_tags("#r*"), ["r*"]);
+
+        // negated tags are not highlighted
+        xassert_eqq($this->highlight_tags("NOT #red"), []);
+        xassert_eqq($this->highlight_tags("-#red"), []);
+        xassert_eqq($this->highlight_tags("1-10 NOT (#red OR #blue)"), []);
+        xassert_eqq($this->highlight_tags("NOT (NOT #red)"), ["red"]);
+
+        // annotations keep a term's tags; sorting by a tag highlights it
+        xassert_eqq($this->highlight_tags("#red show:abstract"), ["red"]);
+        xassert_eqq($this->highlight_tags("#red legend:Red"), ["red"]);
+        xassert_eqq($this->highlight_tags("#red sort:#blue"), ["red", "blue"]);
+
+        // a highlight's tags are highlighted too (unlike its field highlighters)
+        xassert_eqq($this->highlight_tags("#red HIGHLIGHT #blue"), ["red", "blue"]);
+        xassert_eqq($this->highlight_tags("1-10 HIGHLIGHT:pink #blue"), ["blue"]);
+        xassert_eqq($this->highlight_tags("1-10 HIGHLIGHT:pink (#blue OR NOT #green)"), ["blue"]);
+        xassert_eqq($this->highlight_tags("#red THEN #blue HIGHLIGHT:pink #green"), ["red", "blue", "green"]);
+    }
+
+    /** @return list<string> */
+    private function legends($q) {
+        $tas = (new PaperSearch($this->u_root, $q))->group_anno_list();
+        return array_map(function ($ta) { return $ta->heading; }, $tas);
+    }
+
+    function test_legend() {
+        // a legend reaches the search or group it belongs to
+        xassert_eqq($this->legends("1-10"), []);
+        xassert_eqq($this->legends("legend:Main"), ["Main"]);
+        xassert_eqq($this->legends("1-10 legend:Main"), ["Main"]);
+        xassert_eqq($this->legends("legend:Main 1-10"), ["Main"]);
+        xassert_eqq($this->legends("1-10 (2-5 legend:Inner)"), ["Inner"]);
+        xassert_eqq($this->legends("1-10 OR (12 legend:Inner)"), ["Inner"]);
+        xassert_eqq($this->legends("1-5 legend:A THEN 6-10 legend:B"), ["A", "B"]);
+        xassert_eqq($this->legends("1-5 legend:A THEN 6-10"), ["A", "6-10"]);
+
+        // but not through NOT
+        xassert_eqq($this->legends("1-10 NOT (2 legend:Hidden)"), []);
+        xassert_eqq($this->legends("1-10 -legend:Hidden"), []);
+
+        // or from a highlight
+        xassert_eqq($this->legends("1-10 legend:Main HIGHLIGHT:pink 2 legend:Pink"), ["Main"]);
+        xassert_eqq($this->legends("1-10 HIGHLIGHT:pink 2 legend:Pink"), []);
+        xassert_eqq($this->legends("1-5 legend:A THEN 6-10 legend:B HIGHLIGHT:pink 7 legend:Pink"), ["A", "B"]);
+    }
+
+    /** @return list<string> */
+    private function view_texts($q) {
+        $srch = new PaperSearch($this->u_root, $q);
+        return array_map(function ($svc) { return $svc->unparse(); }, $srch->view_commands());
+    }
+
+    /** @return list<list<string>> */
+    private function group_view_texts($q) {
+        $srch = new PaperSearch($this->u_root, $q);
+        $gv = [];
+        foreach ($srch->then_term()->subset_terms() as $chrange) {
+            $gv[] = array_map(function ($svc) { return $svc->unparse(); }, $chrange[0]->view_commands());
+        }
+        return $gv;
+    }
+
+    function test_view_commands() {
+        // view commands survive simplification, in source order
+        xassert_eqq($this->view_texts("1-10"), []);
+        xassert_eqq($this->view_texts("show:au"), ["show:au"]);
+        xassert_eqq($this->view_texts("show:au show:abstract"), ["show:au", "show:abstract"]);
+        xassert_eqq($this->view_texts("show:au (1-10 OR show:abstract)"), ["show:au", "show:abstract"]);
+        xassert_eqq($this->view_texts("show:au sort:title"), ["show:au", "sort:title"]);
+        xassert_eqq($this->view_texts("ti:x show:au"), ["show:au"]);
+        xassert_eqq($this->view_texts("#red sort:#blue"), ["sort:#blue"]);
+        xassert_eqq($this->view_texts("NOT show:abstract"), ["show:abstract"]);
+        xassert_eqq($this->view_texts("1-10 NOT (2 show:abstract)"), ["show:abstract"]);
+        xassert_eqq($this->view_texts("1 AND NOT 1 show:au"), ["show:au"]);
+        // sort priority follows source order, including when a term with its
+        // own sort absorbs a dropped annotation
+        xassert_eqq($this->view_texts("sort:title order:red"), ["sort:title", "sort:#red"]);
+        xassert_eqq($this->view_texts("order:red sort:title"), ["sort:#red", "sort:title"]);
+        xassert_eqq($this->view_texts("sort:title (order:red show:au)"), ["sort:title", "sort:#red", "show:au"]);
+        xassert_eqq($this->view_texts("(show:au order:red) sort:title"), ["show:au", "sort:#red", "sort:title"]);
+
+        // groups sort themselves; the search keeps their other views
+        xassert_eqq($this->view_texts("1-5 sort:title THEN 6-10 sort:id"), []);
+        xassert_eqq($this->group_view_texts("1-5 sort:title THEN 6-10 sort:id"), [["sort:title"], ["sort:id"]]);
+        xassert_eqq($this->view_texts("(1-5 sort:title) THEN (6-10 sort:id show:abstract)"), ["show:abstract"]);
+        xassert_eqq($this->group_view_texts("(1-5 sort:title) THEN (6-10 sort:id show:abstract)"),
+                    [["sort:title"], ["sort:id", "show:abstract"]]);
+        xassert_eqq($this->view_texts("1-5 show:au THEN 6-10"), ["show:au"]);
+        xassert_eqq($this->view_texts("(1-5 THEN 6-10) sort:title"), ["sort:title"]);
+        xassert_eqq($this->legends("1-5 show:au THEN 6-10"), ["1-5", "6-10"]);
+
+        // a highlight's views apply, but not its sorts; a single group's
+        // sorts apply to the whole search
+        xassert_eqq($this->view_texts("1-10 HIGHLIGHT:pink 2 show:abstract"), ["show:abstract"]);
+        xassert_eqq($this->view_texts("1-10 HIGHLIGHT:pink 2 sort:title"), []);
+        xassert_eqq($this->view_texts("1-10 sort:title HIGHLIGHT:pink 2"), ["sort:title"]);
+    }
+
+    /** @return list<int> */
+    private function sorted_ids($q) {
+        return (new PaperList("empty", new PaperSearch($this->u_root, $q)))->paper_ids();
+    }
+
+    function test_highlight_keeps_sorts() {
+        // adding a highlight does not change how a search sorts
+        foreach (["1-10 sort:-id", "(1-5 THEN 6-10) sort:-id", "(1-5 sort:-id THEN 6-10)",
+                  "1-5 THEN 6-10 sort:-id"] as $q) {
+            xassert_eqq($this->sorted_ids("({$q}) HIGHLIGHT:pink 2"), $this->sorted_ids($q));
+        }
+        // ...including the order paper numbers give, as in `3-1`
+        xassert_eqq($this->sorted_ids("3-1"), [3, 2, 1]);
+        foreach (["3-1 HIGHLIGHT 2", "3-1 HIGHLIGHT:pink 2", "3-1 HIGHLIGHT:pink 2 HIGHLIGHT:green 1"] as $q) {
+            xassert_eqq($this->sorted_ids($q), [3, 2, 1]);
+        }
+        xassert_eqq($this->sorted_ids("(1-5 THEN 6-10) sort:-id"), [5, 4, 3, 2, 1, 10, 9, 8, 7, 6]);
+        xassert_eqq($this->sorted_ids("(1-5 sort:-id THEN 6-10)"), [5, 4, 3, 2, 1, 6, 7, 8, 9, 10]);
+        // a highlight's own sorts do not apply
+        xassert_eqq($this->sorted_ids("1-10 HIGHLIGHT:pink 2 sort:-id"), range(1, 10));
+    }
+
+    function test_view_commands_nesting_is_linear() {
+        // deeply nested annotations must not copy every view at every level
+        if (!function_exists("memory_reset_peak_usage")) {
+            return;
+        }
+        $n = 2000;
+        $q = "";
+        for ($i = 0; $i !== $n; ++$i) {
+            $q .= $i % 2 ? "show:au #red OR (" : "show:au #red (";
+        }
+        $q .= "#red" . str_repeat(")", $n);
+        gc_collect_cycles();
+        $m0 = memory_get_usage();
+        memory_reset_peak_usage();
+        $srch = new PaperSearch($this->u_root, $q);
+        xassert_eqq(count($srch->view_commands()), $n);
+        xassert_lt(memory_get_peak_usage() - $m0, 24 << 20);
+    }
+
+    function test_field_highlighter_size_is_linear() {
+        // each term contributes once, however deeply it is nested
+        $one = strlen($this->field_highlighter("ti:w000")->preg_utf8());
+        $n = 200;
+        $flat = $nested = $alt = "";
+        for ($i = 0; $i !== $n; ++$i) {
+            $t = sprintf("ti:w%03d", $i);
+            $flat .= " {$t}";
+            $nested .= "{$t} (";
+            $alt .= ($i % 2 ? "{$t} OR (" : "{$t} (");
+        }
+        $nested .= "#red" . str_repeat(")", $n);
+        $alt .= "#red" . str_repeat(")", $n);
+        foreach ([$flat, $nested, $alt] as $q) {
+            $hl = $this->field_highlighter($q);
+            xassert(!!$hl);
+            xassert_le(strlen($hl->preg_utf8()), $n * ($one + 1));
+            xassert($hl->match("x w000 y") && $hl->match(sprintf("x w%03d y", $n - 1)));
+        }
+    }
+
     function test_xor() {
         xassert_search($this->u_root, "1-10 XOR 4-5", "1 2 3 6 7 8 9 10");
     }
@@ -100,6 +356,27 @@ class Search_Tester {
         xassert_search($this->u_root, "5-100000 XOR 10-100000", "5 6 7 8 9");
         xassert_search($this->u_root, "5- XOR 10-100000", "5 6 7 8 9");
         xassert_search($this->u_root, "8-,7-,6-,5- XOR 10-100000", "5 6 7 8 9");
+    }
+
+    function test_unicode_comparison_after_name() {
+        $ge = search_json($this->u_root, "re:mgbaker>=1");
+        xassert(!empty($ge));
+        xassert_eqq(search_json($this->u_root, "re:mgbaker≥1"), $ge);
+        xassert_eqq(search_json($this->u_root, "re:mgbaker≠0"), $ge);
+    }
+
+    function test_tag_or_prefilter_is_superset() {
+        $old = $this->conf->setting_data("tag_hidden");
+        $this->conf->save_refresh_setting("tag_hidden", 1, "sekrit");
+        $this->conf->invalidate_caches("tags");
+        $this->conf->qe("insert into PaperTag set paperId=1, tag='sekrit', tagIndex=0");
+        $u = $this->conf->checked_user_by_email("mjh@isi.edu"); // PC, conflicted with #1
+        xassert(!$u->can_view_tag($this->conf->checked_paper_by_id(1), "sekrit"));
+        $all = join(" ", (new PaperSearch($u, ""))->paper_ids());
+        xassert_search($u, "tag:any OR tag:none", $all);
+        $this->conf->qe("delete from PaperTag where tag='sekrit'");
+        $this->conf->save_refresh_setting("tag_hidden", $old === null ? null : 1, $old);
+        $this->conf->invalidate_caches("tags");
     }
 
     function test_review_term_to_round_mask() {
@@ -172,6 +449,136 @@ class Search_Tester {
         xassert_neqq($ids, $base_ids);
     }
 
+    /** @param PaperSearch $srch
+     * @return string */
+    static private function messages_text($srch) {
+        return join(" | ", array_map(function ($mi) { return $mi->message; }, $srch->message_list()));
+    }
+
+    function test_large_flat_search_ok() {
+        // Work linear in the query size is never "too complex": a pasted
+        // list of thousands of paper IDs, thousands of OR'd terms, or a THEN
+        // with thousands of groups must all evaluate.
+        $u = $this->u_root;
+        $srch = new PaperSearch($u, join(" ", range(1, 5000)));
+        xassert(!$srch->has_problem());
+        xassert_eqq($srch->paper_ids(), (new PaperSearch($u, "1-5000"))->paper_ids());
+        $srch = new PaperSearch($u, join(" OR ", array_map(function ($i) { return "ti:w{$i}"; }, range(1, 3000))));
+        xassert(!$srch->has_problem());
+        $srch = new PaperSearch($u, join(" THEN ", range(1, 3000)));
+        xassert(!$srch->has_problem());
+        xassert_eqq($srch->ngroups(), 3000);
+        xassert_eqq(($srch->groups_by_paper_id())[7] ?? null, 6);
+        $srch = null;
+        gc_mem_caches(); // large transient parses; don't hold allocator chunks for the rest of the run
+    }
+
+    function test_search_too_complex_fails_closed() {
+        // Exceeding the cost budget, the operator cap, or the keyword-group
+        // depth reports an error and matches nothing, never everything, even
+        // when the offending subterm sits under NOT.
+        $u = $this->u_root;
+        $nops = SearchParser::MAX_OPS + 100;
+        $kwd = PaperSearch::MAX_KEYWORD_DEPTH + 1;
+        $group = str_repeat("ti:(", $kwd) . "x" . str_repeat(")", $kwd);
+        foreach ([
+            join(" ", range(1, PaperSearch::MAX_COST + 100)),
+            str_repeat("NOT ", $nops) . "1",
+            str_repeat("(", $nops) . "1" . str_repeat(")", $nops),
+            $group,
+            "NOT {$group}",
+            "1 AND {$group}"
+        ] as $q) {
+            $srch = new PaperSearch($u, $q);
+            xassert_eqq($srch->paper_ids(), []);
+            xassert($srch->has_error());
+            xassert_str_contains(self::messages_text($srch), "too complex");
+        }
+        $srch = null;
+        gc_mem_caches(); // large transient parses; don't hold allocator chunks for the rest of the run
+    }
+
+    function test_deep_nesting_evaluates() {
+        // Nesting past SQLEXPR_HEIGHT is evaluated in PHP rather than sent
+        // to the database, which cannot parse very deep SQL.
+        $n = Op_SearchTerm::SQLEXPR_HEIGHT + 60;
+        $srch = new PaperSearch($this->u_root, str_repeat("(1 OR (1 AND ", $n) . "1" . str_repeat("))", $n));
+        xassert(!$srch->has_problem());
+        xassert_eqq($srch->paper_ids(), [1]);
+    }
+
+    function test_namedsearch_expansion_limits() {
+        // A saved-search chain whose expansions exceed the budget is an
+        // error, not a hang; a circular definition is detected at the first
+        // repeat; a modest chain still works.
+        $before = $this->conf->setting_data("named_searches");
+        $ns = [];
+        for ($i = 0; $i < 6; ++$i) {
+            $q = $i === 5 ? "1" : join(" ", array_fill(0, 8, "ss:xbudget" . ($i + 1)));
+            $ns[] = (object) ["name" => "xbudget{$i}", "q" => $q, "owner" => "chair"];
+        }
+        $ns[] = (object) ["name" => "xcyc0", "q" => "1 OR ss:xcyc1", "owner" => "chair"];
+        $ns[] = (object) ["name" => "xcyc1", "q" => "2 OR ss:xcyc0", "owner" => "chair"];
+        $this->conf->save_setting("named_searches", 1, json_encode($ns));
+        $this->conf->load_settings();
+
+        $srch = new PaperSearch($this->u_root, "ss:xbudget3"); // 8^2 expansions
+        xassert(!$srch->has_problem());
+        xassert_eqq($srch->paper_ids(), [1]);
+
+        $srch = new PaperSearch($this->u_root, "ss:xbudget0"); // 8^5 expansions
+        xassert_eqq($srch->paper_ids(), []);
+        xassert($srch->has_error());
+        xassert_str_contains(self::messages_text($srch), "too complex");
+
+        $srch = new PaperSearch($this->u_root, "ss:xcyc0");
+        xassert_eqq($srch->paper_ids(), []);
+        xassert($srch->has_error());
+        xassert_str_contains(self::messages_text($srch), ["circularly defined", "refers to itself"]);
+
+        if ($before === null) {
+            $this->conf->save_setting("named_searches", null);
+        } else {
+            $this->conf->save_setting("named_searches", 1, $before);
+        }
+        $this->conf->load_settings();
+    }
+
+    function test_then_highlight_structure() {
+        $u = $this->u_root;
+        // same-operator nesting flattens
+        $srch = new PaperSearch($u, "(1 AND (2 AND 3)) OR (4 OR 5)");
+        xassert_eqq(json_encode($srch->main_term()->debug_json()),
+                    '{"type":"or","child":[{"type":"and","child":["pn","pn","pn"]},"pn"]}');
+        // nested THEN flattens; groups number left to right, and a THEN
+        // nested inside an AND still contributes its groups
+        $srch = new PaperSearch($u, "1 THEN (2 THEN 3)");
+        xassert_eqq($srch->ngroups(), 3);
+        xassert_eqq($srch->groups_by_paper_id(), [1 => 0, 2 => 1, 3 => 2]);
+        $srch = new PaperSearch($u, "(1 THEN 2) AND 1-5 THEN 3");
+        xassert_eqq($srch->ngroups(), 3);
+        xassert_eqq($srch->groups_by_paper_id(), [1 => 0, 2 => 1, 3 => 2]);
+        // legends keep a parenthesized group intact
+        $tas = (new PaperSearch($u, "(1 OR 2) THEN (3 THEN 4)"))->group_anno_list();
+        xassert_eqq(array_map(function ($ta) { return $ta->heading; }, $tas), ["1 OR 2", "3", "4"]);
+        // a highlight search is only tested for matches: its own highlights
+        // and its dead terms' field highlighters are ignored
+        $h = (new PaperSearch($u, "1-4 HIGHLIGHT 2"))->highlights_by_paper_id();
+        xassert_eqq($h, [2 => [""]]);
+        xassert_eqq((new PaperSearch($u, "1-4 HIGHLIGHT (2 HIGHLIGHT (3 HIGHLIGHT 4))"))->highlights_by_paper_id(), $h);
+        xassert_eqq((new PaperSearch($u, "1-4 HIGHLIGHT:red (2 HIGHLIGHT:blue 3)"))->highlights_by_paper_id(), [2 => ["red"]]);
+        xassert(!(new PaperSearch($u, "1-4 HIGHLIGHT (2 HIGHLIGHT ti:scalable)"))->has_field_highlighter("ti"));
+        // highlights keep their own colors across a THEN, and apply only to
+        // the groups they follow
+        $srch = new PaperSearch($u, "1 2 THEN 3 4 HIGHLIGHT:pink 2 4 THEN 5");
+        xassert_eqq($srch->ngroups(), 2);
+        xassert_eqq($srch->groups_by_paper_id(), [1 => 0, 2 => 0, 3 => 1, 4 => 1]);
+        xassert_eqq($srch->highlights_by_paper_id(), [2 => ["pink"], 4 => ["pink"]]);
+        $srch = new PaperSearch($u, "1 THEN 2 HIGHLIGHT:red 3 HIGHLIGHT:blue 2");
+        xassert_eqq($srch->groups_by_paper_id(), [1 => 0, 2 => 1]);
+        xassert_eqq($srch->highlights_by_paper_id(), [2 => ["blue"]]);
+    }
+
     function test_search_overflow() {
         $s = join(" AND ", array_fill(0, 1024, "a"));
         $splitter = new SearchParser($s);
@@ -181,14 +588,16 @@ class Search_Tester {
         $splitter = new SearchParser($s);
         xassert_eqq($splitter->parse_expression(null, "SPACE", 1024), null);
 
+        // nested keyword groups are pre-parsed, but recanonicalized only up
+        // to a depth limit; beyond it the query is refused
         $s = "ti:x";
-        for ($i = 0; $i < 500; ++$i) {
+        for ($i = 0; $i < 39; ++$i) {
             $s = "ti:({$s})";
         }
         xassert_eqq(PaperSearch::canonical_query($s, "", "", "", $this->conf), $s);
 
         $s = "ti:x";
-        for ($i = 0; $i < 1025; ++$i) {
+        for ($i = 0; $i < 40; ++$i) {
             $s = "ti:({$s})";
         }
         xassert_neqq(PaperSearch::canonical_query($s, "", "", "", $this->conf), $s);
@@ -215,6 +624,83 @@ class Search_Tester {
         xassert_eqq(json_encode($a->child[0]->child[0]->child[0]->unparse_json()), '{"op":"(","child":[{"op":"space","child":["OveMer:>3","OveMer:<2"]}]}');
         xassert_eqq(json_encode($a->child[0]->child[0]->child[1]->unparse_json()), '{"op":"(","child":[{"op":"space","child":["OveMer:>4","OveMer:<3"]}]}');
         xassert_eqq(json_encode($a->child[1]->unparse_json()), '"#r2"');
+    }
+
+    /** @suppress PhanTypeArraySuspiciousNullable */
+    function test_search_splitter_keyword_parens() {
+        // `kw:(...)` is a keyword expression whose child is the pre-parsed group
+        $s = "x ti:(a OR b) y";
+        $a = (new SearchParser($s))->parse_expression();
+        xassert_eqq(json_encode($a->unparse_json()), '{"op":"space","child":[{"op":"space","child":["x","ti:(a OR b)"]},"y"]}');
+        $k = $a->child[0]->child[1];
+        xassert_eqq($k->kword, "ti");
+        xassert_eqq($k->text, "(a OR b)");
+        xassert_eqq([$k->kwpos1, $k->pos1, $k->pos2], [2, 5, 13]);
+        xassert_eqq(count($k->child), 1);
+        xassert_eqq(json_encode($k->child[0]->unparse_json($s)), '{"op":"(","child":[{"op":"or","child":["a","b"],"context":"a OR b"}],"context":"(a OR b)"}');
+        xassert_eqq($k->child[0]->kwpos1, 5);
+
+        // nested groups are pre-parsed all the way down
+        $a = (new SearchParser("ti:(ab:(au:(x)))"))->parse_expression();
+        xassert_eqq($a->text, "(ab:(au:(x)))");
+        $k = $a->child[0]->child[0];
+        xassert_eqq($k->kword, "ab");
+        $k = $k->child[0]->child[0];
+        xassert_eqq($k->kword, "au");
+        xassert_eqq(json_encode($k->child[0]->unparse_json()), '{"op":"(","child":["x"]}');
+
+        // the group ends at its close paren; following text is a new term
+        $a = (new SearchParser("ti:(a)b c"))->parse_expression();
+        xassert_eqq(json_encode($a->unparse_json()), '{"op":"space","child":[{"op":"space","child":["ti:(a)","b"]},"c"]}');
+        $k = $a->child[0]->child[0];
+        xassert_eqq($k->text, "(a)");
+        xassert_eqq($k->pos2, 6);
+        xassert_eqq(json_encode($k->child[0]->unparse_json()), '{"op":"(","child":["a"]}');
+
+        // unterminated group (text ends at the last token)
+        $s = "ti:(a b ";
+        $a = (new SearchParser($s))->parse_expression();
+        xassert_eqq($a->text, "(a b");
+        xassert_eqq($a->pos2, 7);
+        xassert_eqq(json_encode($a->child[0]->unparse_json($s)), '{"op":"(","child":[{"op":"space","child":["a","b"],"context":"a b"}],"context":"(a b"}');
+        $a = (new SearchParser("ti:("))->parse_expression();
+        xassert_eqq($a->text, "(");
+        xassert_eqq(json_encode($a->child[0]->unparse_json()), '{"op":"(","child":[""]}');
+
+        // plain keywords have no child
+        $a = (new SearchParser("ti:a"))->parse_expression();
+        xassert_eqq($a->child, null);
+    }
+
+    function test_keyword_group_tail_warning() {
+        $u = $this->u_root;
+        $re = '/Expected space/';
+        foreach (["ti:(a)b", "f:(OveMer)+2", "NOT f:(OveMer)-1", "ti:(ab:(c)d)"] as $q) {
+            $s = new PaperSearch($u, $q);
+            $s->paper_ids();
+            xassert_match($s->full_feedback_text(), $re);
+        }
+        foreach (["ti:(a) b", "(x OR ti:(a))", "[ti:(a)]", "f:((OveMer)+2)", "ti:(a", "ti:(a OR b)"] as $q) {
+            $s = new PaperSearch($u, $q);
+            $s->paper_ids();
+            xassert(!preg_match($re, $s->full_feedback_text()));
+        }
+    }
+
+    /** @suppress PhanTypeArraySuspiciousNullable */
+    function test_search_splitter_stray_brackets() {
+        // unmatched `]` and `}` are literal words, like `[a]` and `{a}`
+        $a = (new SearchParser("a]b"))->parse_expression();
+        xassert_eqq(json_encode($a->unparse_json()), '{"op":"space","child":["a","]b"]}');
+        $a = (new SearchParser("a } OR b"))->parse_expression();
+        xassert_eqq(json_encode($a->unparse_json()), '{"op":"or","child":[{"op":"space","child":["a","}"]},"b"]}');
+        $a = (new SearchParser("-]a"))->parse_expression();
+        xassert_eqq(json_encode($a->unparse_json()), '{"op":"not","child":["]a"]}');
+        $a = (new SearchParser("ti:(a] b)"))->parse_expression();
+        xassert_eqq($a->text, "(a] b)");
+        xassert_eqq(json_encode($a->child[0]->unparse_json()), '{"op":"(","child":[{"op":"space","child":[{"op":"space","child":["a","]"]},"b"]}]}');
+        $a = (new SearchParser("]]]"))->parse_expression();
+        xassert_eqq(json_encode($a->unparse_json()), '"]]]"');
     }
 
     function test_equal_quote() {
@@ -296,4 +782,1717 @@ class Search_Tester {
         xassert_eqq($tas[1]->heading, "ss:bar OR #baaar");
     }
 
+    function test_namedsearch_evaluates_in_caller_context() {
+        // A shared saved search executes in the CALLING user's context, not the
+        // owner's: a personal `~tag` in the definition resolves to the caller's
+        // own tag, so no saving-user state leaks into another user's results
+        // (only the definition text is shared). Invariant, not policy.
+        $before = $this->conf->setting_data("named_searches");
+        $a = $this->conf->checked_user_by_email("marina@poema.ru");
+        $b = $this->conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        xassert($a->isPC && $b->isPC && $a->contactId !== $b->contactId);
+
+        xassert_assign($a, "paper,tag\n1,~sscx\n");
+        xassert_assign($b, "paper,tag\n2,~sscx\n");
+        // `a` saves a global search whose body is the personal tag "#~sscx"
+        $this->conf->save_setting("named_searches", 1,
+            json_encode([(object) ["name" => "sscx", "q" => "#~sscx", "owner" => $a->contactId]]));
+        $this->conf->load_settings();
+
+        xassert_search($a, "ss:sscx", "1");   // a's own ~sscx (paper 1)
+        xassert_search($b, "ss:sscx", "2");   // b's own ~sscx (paper 2), NOT paper 1
+
+        if ($before === null) {
+            $this->conf->save_setting("named_searches", null);
+        } else {
+            $this->conf->save_setting("named_searches", 1, $before);
+        }
+        $this->conf->load_settings();
+        $this->conf->qe("delete from PaperTag where tag like '%~sscx'");
+    }
+
+    function test_namedsearch_api_owner_not_transferable() {
+        // A PC member who cannot edit a chair-owned named search must not
+        // be able to modify it, or take it over by resubmitting it.
+        $before = $this->conf->setting_data("named_searches");
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $pc = $this->conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        xassert($chair->privChair && $pc->isPC && !$pc->privChair);
+
+        $j = call_api("=namedsearch", $chair, [
+            "named_search/1/id" => "new",
+            "named_search/1/name" => "sscown",
+            "named_search/1/search" => "#interesting",
+            "named_search/1/description" => "Chair list"
+        ]);
+        xassert($j->ok);
+        $find = function () {
+            foreach ($this->conf->named_searches() as $sj) {
+                if ($sj->name === "sscown") {
+                    return $sj;
+                }
+            }
+            return null;
+        };
+        $check_unchanged = function () use ($find, $pc) {
+            $sj = $find();
+            xassert($sj !== null);
+            xassert_eqq($sj->owner, "chair");
+            xassert_eqq($sj->q, "#interesting");
+            xassert_eqq($sj->description ?? null, "Chair list");
+            xassert(!isset($sj->display));
+            xassert(!SearchConfig_API::can_edit_search($pc, $sj));
+        };
+        $check_unchanged();
+        $cant_change = "<0>sscown: You can’t change this named search";
+
+        // direct rewrite is rejected
+        $j = call_api("=namedsearch", $pc, [
+            "named_search/1/id" => "sscown",
+            "named_search/1/name" => "sscown",
+            "named_search/1/search" => "#pwned"
+        ]);
+        xassert(!$j->ok);
+        xassert_eqq($j->message_list[0]->message ?? null, $cant_change);
+        $check_unchanged();
+
+        // description change is rejected
+        $j = call_api("=namedsearch", $pc, [
+            "named_search/1/id" => "sscown",
+            "named_search/1/name" => "sscown",
+            "named_search/1/search" => "#interesting",
+            "named_search/1/description" => "pwned"
+        ]);
+        xassert(!$j->ok);
+        xassert_eqq($j->message_list[0]->message ?? null, $cant_change);
+        $check_unchanged();
+
+        // display change is rejected
+        $j = call_api("=namedsearch", $pc, [
+            "named_search/1/id" => "sscown",
+            "named_search/1/name" => "sscown",
+            "named_search/1/search" => "#interesting",
+            "named_search/1/highlight" => 1,
+            "has-named_search/1/highlight" => 1
+        ]);
+        xassert(!$j->ok);
+        xassert_eqq($j->message_list[0]->message ?? null, $cant_change);
+        $check_unchanged();
+
+        // delete is rejected
+        $j = call_api("=namedsearch", $pc, [
+            "named_search/1/id" => "sscown",
+            "named_search/1/delete" => 1
+        ]);
+        xassert(!$j->ok);
+        $check_unchanged();
+
+        // genuinely unchanged resubmission is a no-op: succeeds, but
+        // must not transfer ownership
+        $j = call_api("=namedsearch", $pc, [
+            "named_search/1/id" => "sscown",
+            "named_search/1/name" => "sscown",
+            "named_search/1/search" => "#interesting",
+            "named_search/1/description" => "Chair list"
+        ]);
+        xassert($j->ok);
+        $check_unchanged();
+        $j = call_api("=namedsearch", $pc, [
+            "named_search/1/id" => "sscown",
+            "named_search/1/name" => "sscown",
+            "named_search/1/search" => "#interesting"
+        ]);
+        xassert($j->ok);
+        $check_unchanged();
+
+        // ...so a follow-up rewrite is still rejected
+        $j = call_api("=namedsearch", $pc, [
+            "named_search/1/id" => "sscown",
+            "named_search/1/name" => "sscown",
+            "named_search/1/search" => "#pwned"
+        ]);
+        xassert(!$j->ok);
+        xassert_eqq($j->message_list[0]->message ?? null, $cant_change);
+        $check_unchanged();
+
+        // PC listing still reports it as not editable
+        $j = call_api("namedsearch", $pc, []);
+        xassert($j->ok);
+        $seen = false;
+        foreach ($j->searches as $nsj) {
+            if ($nsj["name"] === "sscown") {
+                $seen = true;
+                xassert(!($nsj["editable"] ?? false));
+            }
+        }
+        xassert($seen);
+
+        // chair can still edit it
+        $j = call_api("=namedsearch", $chair, [
+            "named_search/1/id" => "sscown",
+            "named_search/1/name" => "sscown",
+            "named_search/1/search" => "#interesting",
+            "named_search/1/description" => "Chair list 2",
+            "named_search/1/highlight" => 1
+        ]);
+        xassert($j->ok);
+        $sj = $find();
+        xassert_eqq($sj->owner, "chair");
+        xassert_eqq($sj->description ?? null, "Chair list 2");
+        xassert_eqq($sj->display ?? null, "highlight");
+
+        if ($before === null) {
+            $this->conf->save_setting("named_searches", null);
+        } else {
+            $this->conf->save_setting("named_searches", 1, $before);
+        }
+        $this->conf->load_settings();
+    }
+
+    function test_try_pop_suffix() {
+        $mk = function ($s) {
+            return SearchWord::make_kwarg($s, 0, 0, strlen($s), null);
+        };
+        // suffix present: popped, and the returned word drops it
+        [$w, $ok] = $mk("estrin@usc.edu:explicit")->try_pop_suffix(":explicit");
+        xassert($ok);
+        xassert_eqq($w->qword, "estrin@usc.edu");
+        xassert_eqq($w->word, "estrin@usc.edu");
+        // suffix absent: unchanged, not popped
+        [$w, $ok] = $mk("estrin@usc.edu")->try_pop_suffix(":explicit");
+        xassert(!$ok);
+        xassert_eqq($w->qword, "estrin@usc.edu");
+        // contains but does not end with the suffix: not popped
+        [, $ok] = $mk("foo:explicitx")->try_pop_suffix(":explicit");
+        xassert(!$ok);
+        // case sensitivity honored by default, waived by the flag
+        [, $ok] = $mk("foo:EXPLICIT")->try_pop_suffix(":explicit");
+        xassert(!$ok);
+        [$w, $ok] = $mk("foo:EXPLICIT")->try_pop_suffix(":explicit", true);
+        xassert($ok);
+        xassert_eqq($w->qword, "foo");
+        // suffix is the whole word (nothing would remain): not popped
+        [, $ok] = $mk(":explicit")->try_pop_suffix(":explicit");
+        xassert(!$ok);
+    }
+
+    function test_restricted_option_sqlexpr() {
+        // A restricted-visibility submission field must not narrow the SQL
+        // prefilter for a searcher who cannot view it (row membership would
+        // otherwise leak the hidden value by timing); an administrator still
+        // gets the exact prefilter.
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $sv = SettingValues::make_request($chair, [
+            "has_sf" => 1, "sf/1/id" => "new", "sf/1/name" => "Restricted SF",
+            "sf/1/order" => 100, "sf/1/type" => "text", "sf/1/visibility" => "admin"
+        ]);
+        xassert($sv->execute());
+        $opt = $this->conf->options()->find("Restricted SF");
+        xassert($opt && !$opt->always_visible());
+        try {
+            $pc = $this->conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+            xassert(!$pc->is_track_manager());
+            $pcs = new PaperSearch($pc, "has:\"Restricted SF\"");
+            xassert_eqq($pcs->main_term()->sqlexpr(new SearchQueryInfo($pcs)), "true");
+            $chs = new PaperSearch($chair, "has:\"Restricted SF\"");
+            xassert_str_contains($chs->main_term()->sqlexpr(new SearchQueryInfo($chs)), "PaperOption");
+        } finally {
+            $sv = SettingValues::make_request($chair, ["has_sf" => 1, "sf/1/id" => $opt->id, "sf/1/delete" => 1]);
+            $sv->execute();
+        }
+    }
+
+    /** @return list<string> */
+    private function comment_tables(PaperSearch $srch) {
+        $sqi = new SearchQueryInfo($srch);
+        $qe = $srch->main_term();
+        $qe->sqlexpr($sqi);
+        $qe->precise_sqlexpr($sqi);
+        return array_values(array_filter(array_keys($sqi->tables), function ($t) {
+            return str_starts_with($t, "Comments_");
+        }));
+    }
+
+    function test_comment_search_table_reuse() {
+        // a comment-count table is joined once per distinct definition,
+        // however many times a search asks for it
+        $pc = $this->conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        xassert_eqq(count($this->comment_tables(new PaperSearch($pc, "cmt:>0"))), 1);
+        xassert_eqq(count($this->comment_tables(new PaperSearch($pc, "cmt:>0 OR cmt:>1"))), 1);
+        xassert_eqq(count($this->comment_tables(new PaperSearch($pc, "cmt:>0 OR aucmt:>0"))), 2);
+        $q = join(" OR ", array_map(function ($n) { return "cmt:>{$n}"; }, range(1, 20)));
+        xassert_eqq(count($this->comment_tables(new PaperSearch($pc, $q))), 1);
+    }
+
+    function test_sensitive_search_rate_limit() {
+        $u = $this->conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        xassert($u->contactId > 0);
+        $this->conf->qe("delete from ContactCounter where contactId=?", $u->contactId);
+        $this->conf->set_opt("sensitiveSearchRefreshAmount", 2);
+        $this->conf->set_opt("sensitiveSearchRefreshWindow", 3600000);
+
+        // `sensitive_search_account()` updates the counter row directly in SQL
+        // and marks the in-memory object stale, so throughout this test we
+        // `invalidate_contact_counter()` before each search (to model a fresh
+        // per-request counter) and `->ensure()` afterward (to reload the
+        // persisted counts before asserting on them).
+
+        // `re:NAME` is imprecise: its SQL prefilter matches every paper NAME
+        // reviews, a superset of what a PC member limited by review-identity
+        // visibility may see, so the raw SQL differs from the conservative
+        // SQL. (`ti:the` is *not* sensitive: its raw and conservative SQL
+        // coincide, so it leaks nothing.) The budget permits 2 such searches,
+        // then degrades to leak-free precise SQL. (The visible result depends
+        // on review-visibility settings other tests may have changed, so this
+        // test asserts only the accounting and that the fallback is faithful.)
+        $u->invalidate_contact_counter();
+        $s1 = new PaperSearch($u, "re:varghese@ccrc.wustl.edu");
+        $base = $s1->paper_ids();
+        $cc = $u->contact_counter()->ensure();
+        xassert_eqq($cc->sensitiveSearchCount, 1);   // accounted
+        xassert_eqq($cc->sensitiveSearchFallbackCount, 0);
+
+        // Precise searches never consume the budget or degrade.
+        for ($i = 0; $i < 5; ++$i) {
+            $u->invalidate_contact_counter();
+            $sp = new PaperSearch($u, "status:submitted");
+            $sp->paper_ids();
+        }
+        $cc = $u->contact_counter()->ensure();
+        xassert_eqq($cc->sensitiveSearchCount, 1);   // unchanged by precise searches
+        xassert_eqq($cc->sensitiveSearchFallbackCount, 0);
+
+        // Go back to `re:NAME`
+        $u->invalidate_contact_counter();
+        $s2 = new PaperSearch($u, "re:varghese@ccrc.wustl.edu");
+        $s2->paper_ids();
+        $cc = $u->contact_counter()->ensure();
+        xassert_eqq($cc->sensitiveSearchCount, 2);
+        xassert_eqq($cc->sensitiveSearchFallbackCount, 0);
+
+        $u->invalidate_contact_counter();
+        $s3 = new PaperSearch($u, "re:varghese@ccrc.wustl.edu");
+        $ids3 = $s3->paper_ids();
+        $cc = $u->contact_counter()->ensure();
+        xassert_eqq($cc->sensitiveSearchCount, 2);    // overbudget => fallback
+        xassert_eqq($cc->sensitiveSearchFallbackCount, 1);
+        xassert_eqq($ids3, $base);                   // results unchanged
+
+        // Chairs are exempt: their searches leak nothing, so they are never
+        // accounted even when imprecise.
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        xassert($chair->privChair);
+        $this->conf->qe("delete from ContactCounter where contactId=?", $chair->contactId);
+        for ($i = 0; $i < 5; ++$i) {
+            $chair->invalidate_contact_counter();
+            $sc = new PaperSearch($chair, "re:varghese@ccrc.wustl.edu");
+            $sc->paper_ids();
+        }
+        $cc = $chair->contact_counter()->ensure();
+        xassert_eqq($cc->sensitiveSearchCount, 0);  // never accounted
+        xassert_eqq($cc->sensitiveSearchFallbackCount, 0);
+        $this->conf->qe("delete from ContactCounter where contactId=?", $chair->contactId);
+
+        $this->conf->qe("delete from ContactCounter where contactId=?", $u->contactId);
+        $this->conf->set_opt("sensitiveSearchRefreshAmount", null);
+        $this->conf->set_opt("sensitiveSearchRefreshWindow", null);
+    }
+
+    function test_sensitive_search_window_rollover() {
+        $u = $this->conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        $this->conf->qe("delete from ContactCounter where contactId=?", $u->contactId);
+        $this->conf->set_opt("sensitiveSearchRefreshAmount", 2);
+        $this->conf->set_opt("sensitiveSearchRefreshWindow", 1000);   // 1-second window
+
+        // Drive accounting directly so we can control time and cross a window
+        // boundary; `invalidate_contact_counter()` models a fresh request.
+        $account = function () use ($u) {
+            $u->invalidate_contact_counter();
+            return $u->contact_counter()->sensitive_search_account();
+        };
+
+        $save = Conf::$unow;
+        Conf::set_current_time(1700000000.0);
+
+        xassert($account());                                // 1: accounted
+        xassert($account());                                // 2: accounted
+        xassert(!$account());                               // 3: over budget within the window
+        $cc = $u->contact_counter()->ensure();
+        xassert_eqq($cc->sensitiveSearchCount, 2);
+        xassert_eqq($cc->sensitiveSearchFallbackCount, 1);
+
+        // roll past the window end: the budget refreshes
+        Conf::set_current_time(1700000002.0);
+        xassert($account());
+        $cc = $u->contact_counter()->ensure();
+        xassert_eqq($cc->sensitiveSearchCount, 3);          // accounted again
+        xassert_eqq($cc->sensitiveSearchBase, 2);           // base advanced to the rollover count
+        xassert_eqq($cc->sensitiveSearchFallbackCount, 1);  // unchanged by the refresh
+
+        Conf::set_current_time($save);
+        $this->conf->qe("delete from ContactCounter where contactId=?", $u->contactId);
+        $this->conf->set_opt("sensitiveSearchRefreshAmount", null);
+        $this->conf->set_opt("sensitiveSearchRefreshWindow", null);
+    }
+
+    function test_sensitive_search_cdb_token() {
+        // A request authenticated by a contact-database bearer token charges
+        // API usage to the token's CDB counter, but sensitive searches are
+        // about this conference's data, so they are charged to the user's
+        // local counter, and never to the CDB row.
+        if (!$this->conf->contactdb()) {
+            return;
+        }
+        $u = $this->conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        xassert($u->contactId > 0);
+        $u->update_cdb();
+        $cdbu = $this->conf->fresh_cdb_user_by_email("mgbaker@cs.stanford.edu");
+        xassert($cdbu && $cdbu->contactDbId > 0);
+        $this->conf->qe("delete from ContactCounter where contactId=?", $u->contactId);
+        Dbl::qe($this->conf->contactdb(), "delete from ContactCounter where contactId=?", $cdbu->contactDbId);
+        $this->conf->set_opt("sensitiveSearchRefreshAmount", 2);
+        $this->conf->set_opt("sensitiveSearchRefreshWindow", 3600000);
+
+        $tok = Authorization_Token::prepare_bearer($cdbu, 3600)->insert();
+        xassert($tok->is_cdb);
+        xassert(str_starts_with($tok->salt, "hcT_"));
+
+        $qreq = TestQreq::get([])->set_conf($this->conf)
+            ->set_page("api")->set_path("/search")
+            ->set_header("Authorization", "Bearer {$tok->salt}");
+        Qrequest::set_main_request($qreq);
+        $muser = initialize_user($qreq, ["bearer" => true, "viewer" => false]);
+        xassert_eqq($muser->email, "mgbaker@cs.stanford.edu");
+        xassert($muser->is_bearer_authorized());
+        xassert(!$muser->is_cdb_user());
+        xassert_eqq($muser->contactId, $u->contactId);
+
+        // the API counter is the token's, in the CDB
+        $api_cc = $qreq->contact_counter();
+        xassert($api_cc->is_cdb);
+        xassert_eqq($api_cc->contactId, $cdbu->contactDbId);
+
+        // the sensitive-search counter is the local user's
+        $ss_cc = $muser->contact_counter();
+        xassert(!$ss_cc->is_cdb);
+        xassert_eqq($ss_cc->contactId, $u->contactId);
+
+        $s1 = new PaperSearch($muser, "re:varghese@ccrc.wustl.edu");
+        $s1->paper_ids();
+        $row = Dbl::fetch_first_object($this->conf->qe("select * from ContactCounter where contactId=?", $u->contactId));
+        xassert_eqq((int) ($row->sensitiveSearchCount ?? -1), 1);
+        $crow = Dbl::fetch_first_object(Dbl::qe($this->conf->contactdb(), "select * from ContactCounter where contactId=?", $cdbu->contactDbId));
+        xassert_eqq((int) ($crow->sensitiveSearchCount ?? 0), 0);
+
+        $this->conf->call_shutdown_function("ContactCounterFlush");
+        $this->conf->qe("delete from Capability where salt=?", $tok->salt);
+        Dbl::qe($this->conf->contactdb(), "delete from Capability where salt=?", $tok->salt);
+        $this->conf->qe("delete from ContactCounter where contactId=?", $u->contactId);
+        Dbl::qe($this->conf->contactdb(), "delete from ContactCounter where contactId=?", $cdbu->contactDbId);
+        $this->conf->set_opt("sensitiveSearchRefreshAmount", null);
+        $this->conf->set_opt("sensitiveSearchRefreshWindow", null);
+    }
+
+    function test_sensitive_search_cdb_only_token() {
+        // A contact-database bearer token whose holder has no account in this
+        // conference still yields a local viewer, one with no contactId. Such
+        // a viewer has no sensitive-search budget, so its imprecise searches
+        // take the precise path, and no counter row is touched anywhere.
+        if (!$this->conf->contactdb()) {
+            return;
+        }
+        $email = "ssearch-cdbonly@_.com";
+        $this->conf->qe("delete from ContactInfo where email=?", $email);
+        Dbl::qe($this->conf->contactdb(), "delete from ContactInfo where email=?", $email);
+        $this->conf->invalidate_user(Contact::make_cdb_email($this->conf, $email));
+        $cdbu = Contact::make_cdb_email($this->conf, $email);
+        $cdbu->set_prop("firstName", "Cdb");
+        $cdbu->set_prop("lastName", "Only");
+        $cdbu->save_prop();
+        $cdbu = $this->conf->fresh_cdb_user_by_email($email);
+        xassert($cdbu && $cdbu->contactDbId > 0);
+        xassert(!$this->conf->fresh_user_by_email($email));
+        Dbl::qe($this->conf->contactdb(), "delete from ContactCounter where contactId=?", $cdbu->contactDbId);
+        $this->conf->set_opt("sensitiveSearchRefreshAmount", 2);
+        $this->conf->set_opt("sensitiveSearchRefreshWindow", 3600000);
+
+        $tok = Authorization_Token::prepare_bearer($cdbu, 3600)->insert();
+        xassert($tok->is_cdb);
+
+        $qreq = TestQreq::get([])->set_conf($this->conf)
+            ->set_page("api")->set_path("/search")
+            ->set_header("Authorization", "Bearer {$tok->salt}");
+        Qrequest::set_main_request($qreq);
+        $muser = initialize_user($qreq, ["bearer" => true, "viewer" => false]);
+        xassert_eqq($muser->email, $email);
+        xassert($muser->is_bearer_authorized());
+        xassert(!$muser->is_cdb_user());
+        xassert_eqq($muser->contactId, 0);
+        xassert(!$this->conf->fresh_user_by_email($email));
+
+        // the API counter is the token's, in the CDB
+        $api_cc = $qreq->contact_counter();
+        xassert($api_cc->is_cdb);
+        xassert_eqq($api_cc->contactId, $cdbu->contactDbId);
+
+        // the sensitive-search counter is local, and has no budget
+        $ss_cc = $muser->contact_counter();
+        xassert(!$ss_cc->is_cdb);
+        xassert_eqq($ss_cc->contactId, 0);
+        xassert(!$ss_cc->sensitive_search_account());
+
+        $s1 = new PaperSearch($muser, "re:varghese@ccrc.wustl.edu");
+        $s1->paper_ids();
+        $nlocal = $this->conf->fetch_ivalue("select count(*) from ContactCounter where contactId<=0");
+        xassert_eqq($nlocal, 0);
+        $crow = Dbl::fetch_first_object(Dbl::qe($this->conf->contactdb(), "select * from ContactCounter where contactId=?", $cdbu->contactDbId));
+        xassert_eqq((int) ($crow->sensitiveSearchCount ?? 0), 0);
+        xassert_eqq((int) ($crow->sensitiveSearchFallbackCount ?? 0), 0);
+
+        $this->conf->call_shutdown_function("ContactCounterFlush");
+        Dbl::qe($this->conf->contactdb(), "delete from Capability where salt=?", $tok->salt);
+        Dbl::qe($this->conf->contactdb(), "delete from ContactCounter where contactId=?", $cdbu->contactDbId);
+        Dbl::qe($this->conf->contactdb(), "delete from ContactInfo where email=?", $email);
+        $this->conf->invalidate_user($cdbu);
+        $this->conf->set_opt("sensitiveSearchRefreshAmount", null);
+        $this->conf->set_opt("sensitiveSearchRefreshWindow", null);
+    }
+
+    function test_decision_none_matches_invisible_decision() {
+        // When a user cannot see a paper's decision, that decision degrades to
+        // 0 ("no decision") for that user (see `Decision_SearchTerm::test()`),
+        // so the paper *should* match `dec:none`. This checks that the SQL
+        // prefilter agrees with the precise `test()` semantics.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $mgbaker = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+
+        // Non-conflicted reviewers may see decisions; conflicted ones may not.
+        $conf->save_refresh_setting("seedec", Conf::SEEDEC_NCREV);
+
+        // Give paper 3 a positive (accept) decision. mgbaker is a PC conflict
+        // on paper 3, so under SEEDEC_NCREV she cannot see that decision.
+        xassert_assign($chair, "paper,action,decision\n3,decision,accept\n");
+        $prow = $conf->checked_paper_by_id(3);
+        xassert_gt($prow->outcome, 0);
+        xassert(!$mgbaker->can_view_decision($prow));
+
+        // She reviews other, non-conflicted papers, so she *can* see some
+        // decisions and is not an all-powerful administrator. This is exactly
+        // the case that exercises the buggy branch of `sqlexpr()`.
+        xassert($mgbaker->can_view_some_decision());
+        xassert(!$mgbaker->allow_admin_all());
+
+        // The decision is invisible to her, so paper 3 degrades to "no
+        // decision" and must match `dec:none`.
+        $srch = new PaperSearch($mgbaker, "dec:none");
+        xassert_in_eqq(3, $srch->paper_ids());
+
+        // clean up
+        xassert_assign($chair, "paper,action,decision\n3,cleardecision,accept\n");
+        $conf->save_refresh_setting("seedec", null);
+    }
+
+    function test_decision_none_seedec_rev_hides_own_decision() {
+        // Regression: under SEEDEC_REV a PC member `can_view_all_decision()`,
+        // which drove a *precise* `outcome=0` SQL prefilter for `dec:none`. But a
+        // PC member who authors a submission views that paper as an author, so its
+        // decision follows the author-release rules — and until decisions are
+        // released to authors, it stays hidden even though the paper is visible.
+        // The precise prefilter dropped that decided paper before `test()` could
+        // keep it as "no decision", omitting it from `dec:none` and so leaking
+        // that a decision exists. `can_view_all_decision()` therefore holds only
+        // once decisions are released to all authors.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+
+        $old_seedec = $conf->setting("seedec");
+        $old_au_seedec = $conf->setting("au_seedec");
+        $conf->save_refresh_setting("seedec", Conf::SEEDEC_REV);
+        $conf->save_refresh_setting("au_seedec", null); // decisions NOT released to authors
+
+        // estrin is a PC member and an author of paper 1.
+        $estrin = $conf->checked_user_by_email("estrin@usc.edu");
+        xassert($estrin->isPC);
+
+        xassert_assign($chair, "paper,action,decision\n1,decision,accept\n");
+        $prow = $conf->checked_paper_by_id(1);
+        xassert_gt($prow->outcome, 0);
+
+        // She sees her own paper but not its (author-release-gated) decision, is
+        // not an administrator, and — with the fix — no longer claims to view all
+        // decisions, since her own decision is hidden from her.
+        xassert($estrin->can_view_paper($prow));
+        xassert(!$estrin->can_view_decision($prow));
+        xassert(!$estrin->allow_admin_all());
+        xassert(!$estrin->can_view_all_decision());
+
+        // The decision is invisible to her, so paper 1 degrades to "no
+        // decision" and must appear in both decision-none search vectors.
+        xassert_in_eqq(1, (new PaperSearch($estrin, "dec:none"))->paper_ids());
+        xassert_in_eqq(1, (new PaperSearch($estrin, "in:undecided"))->paper_ids());
+
+        // Once decisions are released to all authors, she can view her own
+        // decision, so `can_view_all_decision()` holds and the precise prefilter
+        // is sound: paper 1 leaves `dec:none` and appears in `dec:yes`.
+        $conf->save_refresh_setting("au_seedec", 1); // released to all authors
+        $estrin = $conf->checked_user_by_email("estrin@usc.edu");
+        $prow = $conf->checked_paper_by_id(1);
+        xassert($estrin->can_view_decision($prow));
+        xassert($estrin->can_view_all_decision());
+        xassert_not_in_eqq(1, (new PaperSearch($estrin, "dec:none"))->paper_ids());
+        xassert_in_eqq(1, (new PaperSearch($estrin, "dec:yes"))->paper_ids());
+
+        // clean up
+        xassert_assign($chair, "paper,action,decision\n1,cleardecision,accept\n");
+        $conf->save_refresh_setting("seedec", $old_seedec);
+        $conf->save_refresh_setting("au_seedec", $old_au_seedec);
+    }
+
+    function test_conflict_count_hides_invisible_conflicts() {
+        // Regression: `Conflict_SearchTerm::sqlexpr` emitted a subtractive
+        // `not exists` for `conflict:U=0` (and raw upper-bound counts) using the
+        // TRUE conflict rows, while `test()` counts a member's conflict only when
+        // the searcher `can_view_conflicts($row)`. When conflicts are hidden from
+        // the PC (`sub_pcconfvis=1`), a paper with a hidden conflict was dropped
+        // from `conflict:U=0` before `test()` could keep it (it looks like 0 to
+        // the searcher) — so the omission leaked that U is conflicted there.
+        $conf = $this->conf;
+        $old_pccv = $conf->setting("sub_pcconfvis");
+        $conf->save_refresh_setting("sub_pcconfvis", 1); // hide conflicts from PC
+
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $searcher = $conf->checked_user_by_email("mgbaker@cs.stanford.edu"); // PC, not admin of p5
+        $marina = $conf->checked_user_by_email("marina@poema.ru");
+
+        // marina gets a hidden PC conflict on paper 5; searcher is not conflicted there.
+        xassert_assign($chair, "paper,action,user\n5,conflict,marina@poema.ru\n");
+        $p5 = $conf->checked_paper_by_id(5);
+        xassert($searcher->can_view_paper($p5));
+        xassert(!$searcher->can_view_conflicts($p5));
+
+        // The conflict is invisible to the searcher, so paper 5 counts as 0 and
+        // must satisfy `=0` and `<2`; it must never surface via `>0`.
+        xassert_in_eqq(5, (new PaperSearch($searcher, "conflict:\"marina@poema.ru\"=0"))->paper_ids());
+        xassert_in_eqq(5, (new PaperSearch($searcher, "conflict:\"marina@poema.ru\"<2"))->paper_ids());
+        xassert_not_in_eqq(5, (new PaperSearch($searcher, "conflict:\"marina@poema.ru\">0"))->paper_ids());
+
+        // An administrator sees the conflict, so their results are exact.
+        xassert_not_in_eqq(5, (new PaperSearch($chair, "conflict:\"marina@poema.ru\"=0"))->paper_ids());
+        xassert_in_eqq(5, (new PaperSearch($chair, "conflict:\"marina@poema.ru\">0"))->paper_ids());
+
+        // clean up
+        xassert_assign($chair, "paper,action,user\n5,noconflict,marina@poema.ru\n");
+        $conf->save_refresh_setting("sub_pcconfvis", $old_pccv);
+    }
+
+    function test_conflict_search_hides_nonpc_author_identities() {
+        $conf = $this->conf;
+        xassert_eqq($conf->submission_blindness(), Conf::BLIND_ALWAYS);
+        $old_pccv = $conf->setting("sub_pcconfvis");
+        $conf->save_refresh_setting("sub_pcconfvis", 2); // PC can always see PC conflicts
+
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $mg = $conf->checked_user_by_email("mgbaker@cs.stanford.edu"); // PC, not admin, not conflicted p1
+        $p1 = $conf->checked_paper_by_id(1);
+
+        // Controls: paper 1 is blind to mgbaker, but they *can* view its conflicts.
+        xassert(!$mg->can_view_authors($p1));
+        xassert($mg->can_view_conflicts($p1));
+
+        // puneet and van are non-PC author/contacts of blind paper 1. `conflict:`
+        // must not count their author conflicts, or it leaks the blind authors.
+        xassert_not_in_eqq(1, (new PaperSearch($mg, "conflict:puneet@catarina.usc.edu>0"))->paper_ids());
+        xassert_not_in_eqq(1, (new PaperSearch($mg, "conflict:van@ee.lbl.gov>0"))->paper_ids());
+        // wildcard probing is equally blocked
+        xassert_not_in_eqq(1, (new PaperSearch($mg, "conflict:puneet*>0"))->paper_ids());
+
+        // An administrator legitimately sees the author conflict.
+        xassert_in_eqq(1, (new PaperSearch($chair, "conflict:puneet@catarina.usc.edu>0"))->paper_ids());
+
+        // The fix does not over-block: a *PC* member's conflict is still visible
+        // to mgbaker under pcconfvis=always.
+        xassert_assign($chair, "paper,action,user\n1,conflict,marina@poema.ru\n");
+        xassert_in_eqq(1, (new PaperSearch($mg, "conflict:marina@poema.ru>0"))->paper_ids());
+
+        // clean up
+        xassert_assign($chair, "paper,action,user\n1,noconflict,marina@poema.ru\n");
+        $conf->save_refresh_setting("sub_pcconfvis", $old_pccv);
+    }
+
+    function test_conflict_search_is_not_a_user_oracle() {
+        // `conflict:USER` resolves the whole account table; reporting "user not
+        // found" would turn it into an account-existence oracle. A non-admin gets
+        // no such feedback (real and fake accounts are indistinguishable); an
+        // admin, who can enumerate accounts anyway, is told; and the PC-restricted
+        // `pcconf:` may report a missing PC member to anyone who can view the PC.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $mg = $conf->checked_user_by_email("mgbaker@cs.stanford.edu"); // PC, not admin
+        xassert(!$mg->privChair);
+        xassert($mg->can_view_pc());
+
+        // Non-admin: no feedback whether the named account exists or not.
+        $s = new PaperSearch($mg, "conflict:nonesuch-zqz@example.invalid");
+        $s->paper_ids();
+        xassert_eqq($s->full_feedback_text(), "");
+        $s = new PaperSearch($mg, "conflict:puneet@catarina.usc.edu"); // real, non-PC account
+        $s->paper_ids();
+        xassert_eqq($s->full_feedback_text(), "");
+
+        // Admin: told when nobody matches.
+        $s = new PaperSearch($chair, "conflict:nonesuch-zqz@example.invalid");
+        $s->paper_ids();
+        xassert_match($s->full_feedback_text(), '/User .*not found/');
+
+        // PC-restricted keyword: a viewer of the PC is told when no PC member matches.
+        $s = new PaperSearch($mg, "pcconf:nonesuch-zqz@example.invalid");
+        $s->paper_ids();
+        xassert_match($s->full_feedback_text(), '/PC .*not found/');
+    }
+
+    function test_selection_keeps_real_paper_ids() {
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $maxpid = $this->conf->fetch_ivalue("select max(paperId) from Paper");
+        // IDs below 1 are dropped, not passed on as "-N" (which reads as NOT N)
+        $ssel = SearchSelection::make_papers(TestQreq::get(["p" => "zq3"]), $chair);
+        xassert_eqq($ssel->selection(), []);
+        xassert($ssel->is_empty());
+        xassert_eqq($ssel->unparse_search(), "NONE");
+        $ssel = SearchSelection::make_papers(TestQreq::get(["p" => "1zq5"]), $chair);
+        xassert_eqq($ssel->selection(), [1, 2]);
+        xassert_eqq($ssel->unparse_search(), "1 2");
+        xassert(!$ssel->is_selected(0));
+        // ranges far beyond the papers are limited to the papers
+        $ssel = SearchSelection::make_papers(TestQreq::get(["p" => "1-99999"]), $chair);
+        xassert_eqq($ssel->selection(), range(1, $maxpid));
+        xassert_eqq($ssel->count(), $maxpid);
+        // ordinary selections are untouched
+        $ssel = SearchSelection::make_papers(TestQreq::get(["p" => "3 1 2"]), $chair);
+        xassert_eqq($ssel->selection(), [1, 2, 3]);
+        xassert_eqq($ssel->order_compare(3, 1), -1);
+    }
+
+    function test_paper_set_extension_with_duplicates() {
+        // extending a set with an imprecise selection that matches a paper
+        // already in the set leaves that paper in place
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $ps = $this->conf->paper_set(["paperId" => [9]], $chair);
+        $p9 = $ps->get(9);
+        $ids = (new PaperIDSet)->add_list([1, 3, 5, 7]);
+        for ($i = 0; $i <= PaperIDSet::MAX_SQL_IN; ++$i) {
+            $ids->add(100 + 2 * $i);
+        }
+        xassert(!$ids->is_sql_predicate_precise());
+        $this->conf->extend_paper_set($ps, ["paperId" => $ids], $chair);
+        xassert_eqq($ps->paper_ids(), [9, 1, 3, 5, 7]);
+        xassert($ps->get(9) === $p9);
+        xassert_eqq(count($ps->as_list()), 5);
+    }
+
+    function test_imprecise_paper_id_sets() {
+        // paper ID sets with too many pieces for exact SQL still match exactly
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $pc = $this->conf->checked_user_by_email("marina@poema.ru");
+        $maxpid = $this->conf->fetch_ivalue("select max(paperId) from Paper");
+        $odd = range(1, 2 * PaperIDSet::MAX_SQL_RANGES + 3, 2);
+        $odd_pids = range(1, $maxpid, 2);
+
+        $code = SessionList::encode_ids($odd);
+        foreach ([$chair, $pc] as $user) {
+            $all = (new PaperSearch($user, ["q" => "", "t" => "all"]))->paper_ids();
+            $srch = new PaperSearch($user, ["q" => "pidcode:{$code}", "t" => "all"]);
+            xassert_eqq($srch->paper_ids(), array_values(array_intersect($all, $odd_pids)));
+        }
+
+        $ssel = SearchSelection::make_papers(TestQreq::get(["p" => join(" ", $odd)]), $chair);
+        xassert(!$ssel->id_set()->is_sql_predicate_precise());
+        $pids = [];
+        foreach ($ssel->paper_set($chair) as $prow) {
+            $pids[] = $prow->paperId;
+        }
+        xassert_eqq($pids, $odd_pids);
+    }
+
+    function test_selection_range_requires_integers() {
+        // request range pairs are strings; only integer pairs are ranges
+        $qreq = TestQreq::get()->set_req("p", [["1 or 1=1", "100"]]);
+        $ssel = SearchSelection::make_papers($qreq, $this->u_root);
+        xassert($ssel->is_empty());
+        xassert_eqq($ssel->id_set()->sql_predicate("Paper.paperId"), "false");
+        $qreq = TestQreq::get()->set_req("p", [["2", "4"], "7", ["a" => 1, "b" => 2]]);
+        $ssel = SearchSelection::make_papers($qreq, $this->u_root);
+        xassert_eqq($ssel->selection(), [7]);
+        $ssel = SearchSelection::make_raw($qreq);
+        xassert_eqq($ssel->selection(), [7]);
+        $ssel = new SearchSelection([[2, 4], 7]);
+        xassert_eqq($ssel->selection(), [2, 3, 4, 7]);
+    }
+
+    function test_paper_set_large_list_requires_integers() {
+        // a `paperId` list longer than 2000 entries becomes a PaperIDSet,
+        // whose SQL predicate interpolates IDs; non-integers are dropped
+        $old_log = ini_get("error_log");
+        $logfn = tempnam(sys_get_temp_dir(), "hotcrp-errlog");
+        ini_set("error_log", $logfn);
+        $nerrors = Dbl::$nerrors;
+        $ids = array_fill(0, 2001, "1 or 1=1");
+        $ids[] = "10 or 1=1";
+        $ps = $this->conf->paper_set(["paperId" => $ids], $this->u_root);
+        xassert_eqq(Dbl::$nerrors, $nerrors);
+        xassert_eqq($ps->paper_ids(), []);
+        ini_set("error_log", $old_log);
+        @unlink($logfn);
+        // integers still work
+        $ids = array_fill(0, 2001, 3);
+        $ids[] = 1;
+        $ps = $this->conf->paper_set(["paperId" => $ids], $this->u_root);
+        xassert_eqq($ps->paper_ids(), [1, 3]);
+    }
+
+    function test_selection_huge_range() {
+        // a range larger than the paper table still yields a list
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $maxpid = $this->conf->fetch_ivalue("select max(paperId) from Paper");
+        $ssel = SearchSelection::make_papers(TestQreq::get(["p" => "1-99999999999"]), $chair);
+        $sel = $ssel->selection();
+        xassert(is_array($sel));
+        xassert_eqq($sel[0] ?? null, 1);
+        xassert_eqq($sel[count($sel) - 1] ?? null, $maxpid);
+        xassert_eqq(count($sel), $maxpid);
+        $ssel = SearchSelection::make_papers(TestQreq::get(["p" => "3 99999000000-99999999999 5"]), $chair);
+        xassert_eqq($ssel->selection(), [3, 5]);
+        xassert_eqq($ssel->count(), 2);
+
+        // ranges that run below 1 keep the valid IDs they include
+        $ssel = SearchSelection::make_papers(TestQreq::get(["p" => "5zq200000"]), $chair);
+        xassert_eqq($ssel->selection(), [1, 2, 3, 4, 5, 6]);
+
+        // a descending range keeps its order
+        $ssel = SearchSelection::make_papers(TestQreq::get(["p" => "99999999999zq100000000000"]), $chair);
+        xassert_eqq(count($ssel->selection()), $maxpid);
+        $pids = [];
+        foreach ($ssel->paper_set($chair) as $prow) {
+            $pids[] = $prow->paperId;
+        }
+        xassert_eqq($pids, range($maxpid, 1, -1));
+
+        // `all` selects the search
+        $qreq = TestQreq::get(["p" => "all", "q" => "", "t" => "s"]);
+        $ssel = SearchSelection::make_papers($qreq, $chair);
+        xassert_eqq($ssel->selection(), (new PaperSearch($chair, ["q" => "", "t" => "s"]))->paper_ids());
+    }
+
+    function test_conflict_and_author_search_without_user() {
+        // `conflict:any`, `pcconf:N`, and friends count conflicts with any PC
+        // member; `au:any` matches any author
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        xassert_assign($chair, "paper,action,user\n5,conflict,marina@poema.ru\n");
+
+        $all = (new PaperSearch($chair, ["q" => "", "t" => "all"]))->paper_ids();
+        $npcconf = [];
+        $result = $conf->qe("select paperId, count(*) from PaperConflict where contactId?a and conflictType>? group by paperId", array_keys($conf->pc_members()), CONFLICT_MAXUNCONFLICTED);
+        while (($row = $result->fetch_row())) {
+            $npcconf[(int) $row[0]] = (int) $row[1];
+        }
+        $result->close();
+        $expect = function ($f) use ($all, $npcconf) {
+            return array_values(array_filter($all, function ($pid) use ($f, $npcconf) {
+                return $f($npcconf[$pid] ?? 0);
+            }));
+        };
+        xassert_in_eqq(5, $expect(function ($n) { return $n > 0; }));
+
+        $search = function ($q) use ($chair) {
+            return (new PaperSearch($chair, ["q" => $q, "t" => "all"]))->paper_ids();
+        };
+        foreach (["conflict:any", "conflict:yes", "has:pcconf", "pcconf:any"] as $q) {
+            xassert_eqq($search($q), $expect(function ($n) { return $n > 0; }), $q);
+        }
+        foreach (["conflict:none", "pcconf:none", "NOT has:pcconf"] as $q) {
+            xassert_eqq($search($q), $expect(function ($n) { return $n === 0; }), $q);
+        }
+        xassert_eqq($search("conflict:>1"), $expect(function ($n) { return $n > 1; }));
+        xassert_eqq($search("pcconf:<2"), $expect(function ($n) { return $n < 2; }));
+
+        xassert_eqq($search("au:any"), $all);
+        xassert_eqq($search("listedau:any"), $all);
+        xassert_eqq($search("au:none"), []);
+
+        xassert_assign($chair, "paper,action,user\n5,noconflict,marina@poema.ru\n");
+    }
+
+    function test_desirability_column_respects_aggregate_pref_visibility() {
+        // Regression: the Desirability column renders the signed reviewer-
+        // preference aggregate. `prepare()` gates only on the global `is_manager()`
+        // role, so without a per-paper `content_empty()` a manager who is
+        // conflicted with (or track-restricted from) a paper saw its desirability
+        // even though `can_view_preference($row, aggregate)` is false there.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+
+        // marina becomes an assigned manager of paper 4 -> is_manager() globally.
+        xassert_assign($chair, "action,paper,user\nadministrator,4,marina@poema.ru\n");
+        // ...but she is conflicted with paper 3, which she does not manage.
+        xassert_assign($chair, "paper,action,user\n3,conflict,marina@poema.ru\n");
+        // seed reviewer preferences on paper 3 so its desirability is non-zero.
+        foreach ([["mogul@wrl.dec.com", 8], ["van@ee.lbl.gov", 6], ["jon@cs.ucl.ac.uk", -20]] as list($em, $pf)) {
+            $rid = $conf->checked_user_by_email($em)->contactId;
+            $conf->qe("insert into PaperReviewPreference (paperId,contactId,preference,expertise) values (3,?,?,null) on duplicate key update preference=?", $rid, $pf, $pf);
+        }
+        $conf->invalidate_caches("pc");
+
+        $marina = $conf->checked_user_by_email("marina@poema.ru");
+        $p3 = $conf->checked_paper_by_id(3);
+        $p4 = $conf->checked_paper_by_id(4);
+        xassert($marina->is_manager());
+        xassert($marina->can_view_paper($p3));
+        xassert(!$marina->can_view_preference($p3, true)); // conflicted -> no aggregate prefs
+        xassert_neqq($p3->desirability(), 0);
+
+        $col = PaperColumn::make($conf, $conf->paper_columns("desirability", $marina)[0]);
+        $pl = new PaperList("empty", new PaperSearch($marina, "3 4"));
+        xassert($col->prepare($pl, FieldRender::CFLIST));
+        // The conflicted paper's cell is blanked; her own managed paper renders.
+        xassert($col->content_empty($pl, $p3));
+        xassert(!$col->content_empty($pl, $p4));
+
+        // clean up
+        xassert_assign($chair, "action,paper,user\nclearadministrator,4,marina@poema.ru\n");
+        xassert_assign($chair, "paper,action,user\n3,noconflict,marina@poema.ru\n");
+        $conf->qe("delete from PaperReviewPreference where paperId=3 and contactId in (select contactId from ContactInfo where email in ('mogul@wrl.dec.com','van@ee.lbl.gov','jon@cs.ucl.ac.uk'))");
+        $conf->invalidate_caches("pc");
+    }
+
+    function test_pdf_none_hides_unviewable_pdf() {
+        // Regression: `pdf:none`/`submission:none` emitted a subtractive
+        // `paperStorageId<=1` on raw document presence, so a paper whose PDF the
+        // searcher cannot view (but whose row exists) was dropped from `:none`,
+        // leaking that a hidden PDF exists. The absent branch is now a conservative
+        // superset and `test()` filters via `viewable_primary_document`. Also pins
+        // that the unqualified `pdf:` form loads `mimetype`, so it agrees with
+        // document visibility (previously it saw no PDF at all).
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $old_open = $conf->setting("sub_open");
+        $old_sub = $conf->setting("sub_sub");
+        $old_seeallpdf = $conf->setting("pc_seeallpdf");
+        $old_seeall = $conf->setting("pc_seeall");
+        $conf->save_refresh_setting("sub_open", 1);
+        $conf->save_refresh_setting("sub_sub", Conf::$now + 100000);
+        $conf->save_refresh_setting("pc_seeallpdf", 0); // PC cannot view PDFs...
+        $conf->save_refresh_setting("pc_seeall", 1);    // ...but can view papers
+
+        $mg = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+
+        // Ground truth: for every paper mgbaker can view, `pdf:any` must hold
+        // exactly when they can view a PDF primary document, and `pdf:none` the
+        // rest. A subtractive prefilter would have dropped hidden-PDF papers from
+        // `pdf:none` (leak); the missing-`mimetype` bug would have made every
+        // paper PDF-less. Both are excluded by matching ground truth exactly.
+        $truth_any = $truth_none = [];
+        foreach ($conf->paper_set(["allConflictType" => true]) as $prow) {
+            if (!$mg->can_view_paper($prow)) {
+                continue;
+            }
+            $doc = $prow->viewable_primary_document($mg);
+            if ($doc && $doc->mimetype === "application/pdf") {
+                $truth_any[] = $prow->paperId;
+            } else {
+                $truth_none[] = $prow->paperId;
+            }
+        }
+        sort($truth_any);
+        sort($truth_none);
+        $search_any = (new PaperSearch($mg, "pdf:any"))->paper_ids();
+        $search_none = (new PaperSearch($mg, "pdf:none"))->paper_ids();
+        sort($search_any);
+        sort($search_none);
+        xassert_eqq($search_any, $truth_any);
+        xassert_eqq($search_none, $truth_none);
+        // Config took effect and the check is non-vacuous: with PC PDFs hidden,
+        // there are viewable papers whose PDF mgbaker cannot see.
+        xassert_gt(count($truth_none), 0);
+
+        // The dtype-specific `submission:` form must match the same ground truth
+        // (this exercises the conservative absent-branch: a non-admin must not get
+        // the subtractive `paperStorageId<=1` prefilter that would drop a viewable
+        // paper whose submission PDF is hidden).
+        $sub_any = $sub_none = [];
+        foreach ($conf->paper_set(["allConflictType" => true]) as $prow) {
+            if (!$mg->can_view_paper($prow)) {
+                continue;
+            }
+            $ov = $prow->option(DTYPE_SUBMISSION);
+            $doc = $ov && $mg->can_view_option($prow, $ov->option)
+                ? $ov->document_set(true)->document_by_index(0) : null;
+            if ($doc && $doc->mimetype === "application/pdf") {
+                $sub_any[] = $prow->paperId;
+            } else {
+                $sub_none[] = $prow->paperId;
+            }
+        }
+        sort($sub_any);
+        sort($sub_none);
+        $ssub_none = (new PaperSearch($mg, "submission:none"))->paper_ids();
+        sort($ssub_none);
+        xassert_eqq($ssub_none, $sub_none);
+
+        // Administrator sees every PDF: the unqualified `pdf:` form matches
+        // `submission:` (it no longer classifies every paper as PDF-less), and the
+        // null-dtype `:none` form does not fault.
+        xassert_eqq((new PaperSearch($chair, "pdf:any"))->paper_ids(),
+                    (new PaperSearch($chair, "submission:any"))->paper_ids());
+        xassert(count((new PaperSearch($chair, "final:none"))->paper_ids()) >= 0);
+
+        $conf->save_refresh_setting("sub_open", $old_open);
+        $conf->save_refresh_setting("sub_sub", $old_sub);
+        $conf->save_refresh_setting("pc_seeallpdf", $old_seeallpdf);
+        $conf->save_refresh_setting("pc_seeall", $old_seeall);
+    }
+
+    function test_has_attachment_none_hides_unviewable_document() {
+        // Regression: `has:<document field>` claimed a precise SQL prefilter
+        // whenever the field was `always_visible()`, so `NOT has:FIELD`
+        // became a subtractive `not exists (PaperOption ...)` on raw rows.
+        // But document fields are additionally gated on document visibility
+        // (`can_view_paper($prow, true)`): under
+        // `submission_visibility_conflict=no-pdf` a conflicted PC member sees
+        // the paper but none of its documents, so `test()` treats the field
+        // as absent. The precise prefilter dropped the paper from
+        // `NOT has:FIELD` exactly when the hidden attachment existed.
+        $conf = $this->conf;
+        $old_options = $conf->setting_data("options");
+        $old_confpdf = $conf->setting("pc_confpdf");
+        $oid = 50;
+        xassert(!$conf->option_by_id($oid));
+        $options = json_decode($old_options ?? "[]");
+        $options[] = (object) ["id" => $oid, "name" => "Supplementary Material", "abbr" => "supmat", "type" => "attachments", "order" => 8];
+        $conf->save_setting("options", 1, json_encode($options));
+        $conf->invalidate_caches("options");
+        $opt = $conf->checked_option_by_id($oid);
+        xassert($opt->has_document());
+        xassert($opt->always_visible());
+
+        $ps = new PaperStatus($conf->root_user());
+        $ps->save_paper_json(json_decode("{\"id\":1,\"supmat\":[{\"content\":\"%PDF-supp\", \"type\":\"application/pdf\"}]}"));
+        xassert_paper_status($ps);
+        $p1 = $conf->checked_paper_by_id(1);
+
+        // The chair can view every document, so the precise path is kept.
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        xassert($chair->can_view_all(true));
+        xassert($chair->can_view_option($p1, $opt));
+        xassert((new PaperSearch($chair, "has:supmat"))->main_term()->is_sqlexpr_precise());
+        xassert_not_in_eqq(1, (new PaperSearch($chair, "NOT has:supmat"))->paper_ids());
+        xassert_in_eqq(1, (new PaperSearch($chair, "has:supmat"))->paper_ids());
+        xassert_not_in_eqq(1, (new PaperSearch($chair, "submission:none"))->paper_ids());
+
+        // A chair whose token scope omits documents cannot see the
+        // attachment (or the submission PDF): `NOT has:FIELD`, `FIELD:none`
+        // and `submission:none` must agree with `test()` and keep paper 1.
+        $chair->set_scope("submeta:read");
+        xassert(!$chair->can_view_all(true));
+        xassert($chair->can_view_paper($p1));
+        xassert(!$chair->can_view_pdf($p1));
+        xassert(!$chair->can_view_option($p1, $opt));
+        xassert(!(new PaperSearch($chair, "has:supmat"))->main_term()->is_sqlexpr_precise());
+        xassert_in_eqq(1, (new PaperSearch($chair, "NOT has:supmat"))->paper_ids());
+        xassert_in_eqq(1, (new PaperSearch($chair, "supmat:none"))->paper_ids());
+        xassert_not_in_eqq(1, (new PaperSearch($chair, "has:supmat"))->paper_ids());
+        xassert_in_eqq(1, (new PaperSearch($chair, "NOT has:submission"))->paper_ids());
+        xassert_in_eqq(1, (new PaperSearch($chair, "submission:none"))->paper_ids());
+        xassert_eqq((new PaperSearch($chair, "submission:none"))->paper_ids(),
+                    (new PaperSearch($chair, "NOT has:submission"))->paper_ids());
+        $chair->set_scope();
+
+        // mjh is a PC member conflicted with paper 1; mgbaker is unconflicted PC.
+        $conf->save_refresh_setting("pc_confpdf", 1); // conflicted PC: metadata, no documents
+        $mjh = $conf->checked_user_by_email("mjh@isi.edu");
+        $mgbaker = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        xassert($p1->has_conflict($mjh));
+        xassert($mjh->can_view_paper($p1));
+        xassert(!$mjh->can_view_pdf($p1));
+        xassert(!$mjh->can_view_option($p1, $opt));
+        xassert(!$mjh->can_view_all(true));
+        xassert($mgbaker->can_view_option($p1, $opt));
+        xassert(!$mgbaker->can_view_all(true));
+
+        // The attachment is invisible to mjh, so paper 1 looks attachment-less
+        // and must stay in `NOT has:supmat`; it must never surface via `has:`.
+        xassert(!(new PaperSearch($mjh, "has:supmat"))->main_term()->is_sqlexpr_precise());
+        xassert_in_eqq(1, (new PaperSearch($mjh, "NOT has:supmat"))->paper_ids());
+        xassert_in_eqq(1, (new PaperSearch($mjh, "supmat:none"))->paper_ids());
+        xassert_not_in_eqq(1, (new PaperSearch($mjh, "has:supmat"))->paper_ids());
+
+        // An unconflicted PC member sees the attachment: results are exact.
+        xassert_not_in_eqq(1, (new PaperSearch($mgbaker, "NOT has:supmat"))->paper_ids());
+        xassert_in_eqq(1, (new PaperSearch($mgbaker, "has:supmat"))->paper_ids());
+
+        // clean up
+        $ps->save_paper_json(json_decode("{\"id\":1,\"supmat\":false}"));
+        xassert_paper_status($ps);
+        if ($old_options === null) {
+            $conf->save_setting("options", null);
+        } else {
+            $conf->save_setting("options", 1, $old_options);
+        }
+        $conf->invalidate_caches("options");
+        $conf->qe("delete from PaperOption where optionId=?", $oid);
+        $conf->qe("delete from PaperStorage where documentType=?", $oid);
+        $conf->save_refresh_setting("pc_confpdf", $old_confpdf);
+        xassert(!$conf->option_by_id($oid));
+    }
+
+    function test_token_none_hides_invisible_token_review() {
+        // Regression: `token:none` emitted a subtractive `count(reviewToken)=0`
+        // over ALL reviews, so a paper with a token review the searcher cannot see
+        // was dropped from `token:none`, leaking that a hidden token review exists.
+        // The sqlexpr is now conservative and `test()` counts a token review only
+        // when the searcher can view its assignment AND identity.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $old_auseerev = $conf->setting("au_seerev");
+        $conf->save_refresh_setting("au_seerev", null); // authors cannot see reviews
+
+        // Stamp a review token on an existing submitted review of estrin's paper 1.
+        $rid = $conf->fetch_ivalue("select reviewId from PaperReview where paperId=1 and reviewType>0 order by reviewId asc limit 1");
+        xassert_gt($rid, 0);
+        $conf->qe("update PaperReview set reviewToken=? where reviewId=?", 8675309, $rid);
+        $conf->update_rev_tokens_setting(1);
+        $conf->invalidate_caches("pc");
+
+        $estrin = $conf->checked_user_by_email("estrin@usc.edu"); // author of paper 1
+        $p1 = $conf->checked_paper_by_id(1);
+        $rrow = null;
+        foreach ($p1->all_reviews() as $r) {
+            if ($r->reviewId === $rid) {
+                $rrow = $r;
+            }
+        }
+        xassert(!$estrin->can_view_review_assignment($p1, $rrow)); // author can't see it exists
+
+        // Leak closed: author can't see the token review, so paper 1 stays in `token:none`.
+        xassert_in_eqq(1, (new PaperSearch($estrin, "token:none"))->paper_ids());
+        xassert_not_in_eqq(1, (new PaperSearch($estrin, "token:any"))->paper_ids());
+
+        // Chair sees it: `token:any` includes paper 1, `token:none` excludes it.
+        xassert_in_eqq(1, (new PaperSearch($chair, "token:any"))->paper_ids());
+        xassert_not_in_eqq(1, (new PaperSearch($chair, "token:none"))->paper_ids());
+
+        // clean up
+        $conf->qe("update PaperReview set reviewToken=0 where reviewId=?", $rid);
+        $conf->update_rev_tokens_setting(-1);
+        $conf->save_refresh_setting("au_seerev", $old_auseerev);
+    }
+
+    function test_reviewer_aliases_to_search_user() {
+        // A `reviewer` naming the search user is canonicalized away, even when
+        // it arrives as a distinct Contact object for that same user (as from
+        // `Conf::user_by_email`). Otherwise the search would treat the user as
+        // a foreign reviewer and apply the administrator restrictions below.
+        $conf = $this->conf;
+        $mgbaker = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        $mgbaker2 = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        xassert($mgbaker !== $mgbaker2);
+        xassert_eqq($mgbaker->contactXid, $mgbaker2->contactXid);
+
+        foreach ([$mgbaker2, $mgbaker->email, strtoupper($mgbaker->email)] as $reviewer) {
+            $srch = new PaperSearch($mgbaker, ["q" => "", "t" => "reviewable", "reviewer" => $reviewer]);
+            xassert_eqq($srch->reviewer_user(), $mgbaker);
+            xassert_not_str_contains($srch->encoded_query_params(), "reviewer=");
+            xassert_not_str_contains($srch->url_site_relative_raw(), "reviewer=");
+        }
+
+        // `reviewable` for oneself is not narrowed to administered papers
+        $self = new PaperSearch($mgbaker, ["q" => "", "t" => "reviewable"]);
+        $aliased = new PaperSearch($mgbaker, ["q" => "", "t" => "reviewable", "reviewer" => $mgbaker2]);
+        xassert(!$mgbaker->allow_admin_all());
+        xassert_neqq($self->paper_ids(), []);
+        xassert_eqq($aliased->paper_ids(), $self->paper_ids());
+
+        // `re:me` stays `re:me`
+        xassert((new PaperSearch($mgbaker, ["q" => "re:me", "reviewer" => $mgbaker2]))->query_is_re_me());
+
+        // a genuinely different reviewer is still honored
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $srch = new PaperSearch($chair, ["q" => "", "t" => "reviewable", "reviewer" => $mgbaker->email]);
+        xassert_eqq($srch->reviewer_user()->contactId, $mgbaker->contactId);
+        xassert_str_contains($srch->encoded_query_params(), "reviewer=" . urlencode($mgbaker->email));
+        xassert(!$srch->query_is_re_me());
+    }
+
+    function test_reviewer_respects_pc_visibility() {
+        // `reviewer` resolves only PC members the search user can see, so it
+        // does not reveal unlisted PC members (or, with `privatePC`, any PC
+        // member) to users outside the PC
+        $conf = $this->conf;
+        $email = "unlisted.reviewer@_.com";
+        $conf->qe("delete from ContactInfo where email=?", $email);
+        $us = new UserStatus($conf->root_user());
+        $acct = $us->save_user((object) ["email" => $email, "roles" => ["unlistedpc"]]);
+        xassert(!!$acct, $us->full_feedback_text());
+        $conf->invalidate_caches("users", "pc");
+        $unlisted = $conf->checked_user_by_email($email);
+        xassert(!!$conf->pc_member_by_email($email));
+        xassert(!isset($conf->listed_pc_members()[$unlisted->contactId]));
+
+        $author = $conf->checked_user_by_email("micke@cdt.luth.se");
+        $pc = $conf->checked_user_by_email("lixia@cs.ucla.edu");
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $mgbaker = "mgbaker@cs.stanford.edu";
+        xassert(!$author->isPC && $author->can_view_pc());
+
+        $resolves = function (Contact $viewer, $reviewer) {
+            $srch = new PaperSearch($viewer, ["q" => "", "t" => $viewer->isPC ? "s" : "a", "reviewer" => $reviewer]);
+            $ok = $srch->reviewer_user() !== $viewer;
+            xassert_eqq(str_contains($srch->encoded_query_params(), "reviewer="), $ok);
+            xassert_eqq(str_contains($srch->url_site_relative_raw(), "reviewer="), $ok);
+            return $ok;
+        };
+
+        // an unlisted member looks like a nonexistent email to non-PC users
+        xassert(!$resolves($author, $email));
+        xassert(!$resolves($author, "nonexistent.reviewer@_.com"));
+        xassert($resolves($author, $mgbaker));
+        $jr = call_api("search", $author, TestQreq::get(["q" => "", "t" => "a", "reviewer" => $email]));
+        xassert_eqq($jr->ok, true);
+        xassert_not_str_contains($jr->search_params, "reviewer=");
+
+        // PC members and chairs see unlisted members
+        xassert($resolves($pc, $email));
+        xassert($resolves($chair, $email));
+
+        // `privatePC`: non-PC users resolve no PC members
+        $conf->set_opt("privatePC", true);
+        Contact::update_rights();
+        $author = $conf->checked_user_by_email("micke@cdt.luth.se");
+        xassert(!$author->can_view_pc());
+        xassert(!$resolves($author, $mgbaker));
+        xassert(!$resolves($author, $email));
+        $pc = $conf->checked_user_by_email("lixia@cs.ucla.edu");
+        xassert($resolves($pc, $mgbaker));
+        $conf->set_opt("privatePC", null);
+        Contact::update_rights();
+
+        // clean up
+        $conf->qe("delete from ContactInfo where contactId=?", $unlisted->contactId);
+        $conf->invalidate_caches("users", "pc");
+    }
+
+    function test_nonpc_limits_restricted_to_own_papers() {
+        // Non-PC users cannot search all papers: `Limit_SearchTerm::sqlexpr()`
+        // ANDs an author-or-reviewer restriction into every base limit
+        // (`need_ar === 3`, a left join on `MyReviews`). A bug in that join
+        // silently emptied every base-limit search for authors.
+        $van = $this->conf->checked_user_by_email("van@ee.lbl.gov");
+        xassert(!$van->isPC);
+        xassert($van->is_author());
+        foreach (["a", "ar", "s", "active", "all", "viewable"] as $t) {
+            xassert_search($van, ["t" => $t, "q" => ""], "1");
+        }
+    }
+
+    function test_reviewable_limit_requires_administrator() {
+        // `reviewable` is the one limit relative to `reviewer_user()`; naming
+        // another user requires administrator rights over each paper.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $lixia = $conf->checked_user_by_email("lixia@cs.ucla.edu");
+        $mgbaker = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        xassert($chair->is_manager());
+        xassert(!$lixia->is_manager());
+        xassert($lixia->can_view_pc());
+
+        // one's own reviewable set needs no administrator rights
+        xassert_eqq(count((new PaperSearch($lixia, ["q" => "", "t" => "reviewable"]))->paper_ids()), 30);
+
+        // an administrator sees another user's reviewable set, and it differs
+        // from their own
+        $chair_mg = (new PaperSearch($chair, ["q" => "", "t" => "reviewable", "reviewer" => $mgbaker->email]))->paper_ids();
+        xassert_eqq(count($chair_mg), 28);
+        xassert_neqq($chair_mg, (new PaperSearch($chair, ["q" => "", "t" => "reviewable"]))->paper_ids());
+
+        // a non-administrator gets nothing, though `reviewer` is accepted
+        $srch = new PaperSearch($lixia, ["q" => "", "t" => "reviewable", "reviewer" => $mgbaker->email]);
+        xassert_eqq($srch->reviewer_user()->contactId, $mgbaker->contactId);
+        xassert_eqq($srch->paper_ids(), []);
+    }
+
+    function test_limit_evaluators_agree() {
+        // `Limit_SearchTerm` is evaluated two ways: `sqlexpr()` + `test()`,
+        // which `PaperSearch::paper_ids()` uses, and `simple_search()`, which
+        // hands query options straight to PaperList and skips both. Whenever
+        // `simple_search()` claims a limit, the two must agree.
+        $conf = $this->conf;
+        $emails = ["chair@_.com", "mgbaker@cs.stanford.edu", "lixia@cs.ucla.edu",
+                   "van@ee.lbl.gov"];
+        $limits = ["a", "ar", "r", "rout", "req", "lead", "s", "active", "all",
+                   "viewable", "reviewable", "accepted", "undecided", "unsub",
+                   "admin", "alladmin", "actadmin"];
+        foreach ($emails as $email) {
+            $u = $conf->checked_user_by_email($email);
+            foreach ($limits as $t) {
+                $q = ["q" => "", "t" => $t];
+                $via_sql = (new PaperSearch($u, $q))->paper_ids();
+                $via_list = array_keys(search_json($u, $q, "id", true));
+                sort($via_sql);
+                sort($via_list);
+                xassert_eqq("{$email} t={$t}: " . join(" ", $via_list),
+                            "{$email} t={$t}: " . join(" ", $via_sql));
+            }
+        }
+    }
+
+    /** @param Contact ...$users
+     * @return int */
+    private function unreviewed_submitted_pid(...$users) {
+        foreach ((new PaperSearch($this->conf->root_user(), ["q" => "", "t" => "s"]))->paper_ids() as $pid) {
+            $prow = $this->conf->checked_paper_by_id($pid);
+            $ok = true;
+            foreach ($users as $user) {
+                $ok = $ok && !$prow->review_by_user($user) && !$prow->has_conflict($user);
+            }
+            if ($ok) {
+                return $pid;
+            }
+        }
+        throw new ErrorException("no unreviewed submitted paper");
+    }
+
+    /** A limit has three evaluators that must agree: `sqlexpr()` + `test()`
+     * (PaperSearch), `simple_search()` (PaperList, which skips both `test()`
+     * and `can_view_paper()`), and, since `is_sqlexpr_precise()` lets
+     * `Not_SearchTerm` negate it in SQL, `-in:LIMIT`.
+     * @param Contact $u
+     * @param string $t
+     * @return list<int> */
+    private function xassert_limit_agrees($u, $t) {
+        $ids = (new PaperSearch($u, ["q" => "", "t" => $t]))->paper_ids();
+        $lids = array_keys(search_json($u, ["q" => "", "t" => $t], "id", true));
+        sort($ids);
+        sort($lids);
+        xassert_eqq("{$u->email} t={$t}: " . join(" ", $lids),
+                    "{$u->email} t={$t}: " . join(" ", $ids));
+        $all = (new PaperSearch($u, ["q" => "", "t" => "all"]))->paper_ids();
+        $in = (new PaperSearch($u, ["q" => "in:{$t}", "t" => "all"]))->paper_ids();
+        $out = (new PaperSearch($u, ["q" => "-in:{$t}", "t" => "all"]))->paper_ids();
+        xassert_eqq("{$u->email} in:{$t} + -in:{$t}: " . (count($in) + count($out)),
+                    "{$u->email} in:{$t} + -in:{$t}: " . count($all));
+        return $ids;
+    }
+
+    function test_ghost_review_status() {
+        // Ghostliness must mean the same to `ReviewInfo::is_ghost()`,
+        // `Contact::act_reviewer_sql()`, `PaperContactInfo::mark_review_type()`,
+        // and the review icon: once reviewing closes only *empty* reviews
+        // are ghosts, and a ghost confers no review status whatever its
+        // reviewNeedsSubmit.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $ext = $conf->checked_user_by_email("van@ee.lbl.gov");
+        $pc = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        $old_rev_open = $conf->setting("rev_open");
+        $conf->save_refresh_setting("rev_open", 1);
+
+        // a drafted, unsubmitted review
+        $pid = $this->unreviewed_submitted_pid($ext);
+        xassert_assign($chair, "paper,action,email\n{$pid},external,{$ext->email}\n");
+        $prow = $conf->checked_paper_by_id($pid);
+        $rv = new ReviewValues($ext);
+        xassert($rv->parse_json(["ovemer" => 2, "papsum" => "Draft", "ready" => false]));
+        xassert($rv->check_and_save($prow, $prow->review_by_user($ext)));
+
+        // a ghost review whose reviewNeedsSubmit is 0, as a secondary's is
+        // once its delegate has submitted
+        $gpid = $this->unreviewed_submitted_pid($pc);
+        xassert_assign($chair, "paper,action,email,ghost\n{$gpid},secondary,{$pc->email},yes\n");
+        $conf->qe("update PaperReview set reviewNeedsSubmit=0 where paperId=? and contactId=?",
+            $gpid, $pc->contactId);
+
+        // a live, empty review
+        $epid = $this->unreviewed_submitted_pid($pc);
+        xassert_assign($chair, "paper,action,email\n{$epid},primary,{$pc->email}\n");
+        $rrow = $conf->checked_paper_by_id($epid)->review_by_user($pc);
+        xassert(!$rrow->is_ghost());
+        xassert_not_str_contains($rrow->icon_classes(), "rtghost");
+
+        $conf->save_refresh_setting("rev_open", null);
+        $conf->invalidate_caches("users");
+        $ext = $conf->checked_user_by_email("van@ee.lbl.gov");
+        $pc = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+
+        // the drafted review keeps its author's review rights
+        $prow = $conf->checked_paper_by_id($pid);
+        xassert(!$prow->review_by_user($ext)->is_ghost());
+        xassert($prow->has_active_reviewer($ext));
+        xassert($ext->can_view_paper($prow));
+        xassert_in_eqq($pid, $this->xassert_limit_agrees($ext, "r"));
+        xassert_not_str_contains($prow->review_by_user($ext)->icon_classes(), "rtghost");
+
+        // the ghost review confers nothing
+        $gprow = $conf->checked_paper_by_id($gpid);
+        xassert($gprow->review_by_user($pc)->is_ghost());
+        xassert(!$gprow->has_active_reviewer($pc));
+        xassert_not_in_eqq($gpid, $this->xassert_limit_agrees($pc, "r"));
+        xassert_str_contains($gprow->review_by_user($pc)->icon_classes(), "rtghost");
+
+        // the empty review is now a ghost, and looks like one
+        $eprow = $conf->checked_paper_by_id($epid);
+        xassert($eprow->review_by_user($pc)->is_ghost());
+        xassert(!$eprow->has_active_reviewer($pc));
+        xassert_not_in_eqq($epid, $this->xassert_limit_agrees($pc, "r"));
+        xassert_str_contains($eprow->review_by_user($pc)->icon_classes(), "rtghost");
+
+        $conf->qe("delete from PaperReview where (paperId=? and contactId=?) or (paperId?a and contactId=?)",
+            $pid, $ext->contactId, [$gpid, $epid], $pc->contactId);
+        $conf->qe("delete from PaperConflict where conflictType<=? and ((paperId=? and contactId=?) or (paperId?a and contactId=?))",
+            CONFLICT_MAXUNCONFLICTED, $pid, $ext->contactId, [$gpid, $epid], $pc->contactId);
+        $conf->save_refresh_setting("rev_open", $old_rev_open);
+        $conf->invalidate_caches("users");
+    }
+
+    function test_limit_edge_cases_agree() {
+        // Each state below made a limit's evaluators disagree: `ar` is the
+        // union of `a` and `r`, so like them it keeps withdrawn submissions;
+        // an author-view capability is an author credential whatever its
+        // holder's role; and members of `req` and `lead` may be unable to view
+        // the submission, which the PaperList path never checks.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $pc = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        $nonpc = $conf->checked_user_by_email("van@ee.lbl.gov");
+        $old_rev_open = $conf->setting("rev_open");
+        $conf->save_refresh_setting("rev_open", 1);
+
+        // `ar`: a withdrawn submission that `pc` reviews but does not author
+        $wpid = null;
+        foreach ((new PaperSearch($pc, ["q" => "", "t" => "r"]))->paper_ids() as $x) {
+            $prow = $conf->checked_paper_by_id($x);
+            if ($prow->timeWithdrawn <= 0 && !$prow->has_author($pc)) {
+                $wpid = $x;
+                break;
+            }
+        }
+        xassert_neqq($wpid, null);
+        xassert_assign($chair, "paper,action\n{$wpid},withdraw\n");
+        xassert_in_eqq($wpid, $this->xassert_limit_agrees($pc, "ar"));
+        $union = array_unique(array_merge(
+            (new PaperSearch($pc, ["q" => "in:a", "t" => "all"]))->paper_ids(),
+            (new PaperSearch($pc, ["q" => "in:r", "t" => "all"]))->paper_ids()));
+        sort($union);
+        xassert_eqq((new PaperSearch($pc, ["q" => "in:ar", "t" => "all"]))->paper_ids(),
+                    $union);
+        xassert_assign($chair, "paper,action\n{$wpid},revive\n");
+
+        // `a`: an author-view capability, held by a PC member and by a non-PC user
+        foreach ([$pc->email, $nonpc->email] as $email) {
+            $u = $conf->fresh_user_by_email($email); // private, so no capability leaks
+            $pid = $this->unreviewed_submitted_pid($u);
+            $u->set_capability("@av{$pid}", true);
+            xassert($u->is_author());
+            xassert_in_eqq($pid, $this->xassert_limit_agrees($u, "a"));
+        }
+
+        // `req`: a requester of a review on a submission that was withdrawn.
+        // (A requester keeps `requestedBy` after being unassigned.)
+        $pid = $this->unreviewed_submitted_pid($pc, $nonpc);
+        xassert_assign($chair, "paper,action,email\n{$pid},external,{$nonpc->email}\n");
+        $conf->qe("update PaperReview set requestedBy=? where paperId=? and contactId=?",
+            $pc->contactId, $pid, $nonpc->contactId);
+        xassert_assign($chair, "paper,action\n{$pid},withdraw\n");
+        $conf->invalidate_caches("users");
+        xassert(!$pc->can_view_paper($conf->checked_paper_by_id($pid)));
+        xassert_not_in_eqq($pid, $this->xassert_limit_agrees($pc, "req"));
+        // the request is moot, so it leaves `req` even for an administrator
+        xassert_not_in_eqq($pid, $this->xassert_limit_agrees($chair, "req"));
+
+        // `lead`: a lead who is no longer a PC member
+        xassert_assign($chair, "paper,action\n{$pid},revive\n");
+        $conf->qe("delete from PaperReview where paperId=? and contactId=?", $pid, $nonpc->contactId);
+        $conf->qe("update Paper set leadContactId=? where paperId=?", $nonpc->contactId, $pid);
+        $conf->invalidate_caches("users");
+        $nonpc = $conf->checked_user_by_email("van@ee.lbl.gov");
+        xassert(!$nonpc->can_view_paper($conf->checked_paper_by_id($pid)));
+        xassert_not_in_eqq($pid, $this->xassert_limit_agrees($nonpc, "lead"));
+
+        $conf->qe("update Paper set leadContactId=0 where paperId=?", $pid);
+        $conf->qe("delete from PaperConflict where paperId=? and contactId=? and conflictType<=?",
+            $pid, $nonpc->contactId, CONFLICT_MAXUNCONFLICTED);
+        $conf->save_refresh_setting("rev_open", $old_rev_open);
+        $conf->invalidate_caches("users");
+    }
+
+    function test_pref_search_hides_individual_preferences() {
+        // `can_view_preference($prow, false)` reserves an individual's review
+        // preferences to administrators; only the PC-wide aggregate is open to
+        // ordinary PC members (see h_keywords.php: "Administrators can search
+        // preferences by name; PC members can only search preferences for the
+        // PC as a whole"). `Revpref_SearchTerm::parse()` relaxes the gate to
+        // the aggregate form whenever `matching_special_uids()` resolves the
+        // word without error — but `chair`, `admin`, and a user tag can each
+        // resolve to a *single named person*, so that relaxation must not be
+        // reachable for them.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $lixia = $conf->checked_user_by_email("lixia@cs.ucla.edu");
+        xassert(!$lixia->is_manager());
+        $p1 = $conf->checked_paper_by_id(1);
+        xassert(!$lixia->can_view_preference($p1, false));
+
+        $conf->qe("delete from PaperReviewPreference where contactId=?", $chair->contactId);
+        $conf->qe("insert into PaperReviewPreference (paperId,contactId,preference) values (2,?,5), (4,?,-3)",
+            $chair->contactId, $chair->contactId);
+        // a *user* tag borne by exactly one PC member resolves the same way
+        $old_tags = $chair->contactTags;
+        $conf->qe("update ContactInfo set contactTags=? where contactId=?",
+            " chairtag#0", $chair->contactId);
+        $conf->invalidate_caches("pc");
+        xassert($conf->pc_tag_exists("chairtag"));
+        xassert($lixia->can_view_user_tag("chairtag"));
+
+        // the sanctioned spelling is denied...
+        xassert_search_all($lixia, "pref:{$chair->email}>0", "");
+        xassert_search_all($lixia, "pref:\"{$chair->email}\">0", "");
+        // ...so these must be denied too: each names the same one person
+        xassert_search_all($lixia, "pref:chair>0", "");
+        xassert_search_all($lixia, "pref:chair<0", "");
+        xassert_search_all($lixia, "pref:admin>0", "");
+        xassert_search_all($lixia, "pref:#chairtag>0", "");
+
+        // an administrator may still search preferences by name
+        xassert_search_all($chair, "pref:{$chair->email}>0", "2");
+        xassert_search_all($chair, "pref:chair<0", "4");
+        // and the PC-wide aggregate remains open to ordinary PC members.
+        // Other testers leave preferences behind, so check membership rather
+        // than pinning the whole result.
+        $agg = (new PaperSearch($lixia, ["q" => "pref:pc>0", "t" => "all"]))->paper_ids();
+        xassert(in_array(2, $agg, true));
+
+        $conf->qe("delete from PaperReviewPreference where contactId=?", $chair->contactId);
+        $conf->qe("update ContactInfo set contactTags=? where contactId=?",
+            $old_tags, $chair->contactId);
+        $conf->invalidate_caches("pc");
+    }
+
+    /** Give the conference a desk-reject decision and hand it to one paper.
+     * @param string $name
+     * @return int the decision id */
+    private function add_desk_reject($name) {
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $sv = SettingValues::make_request($chair, [
+            "has_decision" => 1,
+            "decision/1/name" => $name,
+            "decision/1/id" => "new",
+            "decision/1/category" => "desk_reject"
+        ]);
+        xassert($sv->execute());
+        foreach ($this->conf->decision_set() as $dec) {
+            if ($dec->name === $name) {
+                xassert_eqq($dec->sign, -2);
+                return $dec->id;
+            }
+        }
+        xassert(false);
+        return 0;
+    }
+
+    /** @param string $name */
+    private function remove_decision($name) {
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        foreach ($this->conf->decision_set() as $dec) {
+            if ($dec->name === $name) {
+                $sv = SettingValues::make_request($chair, [
+                    "has_decision" => 1,
+                    "decision/1/id" => (string) $dec->id,
+                    "decision/1/delete" => "1"
+                ]);
+                xassert($sv->execute());
+                return;
+            }
+        }
+    }
+
+    function test_limit_sa_includes_desk_rejected() {
+        // `s` means "submitted, still under consideration": it drops papers
+        // whose decision is a desk rejection. `sa` is the same set without that
+        // exclusion, so it is a superset of `s` and differs from it by exactly
+        // the desk-rejected papers.
+        $conf = $this->conf;
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $this->add_desk_reject("Desk rejected");
+
+        $s_before = (new PaperSearch($this->u_root, ["q" => "", "t" => "s"]))->paper_ids();
+        $sa_before = (new PaperSearch($this->u_root, ["q" => "", "t" => "sa"]))->paper_ids();
+        xassert_eqq($sa_before, $s_before);
+
+        xassert_assign($chair, "paper,action,decision\n2,decision,Desk rejected\n");
+        xassert_eqq($conf->checked_paper_by_id(2)->outcome_sign, -2);
+
+        $s_after = (new PaperSearch($this->u_root, ["q" => "", "t" => "s"]))->paper_ids();
+        $sa_after = (new PaperSearch($this->u_root, ["q" => "", "t" => "sa"]))->paper_ids();
+        xassert(!in_array(2, $s_after, true));
+        xassert_in_eqq(2, $sa_after);
+        // Nothing else moved: the two limits differ by that paper alone.
+        xassert_eqq($sa_after, $sa_before);
+        xassert_eqq(array_values(array_diff($sa_after, $s_after)), [2]);
+
+        // A desk-rejected paper is still reachable by number only under `sa`
+        xassert_search($this->u_root, ["q" => "2", "t" => "sa"], "2");
+        xassert_search($this->u_root, ["q" => "2", "t" => "s"], "");
+
+        xassert_assign($chair, "paper,action,decision\n2,cleardecision,Desk rejected\n");
+        $this->remove_decision("Desk rejected");
+    }
+
+    function test_decision_search_finds_visible_desk_rejects() {
+        // Desk-reject decisions are visible to authors and PC even when other
+        // decisions are not
+        $conf = $this->conf;
+        $conf->set_opt("sensitiveSearchRefreshWindow", 0);
+        $chair = $conf->checked_user_by_email("chair@_.com");
+        $this->add_desk_reject("Desk rejected");
+        xassert_assign($chair, "paper,action,decision\n6,decision,Desk rejected\n7,decision,accept\n");
+
+        $randy = $conf->checked_user_by_email("randy@cs.berkeley.edu");
+        $mgbaker = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        xassert($randy->can_view_some_decision());
+        xassert(!$randy->can_view_some_standard_decision());
+        xassert($mgbaker->can_view_some_decision());
+        xassert(!$mgbaker->can_view_some_standard_decision());
+        xassert($randy->can_view_decision($conf->checked_paper_by_id(6, $randy)));
+        xassert($mgbaker->can_view_decision($conf->checked_paper_by_id(6, $mgbaker)));
+        xassert(!$mgbaker->can_view_decision($conf->checked_paper_by_id(7, $mgbaker)));
+
+        xassert_search($randy, ["q" => "dec:desk", "t" => "a"], "6");
+        xassert_search($randy, ["q" => "dec:any", "t" => "a"], "6");
+        xassert_search($randy, ["q" => "has:decision", "t" => "a"], "6");
+        xassert_search($mgbaker, ["q" => "dec:desk", "t" => "sa"], "6");
+        xassert_search($mgbaker, ["q" => "dec:any", "t" => "sa"], "6");
+        xassert_search($mgbaker, ["q" => "dec:yes", "t" => "sa"], "");
+
+        // formulas see visible desk rejects
+        $f = Formula::make($randy, "dec");
+        xassert($f->ok());
+        $f->prepare();
+        xassert_eqq($f->eval($conf->checked_paper_by_id(6, $randy), null), $conf->checked_paper_by_id(6)->outcome);
+        $f = Formula::make($mgbaker, "dec")->prepare();
+        xassert_eqq($f->eval($conf->checked_paper_by_id(7, $mgbaker), null), 0);
+
+        // features about accepted papers remain hidden
+        xassert(!in_array("accepted", PaperSearch::viewable_limits($mgbaker), true));
+        xassert_search($mgbaker, ["q" => "phase:final", "t" => "sa"], "");
+
+        xassert_assign($chair, "paper,action,decision\n6,cleardecision,Desk rejected\n7,cleardecision,accept\n");
+        $this->remove_decision("Desk rejected");
+        $conf->set_opt("sensitiveSearchRefreshWindow", null);
+    }
+
+    function test_search_api_reports_search_messages() {
+        $u = $this->conf->checked_user_by_email("puneet@catarina.usc.edu");
+        xassert(!$u->isPC);
+        // with and without a rendered format
+        foreach ([[], ["format" => "json", "f" => "title"]] as $extra) {
+            $jr = Search_API::search($u, TestQreq::get(["q" => "formula:(foo bar)", "t" => "a"] + $extra));
+            xassert($jr->content["ok"]);
+            xassert_eqq($jr->content["ids"], []);
+            $ml = $jr->content["message_list"] ?? [];
+            xassert(count($ml) > 0);
+            xassert_str_contains($ml[0]->message, "Expected ‘)’");
+            xassert_eqq($ml[0]->context, "(foo bar)");
+        }
+        $jr = Search_API::search($u, TestQreq::get(["q" => "1-3", "t" => "a"]));
+        xassert($jr->content["ok"]);
+        xassert(!isset($jr->content["message_list"]));
+    }
+
+    function test_alternate_query_with_question_mark() {
+        // `re:me?` looks like a tag, so a search with no matches checks
+        // whether the tag exists
+        $srch = new PaperSearch($this->u_root, ["q" => "re:me?", "t" => "s"]);
+        xassert_eqq($srch->paper_ids(), []);
+        xassert_eqq($srch->alternate_query(), false);
+    }
+
+    /** Managers find their ghost reviews with `re:me`; `t=r` never
+     * includes ghost reviews. */
+    function test_re_me_ghost_reviews() {
+        $chair = $this->conf->checked_user_by_email("chair@_.com");
+        $pc = $this->conf->checked_user_by_email("estrin@usc.edu");
+        $pid = null;
+        foreach ($this->conf->paper_set(["where" => "timeSubmitted>0"], $this->u_root) as $prow) {
+            if (!$prow->review_by_user($chair) && !$prow->has_conflict($chair)
+                && !$prow->review_by_user($pc) && !$prow->has_conflict($pc)) {
+                $pid = $prow->paperId;
+                break;
+            }
+        }
+        xassert($pid !== null);
+        xassert_assign($this->u_root, "paper,action,email,ghost\n{$pid},primary,chair@_.com,yes\n{$pid},primary,estrin@usc.edu,yes\n");
+        $prow = $this->conf->checked_paper_by_id($pid);
+        xassert($prow->review_by_user($chair)->is_ghost());
+        xassert($prow->review_by_user($pc)->is_ghost());
+
+        $chair = $this->conf->fresh_user_by_email("chair@_.com");
+        $pc = $this->conf->fresh_user_by_email("estrin@usc.edu");
+        xassert($chair->is_manager());
+        xassert(!$pc->is_manager());
+        $re_me = function ($user, $t = null) {
+            $args = ["q" => "re:me"] + ($t ? ["t" => $t] : []);
+            return (new PaperSearch($user, $args))->paper_ids();
+        };
+        xassert_in_eqq($pid, $re_me($chair));
+        xassert_not_in_eqq($pid, $re_me($chair, "r"));
+        xassert_not_in_eqq($pid, (new PaperSearch($chair, ["q" => "", "t" => "r"]))->paper_ids());
+        xassert_not_in_eqq($pid, $re_me($pc));
+        xassert_not_in_eqq($pid, $re_me($pc, "r"));
+
+        xassert_assign($this->u_root, "paper,action,email\n{$pid},clearreview,chair@_.com\n{$pid},clearreview,estrin@usc.edu\n");
+    }
+
+    /** The home page counts submitted reviews on withdrawn papers. */
+    function test_home_counts_withdrawn_reviews() {
+        $conf = $this->conf;
+        $old_rev_open = $conf->setting("rev_open");
+        $conf->save_refresh_setting("rev_open", 1);
+        $summary = function ($email) use ($conf) {
+            $user = $conf->fresh_user_by_email($email);
+            $rc = RenderCapture::make(TestQreq::get_page("index")->set_user($user));
+            if (preg_match('/You have submitted (?:(\d+) of )?<a[^>]*>(\d+) reviews?</', $rc->content, $m)) {
+                return ($m[1] === "" ? $m[2] : $m[1]) . "/" . $m[2];
+            }
+            return null;
+        };
+
+        // a PC member with an outstanding review keeps it
+        $pc = $conf->checked_user_by_email("estrin@usc.edu");
+        $pid1 = $this->unreviewed_submitted_pid($pc);
+        xassert_assign($this->u_root, "paper,action,email\n{$pid1},primary,{$pc->email}\n");
+        save_review($pid1, $pc, ["s01" => 4, "s02" => 2, "ready" => true]);
+        $pid2 = $this->unreviewed_submitted_pid($pc);
+        xassert_assign($this->u_root, "paper,action,email\n{$pid2},primary,{$pc->email}\n");
+        $before = $summary($pc->email);
+        xassert_neqq($before, null);
+        xassert_assign($this->u_root, "paper,action\n{$pid1},withdraw\n");
+        xassert_eqq($summary($pc->email), $before);
+        xassert_assign($this->u_root, "paper,action\n{$pid1},revive\n");
+        $conf->qe("delete from PaperReview where paperId?a and contactId=?", [$pid1, $pid2], $pc->contactId);
+
+        // a PC member whose only review is on a withdrawn paper
+        $email = $conf->fetch_value("select email from ContactInfo where (roles&" . Contact::ROLE_PC . ")!=0 and not exists (select * from PaperReview where contactId=ContactInfo.contactId) limit 1");
+        xassert_neqq($email, null);
+        $u = $conf->checked_user_by_email($email);
+        $pid = $this->unreviewed_submitted_pid($u);
+        xassert_assign($this->u_root, "paper,action,email\n{$pid},primary,{$email}\n");
+        save_review($pid, $u, ["s01" => 4, "s02" => 2, "ready" => true]);
+        xassert_eqq($summary($email), "1/1");
+        xassert_assign($this->u_root, "paper,action\n{$pid},withdraw\n");
+        xassert_eqq($summary($email), "1/1");
+        xassert_assign($this->u_root, "paper,action\n{$pid},revive\n");
+        $conf->qe("delete from PaperReview where paperId=? and contactId=?", $pid, $u->contactId);
+
+        $conf->save_refresh_setting("rev_open", $old_rev_open);
+        $conf->invalidate_caches("users");
+    }
 }

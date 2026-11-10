@@ -10,14 +10,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: huitema@bellcore.com
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -36,14 +37,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: christophe.diot@sophia.inria.fr
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -62,14 +64,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: estrin@usc.edu
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -90,14 +93,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: varghese@ccrc.wustl.edu
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -116,14 +120,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: jj@cse.ucsc.edu
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -142,14 +147,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: jon@cs.ucl.ac.uk
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -168,14 +174,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: lixia@cs.ucla.edu
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -194,14 +201,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: marina@poema.ru
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -220,14 +228,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: mjh@isi.edu
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -246,14 +255,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: mgbaker@cs.stanford.edu
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -272,14 +282,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: pfrancis@ntt.jp
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -298,14 +309,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: peter.danzig@usc.edu
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -324,14 +336,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: pdruschel@cs.rice.edu
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -350,14 +363,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: rguerin@ibm.com
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -376,14 +390,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: floyd@ee.lbl.gov
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -402,14 +417,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: shenker@parc.xerox.com
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -430,14 +446,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: ojuelegba@gmail.com
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -456,14 +473,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: vera@bombay.com
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -484,14 +502,15 @@ I (Testconf I) submission site.
 * Site: http://hotcrp.lcdf.org/test
 * Email: d.francis2@place.edu
 
-You will need a password to sign in. Use this link to set one up:
+You’ll need a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: Manage multiple accounts with different email addresses
-using Account settings > Manage email.
+Prefer a different email address? After signing in, transfer PC rights
+using Account settings → Manage email.
 
 Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
 concerns.
@@ -736,7 +755,32 @@ concerns.
 
 - Testconf I Submissions
 http://hotcrp.lcdf.org/test
-******** test01-comment6
+******** Permission_Tester::test_comment_notification-3
+To: Jon Crowcroft <jon@cs.ucl.ac.uk>, Peter Druschel <pdruschel@cs.rice.edu>
+Subject: [Testconf I] Comment for #2 "Small Forwarding Tables for Fast
+ Routing..."
+
+Comment @{{}} by Mary Baker <mgbaker@cs.stanford.edu>
+---------------------------------------------------------------------------
+second test
+
+
+\***************************************************************************
+
+
+You’re following comments for Test Conference I (Testconf I) submission
+#2. For the most up-to-date comments, or to unsubscribe from email
+notification, see the submission site.
+
+* Title: Small Forwarding Tables for Fast Routing Lookups
+* Site: http://hotcrp.lcdf.org/test/paper/2
+
+Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
+concerns.
+
+- Testconf I Submissions
+http://hotcrp.lcdf.org/test
+******** Permission_Tester::test_comment_notification-4
 To: Jane Chair <chair@_.com>
 Subject: [Testconf I] Mentioned for #2 "Small Forwarding Tables for Fast
  Routing..."
@@ -752,6 +796,31 @@ third test, @Jane Chair
 You were mentioned in this comment for Test Conference I (Testconf I)
 submission #2. For the most up-to-date comments, see the submission
 site.
+
+* Title: Small Forwarding Tables for Fast Routing Lookups
+* Site: http://hotcrp.lcdf.org/test/paper/2
+
+Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
+concerns.
+
+- Testconf I Submissions
+http://hotcrp.lcdf.org/test
+******** Permission_Tester::test_comment_notification-4
+To: Jon Crowcroft <jon@cs.ucl.ac.uk>, Peter Druschel <pdruschel@cs.rice.edu>
+Subject: [Testconf I] Comment for #2 "Small Forwarding Tables for Fast
+ Routing..."
+
+Comment @{{}} by Mary Baker <mgbaker@cs.stanford.edu>
+---------------------------------------------------------------------------
+third test, @Jane Chair
+
+
+\***************************************************************************
+
+
+You’re following comments for Test Conference I (Testconf I) submission
+#2. For the most up-to-date comments, or to unsubscribe from email
+notification, see the submission site.
 
 * Title: Small Forwarding Tables for Fast Routing Lookups
 * Site: http://hotcrp.lcdf.org/test/paper/2
@@ -1140,7 +1209,7 @@ submission #17.
 
 * Title: Network Text Editor (NTE): A Scalable Shared Text Editor for
   the MBone
-* Site: http://hotcrp.lcdf.org/test/review/17?cap={{}}
+* Site: http://hotcrp.lcdf.org/test/review/17?cap=hcra{{}}
 
 Once you have viewed the submission and decided whether you are willing
 to review it, please accept or decline this review request at the
@@ -1151,10 +1220,11 @@ create a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: You can redirect future review requests to a chosen
-email address using Account settings > Manage email.
+Prefer a different account? After signing in, transfer this review or
+redirect future review requests using Account settings → Manage email.
 
 Thank you for your help -- we appreciate that reviewing is hard work.
 
@@ -1531,6 +1601,29 @@ concerns.
 - Testconf I Submissions
 http://hotcrp.lcdf.org/test
 ******** t_comments-response-combination
+To: Marcel Waldvogel <waldvogel@tik.ee.ethz.ch>
+Subject: [Testconf I] Draft response for #4 "Scalable High Speed IP Routing
+ Lookups"
+
+The draft authors' response for Test Conference I (Testconf I)
+submission #4 has been updated as shown below. This response has not yet
+been submitted to reviewers. For the most up-to-date version, or to turn
+off notification emails, see the submission site.
+
+* Title: Scalable High Speed IP Routing Lookups
+* Site: http://hotcrp.lcdf.org/test/paper/4
+
+Contact Eddie Kohler <ekohler@hotcrp.lcdf.org> with any questions or
+concerns.
+
+- Testconf I Submissions
+http://hotcrp.lcdf.org/test
+
+Response by Author [George Varghese <varghese@ccrc.wustl.edu>] (1 word)
+---------------------------------------------------------------------------
+Draft
+
+******** t_comments-response-combination
 To: Marcel Waldvogel <waldvogel@tik.ee.ethz.ch>, George Varghese <varghese@ccrc.wustl.edu>
 Subject: [Testconf I] Response for #4 "Scalable High Speed IP Routing Lookups"
 
@@ -1855,7 +1948,7 @@ submission #17.
 
 * Title: Network Text Editor (NTE): A Scalable Shared Text Editor for
   the MBone
-* Site: http://hotcrp.lcdf.org/test/review/17?cap={{}}
+* Site: http://hotcrp.lcdf.org/test/review/17?cap=hcra{{}}
 
 Once you have viewed the submission and decided whether you are willing
 to review it, please accept or decline this review request at the
@@ -1866,10 +1959,11 @@ create a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: You can redirect future review requests to a chosen
-email address using Account settings > Manage email.
+Prefer a different account? After signing in, transfer this review or
+redirect future review requests using Account settings → Manage email.
 
 Thank you for your help -- we appreciate that reviewing is hard work.
 
@@ -1890,7 +1984,7 @@ submission #17.
 
 * Title: Network Text Editor (NTE): A Scalable Shared Text Editor for
   the MBone
-* Site: http://hotcrp.lcdf.org/test/review/17?cap={{}}
+* Site: http://hotcrp.lcdf.org/test/review/17?cap=hcra{{}}
 
 Once you have viewed the submission and decided whether you are willing
 to review it, please accept or decline this review request at the
@@ -1901,10 +1995,11 @@ create a password to sign in. Use this link to set one up:
 
 http://hotcrp.lcdf.org/test/resetpassword/{{}}
 
-Should the link expire, obtain a new one using "Forgot my password".
+The link will expire after 3 days. Obtain a new one if needed via
+"Forgot my password" on the sign-in page.
 
-**NEW IN 2025**: You can redirect future review requests to a chosen
-email address using Account settings > Manage email.
+Prefer a different account? After signing in, transfer this review or
+redirect future review requests using Account settings → Manage email.
 
 Thank you for your help -- we appreciate that reviewing is hard work.
 

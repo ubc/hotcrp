@@ -22,13 +22,13 @@ class PaperPC_Autoassigner extends Autoassigner {
     }
 
     function option_schema() {
-        return make_array(
+        return [
             "score$",
             "allow_incomplete",
             ...Autoassigner::balance_method_schema(),
             ...Autoassigner::max_load_schema(),
             ...Autoassigner::costs_schema()
-        );
+        ];
     }
 
     function configure() {
@@ -60,16 +60,29 @@ class PaperPC_Autoassigner extends Autoassigner {
         $this->configure_costs();
     }
 
+    function token_scope($dry_run) {
+        // picks leads/shepherds among reviewers, reading review scores
+        return TokenScope::S_SUB_ADMIN | TokenScope::S_REV_READ;
+    }
+
     private function set_load() {
-        $q = "select {$this->ass_action}ContactId, count(paperId) from Paper where paperId?A group by {$this->ass_action}ContactId";
-        $result = $this->conf->qe($q, $this->paper_ids());
-        while (($row = $result->fetch_row())) {
-            $this->add_aauser_load((int) $row[0], (int) $row[1]);
-            if ($this->balance === self::BALANCE_ALL) {
-                $this->add_aauser_balance((int) $row[0], (int) $row[1]);
+        $k = "{$this->ass_action}ContactId";
+        $can_view = "can_view_{$this->ass_action}";
+        $opts = [
+            "where" => "not (Paper.paperId" . sql_in_int_list($this->paper_ids()) . ") and Paper.{$k}!=0",
+            "decision" => ["standard"],
+            $k => true
+        ];
+        foreach ($this->conf->paper_set($opts, $this->user) as $prow) {
+            if ($this->user->privChair
+                || $this->user->$can_view($prow)) {
+                $uid = $prow->{$k};
+                $this->add_aauser_load($uid, 1);
+                if ($this->balance === self::BALANCE_ALL) {
+                    $this->add_aauser_balance($uid, 1);
+                }
             }
         }
-        Dbl::free($result);
     }
 
     private function load_preferences() {

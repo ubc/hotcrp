@@ -7,39 +7,40 @@ class RevprefSearchMatcher extends ContactCountMatcher {
     public $preference_match;
     /** @var ?CountMatcher */
     public $expertise_match;
-    public $safe_contacts;
+    /** @var bool */
+    public $aggregate;
+    /** @var bool */
     public $is_any = false;
 
-    /** @param string $countexpr */
-    function __construct($countexpr, $contacts, $safe_contacts) {
+    /** @param string $countexpr
+     * @param bool $aggregate */
+    function __construct($countexpr, $contacts, $aggregate) {
         parent::__construct($countexpr, $contacts);
-        $this->safe_contacts = $safe_contacts;
+        $this->aggregate = $aggregate;
     }
     function preference_expertise_match() {
         if ($this->is_any) {
             return "(preference!=0 or expertise is not null)";
-        } else {
-            $where = [];
-            if ($this->preference_match) {
-                $where[] = "preference" . $this->preference_match->comparison();
-            }
-            if ($this->expertise_match) {
-                $where[] = "expertise" . $this->expertise_match->comparison();
-            }
-            return join(" and ", $where);
         }
+        $where = [];
+        if ($this->preference_match) {
+            $where[] = "preference" . $this->preference_match->comparison();
+        }
+        if ($this->expertise_match) {
+            $where[] = "expertise" . $this->expertise_match->comparison();
+        }
+        return join(" and ", $where);
     }
     /** @param PaperReviewPreference $pf */
     function test_preference($pf) {
         if ($this->is_any) {
             return $pf->exists();
-        } else {
-            return (!$this->preference_match
-                    || $this->preference_match->test($pf->preference))
-                && (!$this->expertise_match
-                    || ($pf->expertise !== null
-                        && $this->expertise_match->test($pf->expertise)));
         }
+        return (!$this->preference_match
+                || $this->preference_match->test($pf->preference))
+            && (!$this->expertise_match
+                || ($pf->expertise !== null
+                    && $this->expertise_match->test($pf->expertise)));
     }
 }
 
@@ -48,60 +49,72 @@ class Revpref_SearchTerm extends SearchTerm {
     private $user;
     /** @var RevprefSearchMatcher */
     private $rpsm;
+    /** @var 0|1|2|3|4|5 */
+    private $view_bound;
 
     function __construct(Contact $user, RevprefSearchMatcher $rpsm) {
         parent::__construct("revpref");
         $this->user = $user;
         $this->rpsm = $rpsm;
+        if ($rpsm->single_cid() === $user->contactXid) {
+            $this->view_bound = Contact::VIEWPREF_OWN;
+        } else if ($rpsm->aggregate) {
+            $this->view_bound = Contact::VIEWPREF_AGG;
+        } else {
+            $this->view_bound = Contact::VIEWPREF_ALL;
+        }
     }
     static function parse($word, SearchWord $sword, PaperSearch $srch) {
         if (!$srch->user->isPC) { // PC only
             return null;
         }
 
+        // set of users
+        $utype = -1;
         if (preg_match('/\A((?:(?!≠|≤|≥)[^:=!<>])+)(.*)\z/s', $word, $m)
             && !ctype_digit($m[1])) {
-            $contacts = $srch->matching_special_uids($m[1], $sword->quoted, true);
-            if ($contacts !== null) {
-                $safe_contacts = 1;
-            } else {
-                $safe_contacts = -1;
-                $contacts = $srch->matching_uids($m[1], $sword->quoted, true);
+            $usword = SearchWord::make_maybe_quoted($m[1]);
+            $usrch = $srch->user_search(ContactSearch::F_USER | ContactSearch::F_PC, $usword);
+            if ($usrch->is_roles()
+                && in_array(strtolower($usrch->text), ["pc", "all", "any", "*"], true)) {
+                // searching safe aggregate group of users
+                $utype = 1;
             }
             $word = str_starts_with($m[2], ":") ? substr($m[2], 1) : $m[2];
-            if ($word === "")
+            if ($word === "") {
                 $word = "any";
+            }
+            $contacts = $usrch->user_ids();
         } else if ($srch->user->can_view_pc()) {
-            $safe_contacts = 0;
+            $utype = 0;
             $contacts = array_keys($srch->conf->pc_members());
         } else {
-            $safe_contacts = 1;
             $contacts = [$srch->user->contactXid];
         }
 
-        $count = "";
+        // how many users must match?
+        $ucount = "";
         if (preg_match('/\A:?\s*((?:[=!<>]=?|≠|≤|≥|)\s*\d+|any|none)\s*((?:[:=!<>]|≠|≤|≥).*)\z/si', $word, $m)) {
             if (strcasecmp($m[1], "any") == 0) {
-                $count = ">0";
+                $ucount = ">0";
             } else if (strcasecmp($m[1], "none") == 0) {
-                $count = "=0";
+                $ucount = "=0";
             } else if (ctype_digit($m[1])) {
-                $count = (int) $m[1] ? ">=$m[1]" : "=0";
+                $ucount = (int) $m[1] ? ">={$m[1]}" : "=0";
             } else {
-                $count = $m[1];
+                $ucount = $m[1];
             }
             $word = str_starts_with($m[2], ":") ? substr($m[2], 1) : $m[2];
         }
-
-        if ($count === "") {
-            if ($safe_contacts === 0) {
+        if ($ucount === "") {
+            if ($utype === 0) {
                 $contacts = [$srch->user->contactXid];
-                $safe_contacts = 1;
             }
-            $count = ">0";
+            $ucount = ">0";
         }
 
-        $value = new RevprefSearchMatcher($count, $contacts, $safe_contacts >= 0);
+        // preference matching
+        $value = new RevprefSearchMatcher($ucount, $contacts, $utype >= 0);
         if (strcasecmp($word, "any") == 0 || strcasecmp($word, "none") == 0) {
             $value->is_any = true;
         } else if (preg_match('/\A\s*([=!<>]=?|≠|≤|≥|)\s*(-?\d*)\s*([xyz]?)\z/is', $word, $m)
@@ -113,6 +126,7 @@ class Revpref_SearchTerm extends SearchTerm {
                 $value->expertise_match = new CountMatcher(($m[2] === "" ? $m[1] : "") . (121 - ord(strtolower($m[3]))));
             }
         } else {
+            $srch->lwarning($sword, "<0>Invalid preference search");
             return new False_SearchTerm;
         }
 
@@ -129,19 +143,18 @@ class Revpref_SearchTerm extends SearchTerm {
                 && $this->rpsm->preference_match->test(0)
                 && !$this->rpsm->expertise_match)) {
             return "true";
-        } else {
-            $where = ["paperId=Paper.paperId", $this->rpsm->contact_match_sql("contactId")];
-            if (($match = $this->rpsm->preference_expertise_match())) {
-                $where[] = $match;
-            }
-            return "coalesce((select count(*) from PaperReviewPreference where " . join(" and ", $where) . "),0)" . $this->rpsm->comparison();
         }
+        $where = ["paperId=Paper.paperId", $this->rpsm->contact_match_sql("contactId")];
+        if (($match = $this->rpsm->preference_expertise_match())) {
+            $where[] = $match;
+        }
+        return "coalesce((select count(*) from PaperReviewPreference where " . join(" and ", $where) . "),0)" . $this->rpsm->conservative_nonnegative_comparison();
     }
     function test(PaperInfo $row, $xinfo) {
-        $can_view = $this->user->can_view_preference($row, $this->rpsm->safe_contacts);
+        $vps = $this->user->view_preference_state($row);
         $n = 0;
         foreach ($this->rpsm->contact_set() as $cid) {
-            if (($cid == $this->user->contactXid || $can_view)
+            if ($vps >= ($cid === $this->user->contactXid ? Contact::VIEWPREF_OWN : $this->view_bound)
                 && $this->rpsm->test_preference($row->preference($cid)))
                 ++$n;
         }

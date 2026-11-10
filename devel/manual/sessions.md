@@ -20,8 +20,8 @@ encoding](https://www.php.net/manual/en/function.session-encode.php).
 
 * `deletedat` (integer): Deletion state
 
-    Set when a session has been deleted (e.g., because the user has signed
-    out, or because the session ID was regenerated).
+    Set when the session ID has been regenerated (e.g., at sign-in). Requests
+    presenting the old ID are served from the old session for 30 seconds.
 
 ### Account information
 
@@ -66,13 +66,32 @@ encoding](https://www.php.net/manual/en/function.session-encode.php).
     * `e` (optional string): Email address of the relevant account. At most
       one of `u` and `e` will be present.
     * `t` (optional integer, default 0): Type of security check. 0 is for
-      HotCRP passwords, 2 for TOTP MFA requests.
+      HotCRP passwords, 1 for OAuth providers, 2 for TOTP MFA requests.
+    * `s` (optional string): For OAuth events, the name of the provider.
     * `r` (optional integer, default 0): Reason for the security event. 0 is
       used for login attempts, 1 for security confirmations (e.g., preceding
-      attempts to change password).
+      attempts to change password), 2 for authorizations granted to OAuth
+      clients. Reason 2 is not an authentication and never satisfies one.
+    * `ci` (optional string): For reason 2, the `client_id` that was
+      authorized.
+    * `ru` (optional string): For reason 2, the `redirect_uri` the
+      authorization was granted for.
+    * `sc` (optional string): For reason 2, the scope that was granted.
+    * `db` (optional string): For reason 2, the conference the authorization
+      was granted at. Absent for a contact-database client, whose grant is
+      cross-conference by design.
+    * `rt` (optional boolean, default false): For OAuth events, true means
+      the provider vouched for the account without saying when it
+      authenticated the user, so `a` is only when the provider vouched. Such
+      an event doesn't answer an OAuth client's request for a fresh sign-in.
     * `x` (optional boolean, default false): Error status. False means the
       check succeeded, true means it failed.
     * `a` (integer timestamp): Time of the event.
+
+    A reason-2 event replaces any earlier one for the same account and
+    `ci`, and at most 200 are kept in a session.
+
+* `themes` (list of nullable strings): Array of theme by user index
 
 ### Other
 
@@ -83,6 +102,8 @@ encoding](https://www.php.net/manual/en/function.session-encode.php).
 * `smsg` (list): Messages saved across API calls
 
 * `sg` (string): Recent settings group
+
+* `pg` (string): Recent profile group
 
 * `login_bounce`
 
@@ -102,14 +123,6 @@ another associative array.
 * `scoresort`
 
 * `uldisplay`
-
-* `ulscoresort`
-
-* `foldpaper`
-
-* `foldpscollab`
-
-* `foldhomeactivity`
 
 * `msgs`
 

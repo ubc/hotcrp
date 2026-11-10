@@ -201,6 +201,8 @@ class FmtContext {
     private function apply_fmtspec_array($fspec, $vformat, $value, $expansion) {
         if ($fspec === ":list") {
             return [$vformat, commajoin($value)];
+        } else if (str_starts_with($fspec, ":list ")) {
+            return [$vformat, commajoin($value, substr($fspec, 6))];
         } else if ($fspec === ":lcrestlist") {
             for ($i = 1; $i < count($value); ++$i) {
                 if (is_string($value[$i])) {
@@ -237,7 +239,7 @@ class FmtContext {
             return [$vformat, commajoin($a)];
         } else if (str_starts_with($fspec, ":plural ")) {
             $word = $this->expand(ltrim(substr($fspec, 8)), $expansion);
-            return [$vformat, plural_word(count($value), substr($fspec, 8))];
+            return [$vformat, plural_word(count($value), $word)];
         }
         return $this->complain("{$fspec} does not expect array");
     }
@@ -754,7 +756,7 @@ class Fmt {
         }
         $cdb = $this->conf ? $this->conf->contactdb() : null;
         if ($cdb && !empty($this->_sources)) {
-            Dbl::qe($cdb, "insert into MessageSources (context, `in`, file, line, count, timestamp) values ?v ?U on duplicate key update file=?U(file), line=?U(line), count=count+1, timestamp=?U(timestamp)", $this->_sources);
+            Dbl::qe($cdb, "insert into MessageSources (context, `in`, file, line, count, timestamp) values ?v ?U on duplicate key update file=?U(file), line=?U(line), count=MessageSources.count+1, timestamp=?U(timestamp)", $this->_sources);
             $this->_sources = [];
         }
         if ($cdb && ($limit >= 1 || ($limit > 0 && mt_rand() < $limit * (mt_getrandmax() + 1)))) {

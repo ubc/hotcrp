@@ -54,14 +54,10 @@ class WithdrawVotesAssigner implements AssignmentPreapplyFunction {
                 $wpids[] = $pid;
             }
         }
-        if (empty($wpids)) {
+        if (empty($wpids)
+            || ($tag_re = $state->conf->tags()->votish_tag_regex()) === null) {
             return;
         }
-        $ltre = [];
-        foreach ($state->conf->tags()->entries_having(TagInfo::TFM_VOTES) as $ti) {
-            $ltre[] = $ti->tag_regex();
-        }
-        $tag_re = '{\A(?:\d+~|)(?:' . join("|", $ltre) . ')\z}i';
         foreach ($wpids as $pid) {
             foreach ($state->query(new Tag_Assignable($pid, null)) as $x) {
                 if (preg_match($tag_re, $x->ltag)) {
@@ -79,8 +75,15 @@ class Status_AssignmentParser extends UserlessAssignmentParser {
         $this->xtype = $aj->type;
     }
     function allow_paper(PaperInfo $prow, AssignmentState $state) {
-        return $state->user->can_manage($prow)
-            || $prow->has_author($state->user);
+        if ($state->user->can_manage($prow)) {
+            return true;
+        } else if (!$prow->has_author($state->user)) {
+            return false;
+        } else if (($fr = $state->user->perm_allow_edit_paper($prow))) {
+            $state->paper_error($fr);
+            return false;
+        }
+        return true;
     }
     static function load_status_state(AssignmentState $state) {
         if ($state->mark_type("status", ["pid"], "Status_Assigner::make")) {
@@ -253,8 +256,16 @@ class Status_Assigner extends Assigner {
                 $aset->conf->update_paperacc_setting(min($vals));
             }, 0);
         }
-        if ($withdrawn > 0 && $old_withdrawn <= 0 && ($this->item["_notify"] ?? true)) {
-            $aset->register_cleanup_function("withdraw {$this->pid}", [$this, "notify_for_withdraw"]);
+        if ($withdrawn > 0 && $old_withdrawn <= 0) {
+            if ($this->item["_notify"] ?? true) {
+                $aset->register_cleanup_function("withdraw {$this->pid}", [$this, "notify_for_withdraw"]);
+            }
+            foreach ($aset->conf->options() as $opt) {
+                if ($opt->reset_on_withdraw()) {
+                    $aset->register_cleanup_function("reset_options_on_withdraw", [$this, "reset_options_on_withdraw"], $this->pid);
+                    break;
+                }
+            }
         }
     }
 
@@ -268,7 +279,7 @@ class Status_Assigner extends Assigner {
             "prow" => $prow,
             "reason" => $reason,
             "adminupdate" => $tmpl === "@adminwithdraw",
-            "combination_type" => 1
+            "combination_type" => HotCRPMailer::COMBINE_PAPER
         ];
 
         // email contact authors
@@ -302,5 +313,14 @@ class Status_Assigner extends Assigner {
         }
 
         HotCRPMailer::send_combined_preparations($preps);
+    }
+
+    function reset_options_on_withdraw(AssignmentSet $aset, $pids) {
+        $oids = [];
+        foreach ($aset->conf->options() as $opt) {
+            if ($opt->reset_on_withdraw())
+                $oids[] = $opt->id;
+        }
+        $aset->conf->qe("delete from PaperOption where paperId?a and optionId?a", $pids, $oids);
     }
 }

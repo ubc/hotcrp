@@ -37,51 +37,29 @@ class Review_SearchTerm extends SearchTerm {
         ];
     }
 
-    /** @param string $s
-     * @return list<string> */
-    static function split($s) {
-        $cs = [];
-        $pos = 0;
-        while ($pos < strlen($s)) {
-            $pos1 = SearchParser::span_balanced_parens($s, $pos, ":", true);
-            $x = trim(substr($s, $pos, $pos1 - $pos));
-            if ($x !== ""
-                && ctype_digit($x[strlen($x) - 1])
-                && ($a = CountMatcher::unpack_comparison($x))) {
-                if ($a[0] !== "") {
-                    $cs[] = $a[0];
-                }
-                $x = CountMatcher::unparse_relation($a[1]) . $a[2];
-            }
-            $cs[] = $x;
-            $pos = $pos1 + 1;
-        }
-        return $cs;
-    }
-
-    /** @param list<string> &$components
+    /** @param list<SearchWord> &$components
      * @param int &$pos
      * @return ?array{int,float} */
     static function comparator_after(&$components, &$pos) {
         if ($pos + 1 < count($components)
-            && ($a = CountMatcher::parse_comparison($components[$pos + 1]))) {
+            && ($a = CountMatcher::parse_comparison($components[$pos + 1]->qword))) {
             ++$pos;
             return $a;
         } else if ($pos + 1 < count($components) - 1
-                   && ($a = CountMatcher::parse_comparison($components[count($components) - 1]))) {
+                   && ($a = CountMatcher::parse_comparison($components[count($components) - 1]->qword))) {
             array_pop($components);
             return $a;
         }
         return null;
     }
 
-    /** @param list<string> $components
+    /** @param list<SearchWord> $components
      * @param int $i
      * @return ?SearchTerm */
     static private function parse_components(ReviewSearchMatcher $rsm, $components, $i, PaperSearch $srch) {
         $contacts = null;
         for (; $i < count($components); ++$i) {
-            $c = $components[$i];
+            $c = $components[$i]->qword;
             if ($rsm->apply_review_word($c, $srch->conf)) {
                 // ok
             } else if (($c === "auwords" || $c === "words")
@@ -96,17 +74,17 @@ class Review_SearchTerm extends SearchTerm {
                        && ($c === "any" || $c === "none")) {
                 $rsm->apply_relation_value($c === "any" ? CountMatcher::RELGT : CountMatcher::RELEQ, 0);
             } else if ($contacts === null) {
-                $contacts = $c;
+                $contacts = $components[$i];
             } else {
                 return null;
             }
         }
-        if (($qr = SearchTerm::make_constant($rsm->tautology()))) {
-            return $qr;
+        if ($rsm->tautology() !== null) {
+            return SearchTerm::make_constant($rsm->tautology());
         }
-        if ($contacts !== null && $contacts !== "") {
-            $rsm->set_contacts($srch->matching_uids($contacts, null, $rsm->only_pc()));
-            if (strcasecmp($contacts, "me") == 0) {
+        if ($contacts !== null && $contacts->qword !== "") {
+            $rsm->set_contacts($srch->user_search(ContactSearch::F_USER | ($rsm->only_pc() ? ContactSearch::F_PC : 0) | ContactSearch::F_REQUIRED, $contacts));
+            if (strcasecmp($contacts->qword, "me") === 0) {
                 $rsm->apply_tokens($srch->user->review_tokens());
             }
         }
@@ -126,7 +104,7 @@ class Review_SearchTerm extends SearchTerm {
             if ($m)
                 $rsm->apply_review_word($m, $srch->conf);
         }
-        if (($qr = self::parse_components($rsm, self::split($sword->qword), 0, $srch))) {
+        if (($qr = self::parse_components($rsm, $sword->split(), 0, $srch))) {
             return $qr;
         }
         $srch->lwarning($sword, "<0>Invalid reviewer search");
@@ -136,9 +114,9 @@ class Review_SearchTerm extends SearchTerm {
     /** @return SearchTerm */
     static function parse_round($word, SearchWord $sword, PaperSearch $srch) {
         $rsm = new ReviewSearchMatcher;
-        $components = self::split($sword->qword);
+        $components = $sword->split();
         if (empty($components)
-            || ($round_list = ReviewSearchMatcher::parse_round($components[0], $srch->conf)) === null) {
+            || ($round_list = ReviewSearchMatcher::parse_round($components[0]->qword, $srch->conf)) === null) {
             $srch->lwarning($sword, "<0>Review round not found");
             return new False_SearchTerm;
         }
@@ -153,9 +131,9 @@ class Review_SearchTerm extends SearchTerm {
     /** @return SearchTerm */
     static function parse_rate($word, SearchWord $sword, PaperSearch $srch) {
         $rsm = new ReviewSearchMatcher;
-        $components = self::split($sword->qword);
+        $components = $sword->split();
         if (!empty($components)) {
-            $rate_bits = ReviewInfo::parse_rating_search($components[0]);
+            $rate_bits = ReviewInfo::parse_rating_search($components[0]->qword);
             $rsm->apply_rate_bits($rate_bits ?? ReviewInfo::RATING_ANYMASK);
             if (($qr = self::parse_components($rsm, $components, 1, $srch))) {
                 return $qr;
@@ -184,33 +162,25 @@ class Review_SearchTerm extends SearchTerm {
         $f = $sword->kwdef->review_field;
         $rsm = new ReviewSearchMatcher;
 
-        // split into parts
-        $parts = preg_split('/((?::(?:[=!<>]=?+|≠|≤|≥)?+|[=!<>]=?+|≠|≤|≥)(?:[^:=!<>\"\xe2]|\xe2(?!\x89[\xa0\xa4\xa5])[\x80-\xBF][\x80-\xBF]|\"[^\"]*+\"?)++)/', $sword->qword, 0, PREG_SPLIT_DELIM_CAPTURE);
-        if (count($parts) === 1 && trim($parts[0]) === "") {
+        // split into modifier components plus a trailing field-value expression
+        $parts = $sword->split();
+        if (empty($parts)) {
             $srch->lwarning($sword, "<0>Missing expression (did you mean ‘{$sword->kwdef->name}:any’?)");
             return new False_SearchTerm;
         }
 
-        $i = $parts[0] === "" ? 1 : 0;
-        while ($i < count($parts) - 2) {
-            $part = $i === 0 ? $parts[$i] : $parts[$i] . $parts[$i + 1];
-            $i = $i === 0 ? 1 : $i + 2;
-            if (str_starts_with($part, ":")) {
-                $part = substr($part, 1);
-            }
+        $last = count($parts) - 1;
+        for ($i = 0; $i !== $last; ++$i) {
+            $part = $parts[$i]->qword;
             if ($rsm->apply_countexpr($part, ">=")
                 || $rsm->apply_review_word($part, $srch->conf)) {
                 // OK
             } else {
-                list($part, $quoted) = SearchWord::maybe_unquote($part);
-                $rsm->set_contacts($srch->matching_uids($part, $quoted, false));
+                $rsm->set_contacts($srch->user_search(ContactSearch::F_USER | ContactSearch::F_REQUIRED, $parts[$i]));
             }
         }
 
-        $word = $i === 0 ? $parts[$i] : $parts[$i] . $parts[$i + 1];
-        if (str_starts_with($word, ":")) {
-            $word = substr($word, 1);
-        }
+        $word = $parts[$last]->qword;
         if ($word === "none") {
             // `FIELD:none` is the opposite of `FIELD:any`; implement with negation
             $rsm->apply_field(new Present_ReviewFieldSearch($f, true));
@@ -248,6 +218,7 @@ class Review_SearchTerm extends SearchTerm {
         }
         return "(select count(*) from PaperReview r where paperId=Paper.paperId and {$wheres}){$cexpr}";
     }
+
     function test(PaperInfo $prow, $xinfo) {
         $this->rsm->prepare_reviews($prow);
         $n = 0;

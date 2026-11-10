@@ -49,8 +49,12 @@ class Collaborators_PaperOption extends PaperOption {
         $this->normalize_value($ov);
         return $ov;
     }
-    private function normalize_value(PaperValue $ov) {
-        $s = $ov->value ? rtrim(cleannl($ov->data())) : "";
+    private function normalize_value(?PaperValue $ov) {
+        $s = $ov && $ov->value ? rtrim(cleannl($ov->data())) : "";
+        if (strlen($s) > 32768) {
+            $ov->estop("<0>Collaborators too long");
+            return;
+        }
         $fix = (string) AuthorMatcher::fix_collaborators($s);
         if ($s !== $fix) {
             $ov->warning("<0>Field changed to follow our required format");

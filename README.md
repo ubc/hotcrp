@@ -35,14 +35,15 @@ software:
 
 * Nginx, https://nginx.org/ \
   (Or [Apache](https://httpd.apache.org), or another web server that works with PHP)
-* PHP version 7.3 or higher, http://php.net/
+* PHP version 8.1 or higher, http://php.net/
   - Including MySQL support, php-fpm, and php-intl
+  - Some features may require later versions of PHP.
 * MariaDB, https://mariadb.org/
 * Poppler’s version of pdftohtml, https://poppler.freedesktop.org/ (only
   required for format checking)
 
-You may need to install additional packages, such as php84, php84-fpm,
-php84-intl, php84-mysqlnd, zip, poppler-utils, and sendmail or postfix.
+You may need to install additional packages, such as php85, php85-fpm,
+php85-intl, php85-mysqlnd, zip, poppler-utils, and sendmail or postfix.
 
 Running with Docker
 -------------------
@@ -88,6 +89,9 @@ Installation
        include fastcgi_params;
    }
    ```
+
+   If you serve HotCRP on a nonstandard port, you may need `fastcgi_param
+   HTTP_HOST $host:$server_port;` after `include fastcgi_params`.
 
    **Apache with mod_proxy and `php-fpm`**: Add a `ProxyPass`.
 
@@ -194,7 +198,7 @@ submissions in the database, so the backup file may be quite large.
 Run `php batch/backupdb.php -r BACKUPFILE` at the shell prompt to restore the
 database from a backup stored in `BACKUPFILE`.
 
-Run `lib/runsql.sh` at the shell prompt to get a SQL command prompt for the
+Run `php batch/db.php` at the shell prompt to get a SQL command prompt for the
 conference database.
 
 

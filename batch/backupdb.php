@@ -343,21 +343,21 @@ class BackupDB_Batch {
             return $this->_s3_client;
         }
         global $Opt;
-        $arg = [];
-        foreach (["s3_bucket" => "bucket", "s3_secret" => "secret", "s3_key" => "key",
-                  "s3_region" => "region", "s3_backup_pattern" => "pattern"] as $optk => $ak) {
-            if ($ak === "region" && !isset($Opt[$optk])) {
-                // OK to leave out `$Opt["s3_region"]`
+        for ($index = 0; ($config = S3Client::extract_config($Opt, $index)); ++$index) {
+            $config["backup_pattern"] = $config["backup_pattern"] ?? $Opt["s3_backup_pattern"] ?? null;
+            if (!isset($config["backup_pattern"])
+                || !is_string($config["backup_pattern"])
+                || in_array($config["backup_pattern"], ["", "none"], true)) {
                 continue;
             }
-            if (!isset($Opt[$optk]) || !is_string($Opt[$optk])) {
-                throw new CommandLineException("missing or invalid \$Opt[{$optk}]");
+            $this->_s3_client = new S3Client($config);
+            if (function_exists("curl_init")) {
+                $this->_s3_client->set_result_class("CurlS3Result");
             }
-            $arg[$ak] = $Opt[$optk];
+            $this->_s3_pattern = $config["backup_pattern"];
+            return $this->_s3_client;
         }
-        $this->_s3_client = new S3Client($arg);
-        $this->_s3_pattern = $arg["pattern"];
-        return $this->_s3_client;
+        throw new CommandLineException("invalid S3 configuration");
     }
 
     /** @param int $count
@@ -396,15 +396,14 @@ class BackupDB_Batch {
             } else {
                 $ans[] = $key;
             }
-            if ($count > 0 && count($ans) >= $count) {
-                break;
-            }
         }
 
         krsort($ans);
         $ans = array_values($ans);
         if ($count <= 0) {
             $this->_s3_list = $ans;
+        } else {
+            $ans = array_slice($ans, 0, $count);
         }
         return $ans;
     }
@@ -422,8 +421,11 @@ class BackupDB_Batch {
         }
         register_shutdown_function("unlink", $fn);
         $this->in = fopen($fn, "w+b");
-        $s3l = $this->s3_client()->start_curl_get($this->_s3_key)
-            ->set_response_body_stream($this->in)
+        $s3l = $this->s3_client()->start_curl_get($this->_s3_key);
+        if (!$s3l) {
+            $this->throw_error("Cannot connect to S3");
+        }
+        $s3l->set_response_body_stream($this->in)
             ->set_timeout(60);
         if ($this->verbose) {
             fwrite(STDERR, "Reading {$this->_s3_key}\n");
@@ -465,6 +467,13 @@ class BackupDB_Batch {
      * @param list<string> $restargs
      * @return list<string> */
     function mysqlcmd($cmd, $flagargs, $restargs) {
+        // the mysql client is not configured for SSL
+        assert($this->connp->ssl === null
+               && $this->connp->ssl_key === null
+               && $this->connp->ssl_cert === null
+               && $this->connp->ssl_ca === null
+               && $this->connp->ssl_capath === null
+               && $this->connp->ssl_cipher === null);
         $a = [$cmd];
         if (($this->connp->password ?? "") !== "") {
             if ($this->_pwfile === null) {
@@ -472,11 +481,11 @@ class BackupDB_Batch {
                 $md = stream_get_meta_data($this->_pwtmp);
                 if (is_file($md["uri"] ?? "/nonexistent")) {
                     $this->_pwfile = $md["uri"];
-                    fwrite($this->_pwtmp, "[client]\npassword={$this->connp->password}\n");
+                    fwrite($this->_pwtmp, $this->connp->client_option_file());
                     fflush($this->_pwtmp);
                 } else if (($fn = tempnam("/tmp", "hcpx")) !== false) {
                     $this->_pwfile = $fn;
-                    file_put_contents($fn, "[client]\npassword={$this->connp->password}\n");
+                    file_put_contents($fn, $this->connp->client_option_file());
                     register_shutdown_function("unlink", $fn);
                 } else {
                     $this->throw_error("Cannot create temporary file");
@@ -488,6 +497,10 @@ class BackupDB_Batch {
             && $this->connp->host !== "") {
             $a[] = "-h";
             $a[] = $this->connp->host;
+        }
+        if (($this->connp->port ?? 0) > 0 && $this->connp->port !== 3306) {
+            $a[] = "-P";
+            $a[] = (string) $this->connp->port;
         }
         if (($this->connp->user ?? "") !== "") {
             $a[] = "-u";
@@ -783,7 +796,7 @@ class BackupDB_Batch {
     }
 
     private function run_pc_only_transfer() {
-        $pc = Dbl::fetch_first_columns($this->dblink(), "select contactId from ContactInfo where roles!=0 and (roles&7)!=0");
+        $pc = Dbl::fetch_first_columns($this->dblink(), "select contactId from ContactInfo where roles!=0 and (roles&" . Contact::ROLE_PCLIKE . ")!=0");
         if (empty($pc)) {
             $pc[] = -1;
         }
@@ -824,7 +837,15 @@ class BackupDB_Batch {
                 fwrite(STDERR, "{$output}\n");
             }
             $this->_out_dstname = str_starts_with($output, "/") ? $output : "./{$output}";
-            $this->_out_srcname = "{$this->_out_dstname}.tmp";
+            // write regular files via a temporary file and rename;
+            // write devices, FIFOs, and symlinks directly
+            if (is_link($this->_out_dstname)
+                || (file_exists($this->_out_dstname) && !is_file($this->_out_dstname))
+                || !is_writable(dirname($this->_out_dstname))) {
+                $this->_out_srcname = $this->_out_dstname;
+            } else {
+                $this->_out_srcname = "{$this->_out_dstname}.tmp";
+            }
             if ($this->compress) {
                 $this->out = @gzopen($this->_out_srcname, "wb9");
             } else {
@@ -912,7 +933,8 @@ class BackupDB_Batch {
         }
         if ($this->_output_mode === "file") {
             if (!@fclose($this->out)
-                || !@rename($this->_out_srcname, $this->_out_dstname)) {
+                || ($this->_out_srcname !== $this->_out_dstname
+                    && !@rename($this->_out_srcname, $this->_out_dstname))) {
                 throw error_get_last_as_exception("{$this->_out_dstname}: ");
             }
             $this->out = null;
@@ -973,7 +995,7 @@ class BackupDB_Batch {
             "s3-tag[] =TAGPAIR !s3 Add S3 tag",
             "before: =DATE !s3 Include S3 backups before DATE",
             "after: =DATE !s3 Include S3 backups after DATE",
-            "count: {n} =N !s3 Fetch N backups (--s3-get only)",
+            "count: {n} =N !s3 Fetch or list the N most recent backups",
             "V,verbose Be verbose",
             "help::,h:: Print help"
         )->description("Back up HotCRP database or restore from backup.

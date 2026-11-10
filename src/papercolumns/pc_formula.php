@@ -83,18 +83,21 @@ class Formula_PaperColumn extends PaperColumn {
         }
         $this->statistics = (new ScoreInfo)->set_value_format($this->value_format);
     }
-    function content(PaperList $pl, PaperInfo $row) {
+    /** @return mixed */
+    private function value(PaperList $pl, PaperInfo $row) {
+        // `results` were computed without conflict override
         if ($pl->overriding === 2) {
-            $v = $this->formula->eval($row, null);
-        } else {
-            $v = $this->results[$row->paperId];
+            return $this->formula->eval($row, null);
         }
+        return $this->results[$row->paperId];
+    }
+    function content(PaperList $pl, PaperInfo $row) {
+        $v = $this->value($pl, $row);
         $this->statistics->add_overriding($v, $pl->overriding);
         return $this->value_format->html($v);
     }
     function text(PaperList $pl, PaperInfo $row) {
-        $v = $this->results[$row->paperId];
-        return $this->value_format->text($v);
+        return $this->value_format->text($this->value($pl, $row));
     }
     function has_statistics() {
         return true;
@@ -135,6 +138,9 @@ class Formula_PaperColumnFactory {
         if (str_starts_with($name, "formula")
             && ctype_digit(substr($name, 7))) {
             $nf = ($xtp->conf->named_formulas())[(int) substr($name, 7)] ?? null;
+            if ($nf && !$xtp->user->can_view_named_formula($nf)) {
+                $nf = null;
+            }
         }
 
         $prefix = "";
@@ -149,12 +155,12 @@ class Formula_PaperColumnFactory {
         $name = substr($name, strlen($prefix));
 
         if (!$nf) {
-            $nf = $xtp->conf->find_named_formula($name);
+            $nf = $xtp->conf->find_named_formula($name, $xtp->user);
         }
         if (!$nf
             && str_starts_with($name, "\"")
             && strpos($name, "\"", 1) === strlen($name) - 1) {
-            $nf = $xtp->conf->find_named_formula(substr($name, 1, -1));
+            $nf = $xtp->conf->find_named_formula(substr($name, 1, -1), $xtp->user);
         }
         if ($nf) {
             $ff = $nf->realize($xtp->user);

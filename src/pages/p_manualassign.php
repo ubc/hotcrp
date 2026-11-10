@@ -165,9 +165,10 @@ class ManualAssign_Page {
 
         // main assignment form
         $search = (new PaperSearch($this->viewer, [
-            "t" => $this->qreq->t,
             "q" => $this->qreq->q,
-            "reviewer" => $reviewer
+            "t" => $this->qreq->t,
+            "reviewer" => $reviewer,
+            "tsoft" => $this->viewer->privChair
         ]))->set_urlbase("manualassign");
         $pl = new PaperList("reviewAssignment", $search, ["sort" => true], $this->qreq);
         $pl->apply_view_session($this->qreq);
@@ -197,8 +198,8 @@ class ManualAssign_Page {
                 '<ul class="entry inline">', join('', $show_data), '</ul></div>';
         }
         echo Ht::hidden("forceShow", 1, ["id" => "showforce"]); // search API must override conflicts
-        echo '<div class="entryi autosave-hidden hidden"><label></label><div class="entry">',
-            Ht::submit("update", "Save assignments", ["class" => "btn-primary big"]), '</div></div>';
+        echo '<div class="entryi autosave-hidden" hidden><label></label><div class="entry">',
+            Ht::submit("update", "Save assignments", ["class" => "btn-primary"]), '</div></div>';
         echo '</div>';
 
         $pl->set_table_id_class("pl", null);
@@ -265,9 +266,22 @@ class ManualAssign_Page {
         if (!$reviewer) {
             $rev_opt[0] = "(Select a PC member)";
         }
+        $unlisted = [];
         foreach ($this->conf->pc_members() as $pc) {
-            $rev_opt[$pc->email] = $pc->name(NAME_P|NAME_S) . " ("
-                . plural($acs->get($pc->contactId)->rev, "assignment") . ")";
+            if ($pc->is_listed_pc_member()) {
+                $rev_opt[$pc->email] = $pc->name(NAME_P|NAME_S) . " ("
+                    . plural($acs->get($pc->contactId)->rev, "assignment") . ")";
+            } else {
+                $unlisted[] = $pc;
+            }
+        }
+        // unlisted PC members are assignable, but grouped at the end
+        if (!empty($unlisted)) {
+            $rev_opt[] = ["optgroup", "Unlisted PC members"];
+            foreach ($unlisted as $pc) {
+                $rev_opt[$pc->email] = $pc->name(NAME_P|NAME_S) . " ("
+                    . plural($acs->get($pc->contactId)->rev, "assignment") . ")";
+            }
         }
 
         echo "<table><tr><td><strong>PC member:</strong> &nbsp;</td>",
@@ -304,7 +318,8 @@ class ManualAssign_Page {
     function run() {
         $overrides = $this->viewer->add_overrides(Contact::OVERRIDE_CONFLICT);
 
-        $this->limits = PaperSearch::viewable_manager_limits($this->viewer);
+        $this->limits = PaperSearch::viewable_manager_limits($this->viewer, $this->qreq->t);
+        array_unshift($this->limits, "reviewable");
         if (!$this->qreq->t || !in_array($this->qreq->t, $this->limits, true)) {
             $this->qreq->t = $this->limits[0];
         }
@@ -320,7 +335,7 @@ class ManualAssign_Page {
                 ? $this->conf->user_by_id(intval($this->qreq->reviewer), USER_SLICE)
                 : $this->conf->user_by_email($this->qreq->reviewer, USER_SLICE);
         }
-        if ($reviewer && ($reviewer->roles & Contact::ROLE_PC) === 0) {
+        if ($reviewer && !$reviewer->is_pc_member()) {
             $reviewer = null;
         }
 

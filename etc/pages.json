@@ -8,11 +8,11 @@
     {   "name": "__profilemenu/search", "order": 310, "allow_if": "pc", "print_function": "*Conf::print_profilemenu_item", "separator_group": "main"   },
     {   "name": "__profilemenu/my_reviews", "order": 320, "allow_if": "reviewer", "print_function": "*Conf::print_profilemenu_item", "separator_group": "main"   },
     {   "name": "__profilemenu/my_submissions", "order": 330, "allow_if": "author", "print_function": "*Conf::print_profilemenu_item", "separator_group": "main"   },
+    {   "name": "__profilemenu/profile", "order": 400, "allow_if": "email", "print_function": "*Conf::print_profilemenu_item", "separator_group": "account"   },
+    {   "name": "__profilemenu/help", "order": 410, "allow_if": "!disabled", "print_function": "*Conf::print_profilemenu_item", "separator_group": "account"   },
     {   "name": "__profilemenu/settings", "order": 450, "allow_if": "chair", "print_function": "*Conf::print_profilemenu_item", "separator_group": "overall"   },
     {   "name": "__profilemenu/users", "order": 460, "allow_if": "chair", "print_function": "*Conf::print_profilemenu_item", "separator_group": "overall"   },
     {   "name": "__profilemenu/assignments", "order": 470, "allow_if": "chair", "print_function": "*Conf::print_profilemenu_item", "separator_group": "overall"   },
-    {   "name": "__profilemenu/profile", "order": 500, "allow_if": "email", "print_function": "*Conf::print_profilemenu_item", "separator_group": "account"   },
-    {   "name": "__profilemenu/help", "order": 510, "allow_if": "!disabled", "print_function": "*Conf::print_profilemenu_item", "separator_group": "account"   },
     {   "name": "__profilemenu/other_accounts", "order": 600, "print_function": "*Conf::print_profilemenu_item", "separator_group": "close"   },
     {   "name": "__profilemenu/signout", "order": 610, "allow_if": "email", "print_function": "*Conf::print_profilemenu_item", "separator_group": "close"   },
 
@@ -181,10 +181,6 @@
     [   "forgotpassword/form/description", 10, "Signin_Page::print_forgot_form_description"   ],
     [   "forgotpassword/form/email", 20, "*Signin_Page::print_forgot_form_email"   ],
     [   "forgotpassword/form/actions", 100, "*Signin_Page::print_forgot_form_actions"   ],
-    {
-        "name": "forgotpassword/externallogin", "order": false,
-        "print_function": "Signin_Page::forgot_externallogin_message"
-    },
 
 
     {   "name": "resetpassword", "allow_disabled": true   },
@@ -220,6 +216,7 @@
 
     {   "name": "authorize", "print_function": "*HotCRP\\Authorize_Page::go", "allow_disabled": true   },
     [   "authorize/form/title", 1, "*HotCRP\\Authorize_Page::print_form_title"   ],
+    [   "authorize/form/reauth", 10, "*HotCRP\\Authorize_Page::print_form_reauth"   ],
     [   "authorize/form/main", 15, "*HotCRP\\Authorize_Page::print_form_main"   ],
     [   "authorize/other/local", 15, "signin/form/local"   ],
     [   "authorize/other/oauth", 1000, "signin/form/oauth"   ],

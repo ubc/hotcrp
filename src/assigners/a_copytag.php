@@ -36,13 +36,13 @@ class CopyTag_AssignmentParser extends UserlessAssignmentParser {
     function set_req($req, AssignmentState $state) {
         // parse tags
         $this->tagger = new Tagger($state->user);
-        $this->tag = $this->tagger->check($req["tag"] ?? "", Tagger::NOVALUE | Tagger::ALLOWSTAR | Tagger::ALLOWCONTACTID);
+        $this->tag = $this->tagger->check_syntax($req["tag"] ?? "", Tagger::NOVALUE | Tagger::ALLOWSTAR | Tagger::ALLOWCONTACTID);
         if (!$this->tag) {
             $state->error($this->tagger->error_ftext(true));
             return false;
         }
 
-        $this->new_tag = $this->tagger->check($req["new_tag"] ?? "", Tagger::NOVALUE | Tagger::ALLOWSTAR | Tagger::ALLOWCONTACTID);
+        $this->new_tag = $this->tagger->check_syntax($req["new_tag"] ?? "", Tagger::NOVALUE | Tagger::ALLOWSTAR | Tagger::ALLOWCONTACTID);
         if (!$this->new_tag) {
             if ($this->tagger->error_code() === Tagger::EEMPTY) {
                 $state->error("<0>New tag required");
@@ -57,24 +57,21 @@ class CopyTag_AssignmentParser extends UserlessAssignmentParser {
         if ($star !== false && strpos($this->tag, "*", $star + 1) !== false) {
             $state->error("<0>‘{$this->tag}’: At most one wildcard allowed");
             return false;
-        }
-        $new_star = strpos($this->new_tag, "*");
-        if ($new_star !== false && strpos($this->new_tag, "*", $new_star + 1) !== false) {
-            $state->error("<0>‘{$this->new_tag}’: At most one wildcard allowed");
+        } else if ($star !== false && strpos($this->tag, "~", $star + 1) !== false) {
+            $state->error("<0>‘{$this->tag}’: Wildcard must follow ‘~’");
             return false;
         }
-        if (($star === false) !== ($new_star === false)) {
+        $new_star = strpos($this->new_tag, "*");
+        if (($star === false) !== ($new_star === false)
+            || ($new_star !== false && strpos($this->new_tag, "*", $new_star + 1) !== false)
+            || ($new_star !== false && strpos($this->new_tag, "~", $new_star + 1) !== false)) {
             $state->error("<0>Wildcards in tag and new tag must match");
             return false;
         }
         if ($star === false) {
             $this->pattern = null;
-        } else if ($star === 0) {
-            $this->pattern = "{\\A((?![~\\d]).*)"
-                . preg_quote(substr($this->tag, 1)) . "\\z}i";
         } else {
-            $this->pattern = "{\\A" . preg_quote(substr($this->tag, 0, $star))
-                . "(.*)" . preg_quote(substr($this->tag, $star + 1)) . "\\z}i";
+            $this->pattern = '{\A' . Text::one_wildcard_regex($this->tag, '(?=[^~\d])', '', '\z', true) . '\z}i';
         }
         $this->new_star = $new_star;
 
@@ -106,8 +103,9 @@ class CopyTag_AssignmentParser extends UserlessAssignmentParser {
     }
     function allow_paper(PaperInfo $prow, AssignmentState $state) {
         if ($prow->paperId > 0
-            && ($whyNot = $state->user->perm_edit_some_tag($prow))) {
-            return new AssignmentError($whyNot);
+            && ($fr = $state->user->perm_edit_some_tag($prow))) {
+            $state->paper_error($fr);
+            return false;
         }
         return true;
     }
@@ -126,14 +124,24 @@ class CopyTag_AssignmentParser extends UserlessAssignmentParser {
         }
         $tagmap = $state->conf->tags();
         foreach ($res as $x) {
+            // skip if no match
             if (!preg_match($this->pattern, $x->ltag, $m)) {
                 continue;
             }
-            $new_tag = substr_replace($this->new_tag, $m[1], $this->new_star, 1);
-            if ($tagmap->is_automatic($new_tag)) {
+            // skip source tags you can't view
+            if ($prow->paperId > 0
+                ? !$state->user->can_view_tag($prow, $x->ltag)
+                : !$state->user->can_view_tag_somewhere($x->ltag)) {
                 continue;
             }
-            if (!$this->tagger->check($new_tag, Tagger::NOVALUE | Tagger::ALLOWCONTACTID)) {
+            $new_tag = substr_replace($this->new_tag, $m[1], $this->new_star, 1);
+            if ($tagmap->is_automatic($new_tag)
+                || ($prow->paperId > 0
+                    ? !$state->user->can_view_tag($prow, $new_tag)
+                    : !$state->user->can_view_tag_somewhere($new_tag))) {
+                continue;
+            }
+            if (!$this->tagger->check_syntax($new_tag, Tagger::NOVALUE | Tagger::ALLOWCONTACTID)) {
                 $state->error($this->tagger->error_ftext(true));
                 $ok = false;
                 continue;
@@ -153,6 +161,10 @@ class CopyTag_AssignmentParser extends UserlessAssignmentParser {
         if (strcasecmp($tag, $new_tag) === 0) {
             return true;
         }
+        $new_ltag = strtolower($new_tag);
+        if (($r = Tag_AssignmentParser::check_unviewable_add($prow, $new_ltag, null, $state)) !== null) {
+            return $r;
+        }
 
         $res = $state->query(new Tag_Assignable($prow->paperId, strtolower($tag)));
         assert(count($res) <= 1);
@@ -161,7 +173,6 @@ class CopyTag_AssignmentParser extends UserlessAssignmentParser {
             return true;
         }
 
-        $new_ltag = strtolower($new_tag);
         if ($this->value !== "old") {
             $new_res = $state->query(new Tag_Assignable($prow->paperId, $new_ltag));
             $new_value = empty($new_res) ? null : $new_res[0]->_index;

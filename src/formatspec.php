@@ -121,7 +121,7 @@ class FormatSpec {
     }
 
     function merge_banal() {
-        if (($ts = @filemtime(SiteLoader::find("src/banal"))) !== false) {
+        if (($ts = @filemtime(SiteLoader::resolve("src/banal"))) !== false) {
             $this->timestamp = max($ts, $this->timestamp);
         }
     }
@@ -261,7 +261,7 @@ class FormatSpec {
         $n = $text;
         $a = [];
         $unit = [];
-        while (preg_match('/^\s*(\d+\.?\d*|\.\d+)\s*("|″|in?|cm?|mm|pt|)\s*(.*)$/', $n, $m)) {
+        while (preg_match('/\A\s*+(\d+\.?\d*|\.\d+)\s*("|″|in?|cm?|mm|pt|)\s*+(.*+)\z/', $n, $m)) {
             $a[] = $m[1];
             if ($m[2] === "i" || $m[2] === "in" || $m[2] === "\"" || $m[2] === "″") {
                 $unit[] = 72;
@@ -294,11 +294,10 @@ class FormatSpec {
                     }
                 }
 
-                return (count($a) == 1 ? $a[0] : $a);
+                return count($a) === 1 ? $a[0] : $a;
             } else if ($m[3][0] === "x") {
                 $n = substr($m[3], 1);
-            } else if ($m[3][0] == 0xC3 && $m[3][1] == 0x97) {
-                // \xC3\x97 is utf-8 for MULTIPLICATION SIGN
+            } else if (str_starts_with($m[3], "×")) { // MULTIPLICATION SIGN
                 $n = substr($m[3], 2);
             } else {
                 return false;
@@ -370,6 +369,4 @@ interface FormatChecker {
     /** @return bool */
     function append_report(CheckFormat $cf, FormatSpec $spec, DocumentInfo $doc,
                            MessageSet $ms);
-    /** @return ?string */
-    function report(CheckFormat $cf, FormatSpec $spec, DocumentInfo $doc);
 }

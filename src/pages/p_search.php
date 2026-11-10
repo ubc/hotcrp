@@ -50,7 +50,7 @@ class Search_Page {
         $options["id"] = "show{$type}";
         $xtype = $type === "anonau" ? "authors" : $type;
         $lclass = "checki";
-        if ($this->pl->view_origin($xtype) === PaperList::VIEWORIGIN_SEARCH) {
+        if ($this->pl->view_origin($xtype) === ViewCommand::ORIGIN_SEARCH) {
             $options["disabled"] = true;
             $lclass .= " disabled";
         }
@@ -153,7 +153,6 @@ class Search_Page {
             $this->set_header(40, "<strong>Formulas:</strong>");
         }
         if ($user->isPC && $pl->search->limit() !== "a") {
-            Icons::stash_defs("trash");
             $this->item(40, '<div class="mt-2"><button type="button" class="link ui js-edit-formulas">Edit formulas</button></div>');
         }
     }
@@ -236,7 +235,7 @@ class Search_Page {
         }
         if ($this->pl->has_message()) {
             echo '<div class="msgs-wide">',
-                Ht::msg($this->pl->full_feedback_html(), min($this->pl->problem_status(), MessageSet::WARNING), "mx-auto"),
+                Ht::msg($this->pl->full_feedback_html(), $this->pl->problem_status(), "mx-auto"),
                 '</div>';
         }
         echo "\n";
@@ -271,7 +270,7 @@ class Search_Page {
 
         // create PaperList
         if (isset($qreq->q)) {
-            $qreq->toverride = $qreq->toverride ?? "1";
+            $qreq->tsoft = $qreq->tsoft ?? "1";
             $search = new PaperSearch($user, $qreq);
         } else {
             $search = new PaperSearch($user, ["t" => $qreq->t, "q" => "NONE"]);
@@ -443,6 +442,13 @@ class Search_Page {
             $user->escape();
         }
 
+        // check search permission before canonicalizing: canonicalization can
+        // be expensive on hostile input, so refuse a user who cannot search at
+        // all first (it depends only on the raw request, not the canonical query)
+        if (!PaperSearch::viewable_limits($user, $qreq->t)) {
+            self::not_allowed($user, $qreq);
+        }
+
         // canonicalize request
         assert(!$qreq->ajax);
         if (isset($qreq->default) && $qreq->defaultfn) {
@@ -464,13 +470,8 @@ class Search_Page {
             }
         }
 
-        // paper group
-        if (!PaperSearch::viewable_limits($user, $qreq->t)) {
-            self::not_allowed($user, $qreq);
-        }
-
         // paper selection
-        $ssel = SearchSelection::make($qreq, $user);
+        $ssel = SearchSelection::make_papers($qreq, $user);
         SearchSelection::clear_request($qreq);
 
         // look for search action

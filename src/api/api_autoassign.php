@@ -25,7 +25,7 @@ class Autoassign_API {
 
         $ls = [];
         if (preg_match('/\A\s*\[/', $qreq->$name)) {
-            $list = json_decode($qreq->$name);
+            $list = Json::decode_user($qreq->$name);
             if (!is_array($list)) {
                 return null;
             }
@@ -38,7 +38,7 @@ class Autoassign_API {
                 $ls[] = (string) $elt;
             }
         } else if ($is_param && preg_match('/\A\s*\{/', $qreq->$name)) {
-            $map = json_decode($qreq->$name, true);
+            $map = (new JsonParser($qreq->$name))->set_assoc(true)->set_user()->decode();
             if (!is_array($map)) {
                 return null;
             }
@@ -58,23 +58,26 @@ class Autoassign_API {
     }
 
     static function autoassign(Contact $user, Qrequest $qreq) {
-        if (!isset($qreq->autoassigner)) {
+        if (!$user->is_manager()) {
+            return JsonResult::make_permission_error();
+        } else if (!isset($qreq->autoassigner)) {
             return JsonResult::make_missing_error("autoassigner");
         } else if (!($aa = $user->conf->autoassigner($qreq->autoassigner))) {
             return JsonResult::make_not_found_error("autoassigner");
-        }
-        if (!isset($qreq->q)) {
+        } else if (!isset($qreq->q)) {
             return JsonResult::make_missing_error("q");
         }
 
-        $argv = ["-q{$qreq->q}", "-t" . ($qreq->t ?? "s"), "-a{$aa->name}"];
+        $qreq->t = $qreq->t ?? "alladmin";
+        // Ouch! Must supply `=` signs because these arguments might be empty
+        $argv = ["-q={$qreq->q}", "-t={$qreq->t}", "-a={$aa->name}"];
 
         $us = self::parse_param($qreq, "u", false);
         if ($us === null) {
             return JsonResult::make_parameter_error("u");
         }
         foreach ($us as $u) {
-            $argv[] = "-u{$u}";
+            $argv[] = "-u={$u}";
         }
 
         $disjoints = self::parse_param($qreq, "disjoint", false);
@@ -82,7 +85,7 @@ class Autoassign_API {
             return JsonResult::make_parameter_error("disjoint");
         }
         foreach ($disjoints as $dj) {
-            $argv[] = "-X{$dj}";
+            $argv[] = "-X={$dj}";
         }
 
         $params = self::parse_param($qreq, "param", true);
@@ -114,7 +117,7 @@ class Autoassign_API {
             $jr = new JsonResult(202 /* Accepted */, [
                 "ok" => true,
                 "job" => $jobid,
-                "job_url" => $qreq->conf()->hoturl_raw("api/job", ["job" => $jobid], Conf::HOTURL_ABSOLUTE)
+                "job_url" => $qreq->conf()->hoturl("api/job", ["job" => $jobid], Conf::HOTURL_ABSOLUTE)
             ]);
             $jr->emit($qreq);
             $qreq->qsession()->commit();
@@ -136,11 +139,18 @@ class Autoassign_API {
         // The job ran but failed; report `status: failed`, matching `/job`.
         $jr = JsonResult::make_message_list($tok->data("message_list") ?? [])
             ->set("status", "failed");
+        if (is_string(($scope = $tok->data("insufficient_scope")))) {
+            $jr->set_response_code(403)
+                ->set_header($user->conf->www_authenticate_header("insufficient_scope", $qreq, $scope));
+        }
         $tok->delete();
         return $jr;
     }
 
     static function autoassigners(Contact $user, Qrequest $qreq) {
+        if (!$user->is_manager()) {
+            return JsonResult::make_permission_error();
+        }
         $conf = $user->conf;
         $exs = [];
         $xtp = (new XtParams($conf, $user))->set_warn_deprecated(false);

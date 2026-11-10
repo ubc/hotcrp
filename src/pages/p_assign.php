@@ -25,9 +25,16 @@ class Assign_Page {
         $this->ms = new MessageSet;
     }
 
-    function error_exit(...$mls) {
+    /** @return never
+     * @throws PageCompletion */
+    function error_exit(FailureReason $perm) {
+        Navigation::http_response_code($perm->response_code($this->user));
+        if (!$perm->secondary || $this->conf->saved_messages_status() < 2) {
+            $perm->set("expand", true);
+            $perm->set("listViewable", $this->user->is_author() || $this->user->is_reviewer());
+            $this->conf->feedback_msg($perm->message_list());
+        }
         PaperTable::print_header($this->pt, $this->qreq, true);
-        $this->conf->feedback_msg(...$mls);
         $this->qreq->print_footer();
         throw new PageCompletion;
     }
@@ -44,8 +51,11 @@ class Assign_Page {
         } catch (Redirection $redir) {
             throw $redir;
         } catch (FailureReason $perm) {
-            $perm->set("expand", true);
-            $this->error_exit($perm->message_list());
+            $this->error_exit($perm);
+        }
+        // check for garbage in path
+        if ((string) $this->qreq->path_component(0) !== "") {
+            $this->error_exit(new FailureReason($this->conf, ["invalidPath" => $this->qreq->path_component(0)]));
         }
     }
 
@@ -217,7 +227,7 @@ class Assign_Page {
     private function print_reqrev_main($rrow, $namex, $time) {
         $rname = $rrow->status_title(true) . " (" . $rrow->status_description() . ")";
         if ($this->user->can_view_review($this->prow, $rrow)) {
-            $rname = Ht::link($rname, $this->prow->reviewurl(["r" => $rrow->reviewId], Conf::HOTURL_RAW));
+            $rname = Ht::link($rname, $this->prow->reviewurl(["r" => $rrow->reviewId]));
         }
         echo $rname, ': ', $namex,
             '</div><div class="f-d"><ul class="x mb-0">';
@@ -299,9 +309,8 @@ class Assign_Page {
             }
         }
         echo '</li>';
-        if ((string) $rrow->reason !== ""
-            && $rrow->reason !== "request denied by chair") {
-            echo '<li class="mb-0-last-child">', Ht::format0("reason: " . $rrow->reason), '</li>';
+        if (($r = $rrow->viewable_reason($this->user, $this->prow, true)) !== null) {
+            echo '<li class="mb-0-last-child">', Ht::format0("reason: " . $r), '</li>';
         }
         echo '</ul></div>';
     }
@@ -328,8 +337,10 @@ class Assign_Page {
             if ($rrow->contactId !== $this->user->contactId
                 && $this->user->privChair
                 && $this->user->allow_admin($this->prow)) {
-                $actas = ' ' . Ht::link(Ht::img("viewas.png", "[Act as]", ["title" => "Become user"]),
-                    $this->prow->reviewurl(["actas" => $rrowid->email], Conf::HOTURL_RAW));
+                $actast = "Act as " . $this->user->reviewer_text_for($rrowid);
+                $actas = " " . Ht::link(Ht::make_icon("viewas", ["class" => "viewas-icon"]),
+                    $this->prow->reviewurl(["actas" => $rrowid->email]),
+                    ["title" => $actast, "aria-label" => $actast]);
             }
         } else {
             $name = Text::nameo_h($rrowid, NAME_P);
@@ -369,7 +380,8 @@ class Assign_Page {
                 && $rrow->requestedBy == $this->user->contactId)) {
             echo $this->conf->hotform("=assign", [
                     "p" => $this->prow->paperId, "action" => "managerequest",
-                    "email" => $rrowid->email, "round" => $rrow->reviewRound
+                    "email" => $rrowid->email,
+                    "round" => $this->conf->round_name_argument($rrow->reviewRound)
                 ], ["class" => "fx"]);
             if (!isset($rrow->contactId) || !$rrow->contactId) {
                 echo Ht::hidden("given_name", $rrowid->firstName),
@@ -462,7 +474,8 @@ class Assign_Page {
         echo '</div>'; // .pctbname
         if ($potconf) {
             echo '<div class="pcconfmatch need-tooltip" data-tooltip-class="gray" data-tooltip="',
-                str_replace('"', '&quot;', $potconf->tooltip_html($this->prow)),
+                // NB double-escaping required!
+                Ht::escape_attr($potconf->tooltip_html($this->prow)),
                 '">', $potconf->description_html(), '</div>';
         }
 
@@ -657,7 +670,7 @@ class Assign_Page {
         }
 
         // reason area
-        $null_mailer = new HotCRPMailer($this->conf);
+        $null_mailer = new HotCRPMailer($this->conf->root_user());
         $reqbody = $null_mailer->expand_template("requestreview");
         if ($reqbody && strpos($reqbody["body"], "REASON") !== false) {
             echo '<div class="f-i">',

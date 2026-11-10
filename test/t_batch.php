@@ -112,4 +112,250 @@ class Batch_Tester {
         $this->conf->qe("delete from ContactInfo where email='addeduser@_.com'");
         $this->conf->invalidate_user($u);
     }
+
+    function test_saveusers_json_arrays() {
+        // JSON users may give list fields as arrays, mixed with strings
+        $this->delete_batch_users();
+        $su = new SaveUsers_Batch($this->conf->root_user(), [
+            "expression" => [json_encode([
+                ["email" => "csvbatchj1@_.com", "roles" => ["pc"], "tags" => ["red", "blue"],
+                 "given_name" => "Jay", "family_name" => "One"],
+                ["email" => "csvbatchj2@_.com", "roles" => "chair", "tags" => "green",
+                 "disabled" => true]
+            ])],
+            "quiet" => true
+        ]);
+        xassert_eqq($su->run(), 0);
+
+        $u1 = $this->conf->fresh_user_by_email("csvbatchj1@_.com");
+        xassert_eqq($u1->roles & Contact::ROLE_PCLIKE, Contact::ROLE_PC);
+        xassert($u1->has_tag("red") && $u1->has_tag("blue"));
+        xassert_eqq($u1->firstName, "Jay");
+        xassert_eqq($u1->lastName, "One");
+        xassert(!$u1->is_disabled());
+        $u2 = $this->conf->fresh_user_by_email("csvbatchj2@_.com");
+        xassert_eqq($u2->roles & Contact::ROLE_PCLIKE, Contact::ROLE_CHAIR | Contact::ROLE_PC);
+        xassert($u2->has_tag("green"));
+        xassert($u2->is_disabled());
+        $this->delete_batch_users();
+    }
+
+    /** @param string $text
+     * @return string */
+    private function write_temp($text) {
+        $fn = tempdir() . "/users.csv";
+        xassert_eqq(file_put_contents($fn, $text), strlen($text));
+        return $fn;
+    }
+
+    private function delete_batch_users() {
+        $this->conf->qe("delete from ContactInfo where email like 'csvbatch%'");
+        if (($cdb = $this->conf->contactdb())) {
+            Dbl::qe($cdb, "delete from ContactInfo where email like 'csvbatch%'");
+        }
+        $this->conf->invalidate_caches("users");
+    }
+
+    function test_saveusers_csv_file() {
+        $this->delete_batch_users();
+
+        // header, `###` comment line, two rows
+        $fn = $this->write_temp("email,name,affiliation,roles\n"
+            . "### this is a comment\n"
+            . "csvbatch1@_.com,\"Adams, John Quincy\",Whitehouse,\"pc,chair\"\n"
+            . "csvbatch2@_.com,Millard Fillmore,Buffalo,pc\n");
+        $su = new SaveUsers_Batch($this->conf->root_user(), ["_" => [$fn], "quiet" => true]);
+        xassert_eqq($su->run(), 0);
+
+        $u1 = $this->conf->fresh_user_by_email("csvbatch1@_.com");
+        xassert_neqq($u1, null);
+        xassert_eqq($u1->firstName, "John Quincy");
+        xassert_eqq($u1->lastName, "Adams");
+        xassert_eqq($u1->affiliation, "Whitehouse");
+        xassert_eqq($u1->roles & Contact::ROLE_PCLIKE, Contact::ROLE_PC | Contact::ROLE_CHAIR);
+
+        $u2 = $this->conf->fresh_user_by_email("csvbatch2@_.com");
+        xassert_neqq($u2, null);
+        xassert_eqq($u2->firstName, "Millard");
+        xassert_eqq($u2->roles & Contact::ROLE_PCLIKE, Contact::ROLE_PC);
+
+        $this->delete_batch_users();
+    }
+
+    function test_saveusers_csv_requires_email_header() {
+        $fn = $this->write_temp("user,affiliation\nJohn Adams <csvbatch3@_.com>,UCB\n");
+        $su = new SaveUsers_Batch($this->conf->root_user(), ["_" => [$fn], "quiet" => true]);
+        $msg = "";
+        try {
+            $su->run();
+        } catch (CommandLineException $ex) {
+            $msg = $ex->getMessage();
+        }
+        xassert_str_contains($msg, "email field missing");
+        xassert(!$this->conf->fresh_user_by_email("csvbatch3@_.com"));
+    }
+
+    function test_saveusers_csv_only_create() {
+        $this->delete_batch_users();
+
+        $fn = $this->write_temp("email,roles\ncsvbatch4@_.com,pc\n");
+        $su = new SaveUsers_Batch($this->conf->root_user(), ["_" => [$fn], "quiet" => true]);
+        xassert_eqq($su->run(), 0);
+        xassert_neqq($this->conf->fresh_user_by_email("csvbatch4@_.com"), null);
+
+        // An existing account fails under `--only-create`, but later rows
+        // still save. (The batch script prints the failure to stderr; that
+        // line in the test output is expected.)
+        $fn = $this->write_temp("email,roles\ncsvbatch4@_.com,chair\ncsvbatch5@_.com,pc\n");
+        $su = new SaveUsers_Batch($this->conf->root_user(), [
+            "_" => [$fn], "quiet" => true, "only-create" => true
+        ]);
+        xassert_eqq($su->run(), 1);
+        xassert_eqq($this->conf->fresh_user_by_email("csvbatch4@_.com")->roles & Contact::ROLE_CHAIR, 0);
+        xassert_neqq($this->conf->fresh_user_by_email("csvbatch5@_.com"), null);
+
+        $this->delete_batch_users();
+    }
+
+    /** Parse `hotcrapi.php upload` arguments.
+     * @param string ...$argv
+     * @return Upload_CLIBatch */
+    private function parse_upload_args(...$argv) {
+        $hcli = Hotcrapi_Batch::make_args(["hotcrapi.php", "--config", "none", "test"]);
+        $arg = $hcli->getopt->parse(["hotcrapi.php", "--config", "none", "upload", ...$argv]);
+        return Upload_CLIBatch::make_arg($hcli, $arg);
+    }
+
+    function test_cli_upload_args() {
+        $f = SiteLoader::$root . "/README.md";
+
+        $ucb = $this->parse_upload_args($f);
+        xassert_eqq($ucb->doctype, null);
+        xassert_eqq($ucb->pid, null);
+        xassert(!$ucb->temporary);
+
+        // document type
+        xassert_eqq($this->parse_upload_args("--dt", "final", $f)->doctype, "final");
+        xassert_eqq($this->parse_upload_args("-D", "final", $f)->doctype, "final");
+        xassert_eqq($this->parse_upload_args("--dt=Attachments", $f)->doctype, "Attachments");
+        xassert_eqq($this->parse_upload_args("--dt", "2", $f)->doctype, "2");
+
+        // submission ID, by each spelling, and as an integer
+        foreach (["-p", "--pid", "--paper"] as $opt) {
+            $ucb = $this->parse_upload_args($opt, "3", $f);
+            xassert_eqq($ucb->pid, 3);
+        }
+
+        // exposed filename defaults to the input file's basename
+        xassert_eqq($this->parse_upload_args($f)->filename, "README.md");
+        xassert_eqq($this->parse_upload_args("-f", "other.md", $f)->filename, "other.md");
+        xassert_eqq($this->parse_upload_args("--filename=other.md", $f)->filename, "other.md");
+        xassert_eqq($this->parse_upload_args("--no-filename", $f)->filename, null);
+        xassert_eqq($this->parse_upload_args("-f", "dir/other.md", $f)->filename, "dir/other.md");
+
+        // combinations
+        $ucb = $this->parse_upload_args("--dt", "Attachments", "-p", "3", "--temporary", $f);
+        xassert_eqq($ucb->doctype, "Attachments");
+        xassert_eqq($ucb->pid, 3);
+        xassert_eqq($ucb->temporary, true);
+
+        // arguments reach the `start` query
+        xassert_eqq($this->parse_upload_args($f)->start_query(),
+            "start=1&filename=README.md&size=" . filesize($f) . "&temp=0");
+        xassert_eqq($this->parse_upload_args("--no-filename", "--temporary", $f)->start_query(),
+            "start=1&size=" . filesize($f) . "&temp=1");
+        xassert_eqq($this->parse_upload_args("-f", "other name.md", "--dt", "Attachments", "-p", "3", $f)->start_query(),
+            "start=1&filename=other+name.md&size=" . filesize($f) . "&p=3&dt=Attachments");
+        xassert_eqq($this->parse_upload_args("--dt", "final", "--temporary", $f)->start_query(),
+            "start=1&filename=README.md&size=" . filesize($f) . "&dt=final&temp=1");
+
+        // a non-numeric submission ID is an error
+        $ok = false;
+        try {
+            $this->parse_upload_args("-p", "butterfly", $f);
+        } catch (CommandLineException $ex) {
+            $ok = true;
+        }
+        xassert($ok);
+    }
+
+    function test_hotcrp_daemonize() {
+        if ((!is_dir("/proc/self/fd") && !is_dir("/dev/fd"))
+            || !is_executable("/bin/bash")
+            || !function_exists("stream_socket_pair")) {
+            return;
+        }
+        $daemonize = escapeshellarg(SiteLoader::$root . "/batch/hotcrp-daemonize");
+        $devnull = ["file", "/dev/null", "a"];
+        $descriptors = [["file", "/dev/null", "r"], $devnull, $devnull];
+
+        // no command: usage error
+        $p = proc_open($daemonize, $descriptors, $pipes);
+        xassert_eqq(proc_close($p), 1);
+
+        // this socket stands in for the descriptors a web request holds open,
+        // such as its connection to the browser and to the database
+        $sp = stream_socket_pair(STREAM_PF_UNIX, STREAM_SOCK_STREAM, 0);
+        xassert_neqq($sp, false);
+
+        $time0 = microtime(true);
+        $p = proc_open("{$daemonize} /bin/sh -c " . escapeshellarg("sleep 3"),
+            $descriptors, $pipes);
+        xassert_eqq(proc_close($p), 0);
+        $elapsed = microtime(true) - $time0;
+
+        // the daemon runs for 3sec, so `hotcrp-daemonize` did not wait for it
+        xassert_lt($elapsed, 1.0);
+
+        // drop this process's copy of the write end; the read end sees
+        // end-of-file unless the daemon inherited a copy, in which case the
+        // read blocks until it times out
+        fclose($sp[1]);
+        stream_set_blocking($sp[0], true);
+        stream_set_timeout($sp[0], 1);
+        fread($sp[0], 1);
+        $metadata = stream_get_meta_data($sp[0]);
+        xassert(!$metadata["timed_out"]);
+        fclose($sp[0]);
+    }
+
+    /** @param string $output */
+    private function run_schema_backup($output) {
+        global $Opt;
+        $bdb = new BackupDB_Batch(Dbl::parse_connection_params($Opt), [
+            "output" => $output, "schema" => true, "only" => ["Settings"]
+        ]);
+        return $bdb->run();
+    }
+
+    function test_backupdb_output_targets() {
+        $dir = tempdir();
+        xassert(!!$dir);
+
+        // a regular file is replaced atomically
+        $fn = "{$dir}/backup.sql";
+        file_put_contents($fn, "old\n");
+        xassert_eqq($this->run_schema_backup($fn), 0);
+        xassert_str_contains(file_get_contents($fn), "CREATE TABLE `Settings`");
+        xassert(!file_exists("{$fn}.tmp"));
+
+        // a symlink is written through, not replaced
+        $target = "{$dir}/target.sql";
+        file_put_contents($target, "old\n");
+        $link = "{$dir}/link.sql";
+        symlink($target, $link);
+        xassert_eqq($this->run_schema_backup($link), 0);
+        xassert(is_link($link));
+        xassert_str_contains(file_get_contents($target), "CREATE TABLE `Settings`");
+        xassert(!file_exists("{$link}.tmp"));
+
+        // a device is written directly
+        xassert_eqq($this->run_schema_backup("/dev/null"), 0);
+        xassert(!file_exists("/dev/null.tmp"));
+
+        unlink($link);
+        unlink($target);
+        unlink($fn);
+        rmdir($dir);
+    }
 }

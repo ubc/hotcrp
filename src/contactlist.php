@@ -49,21 +49,26 @@ class ContactList {
     private $has_flags = 0;
     /** @var Tagger */
     private $tagger;
+    /** @var string */
     private $limit;
+    /** @var ?PaperIDSet */
+    private $_user_filter;
     public $have_folds = [];
     private $qopt = [];
+    /** @var string */
+    private $_uldisplay;
     /** @var array<int,Column> */
     private $_columns = [];
     /** @var array<int,string> */
     private $_fold_names = [];
-    /** @var PaperInfoSet */
-    private $_rowset;
     /** @var array<int,list<int>> */
     private $_au_data;
     /** @var array<int,bool> */
     private $_au_unsub;
     /** @var array<int,int> */
     private $_pref_data;
+    /** @var list<int> */
+    private $_pref_pids = [];
     /** @var array<int,list<int>> */
     private $_re_data;
     /** @var array<int,list<array{int,int,int,int}>> */
@@ -92,6 +97,10 @@ class ContactList {
     private $_selection;
     /** @var bool */
     private $_select_all = false;
+    /** @var int */
+    private $_viewable_roles = 0;
+    /** @var int */
+    private $_limit_default_roles = 0;
 
     /** @var ?array<string,int> */
     static private $field_name_map;
@@ -99,6 +108,7 @@ class ContactList {
     const HAS_SELECTOR = 1;
     const HAS_PC = 2;
     const HAS_NONPC = 4;
+    const HAS_UNLISTEDPC = 8;
 
     function __construct(Contact $user, $sortable = true, $qreq = null) {
         $this->conf = $user->conf;
@@ -133,11 +143,34 @@ class ContactList {
         }
 
         if ($this->qreq->has_a("pap")) {
-            $this->_selection = SearchSelection::make($this->qreq);
+            $this->_selection = SearchSelection::make_raw($this->qreq, "pap");
         }
         if ($this->qreq->selectall) {
             $this->_select_all = true;
         }
+        $this->_uldisplay = self::uldisplay($qreq);
+    }
+
+    /** @param ?PaperIDSet $uids
+     * @return $this */
+    function set_user_filter($uids) {
+        assert($this->limit === null);
+        $this->_user_filter = $uids;
+        return $this;
+    }
+
+    /** @param string $key
+     * @return null|true|string */
+    function display_value($key) {
+        $xkey = $key === "scoresort" ? " {$key}=" : " {$key} ";
+        if (($pos = strpos($this->_uldisplay, $xkey)) === false) {
+            return null;
+        } else if ($key === "scoresort") {
+            $pos += strlen($xkey);
+            $sp = strpos($this->_uldisplay, " ", $pos);
+            return substr($this->_uldisplay, $pos, $sp - $pos);
+        }
+        return true;
     }
 
     /** @param string $name
@@ -300,15 +333,14 @@ class ContactList {
     }
 
     /** @param Column $col
-     * @param string $uldisplay
      * @return bool */
-    private function column_unfolded($col, $uldisplay) {
+    private function column_unfolded($col) {
         if (!$col->fold) {
             return true;
         }
         $foldname = $this->_fold_names[$col->order] ?? $col->name;
         $this->have_folds[$foldname] = true;
-        return strpos($uldisplay, " {$foldname} ") !== false;
+        return $this->display_value($foldname) === true;
     }
 
     /** @param Column $col */
@@ -531,10 +563,7 @@ class ContactList {
             break;
         default:
             $f = $this->_rfields[$this->sortField - self::FIELD_SCORE] ?? null;
-            $scoresort = $this->qreq->csession("ulscoresort") ?? "average";
-            if (!in_array($scoresort, ["average", "variance", "maxmin"], true)) {
-                $scoresort = "average";
-            }
+            $scoresort = Session_API::clean_ulscoresort($this->display_value("scoresort")) ?? "average";
             foreach ($rows as $row) {
                 $scoreinfo = new ScoreInfo($this->_extract_scores($row->contactId, $f));
                 $this->_sort_data[$row->contactId] =
@@ -545,9 +574,8 @@ class ContactList {
         }
         if ($this->reverseSort) {
             return array_reverse($rows);
-        } else {
-            return $rows;
         }
+        return $rows;
     }
 
     /** @param int $fieldId
@@ -576,15 +604,13 @@ class ContactList {
         case self::FIELD_REVIEWS:
             if ($this->limit === "extsub") {
                 return "Completed reviews";
-            } else {
-                return '<span class="hastitle" title="“1/2” means 1 complete review out of 2 assigned reviews">Reviews</span>';
             }
+            return '<span class="hastitle" title="“1/2” means 1 complete review out of 2 assigned reviews">Reviews</span>';
         case self::FIELD_INCOMPLETE_REVIEWS:
             if ($this->limit === "extrev-not-accepted") {
                 return "Outstanding review requests";
-            } else {
-                return "Incomplete reviews";
             }
+            return "Incomplete reviews";
         case self::FIELD_LEADS:
             return "Leads";
         case self::FIELD_SHEPHERDS:
@@ -600,10 +626,9 @@ class ContactList {
                 return "Rejected submissions";
             } else if ($this->limit === "auuns") {
                 return "Incomplete submissions";
-            } else {
-                assert($this->limit === "au" || $this->limit === "all");
-                return "Submissions";
             }
+            assert($this->limit === "au" || $this->limit === "all");
+            return "Submissions";
         case self::FIELD_REVIEW_PAPERS:
             return "Assigned submissions";
         case self::FIELD_TAGS:
@@ -686,6 +711,15 @@ class ContactList {
         $limit = $this->limit;
         $review_limit = in_array($limit, ["re", "req", "ext", "extsub", "extrev-not-accepted", "all"], true) ? $limit : null;
 
+        $this->_viewable_roles = $this->user->viewable_roles_mask();
+        if ($limit === "pc" || $limit === "fullpc") {
+            $this->_limit_default_roles = Contact::ROLE_PC;
+        } else if ($limit === "unlistedpc") {
+            $this->_limit_default_roles = Contact::ROLE_UNLISTEDPC;
+        } else {
+            $this->_limit_default_roles = 0;
+        }
+
         $args = [];
         if (isset($this->qopt["papers"])) {
             $args["allConflictType"] = true;
@@ -710,6 +744,7 @@ class ContactList {
         if (empty($args)
             && !isset($this->qopt["leads"])
             && !isset($this->qopt["shepherds"])
+            && (!isset($this->qopt["preferences"]) || $this->user->allow_admin_all())
             && !str_starts_with($limit, "au")) {
             return;
         }
@@ -756,13 +791,9 @@ class ContactList {
                 $this->_re_data = $this->_reord_data = [];
             }
             foreach ($prows as $prow) {
-                if ($this->user->can_view_review_assignment($prow, null)
-                    && $this->user->can_view_review_identity($prow, null)) {
-                    foreach ($prow->all_reviews() as $rrow) {
-                        if ($this->user->can_view_review_assignment($prow, $rrow)
-                            && $this->user->can_view_review_identity($prow, $rrow)) {
-                            $this->collect_review_data($prow, $rrow, $repapers, $review_limit);
-                        }
+                foreach ($prow->all_reviews() as $rrow) {
+                    if ($this->user->can_view_review_identity($prow, $rrow)) {
+                        $this->collect_review_data($prow, $rrow, $repapers, $review_limit);
                     }
                 }
             }
@@ -824,6 +855,15 @@ class ContactList {
             }
         }
 
+        if (isset($this->qopt["preferences"]) && !$this->user->allow_admin_all()) {
+            $this->_pref_pids = [];
+            foreach ($prows as $prow) {
+                if ($this->user->can_view_preference($prow, true)) {
+                    $this->_pref_pids[] = $prow->paperId;
+                }
+            }
+        }
+
         $this->user->set_overrides($overrides);
     }
 
@@ -846,17 +886,18 @@ class ContactList {
                 $tagger = new Tagger($this->user);
                 $t .= $tagger->unparse_decoration_html($viewable, Tagger::DECOR_USER);
             }
-            $roles = $row->viewable_pc_roles($this->user);
-            if ($roles === Contact::ROLE_PC && $this->limit === "pc") {
-                $roles = 0;
-            }
-            if ($roles !== 0 && ($rolet = Contact::role_html_for($roles))) {
+            $roles = $row->roles & $this->_viewable_roles;
+            if ($roles !== 0
+                && $roles !== $this->_limit_default_roles
+                && ($rolet = Contact::role_html_for($roles))) {
                 $t .= " {$rolet}";
             }
             if ($this->user->privChair && $row->email != $this->user->email) {
+                $actast = "Act as " . $row->name(NAME_P);
                 $t .= " " . $this->conf->hotlink(
-                    Ht::img("viewas.png", "[Act as]", ["title" => "Act as " . $row->name(NAME_P)]),
-                    "index", ["actas" => $row->email]
+                    Ht::make_icon("viewas", ["class" => "viewas-icon"]),
+                    "index", ["actas" => $row->email],
+                    ["title" => $actast, "aria-label" => $actast]
                 );
             }
             if ($row->is_disabled() && $this->user->isPC) {
@@ -996,18 +1037,18 @@ class ContactList {
                 . join(", ", $t) . '</div>';
         case self::FIELD_TAGS:
             if ($this->user->isPC
-                && ($tags = $row->viewable_tags($this->user))) {
+                && ($tags = $row->viewable_tags($this->user, 0))) {
                 $x = [];
                 foreach (Tagger::split($tags) as $t) {
-                    if ($t !== "pc#0")
-                        $x[] = $this->conf->hotlink($this->tagger->unparse_hashed($t), "users", ["t" => "#" . Tagger::tv_tag($t)], ["class" => "q nw"]);
+                    $x[] = $this->conf->hotlink($this->tagger->unparse_hashed($t), "users", ["t" => "#" . Tagger::tv_tag($t)], ["class" => "q nw"]);
                 }
                 return join(" ", $x);
             } else {
                 return "";
             }
         case self::FIELD_COLLABORATORS:
-            if ($this->user->isPC && ($row->roles & Contact::ROLE_PC)) {
+            if ($this->user->isPC
+                && ($row->roles & $this->_viewable_roles & Contact::ROLE_ANYPC) !== 0) {
                 $t = [];
                 foreach ($row->collaborator_generator() as $co) {
                     $t[] = (empty($t) ? '' : ';</span> ') . '<span class="nw">' . $co->name_h(NAME_A);
@@ -1017,7 +1058,7 @@ class ContactList {
                 return "";
             }
         default:
-            if (($row->roles & Contact::ROLE_PC)
+            if (($row->roles & $this->_viewable_roles & Contact::ROLE_ANYPC) !== 0
                 || $this->user->privChair
                 || $this->limit === "req") {
                 $f = $this->_rfields[$fieldId - self::FIELD_SCORE];
@@ -1031,19 +1072,26 @@ class ContactList {
 
     /** @return string */
     static function uldisplay(Qrequest $qreq, $no_session = false) {
-        if ($no_session || ($uldisplay = $qreq->csession("uldisplay")) === null) {
-            $uldisplay = " tags ";
+        if ($no_session) {
+            $d = " tags ";
             foreach ($qreq->conf()->review_form()->highlighted_main_scores() as $rf) {
-                $uldisplay .= "{$rf->short_id} ";
+                $d .= "{$rf->short_id} ";
+            }
+            return $d;
+        }
+        $d = $qreq->csession("uldisplay");
+        if ($d === null && !$qreq->qsid() && $qreq->has_a("show")) {
+            $d = " " . join(" ", $qreq->get_a("show")) . " ";
+            if (($ss = Session_API::clean_ulscoresort($qreq->scoresort))) {
+                $d .= "scoresort={$ss} ";
             }
         }
-        return $uldisplay;
+        return $d ?? self::uldisplay($qreq, true);
     }
 
     /** @param string $columnlist
      * @return list<Column> */
     function _resolve_columns($columnlist) {
-        $uldisplay = self::uldisplay($this->qreq);
         $cols = [];
         foreach (explode(" ", $columnlist) as $colname) {
             if ($colname === "") {
@@ -1052,7 +1100,7 @@ class ContactList {
                 $cols[] = $col;
             } else if ($colname === "scores" && $this->user->isPC) {
                 foreach ($this->_rfields as $i => $f) {
-                    if (strpos($uldisplay, " {$f->short_id} ") !== false)
+                    if ($this->display_value($f->short_id))
                         $cols[] = $this->_column(self::FIELD_SCORE + $i);
                 }
             }
@@ -1060,16 +1108,87 @@ class ContactList {
         return $cols;
     }
 
-    /** @return list<Column> */
-    private function list_columns($listname) {
-        $this->limit = $listname;
+    /** @param string $listname
+     * @return bool */
+    static function can_view_list(Contact $viewer, $listname) {
+        if (str_starts_with($listname, "#")) {
+            return $viewer->can_view_pc()
+                && strlen($listname) > 1
+                && $viewer->can_view_user_tag(substr($listname, 1));
+        }
         switch ($listname) {
         case "pc":
+        case "fullpc":
+            return ($viewer->viewable_roles_mask() & Contact::ROLE_PC) !== 0;
+        case "unlistedpc":
+            return ($viewer->viewable_roles_mask() & Contact::ROLE_UNLISTEDPC) !== 0;
+        case "admin":
+        case "pcadmin":
+        case "pcadminx":
+            return ($viewer->viewable_roles_mask() & Contact::ROLE_ADMIN) !== 0;
+        case "re":
+        case "ext":
+        case "extsub":
+        case "extrev-not-accepted":
+            return $viewer->is_manager()
+                || ($viewer->isPC
+                    && $viewer->conf->setting("viewrev") > 0);
+        case "req":
+            return $viewer->isPC;
+        case "au":
+            return $viewer->is_manager()
+                || ($viewer->isPC
+                    && $viewer->conf->submission_blindness() !== Conf::BLIND_ALWAYS);
+        case "auacc":
+            return $viewer->is_manager()
+                || ($viewer->isPC
+                    && $viewer->can_view_some_standard_decision()
+                    && $viewer->can_view_some_authors());
+        case "aurej":
+            return $viewer->is_manager()
+                || ($viewer->isPC
+                    && $viewer->can_view_some_decision()
+                    && $viewer->conf->submission_blindness() !== Conf::BLIND_ALWAYS);
+        case "auuns":
+            return $viewer->is_manager();
+        case "all":
+        case "bot":
+            return $viewer->privChair;
+        default:
+            return false;
+        }
+    }
+
+    /** @return list<Column> */
+    private function resolve_list_columns($listname) {
+        if (!self::can_view_list($this->user, $listname)) {
+            return [];
+        }
+        $this->qopt = [];
+        if (isset($this->_user_filter)) {
+            $this->qopt["where"][] = $this->_user_filter->sql_predicate("contactId");
+        }
+        if (str_starts_with($listname, "#")) {
+            if (strcasecmp($listname, "#pc") === 0) {
+                $listname = "pc";
+            } else {
+                $x = sqlq(Dbl::escape_like(substr($listname, 1)));
+                $this->qopt["where"][] = "(contactTags like " . Dbl::utf8ci("'% {$x}#%'") . ")";
+                $listname = $this->user->isPC ? "pcadmin" : "pc";
+            }
+        }
+        $this->limit = $listname;
+        switch ($this->limit) {
+        case "pc":
+        case "unlistedpc":
+        case "fullpc":
         case "admin":
         case "pcadmin":
             return $this->_resolve_columns("sel name email aff orcid country lastvisit tags collab topicshi topicslo nprefs reviews revratings lead shepherd scores");
         case "pcadminx":
             return $this->_resolve_columns("name email aff orcid country lastvisit tags collab topicshi topicslo nprefs");
+        case "bot":
+            return $this->_resolve_columns("sel name email lastvisit tags topicshi topicslo nprefs reviews revratings scores");
         case "re":
             return $this->_resolve_columns("sel name email aff orcid country lastvisit tags collab topicshi topicslo nprefs reviews revratings scores");
         case "ext":
@@ -1126,8 +1245,9 @@ class ContactList {
             $mods[] = null;
             if ($this->has("nonpc")) {
                 $mods["add_pc"] = "Add to PC";
+                $mods["add_unlistedpc"] = "Add to unlisted PC";
             }
-            if ($this->has("pc")) {
+            if ($this->has("pc") || $this->has("unlistedpc")) {
                 $mods["remove_pc"] = "Remove from PC";
             }
             $plft = PaperList::make_tab("modify", "Modify");
@@ -1143,21 +1263,34 @@ class ContactList {
             . "</tfoot>\n";
     }
 
+    /** @return list<Contact> */
     function _rows() {
         // Collect paper data first
         $this->collect_paper_data();
 
-        $mainwhere = [];
-        if (isset($this->qopt["where"])) {
-            $mainwhere[] = $this->qopt["where"];
-        }
+        $mainwhere = $this->qopt["where"] ?? [];
         if ($this->limit == "pc") {
-            $mainwhere[] = "roles!=0 and (roles&" . Contact::ROLE_PC . ")!=0";
+            $rolemask = Contact::ROLE_PC;
+        } else if ($this->limit == "unlistedpc") {
+            $rolemask = Contact::ROLE_UNLISTEDPC;
+        } else if ($this->limit == "fullpc") {
+            $rolemask = Contact::ROLE_ANYPC;
         } else if ($this->limit == "admin") {
-            $mainwhere[] = "roles!=0 and (roles&" . (Contact::ROLE_ADMIN | Contact::ROLE_CHAIR) . ")!=0";
+            $rolemask = Contact::ROLE_ADMIN | Contact::ROLE_CHAIR;
         } else if ($this->limit == "pcadmin" || $this->limit == "pcadminx") {
-            $mainwhere[] = "roles!=0 and (roles&" . Contact::ROLE_PCLIKE . ")!=0";
+            $rolemask = Contact::ROLE_ANYPC | Contact::ROLE_ADMIN | Contact::ROLE_CHAIR;
+        } else {
+            $rolemask = null;
         }
+        if ($rolemask !== null) {
+            $rolemask &= $this->user->viewable_roles_mask(); // might yield 0
+            $mainwhere[] = "roles!=0 and (roles&{$rolemask})!=0";
+        }
+
+        if ($this->limit === "bot") {
+            $mainwhere[] = "(cflags&" . Contact::CF_BOT . ")!=0";
+        }
+
         if ($this->limit === "all") {
             $mainwhere[] = "(roles!=0 or lastLogin>0 or contactId" . sql_in_int_list(array_keys($this->_limit_cids)) . ")";
         } else if ($this->_limit_cids !== null) {
@@ -1171,7 +1304,8 @@ class ContactList {
         while (($row = Contact::fetch($result, $this->conf))) {
             if ($row->is_anonymous_user()
                 || $row->is_placeholder()
-                || $row->is_deleted()) {
+                || $row->is_deleted()
+                || ($this->_user_filter && !$this->_user_filter->contains($row->contactId))) {
                 continue;
             }
             $rows[] = $row;
@@ -1182,7 +1316,6 @@ class ContactList {
         }
         if (isset($this->qopt["preferences"]) && $this->user->isPC) {
             $this->_pref_data = [];
-            $uids = [];
             if ($this->user->can_view_pc()) {
                 foreach ($rows as $row) {
                     $this->_pref_data[$row->contactId] = 0;
@@ -1190,7 +1323,16 @@ class ContactList {
             } else {
                 $this->_pref_data[$this->user->contactId] = 0;
             }
-            $result = $this->conf->qe("select contactId, count(*) from PaperReviewPreference where contactId?a group by contactId", array_keys($this->_pref_data));
+            if ($this->user->allow_admin_all()) {
+                // chair can see all preferences
+                $result = $this->conf->qe("select contactId, count(*) from PaperReviewPreference where contactId?a and (preference!=0 or expertise is not null) group by contactId",
+                    array_keys($this->_pref_data));
+            } else {
+                // count others' preferences only on papers where the viewer
+                // can see aggregate preferences; count own preferences everywhere
+                $result = $this->conf->qe("select contactId, count(*) from PaperReviewPreference where contactId?a and (paperId?a or contactId=?) and (preference!=0 or expertise is not null) group by contactId",
+                    array_keys($this->_pref_data), $this->_pref_pids, $this->user->contactId);
+            }
             while (($row = $result->fetch_row())) {
                 $this->_pref_data[(int) $row[0]] = (int) $row[1];
             }
@@ -1213,31 +1355,21 @@ class ContactList {
     }
 
     function print_table_html($listname, $url, $listtitle = "", $foldsession = null) {
-        // PC tags
-        $listquery = $listname;
-        $this->qopt = [];
-        if (str_starts_with($listname, "#")) {
-            $x = sqlq(Dbl::escape_like(substr($listname, 1)));
-            $this->qopt["where"] = "(contactTags like " . Dbl::utf8ci("'% {$x}#%'") . ")";
-            $listquery = "pcadmin";
-        }
-
-        // get paper list
-        $columns = $this->list_columns($listquery);
+        // resolve columns
+        $columns = $this->resolve_list_columns($listname);
         if (empty($columns)) {
-            echo Ht::feedback_msg(MessageItem::error("<0>User set ‘{$listquery}’ not found"));
+            echo Ht::feedback_msg(MessageItem::error("<0>User set ‘{$listname}’ not found"));
             return;
         }
 
         // get field array
         $fieldDef = [];
         $acceptable_fields = [];
-        $uldisplay = self::uldisplay($this->qreq);
         $this->has_flags = 0;
         $ncol = 0;
         foreach ($columns as $col) {
             if ($this->column_visible($col)
-                && $this->column_unfolded($col, $uldisplay)) {
+                && $this->column_unfolded($col)) {
                 $this->column_query_options($col);
                 $acceptable_fields[$col->order] = true;
                 $fieldDef[$col->order] = $col;
@@ -1285,7 +1417,7 @@ class ContactList {
 
         $anyData = [];
         $bodyrows = [];
-        $extrainfo = $hascolors = false;
+        $hascolors = false;
         $ids = [];
         foreach ($srows as $row) {
             if (($this->limit == "resub" || $this->limit == "extsub")
@@ -1310,6 +1442,8 @@ class ContactList {
             $ids[] = (int) $row->contactId;
             if ($row->roles & Contact::ROLE_PC) {
                 $this->has_flags |= self::HAS_PC;
+            } else if ($row->roles & Contact::ROLE_UNLISTEDPC) {
+                $this->has_flags |= self::HAS_UNLISTEDPC;
             } else {
                 $this->has_flags |= self::HAS_NONPC;
             }
@@ -1359,11 +1493,10 @@ class ContactList {
             $bodyrows[] = $t . $tt;
         }
 
-        $uldisplay = self::uldisplay($this->qreq);
         $foldclasses = [];
         foreach (self::$folds as $k => $fold) {
             if (($this->have_folds[$fold] ?? null) !== null) {
-                $this->have_folds[$fold] = strpos($uldisplay, " {$fold} ") !== false;
+                $this->have_folds[$fold] = $this->display_value($fold) === true;
                 $foldclasses[] = "fold" . ($k + 1) . ($this->have_folds[$fold] ? "o" : "c");
             }
         }
@@ -1397,15 +1530,15 @@ class ContactList {
                     echo "<th class=\"pl plh {$fdef->className}\"></th>";
                     continue;
                 }
-                echo "<th class=\"pl plh {$fdef->className}\">";
+                echo "<th class=\"pl plh ", $fdef->className;
                 $ftext = $this->header($fieldId);
                 if ($fieldId === $sortField) {
                     $klass = $this->reverseSort ? "sort-descending" : "sort-ascending";
-                    echo Ht::link($ftext, $this->_next_sort_link($sortUrl), ["class" => "pl_sort {$klass}", "rel" => "nofollow"]);
+                    echo " sortable\">", Ht::link($ftext, $this->_next_sort_link($sortUrl), ["class" => "pl_sort {$klass}", "rel" => "nofollow"]);
                 } else if ($fdef->sort) {
-                    echo Ht::link($ftext, $sortUrl . $fdef->name, ["class" => "pl_sort", "rel" => "nofollow"]);
+                    echo " sortable\">", Ht::link($ftext, $sortUrl . $fdef->name, ["class" => "pl_sort", "rel" => "nofollow"]);
                 } else {
-                    echo $ftext;
+                    echo "\">", $ftext;
                 }
                 echo "</th>";
             }
@@ -1436,7 +1569,7 @@ class ContactList {
                 }
             }
             $l = (new SessionList("u/{$listlink}", $ids, $listtitle))
-                ->set_urlbase($this->conf->hoturl_raw("users", ["t" => $listlink], Conf::HOTURL_SITEREL));
+                ->set_urlbase($this->conf->hoturl("users", ["t" => $listlink], Conf::HOTURL_SITEREL));
             echo " has-hotlist\" data-hotlist=\"", htmlspecialchars($l->info_string());
         }
         echo "\">";
@@ -1460,23 +1593,14 @@ class ContactList {
         return ob_get_clean();
     }
 
-    function rows($listname) {
-        // PC tags
-        $this->qopt = [];
-        if (str_starts_with($listname, "#")) {
-            $x = sqlq(Dbl::escape_like(substr($listname, 1)));
-            $this->qopt["where"] = "(contactTags like " . Dbl::utf8ci("'% {$x}#%'") . ")";
-            $listname = "pc";
+    /** @return list<Contact> */
+    function sorted_users($listname) {
+        if (!$this->resolve_list_columns($listname)) {
+            return [];
         }
-
-        // get paper list
-        if (!$this->list_columns($listname)) {
-            $this->conf->error_msg("<0>User list ‘{$listname}’ not found");
-            return null;
-        }
-
-        // run query
-        return $this->_rows();
+        $users = $this->_rows();
+        usort($users, $this->conf->user_comparator());
+        return $users;
     }
 
     /** @param string $field
@@ -1488,6 +1612,8 @@ class ContactList {
             return ($this->has_flags & self::HAS_PC) !== 0;
         } else if ($field === "nonpc") {
             return ($this->has_flags & self::HAS_NONPC) !== 0;
+        } else if ($field === "unlistedpc") {
+            return ($this->has_flags & self::HAS_UNLISTEDPC) !== 0;
         }
         return false;
     }

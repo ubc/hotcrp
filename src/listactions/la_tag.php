@@ -33,7 +33,7 @@ class Tag_ListAction extends ListAction {
             . $pl->action_submit("tag");
         if ($pl->user->privChair) {
             $t .= '<div class="fx99"><div style="margin:2px 0">'
-                . Ht::checkbox("tagcr_gapless", 1, !!$qreq->tagcr_gapless, ["class" => "ml-0"])
+                . Ht::checkbox("tagcr_gapless", 1, friendly_boolean($qreq->tagcr_gapless) ?? false, ["class" => "ml-0"])
                 . "&nbsp;" . Ht::label("Gapless order") . "</div>"
                 . '<div style="margin:2px 0">Using: &nbsp;'
                 . Ht::select("tagcr_method", PaperRank::default_method_selector(), $qreq->tagcr_method)
@@ -50,7 +50,6 @@ class Tag_ListAction extends ListAction {
         return $user->can_edit_some_tag();
     }
     function run(Contact $user, Qrequest $qreq, SearchSelection $ssel) {
-        $papers = $ssel->selection();
         $gapless = friendly_boolean($qreq->gapless);
 
         $act = $this->tagfn ?? $qreq->tagfn;
@@ -81,23 +80,20 @@ class Tag_ListAction extends ListAction {
             $act = "";
         }
 
-        $tagreq = trim(str_replace(",", " ", (string) $qreq->tag));
-        $tags = preg_split('/\s+/', $tagreq);
+        $tagreq = trim((string) $qreq->tag);
+        $tags = Tag_AssignmentParser::split_tag_assignments($tagreq);
+        $papers = $ssel->paper_set($user);
 
-        if ($act === "da") {
-            $otags = $tags;
-            foreach ($otags as $t) {
-                $tags[] = "all~" . preg_replace('/\A.*~([^~]+)\z/', '$1', $t);
-            }
-            $act = "d";
-        } else if ($act === "sor" || $act === "sosr") {
-            shuffle($papers);
+        if ($act === "sor" || $act === "sosr") {
+            $papers->shuffle();
         }
 
         $x = ["action,paper,tag\n"];
         if (str_starts_with($act, "s")) {
             foreach ($tags as $t) {
-                $x[] = "cleartag,all," . Tagger::tv_tag($t) . "\n";
+                if (($m = Tag_AssignmentParser::unpack_tag_assignment($t)) !== null
+                    && ($m[4] === "" || $m[4] === "#"))
+                    $x[] = "cleartag,all," . CsvGenerator::quote($m[1] . $m[2] . $m[3]) . "\n";
             }
         }
         if ($act === "s" || $act === "a") {
@@ -114,30 +110,28 @@ class Tag_ListAction extends ListAction {
 
         $assignset = new AssignmentSet($user);
         $assignset->set_overrides(Contact::OVERRIDE_CONFLICT); // i.e., not other overrides
-        if ($tagreq === "" || $act === "") {
+        if (empty($tags) || $act === "") {
             if ($act === "") {
                 $assignset->message_set()->append_item(MessageItem::error_at("tagfn", isset($qreq->tagfn) ? "<0>Parameter error" : "<0>Parameter missing"));
             }
-            if ($tagreq === "") {
+            if (empty($tags)) {
                 $assignset->message_set()->append_item(MessageItem::error_at("tag", "<0>Tags required"));
             }
-        } else if (!empty($papers) && $action) {
+        } else if (!$papers->is_empty() && $action) {
             foreach ($papers as $p) {
-                foreach ($tags as $t) {
-                    $x[] = "{$action},{$p},{$t}\n";
-                }
+                $x[] = "{$action},{$p->paperId}," . CsvGenerator::quote(join(" ", $tags)) . "\n";
             }
             $assignset->parse(join("", $x));
-        } else if (!empty($papers) && $act === "cr" && $user->privChair) {
+        } else if (!$papers->is_empty() && $act === "cr" && $user->privChair) {
             $source_tag = $qreq->tagcr_source ?? $qreq->source_tag;
             $source_tag = trim((string) $source_tag);
             if ($source_tag === "") {
                 $source_tag = (substr($tagreq, 0, 2) === "~~" ? substr($tagreq, 2) : $tagreq);
             }
             $tagger = new Tagger($user);
-            if ($tagger->check($tagreq, Tagger::NOPRIVATE | Tagger::NOVALUE)
-                && $tagger->check($source_tag, Tagger::NOPRIVATE | Tagger::NOCHAIR | Tagger::NOVALUE)) {
-                $r = new PaperRank($papers);
+            if ($tagger->check_syntax($tagreq, Tagger::NOPRIVATE | Tagger::NOVALUE)
+                && $tagger->check_syntax($source_tag, Tagger::NOPRIVATE | Tagger::NOCHAIR | Tagger::NOVALUE)) {
+                $r = new PaperRank($papers->paper_ids());
                 $r->load_user_tag_ranks($user->conf, $source_tag);
                 $r->set_gapless($gapless);
                 $r->set_printable_header($qreq, "Search", "search");

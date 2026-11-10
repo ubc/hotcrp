@@ -50,10 +50,17 @@ class CommentInfo {
     public $message_list;
     /** @var ?Contact */
     private $_commenter;
-    /** @var ?bool */
-    private $_recently_censored;
+    /** @var int */
+    private $_recently_censored = 0;
     /** @var ?bool */
     private $_recently_censorable;
+    /** @var ?array<string,mixed> */
+    public $_old_prop;
+    /** @var ?DocumentInfoSet cached attachment set; holds the staged documents
+     * when an attachment change is registered, else the saved documents */
+    private $_docs;
+    /** @var ?DocumentInfoSet base attachment set; non-null iff an attachment change is staged */
+    private $_old_docs;
 
     const CT_DRAFT = 0x01;
     const CT_BLIND = 0x02;
@@ -69,6 +76,9 @@ class CommentInfo {
     const CT_BYADMINISTRATOR = 0x100;
     const CT_TOPIC_DECISION = 0x200;
     const CT_BYMETAREVIEWER = 0x400;
+    const CT_BOT = 0x800;           // this version was written by a bot
+    const CT_BOT_PREVIOUS = 0x1000; // a previous version was written by a bot
+    const CTM_BOT = 0x1800;         // CT_BT | CT_BOT_PREVIOUS
     const CT_FROZEN = 0x4000;
     const CT_SUBMIT = 0x8000; // only used internally, not in database
     const CTVIS_ADMINONLY = 0x00000;
@@ -95,19 +105,26 @@ class CommentInfo {
      * @readonly */
     static private $visibility_revmap = [
         "admin" => 0x00000 /* CTVIS_ADMINONLY */,
-        "pc" => 0x10000 /* CTVIS_PCONLY */,
-        "p" => 0x10000 /* CTVIS_PCONLY */,
-        "rev" => 0x20000 /* CTVIS_REVIEWER */,
-        "r" => 0x20000 /* CTVIS_REVIEWER */,
+        "admin_only" => 0x00000 /* CTVIS_ADMINONLY */,
+        "a" => 0x30000 /* CTVIS_AUTHOR */,
         "au" => 0x30000 /* CTVIS_AUTHOR */,
-        "a" => 0x30000 /* CTVIS_AUTHOR */
+        "authors" => 0x30000 /* CTVIS_AUTHOR */,
+        "p" => 0x10000 /* CTVIS_PCONLY */,
+        "pc" => 0x10000 /* CTVIS_PCONLY */,
+        "pc_only" => 0x10000 /* CTVIS_PCONLY */,
+        "r" => 0x20000 /* CTVIS_REVIEWER */,
+        "rev" => 0x20000 /* CTVIS_REVIEWER */,
+        "reviewers" => 0x20000 /* CTVIS_REVIEWER */
     ];
     /** @var array<string,int>
      * @readonly */
     static private $topic_revmap = [
+        "dec" => 0x200 /* CT_TOPIC_DECISION */,
+        "decision" => 0x200 /* CT_TOPIC_DECISION */,
         "paper" => 0x40 /* CT_TOPIC_PAPER */,
         "rev" => 0,
-        "dec" => 0x200 /* CT_TOPIC_DECISION */
+        "reviews" => 0,
+        "submission" => 0x40 /* CT_TOPIC_PAPER */
     ];
 
 
@@ -193,20 +210,23 @@ class CommentInfo {
             return self::CT_RESPONSE
                 | self::CTVIS_AUTHOR
                 | ($this->prow->blind ? self::CT_BLIND : 0)
-                | ($ctype & (self::CT_DRAFT | self::CT_SUBMIT));
+                | ($ctype & (self::CT_DRAFT | self::CT_SUBMIT | self::CTM_BOT));
         } else if (($ctype & self::CTM_BYAUTHOR) !== 0) {
+            if (($ctype & self::CTM_VIS) !== self::CTVIS_ADMINONLY
+                && ($ctype & self::CTM_VIS) !== self::CTVIS_AUTHOR) {
+                $ctype = ($ctype & ~self::CTM_VIS) | self::CTVIS_AUTHOR;
+            }
             return self::CT_BYAUTHOR
                 | ($this->prow->blind ? self::CT_BLIND : 0)
-                | ($ctype & (self::CTM_TOPIC | self::CTM_VIS | self::CT_SUBMIT));
-        } else {
-            $rb = $this->conf->review_blindness();
-            if ($rb === Conf::BLIND_NEVER) {
-                $ctype &= ~self::CT_BLIND;
-            } else if ($rb !== Conf::BLIND_OPTIONAL) {
-                $ctype |= self::CT_BLIND;
-            }
-            return $ctype & ~(self::CT_DRAFT | self::CTM_BYAUTHOR);
+                | ($ctype & (self::CTM_TOPIC | self::CTM_VIS | self::CT_SUBMIT | self::CTM_BOT));
         }
+        $rb = $this->conf->review_blindness();
+        if ($rb === Conf::BLIND_NEVER) {
+            $ctype &= ~self::CT_BLIND;
+        } else if ($rb !== Conf::BLIND_OPTIONAL) {
+            $ctype |= self::CT_BLIND;
+        }
+        return $ctype & ~(self::CT_DRAFT | self::CTM_BYAUTHOR);
     }
 
     /** @param int $ctype
@@ -223,8 +243,9 @@ class CommentInfo {
 
 
     /** @param PaperInfo $prow
+     * @param Contact $user
      * @return string */
-    static function script($prow) {
+    static function script($prow, $user) {
         if (!Ht::mark_stash("papercomment")) {
             return "";
         }
@@ -237,7 +258,7 @@ class CommentInfo {
                 $j["hwl"] = $rrd->hard_wordlimit;
             }
             $crow->commentRound = $rrd->id;
-            if (Contact::$main_user->can_edit_response($prow, $crow)) {
+            if ($user->can_edit_response($prow, $crow)) {
                 if (($m = $rrd->instructions($prow->conf)) !== false) {
                     $j["instrux"] = $m;
                 }
@@ -247,13 +268,13 @@ class CommentInfo {
             }
             $t[] = "hotcrp.set_response_round(" . json_encode_browser($rrd->name) . "," . json_encode_browser($j) . ")";
         }
-        Icons::stash_defs("tag", "attachment", "trash", "thread");
         return Ht::unstash_script(join(";", $t));
     }
 
-    /** @param PaperInfo $prow */
-    static function print_script($prow) {
-        echo self::script($prow);
+    /** @param PaperInfo $prow
+     * @param Contact $user */
+    static function print_script($prow, $user) {
+        echo self::script($prow, $user);
     }
 
 
@@ -266,9 +287,8 @@ class CommentInfo {
     function response_round() {
         if (($this->commentType & self::CT_RESPONSE) !== 0) {
             return $this->conf->response_round_by_id($this->commentRound);
-        } else {
-            return null;
         }
+        return null;
     }
 
     /** @param int $ctype
@@ -278,11 +298,12 @@ class CommentInfo {
             && ($ctype & self::CTM_VIS) !== self::CTVIS_ADMINONLY;
     }
 
-    /** @param int $ctype
-     * @return bool */
-    private function ordinal_missing($ctype) {
-        return self::commenttype_needs_ordinal($ctype)
-            && ($ctype >= self::CTVIS_AUTHOR ? $this->authorOrdinal : $this->ordinal) === 0;
+    /** @return bool */
+    function ordinal_missing() {
+        return self::commenttype_needs_ordinal($this->commentType)
+            && ($this->commentType >= self::CTVIS_AUTHOR
+                ? $this->authorOrdinal === 0
+                : $this->ordinal === 0);
     }
 
     /** @return ?string */
@@ -307,10 +328,9 @@ class CommentInfo {
         if (($o = $this->unparse_ordinal()) !== null) {
             return "c{$o}";
         } else if (($rrd = $this->response_round()) !== null) {
-            return $rrd->unnamed ? "response" : "{$rrd->name}response";
-        } else {
-            return "cx{$this->commentId}";
+            return $rrd->id_name();
         }
+        return "cx{$this->commentId}";
     }
 
     /** @return int */
@@ -326,7 +346,7 @@ class CommentInfo {
         return $this->commentOverflow ?? $this->comment ?? "";
     }
 
-    /** @param Contact $viewer
+    /** @param ContactPermissions $viewer
      * @return bool */
     private function _mention_censorable($viewer) {
         $this->_recently_censorable = !$viewer->is_my_comment($this->prow, $this)
@@ -334,34 +354,39 @@ class CommentInfo {
         return $this->_recently_censorable;
     }
 
-    /** @param Contact $viewer
-     * @param array{int,int,int,?bool} $mn
+    /** @param ContactPermissions $viewer
+     * @param array{int,int,int,int|bool} $mn
      * @param int $censor_until
      * @return bool */
     private function _mention_censor($viewer, $mn, $censor_until) {
         // skip bogus, already-pseudonymous, and self mentions
         if (!is_array($mn)
             || count($mn) < 4
-            || !$mn[3]
+            || ((int) $mn[3] & MentionPhrase::TF_NAMED) === 0
             || $mn[0] === $viewer->contactId
             || !($this->_recently_censorable ?? $this->_mention_censorable($viewer))) {
             return false;
         }
         // skip mentions beyond boundary
         if ($mn[1] >= $censor_until) {
+            $this->_recently_censored |= 1;
             return false;
         }
         // do not censor visible shepherd
-        if ($mn[0] === $this->prow->shepherdContactId
+        $mt = is_int($mn[3]) ? $mn[3] : MentionPhrase::TFM_ALL;
+        if (($mt & MentionPhrase::TF_SHEPHERD) !== 0
+            && $mn[0] === $this->prow->shepherdContactId
             && $viewer->can_view_shepherd($this->prow)) {
             return false;
         }
         // do not censor visible reviewer identity
-        if ($this->prow->can_view_review_identity_of($mn[0], $viewer)) {
+        if (($mt & MentionPhrase::TF_REVIEWER) !== 0
+            && $this->prow->can_view_review_identity_of($mn[0], $viewer)) {
             return false;
         }
         // do not censor fellow author
-        if ($this->prow->has_author($viewer)
+        if (($mt & MentionPhrase::TF_AUTHOR) !== 0
+            && $this->prow->has_author($viewer)
             && $this->prow->has_author($mn[0])) {
             return false;
         }
@@ -379,15 +404,38 @@ class CommentInfo {
         return true;
     }
 
-    /** @param Contact $viewer
+    /** @param ContactPermissions $viewer
      * @param int $uid
+     * @param null|int|bool $mt
      * @return string */
-    private function _mention_pseudonym($viewer, $uid) {
-        $s = $this->prow->unparse_pseudonym($viewer, $uid) ?? "Anonymous";
+    private function _mention_pseudonym($viewer, $uid, $mt) {
+        $mt = is_int($mt) ? $mt : null;
+        $s = $this->prow->unparse_pseudonym($viewer, $uid, $mt) ?? "Anonymous";
         return "@{$s}";
     }
 
-    /** @param ?Contact $viewer
+    /** @param ?ContactPermissions $viewer
+     * @return bool */
+    function content_censored($viewer) {
+        if (!$viewer
+            || !($mns = $this->data("mentions"))
+            || !is_array($mns)) {
+            return false;
+        }
+        $ret = false;
+        if ($this->_mention_censorable($viewer)) {
+            foreach ($mns as $mn) {
+                if ($this->_mention_censor($viewer, $mn, PHP_INT_MAX)) {
+                    $ret = true;
+                    break;
+                }
+            }
+        }
+        $this->_recently_censorable = null;
+        return $ret;
+    }
+
+    /** @param ?ContactPermissions $viewer
      * @param ?int $censor_until
      * @return string */
     function content($viewer = null, $censor_until = null) {
@@ -395,26 +443,31 @@ class CommentInfo {
         if ($t === ""
             || !$viewer
             || !($mns = $this->data("mentions"))
-            || !is_array($mns)
-            || !$this->_mention_censorable($viewer)) {
+            || !is_array($mns)) {
             return $t;
         }
-        $delta = 0;
-        $censor_until = $censor_until ?? PHP_INT_MAX;
-        foreach ($mns as $mn) {
-            if ($this->_mention_censor($viewer, $mn, $censor_until - $delta)) {
-                $r = $this->_mention_pseudonym($viewer, $mn[0]);
-                $t = substr_replace($t, $r, $mn[1] + $delta, $mn[2] - $mn[1]);
-                $delta += strlen($r) - ($mn[2] - $mn[1]);
-                $this->_recently_censored = true;
+        if ($this->_mention_censorable($viewer)) {
+            $delta = 0;
+            $censor_until = $censor_until ?? PHP_INT_MAX;
+            foreach ($mns as $mn) {
+                if ($this->_mention_censor($viewer, $mn, $censor_until - $delta)) {
+                    $r = $this->_mention_pseudonym($viewer, $mn[0], $mn[3]);
+                    $t = substr_replace($t, $r, $mn[1] + $delta, $mn[2] - $mn[1]);
+                    $delta += strlen($r) - ($mn[2] - $mn[1]);
+                    $this->_recently_censored |= 2;
+                }
+            }
+            if (($this->_recently_censored & 1) !== 0) {
+                // truncate where we stopped censoring
+                $t = UnicodeHelper::utf8_truncate($t, $censor_until);
             }
         }
         $this->_recently_censorable = null;
         return $t;
     }
 
-    /** @param list<array{int,int,int,bool}> $mns
-     * @return list<array{int,int,int,bool}> */
+    /** @param list<array{int,int,int,int|bool}> $mns
+     * @return list<array{int,int,int,int|bool}> */
     private function make_my_mentions(Contact $viewer, $mns) {
         $delta = 0;
         $result = [];
@@ -422,7 +475,7 @@ class CommentInfo {
             if ($mn[0] === $viewer->contactId) {
                 $result[] = [$mn[0], $mn[1] + $delta, $mn[2] + $delta, $mn[3]];
             } else if ($this->_mention_censor($viewer, $mn, PHP_INT_MAX)) {
-                $r = $this->_mention_pseudonym($viewer, $mn[0]);
+                $r = $this->_mention_pseudonym($viewer, $mn[0], $mn[3]);
                 $delta += strlen($r) - ($mn[2] - $mn[1]);
             }
         }
@@ -446,23 +499,6 @@ class CommentInfo {
         }
         $this->make_data();
         return $key === null ? $this->_jdata : ($this->_jdata->$key ?? null);
-    }
-
-    /** @param string $key */
-    function set_data($key, $value) {
-        $this->make_data();
-        if ($value === null) {
-            unset($this->_jdata->$key);
-        } else if ($key === "mentions") {
-            $this->_jdata->mentions = [];
-            foreach ($value as $mn) {
-                $this->_jdata->mentions[] = is_object($mn) ? $mn->jsonSerialize() : $mn;
-            }
-        } else {
-            $this->_jdata->$key = $value;
-        }
-        $s = json_encode_db($this->_jdata);
-        $this->commentData = $s === "{}" ? null : $s;
     }
 
     /** @return Contact */
@@ -492,15 +528,17 @@ class CommentInfo {
      * @param bool $separateColors
      * @return list<array{CommentInfo,int,string}> */
     static function group_by_identity($crows, Contact $viewer, $separateColors) {
-        $known_cids = [];
+        $known_cids = $pseudonyms = [];
         '@phan-var array<int,int> $known_cids';
         $result = [];
         '@phan-var list<array{CommentInfo,int,string}> $result';
         foreach ($crows as $cr) {
             $cid = 0;
-            if ($viewer->can_view_comment_identity($cr->prow, $cr)
-                || $cr->unparse_commenter_pseudonym($viewer)) {
+            if ($viewer->can_view_comment_identity($cr->prow, $cr)) {
                 $cid = $cr->contactId;
+            } else if (($p = $cr->unparse_commenter_pseudonym($viewer, false))) {
+                $pdn = &$pseudonyms[$p];
+                $cid = $pdn = $pdn ?? -count($pseudonyms);
             }
             if ($cr->commentType & self::CT_RESPONSE) {
                 if (!empty($result)) {
@@ -536,15 +574,26 @@ class CommentInfo {
         return $result;
     }
 
-    /** @return ?string */
-    private function unparse_commenter_pseudonym(Contact $viewer) {
-        if (($this->commentType & self::CTM_BYAUTHOR) !== 0) {
+    /** @param bool $idable
+     * @return ?string */
+    function unparse_commenter_pseudonym(ContactPermissions $viewer, $idable) {
+        if (($this->commentType & self::CTM_BYAUTHOR) !== 0
+            && (!$idable || $viewer->can_view_authors($this->prow))) {
             return "Author";
-        } else if (($this->commentType & (self::CTM_VIS | self::CT_BYSHEPHERD)) === (self::CTVIS_AUTHOR | self::CT_BYSHEPHERD)
-                   && $this->contactId === $this->prow->shepherdContactId) {
+        }
+        $shepherd = ($this->commentType & self::CT_BYSHEPHERD) !== 0
+            && $this->contactId === $this->prow->shepherdContactId
+            && (!$idable || $viewer->can_view_shepherd($this->prow));
+        if ($shepherd
+            && ($this->commentType & self::CTM_VIS) === self::CTVIS_AUTHOR) {
             return "Shepherd";
         }
-        if (($rrow = $this->prow->review_by_user($this->contactId))) {
+        // A review pseudonym ("Reviewer A") shown next to a revealed author
+        // name would deanonymize a blind review, so offer it only when the
+        // identity is not already being shown ($idable false) or the viewer
+        // may view that review's identity anyway.
+        if (($rrow = $this->prow->review_by_user($this->contactId))
+            && (!$idable || $viewer->can_view_review_identity($this->prow, $rrow))) {
             if ($rrow->reviewOrdinal
                 && $viewer->can_view_review_assignment($this->prow, $rrow)) {
                 return "Reviewer " . unparse_latin_ordinal($rrow->reviewOrdinal);
@@ -552,10 +601,10 @@ class CommentInfo {
                 return "Metareviewer";
             }
         }
-        if (($this->commentType & self::CT_BYSHEPHERD) !== 0
-            && $this->contactId === $this->prow->shepherdContactId) {
+        if ($shepherd) {
             return "Shepherd";
-        } else if (($this->commentType & self::CT_BYADMINISTRATOR) !== 0) {
+        }
+        if (($this->commentType & self::CT_BYADMINISTRATOR) !== 0) {
             return "Administrator";
         }
         return null;
@@ -578,7 +627,7 @@ class CommentInfo {
         if ($viewer->can_view_comment_identity($this->prow, $this)) {
             $n = Text::nameo_h($this->commenter(), NAME_P|NAME_I);
         } else {
-            $n = $this->unparse_commenter_pseudonym($viewer) ?? "anonymous";
+            $n = $this->unparse_commenter_pseudonym($viewer, false) ?? "anonymous";
         }
         if (($this->commentType & self::CT_RESPONSE) !== 0) {
             $n = "<i>" . $this->unparse_response_text() . "</i>"
@@ -590,11 +639,11 @@ class CommentInfo {
     }
 
     /** @return string */
-    function unparse_commenter_text(Contact $viewer) {
+    function unparse_commenter_text(ContactPermissions $viewer) {
         if ($viewer->can_view_comment_identity($this->prow, $this)) {
             $n = Text::nameo($this->commenter(), NAME_P|NAME_I);
         } else {
-            $n = $this->unparse_commenter_pseudonym($viewer) ?? "anonymous";
+            $n = $this->unparse_commenter_pseudonym($viewer, false) ?? "anonymous";
         }
         if (($this->commentType & self::CT_RESPONSE) !== 0) {
             $n = $this->unparse_response_text()
@@ -618,7 +667,7 @@ class CommentInfo {
     }
 
     /** @return ?string */
-    function searchable_tags(Contact $viewer) {
+    function searchable_tags(ContactPermissions $viewer) {
         if (($tags = $this->all_tags_text()) !== ""
             && $viewer->can_view_comment_tags($this->prow, $this)) {
             return $this->conf->tags()->censor(TagMap::CENSOR_SEARCH, $tags, $viewer, $this->prow);
@@ -627,7 +676,7 @@ class CommentInfo {
     }
 
     /** @return ?string */
-    function viewable_tags(Contact $viewer) {
+    function viewable_tags(ContactPermissions $viewer) {
         if (($tags = $this->all_tags_text()) !== ""
             && $viewer->can_view_comment_tags($this->prow, $this)) {
             return $this->conf->tags()->censor(TagMap::CENSOR_VIEW, $tags, $viewer, $this->prow);
@@ -636,7 +685,7 @@ class CommentInfo {
     }
 
     /** @return ?string */
-    function viewable_nonresponse_tags(Contact $viewer) {
+    function viewable_nonresponse_tags(ContactPermissions $viewer) {
         if ($this->commentTags
             && $viewer->can_view_comment_tags($this->prow, $this)) {
             return $this->conf->tags()->censor(TagMap::CENSOR_VIEW, $this->commentTags, $viewer, $this->prow);
@@ -653,20 +702,72 @@ class CommentInfo {
 
     /** @return bool */
     function has_attachments() {
+        if ($this->_old_docs !== null) {
+            return !$this->attachments()->is_empty();
+        }
         return ($this->commentType & self::CT_HASDOC) !== 0;
+    }
+
+    /** @return bool */
+    function has_viewable_attachments(Contact $viewer) {
+        // Assumes $viewer->can_view_comment($this).
+        return $this->has_attachments()
+            && $viewer->scope_allows(TokenScope::S_DOC_READ, $this->prow)
+            && (($this->commentType & self::CTM_BYAUTHOR) === 0
+                || $viewer->can_view_pdf($this->prow));
     }
 
     /** @return DocumentInfoSet */
     function attachments() {
-        if (($this->commentType & self::CT_HASDOC) !== 0) {
-            return $this->prow->linked_documents($this->commentId, DTYPE_COMMENT, $this);
+        // `_docs` holds the staged set when a change is registered (so the
+        // comment reads as its unsaved version, mirroring `_old_prop`),
+        // otherwise it lazily caches the saved documents
+        if ($this->_docs === null) {
+            if (($this->commentType & self::CT_HASDOC) !== 0) {
+                $this->_docs = $this->prow->linked_documents($this->commentId, DTYPE_COMMENT, $this);
+            } else {
+                $this->_docs = new DocumentInfoSet;
+            }
         }
-        return new DocumentInfoSet;
+        return $this->_docs;
     }
 
     /** @return list<int> */
     function attachment_ids() {
         return $this->attachments()->document_ids();
+    }
+
+    /** Register a change to this comment's attachments. The new documents
+     * replace the current ones; thereafter `attachments()` reflects them and
+     * `save` rewrites the document links.
+     * @param list<DocumentInfo> $docs */
+    function set_attachments($docs) {
+        // base = the saved attachment set, not any prior staged override
+        $base = $this->_old_docs ?? $this->attachments();
+        $new_ids = [];
+        foreach ($docs as $doc) {
+            $new_ids[] = $doc->paperStorageId;
+        }
+        // reflect the presence of attachments in the comment type
+        $this->set_prop("commentType",
+            ($this->commentType & ~self::CT_HASDOC)
+            | (empty($docs) ? 0 : self::CT_HASDOC));
+        if ($base->document_ids() !== $new_ids) {
+            $this->_old_docs = $base;
+            $dset = new DocumentInfoSet;
+            foreach ($docs as $doc) {
+                $dset->add($doc->with_owner($this));
+            }
+            $this->_docs = $dset;
+        } else {
+            // no net change: drop any staged override and reload the saved set
+            $this->_old_docs = $this->_docs = null;
+        }
+    }
+
+    /** @return bool */
+    function docs_changed() {
+        return $this->_old_docs !== null;
     }
 
     /** @param bool $editable
@@ -683,9 +784,11 @@ class CommentInfo {
         return $docs;
     }
 
-    /** @param bool $no_content
+    const UNPARSE_NO_CONTENT = 1;
+    const UNPARSE_HARD_LIMIT = 2;
+    /** @param int $flags
      * @return ?object */
-    function unparse_json(Contact $viewer, $no_content = false) {
+    function unparse_json(Contact $viewer, $flags = 0) {
         if ($this->commentId !== 0
             && !$viewer->can_view_comment($this->prow, $this, true)) {
             return null;
@@ -793,7 +896,7 @@ class CommentInfo {
                 $cj["author_hidden"] = true;
             }
         }
-        if (($p = $this->unparse_commenter_pseudonym($viewer))) {
+        if (($p = $this->unparse_commenter_pseudonym($viewer, $idable))) {
             $cj["author_pseudonym"] = $p;
         }
         if ($idable && $this->commenter_may_be_pseudonymous()) {
@@ -810,18 +913,32 @@ class CommentInfo {
         }
 
         // content
-        if ($no_content) {
+        if (($flags & self::UNPARSE_NO_CONTENT) !== 0) {
             // do not include content
         } else if ($viewer->can_view_comment_content($this->prow, $this)) {
-            $cj["text"] = $this->content($viewer);
-            if ($this->has_attachments()) {
+            $ctext = $this->content($viewer);
+            if (($rrd = $this->response_round())
+                && $rrd->wordlimit > 0) {
+                $truncation = Text::apply_wordlimit($ctext, $rrd->wordlimit, $rrd->hard_wordlimit, ($flags & self::UNPARSE_HARD_LIMIT) !== 0);
+                $cj["text"] = $truncation->truncation ?? $ctext;
+                $cj["word_count"] = $truncation->word_count;
+                if ($truncation->overlong) {
+                    $cj["overlong"] = ["text" => true];
+                }
+                if ($truncation->truncation !== null) {
+                    $cj["truncated"] = ["text" => $truncation->truncation_band];
+                }
+            } else {
+                $cj["text"] = $ctext;
+            }
+            if ($this->has_viewable_attachments($viewer)) {
                 $cj["docs"] = $this->attachments_json($cj["editable"] ?? false);
             }
             if (($mentions = $this->data("mentions"))
                 && ($my_mentions = $this->make_my_mentions($viewer, $mentions))) {
                 $cj["my_mentions"] = $my_mentions;
             }
-        } else {
+        } else if ($this->is_response() && $viewer->is_admin($this->prow)) {
             $cj["word_count"] = count_words($this->raw_content());
         }
 
@@ -830,15 +947,15 @@ class CommentInfo {
 
     /** @param int $flags
      * @return string */
-    function unparse_text(Contact $viewer, $flags = 0) {
+    function unparse_text(ContactPermissions $viewer, $flags = 0) {
         if (($rrd = $this->response_round())) {
             $x = $rrd->unnamed ? "Response" : "{$rrd->name} Response";
         } else {
             $ordinal = $this->unparse_ordinal();
             $x = "Comment" . ($ordinal ? " @{$ordinal}" : "");
         }
-        $p = $this->unparse_commenter_pseudonym($viewer);
         $idable = $viewer->can_view_comment_identity($this->prow, $this);
+        $p = $this->unparse_commenter_pseudonym($viewer, $idable);
         if ($idable) {
             $n = Text::nameo($this->commenter(), NAME_EB);
             $np = $this->commenter_may_be_pseudonymous();
@@ -856,15 +973,13 @@ class CommentInfo {
         }
         $ctext = $this->content($viewer);
         if ($rrd && $rrd->wordlimit > 0) {
-            $nwords = count_words($ctext);
-            $x .= " (" . plural($nwords, "word") . ")";
-            if ($nwords > $rrd->wordlimit
-                && ($flags & ReviewForm::UNPARSE_TRUNCATE) !== 0) {
-                list($ctext, $overflow) = count_words_split($ctext, $rrd->wordlimit);
-                if ($rrd->wordlimit === $rrd->hard_wordlimit) {
-                    $ctext = rtrim($ctext) . "…\n- - - - - - - - - - - - - - Truncated for length - - - - - - - - - - - - - -\n";
+            $truncation = Text::apply_wordlimit($ctext, $rrd->wordlimit, $rrd->hard_wordlimit, ($flags & ReviewForm::UNPARSE_TRUNCATE) === 0);
+            $x .= " (" . plural($truncation->word_count, "word") . ")";
+            if ($truncation->truncation !== null) {
+                if ($truncation->truncation_band === "hard") {
+                    $ctext = rtrim($truncation->truncation) . "…\n- - - - - - - - - - - - - - Truncated for length - - - - - - - - - - - - - -\n";
                 } else {
-                    $ctext = rtrim($ctext) . "…\n- - - - - - - Truncated for length, more available on website - - - - - - -\n";
+                    $ctext = rtrim($truncation->truncation) . "…\n- - - - - - - Truncated for length, more available on website - - - - - - -\n";
                 }
             }
         }
@@ -887,10 +1002,10 @@ class CommentInfo {
     /** @return string */
     function unparse_flow_entry(Contact $viewer) {
         // See also ReviewForm::reviewFlowEntry
-        $url = $this->conf->hoturl_raw("paper", ["p" => $this->paperId, "#" => $this->unparse_html_id()]);
+        $url = $this->conf->hoturl("paper", ["p" => $this->paperId, "#" => $this->unparse_html_id()]);
         $a = '<a href="' . Ht::escape_attr($url) . '"';
         $t = "<tr class=\"pl\"><td class=\"pl_eventicon\">{$a}>"
-            . Ht::img("comment48.png", "[Comment]", ["class" => "dlimg", "width" => 24, "height" => 24])
+            . Ht::img("comment48.svg", "[Comment]", ["class" => "dlimg", "width" => 24, "height" => 24])
             . "</a></td><td class=\"pl_eventid pl_rowclick\">{$a} class=\"pnum\">#{$this->paperId}</a></td><td class=\"pl_eventdesc pl_rowclick\"><small>{$a} class=\"ptitle\">"
             . htmlspecialchars(UnicodeHelper::utf8_word_abbreviate($this->prow->title, 80))
             . "</a>";
@@ -905,20 +1020,21 @@ class CommentInfo {
             $t .= ' <span class="barsep">·</span> <span class="hint">comment by</span> ' . $viewer->reviewer_html_for($this->contactId);
         }
         return $t . "</small><br>"
-            . htmlspecialchars(UnicodeHelper::utf8_word_abbreviate($this->content($viewer, 300), 300))
+            . htmlspecialchars(UnicodeHelper::utf8_word_abbreviate($this->content($viewer, 600), 300))
             . "</td></tr>";
     }
 
 
-    private function save_ordinal($cmtid, $ctype) {
-        $okey = $ctype >= self::CTVIS_AUTHOR ? "authorOrdinal" : "ordinal";
-        $q = "update PaperComment, (select coalesce(max(PaperComment.{$okey}),0) maxOrdinal
+    /** @internal */
+    function save_ordinal() {
+        $okey = $this->commentType >= self::CTVIS_AUTHOR ? "authorOrdinal" : "ordinal";
+        $this->conf->qe("update PaperComment, (select coalesce(max(PaperComment.{$okey}),0) maxOrdinal
     from Paper
     left join PaperComment on (PaperComment.paperId=Paper.paperId)
-    where Paper.paperId={$this->prow->paperId}
+    where Paper.paperId={$this->paperId}
     group by Paper.paperId) t
-set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
-        $this->conf->qe($q);
+set {$okey}=(t.maxOrdinal+1) where paperId={$this->paperId} and commentId={$this->commentId} and {$okey}=0");
+        $this->$okey = $this->conf->fetch_ivalue("select {$okey} from PaperComment where paperId={$this->paperId} and commentId={$this->commentId}");
     }
 
     /** @param array $req
@@ -946,222 +1062,143 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
         return $this->fix_type($ctype);
     }
 
-    /** @param array{docs?:list<DocumentInfo>,tags?:?string,no_autosearch?:bool} $req
-     * @return bool */
-    function save_comment($req, Contact $acting_user) {
-        assert($this->paperId > 0 && (!$this->prow || $this->prow->paperId === $this->paperId));
-        $this->notifications = [];
-
-        $user = $acting_user;
-        if (!$user->contactId) {
-            $user = $acting_user->reviewer_capability_user($this->paperId);
-        }
-        if (!$user || !$user->contactId) {
-            error_log("Comment::save({$this->paperId}): no such user");
-            return false;
-        }
-
-        $ctype = $this->requested_type($req) & self::CT_DBMASK;
-        $is_response = ($ctype & self::CT_RESPONSE) !== 0;
-        $response_name = $is_response ? $this->response_round()->name : null;
-
-        // tags
-        $expected_tags = $this->commentTags;
-        if (!$is_response
-            && ($req["tags"] ?? "")
-            && preg_match_all('/\S+/', $req["tags"] ?? "", $m)
-            && !$user->act_author_view($this->prow)) {
-            $tagger = new Tagger($user);
-            $ts = [];
-            foreach ($m[0] as $tt) {
-                if (($tt = $tagger->check($tt))
-                    && !stri_ends_with($tt, "response")) {
-                    list($tag, $value) = Tagger::unpack($tt);
-                    $ts[strtolower($tag)] = $tag . "#" . (float) $value;
-                }
-            }
-            if (!empty($ts)) {
-                $ts = array_values($ts);
-                $ctags = " " . join(" ", $this->conf->tags()->sort_array($ts));
-            } else {
-                $ctags = null;
+    /** @return string
+     * @internal */
+    function logid() {
+        if (($this->commentType & self::CT_RESPONSE) !== 0) {
+            $s = "Response {$this->commentId}";
+            $rrd = $this->response_round();
+            if (!$rrd->unnamed) {
+                $s .= " ({$rrd->name})";
             }
         } else {
-            $ctags = null;
+            $s = "Comment {$this->commentId}";
+            if (($this->commentType & self::CT_TOPIC_PAPER) !== 0) {
+                $s .= " on submission thread";
+            } else if (($this->commentType & self::CT_TOPIC_DECISION) !== 0) {
+                $s .= " on decision thread";
+            }
+        }
+        return $s;
+    }
+
+    /** @param string $prop
+     * @param mixed $v */
+    function set_prop($prop, $v) {
+        if ($this->$prop === $v) {
+            return;
+        }
+        if ($this->_old_prop === null) {
+            $this->_old_prop = [];
+        }
+        if (!array_key_exists($prop, $this->_old_prop)) {
+            $this->_old_prop[$prop] = $this->$prop;
+        } else if ($this->_old_prop[$prop] === $v) {
+            unset($this->_old_prop[$prop]);
+        }
+        $this->$prop = $v;
+    }
+
+    /** @param string $key */
+    function set_data_prop($key, $value) {
+        $this->make_data();
+        if ($value === null) {
+            unset($this->_jdata->$key);
+        } else if ($key === "mentions") {
+            $this->_jdata->mentions = [];
+            foreach ($value as $mn) {
+                $this->_jdata->mentions[] = is_object($mn) ? $mn->jsonSerialize() : $mn;
+            }
+        } else {
+            $this->_jdata->$key = $value;
+        }
+        $s = json_encode_db($this->_jdata);
+        $this->set_prop("commentData", $s === "{}" ? null : $s);
+    }
+
+    /** @param string $prop
+     * @return mixed */
+    function base_prop($prop) {
+        if ($this->_old_prop !== null
+            && array_key_exists($prop, $this->_old_prop)) {
+            return $this->_old_prop[$prop];
+        }
+        return $this->$prop;
+    }
+
+    /** @param ?string $prop
+     * @return bool */
+    function prop_changed($prop = null) {
+        return !empty($this->_old_prop)
+            && (!$prop || array_key_exists($prop, $this->_old_prop));
+    }
+
+    /** Mark this comment clean after its staged changes have been persisted.
+     * `_docs` keeps the now-saved attachment set. */
+    function commit_prop() {
+        $this->_old_prop = $this->_old_docs = null;
+    }
+
+    function abort_prop() {
+        foreach ($this->_old_prop ?? [] as $prop => $v) {
+            $this->$prop = $v;
+        }
+        $this->_docs = $this->_old_docs;
+        $this->_old_prop = $this->_old_docs = $this->_jdata = null;
+    }
+
+    /** Persist this comment's registered property and attachment changes to the
+     * database and assign its ordinal. Does not write the activity log (that is
+     * CommentStatus's job, which owns the change list), check permissions,
+     * recompute automatic tags, or send notifications.
+     * @return bool */
+    function save() {
+        $docs_differ = $this->docs_changed();
+        if (empty($this->_old_prop) && !$docs_differ) {
+            return true;
         }
 
-        // attachments
-        $old_docids = $this->attachment_ids();
-        $docs = $req["docs"] ?? [];
-        $ctype = $docs ? ($ctype | self::CT_HASDOC) : ($ctype & ~self::CT_HASDOC);
-
-        // notifications
-        $displayed = ($ctype & self::CT_DRAFT) === 0;
-
-        // text, mentions
-        $text = $req["text"] ?? null;
-        $desired_mentions = [];
-        if ($text !== false) {
-            $text = (string) $text;
-            $desired_mentions = self::parse_mentions($user, $this->prow, $text, $ctype);
-            $this->set_data("mentions", empty($desired_mentions) ? null : $desired_mentions);
-        }
-
-        // query
-        $q = "";
-        $qv = [];
-        if ($text === false) {
-            if (!$this->commentId) {
-                return false;
-            }
-            $q = "delete from PaperComment where paperId={$this->paperId} and commentId={$this->commentId}";
-            $docs = [];
-        } else if (!$this->commentId) {
-            $qa = ["contactId, paperId, commentType, comment, commentOverflow, timeModified, replyTo"];
-            $qb = [$user->contactId, $this->paperId, $ctype, "?", "?", Conf::$now, 0];
-            if (strlen($text) <= 32000) {
-                array_push($qv, $text, null);
-            } else {
-                array_push($qv, UnicodeHelper::utf8_prefix($text, 200), $text);
-            }
-            if ($ctags !== null) {
-                $qa[] = "commentTags";
-                $qb[] = "?";
-                $qv[] = $ctags;
-            }
-            if ($this->commentData !== null) {
-                $qa[] = "commentData";
-                $qb[] = "?";
-                $qv[] = $this->commentData;
-            }
-            if ($is_response) {
-                $qa[] = "commentRound";
-                $qb[] = $this->commentRound;
-            }
-            if ($displayed) {
-                $qa[] = "timeDisplayed, timeNotified";
-                $qb[] = Conf::$now . ", " . Conf::$now;
-            }
-            $q = "insert into PaperComment (" . join(", ", $qa) . ") select " . join(", ", $qb) . "\n";
+        $this->set_prop("timeModified", Conf::$now);
+        $inserting = !$this->commentId;
+        $is_response = $this->is_response();
+        if ($inserting) {
+            $q = "insert into PaperComment ("
+                . join(", ", array_keys($this->_old_prop))
+                . ") select "
+                . join(", ", array_fill(0, count($this->_old_prop), "?"));
             if ($is_response) {
                 // make sure there is exactly one response
-                $q .= "from dual where not exists (select * from PaperComment where paperId={$this->paperId} and (commentType&" . self::CT_RESPONSE . ")!=0 and commentRound={$this->commentRound})";
+                $q .= " from dual where not exists (select * from PaperComment where paperId={$this->paperId} and (commentType&" . self::CT_RESPONSE . ")!=0 and commentRound={$this->commentRound})";
             }
         } else {
-            if ($this->timeModified >= Conf::$now) {
-                Conf::advance_current_time($this->timeModified);
-            }
-            // do not notify on updates within 3 hours
-            $qa = "";
-            if ($this->timeNotified + 10800 < Conf::$now
-                || (($ctype & self::CT_RESPONSE) !== 0
-                    && ($ctype & self::CT_DRAFT) === 0
-                    && ($this->commentType & self::CT_DRAFT) !== 0)) {
-                $qa .= ", timeNotified=" . Conf::$now;
-            }
-            // reset timeDisplayed if you change the comment type
-            if ((!$this->timeDisplayed || $this->ordinal_missing($ctype))
-                && ($text !== "" || $docs)
-                && $displayed) {
-                $qa .= ", timeDisplayed=" . Conf::$now;
-            }
-            $q = "update PaperComment set timeModified=" . Conf::$now . $qa . ", commentType={$ctype}, comment=?, commentOverflow=?, commentTags=?, commentData=? where paperId={$this->paperId} and commentId={$this->commentId}";
-            if (strlen($text) <= 32000) {
-                array_push($qv, $text, null);
-            } else {
-                array_push($qv, UnicodeHelper::utf8_prefix($text, 200), $text);
-            }
-            $qv[] = $ctags;
-            $qv[] = $this->commentData;
+            $q = "update PaperComment set "
+                . join("=?, ", array_keys($this->_old_prop))
+                . "=? where paperId={$this->paperId} and commentId={$this->commentId}";
         }
 
+        $qv = [];
+        foreach ($this->_old_prop as $prop => $v) {
+            $qv[] = $this->$prop;
+        }
         $result = $this->conf->qe_apply($q, $qv);
         if (Dbl::is_error($result)) {
             return false;
-        }
-
-        $cmtid = $this->commentId ? : $result->insert_id;
-        if (!$cmtid) {
-            return false;
-        }
-
-        // check for document change
-        $docs_differ = count($docs) !== count($old_docids);
-        for ($i = 0; !$docs_differ && $i !== count($docs); ++$i) {
-            $docs_differ = $docs[$i]->paperStorageId !== $old_docids[$i];
-        }
-
-        // log
-        if ($is_response) {
-            $x = $response_name == "1" ? "" : " ({$response_name})";
-            $log = "Response {$cmtid}{$x}";
-        } else {
-            if (($ctype & self::CT_TOPIC_PAPER) !== 0) {
-                $x = " on submission thread";
-            } else if (($ctype & self::CT_TOPIC_DECISION) !== 0) {
-                $x = " on decision thread";
-            } else {
-                $x = "";
+        } else if ($inserting) {
+            if ($result->affected_rows === 0) { // concurrent response insertion
+                return false;
             }
-            $log = "Comment {$cmtid}{$x}";
-        }
-        if ($text === false) {
-            $log .= " deleted";
-        } else {
-            if (($ctype & self::CT_DRAFT) === 0
-                && (!$this->commentId || ($this->commentType & self::CT_DRAFT) !== 0)) {
-                $log .= " submitted";
-            } else {
-                $log .= $this->commentId ? " edited" : " started";
-                if (($ctype & self::CT_DRAFT) !== 0) {
-                    $log .= " draft";
-                }
-            }
-            $ch = [];
-            if ($this->commentId
-                && $text !== $this->raw_content()) {
-                $ch[] = "text";
-            }
-            if ($this->commentId
-                && ($ctype | self::CT_DRAFT) !== ($this->commentType | self::CT_DRAFT)) {
-                $ch[] = "visibility";
-            }
-            if ($ctags !== $expected_tags) {
-                $ch[] = "tags";
-            }
-            if ($docs_differ) {
-                $ch[] = "attachments";
-            }
-            if (!empty($ch)) {
-                $log .= ": " . join(", ", $ch);
-            }
-        }
-        $acting_user->log_activity_for($this->contactId ? : $user->contactId, $log, $this->paperId);
-
-        // update automatic tags
-        if (!($req["no_autosearch"] ?? false)) {
-            $this->conf->update_automatic_tags($this->prow, SearchTerm::ABOUT_COMMENTS);
+            $this->commentId = (int) $result->insert_id;
         }
 
         // ordinal
-        if ($text !== false && $this->ordinal_missing($ctype)) {
-            $this->save_ordinal($cmtid, $ctype);
-        }
-
-        // reload contents
-        if ($text !== false) {
-            $cobject = $this->conf->fetch_first_object("select * from PaperComment where paperId=? and commentId=?", $this->paperId, $cmtid);
-            if (!$cobject) {
-                return false;
-            }
-            foreach (get_object_vars($cobject) as $k => $v) {
-                $this->$k = $v;
-            }
-            $this->_incorporate($this->prow, $this->conf);
+        if ($this->ordinal_missing()) {
+            $this->save_ordinal();
         }
 
         // document links
         if ($docs_differ) {
+            $old_docids = $this->_old_docs->document_ids();
+            $docs = $this->attachments()->as_list();
             if ($old_docids) {
                 $this->conf->qe("delete from DocumentLink where paperId=? and linkId=? and linkType=?", $this->paperId, $this->commentId, DTYPE_COMMENT);
             }
@@ -1188,33 +1225,45 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
             }
         }
 
-        // delete if appropriate
-        if ($text === false) {
-            $this->commentId = 0;
-            $this->comment = "";
-            $this->commentTags = $this->commentData = $this->_jdata = null;
-            return true;
-        }
-
-        // notify mentions and followers
-        if ($displayed
-            && $this->commentId
-            && !empty($desired_mentions)) {
-            $this->inform_mentions($user, $desired_mentions);
-        }
-
-        if ($this->timeNotified === $this->timeModified) {
-            $this->notify($user);
-        }
-
         return true;
     }
 
-    function delete(Contact $actor, $req = []) {
-        return $this->save_comment([
-            "text" => false,
-            "no_autosearch" => $req["no_autosearch"] ?? null
-        ], $actor);
+    /** Delete this comment from the database and write the activity log. Does
+     * not check permissions, recompute automatic tags, or send notifications.
+     * The comment may have staged changes.
+     * @return bool */
+    function delete(Contact $acting_user) {
+        if (!$this->commentId) {
+            return false;
+        }
+        $result = $this->conf->qe("delete from PaperComment where paperId=? and commentId=?", $this->paperId, $this->commentId);
+        if (Dbl::is_error($result)) {
+            return false;
+        }
+
+        // log
+        $acting_user->log_activity_for($this->contactId ? : $acting_user->contactId,
+            $this->logid() . " deleted",
+            $this->paperId);
+
+        // document links
+        if ($this->has_attachments() || $this->_old_docs !== null) {
+            $this->conf->qe("delete from DocumentLink where paperId=? and linkId=? and linkType=?", $this->paperId, $this->commentId, DTYPE_COMMENT);
+            $this->prow->mark_inactive_linked_documents();
+            $this->prow->invalidate_linked_documents();
+        }
+
+        $this->mark_deleted();
+        return true;
+    }
+
+    /** Reset this comment's in-memory state after a committed deletion.
+     * @internal */
+    function mark_deleted() {
+        $this->commentId = 0;
+        $this->comment = "";
+        $this->commentTags = $this->commentData = $this->commentOverflow = $this->_jdata = null;
+        $this->_old_docs = $this->_docs = null;
     }
 
     /** @param Contact $user
@@ -1245,8 +1294,9 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
     }
 
     /** @param Contact $user
-     * @param list<MentionPhrase> $mentions */
-    private function inform_mentions($user, $mentions) {
+     * @param list<MentionPhrase> $mentions
+     * @internal */
+    function inform_mentions($user, $mentions) {
         foreach ($mentions as $mxm) {
             $this->conf->prefetch_user_by_id($mxm->user->contactId);
         }
@@ -1256,23 +1306,31 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
                 continue;
             }
             $notification = $this->notification($mentionee, NotificationInfo::MENTION);
-            if ($notification->sent()
-                || $mentionee->is_dormant()
-                || !$mentionee->can_view_comment($this->prow, $this)) {
+            if ($notification->is(NotificationInfo::ATTEMPTED)
+                || $mentionee->is_dormant()) {
                 continue;
             }
-            $this->_recently_censored = false;
+            $notification->flags |= NotificationInfo::ATTEMPTED;
+            if (!$mxm->named()) {
+                $n = substr($this->raw_content(), $mxm->pos1 + 1, $mxm->pos2 - $mxm->pos1 - 1);
+                $notification->text = $n;
+            }
+            if (!$mentionee->can_view_comment($this->prow, $this)) {
+                if (!$mxm->is_notification_viewable($user, $this)) {
+                    $notification->flags |= NotificationInfo::PRETEND_SENT;
+                    if ($this->content_censored($mentionee)) {
+                        $notification->flags |= NotificationInfo::CENSORED;
+                    }
+                }
+                continue;
+            }
+            $this->_recently_censored = 0;
             HotCRPMailer::send_to($mentionee, "@mentionnotify", [
                 "prow" => $this->prow,
                 "comment_row" => $this
             ]);
-            if (!$mxm->named()
-                && !$this->prow->can_view_review_identity_of($mxm->user->contactId, $user)) {
-                $n = substr($this->raw_content(), $mxm->pos1 + 1, $mxm->pos2 - $mxm->pos1 - 1);
-                $notification->user_html = htmlspecialchars($n);
-            }
             $notification->flags |= NotificationInfo::SENT;
-            if ($this->_recently_censored) {
+            if ($this->_recently_censored !== 0) {
                 $notification->flags |= NotificationInfo::CENSORED;
             }
         }
@@ -1325,7 +1383,7 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
         $info = [
             "prow" => $this->prow,
             "comment_row" => $this,
-            "combination_type" => 1
+            "combination_type" => HotCRPMailer::COMBINE_PAPER
         ];
         $preps = [];
         foreach ($this->followers() as $minic) {
@@ -1334,26 +1392,18 @@ set {$okey}=(t.maxOrdinal+1) where commentId={$cmtid}";
             }
             $is_author = $this->prow->has_author($minic);
             $notification = $this->notification($minic, $is_author ? NotificationInfo::CONTACT : NotificationInfo::FOLLOW);
-            if ($notification->sent()) {
+            if ($notification->is(NotificationInfo::ATTEMPTED)) {
                 continue;
             }
+            $notification->flags |= NotificationInfo::ATTEMPTED;
             // prepare mail
-            $this->_recently_censored = false;
-            $p = HotCRPMailer::prepare_to($minic, $tmpl, $info);
-            if (!$p) {
-                continue;
-            }
-            // Don't combine preparations unless you can see all submitted
-            // reviewer identities
-            // XXX maybe should not combine preparations at all?
-            if (!$this->prow->has_author($minic)
-                && !$minic->can_view_review_identity($this->prow, null)) {
-                $p->unique_preparation = true;
-            }
-            $preps[] = $p;
-            $notification->flags |= NotificationInfo::SENT;
-            if ($this->_recently_censored) {
-                $notification->flags |= NotificationInfo::CENSORED;
+            $this->_recently_censored = 0;
+            if (($p = HotCRPMailer::prepare_to($minic, $tmpl, $info))) {
+                $preps[] = $p;
+                $notification->flags |= NotificationInfo::SENT;
+                if ($this->_recently_censored !== 0) {
+                    $notification->flags |= NotificationInfo::CENSORED;
+                }
             }
         }
         HotCRPMailer::send_combined_preparations($preps);

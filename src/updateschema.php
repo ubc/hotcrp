@@ -782,6 +782,29 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
         return true;
     }
 
+    /** @param string $table
+     * @return true */
+    private function v333_refold_unaccented_name($table) {
+        $this->conf->qe("lock tables {$table} write");
+        $updates = [];
+        $result = $this->conf->qe("select * from {$table}");
+        while (($u = Contact::fetch($result, $this->conf))) {
+            $n = $u->db_searchable_name();
+            if ($n !== $u->unaccentedName) {
+                $updates[] = [$n, $u->contactId];
+            }
+        }
+        Dbl::free($result);
+
+        $cleanf = Dbl::make_multi_ql_stager($this->conf->dblink);
+        foreach ($updates as $nu) {
+            $cleanf("update {$table} set unaccentedName=? where contactId=?", $nu[0], $nu[1]);
+        }
+        $cleanf(null);
+        $this->conf->qe("unlock tables");
+        return true;
+    }
+
     /** @return bool */
     private function v260_paperreview_fields() {
         if ($this->check_column_exists("PaperReview", "reviewFormat")
@@ -1292,6 +1315,48 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
         return true;
     }
 
+    private function v329_delete_withdrawn_certifications() {
+        $oids = [];
+        foreach ($this->conf->options() as $opt) {
+            if ($opt->reset_on_withdraw())
+                $oids[] = $opt->id;
+        }
+        return empty($oids)
+            || $this->conf->ql_ok("delete from PaperOption where optionId?a and paperId in (select paperId from Paper where timeWithdrawn>0)", $oids);
+    }
+
+    /** Normalize roles: chair implies PC, and PC excludes unlisted PC.
+     * @return bool */
+    function v332_listed_unlisted_pc() {
+        return $this->conf->ql_ok("update ContactInfo set roles=roles|? where (roles&?)!=0 and (roles&?)=0",
+                Contact::ROLE_PC, Contact::ROLE_CHAIR, Contact::ROLE_PC)
+            && $this->conf->ql_ok("update ContactInfo set roles=roles&~? where (roles&?)!=0 and (roles&?)!=0",
+                Contact::ROLE_UNLISTEDPC, Contact::ROLE_PC, Contact::ROLE_UNLISTEDPC);
+    }
+
+    /** @return bool */
+    private function v331_reorder_tag_log_entries() {
+        // Combined tag log entries used to append tag words after the paper
+        // list, `Tag +#a (papers 1, 3) +#b`; move the paper list last
+        $result = $this->conf->ql_ok("select logId, action from ActionLog where paperId is null and action like 'Tag %) %'");
+        if (!$result) {
+            return false;
+        }
+        $updates = [];
+        while (($row = $result->fetch_row())) {
+            if (preg_match('/\A(.*?) \(papers ([\d, ]++)\)( .*+)\z/s', $row[1], $m)) {
+                $updates[] = [(int) $row[0], "{$m[1]}{$m[3]} (papers {$m[2]})"];
+            }
+        }
+        $result->close();
+        $cleanf = Dbl::make_multi_ql_stager($this->conf->dblink);
+        foreach ($updates as [$logid, $action]) {
+            $cleanf("update ActionLog set action=? where logId=?", $action, $logid);
+        }
+        $cleanf(null);
+        return true;
+    }
+
     /** @return bool */
     function run() {
         $conf = $this->conf;
@@ -1408,6 +1473,20 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
         if ($conf->sversion <= 281
             && !$conf->setting("__extrev_seerev_v282")) {
             $this->v282_update_viewrev();
+        }
+
+        // set stored reviewSubmitted null values to 0
+        if ($conf->sversion >= 122
+            && $conf->sversion <= 327
+            && !$conf->setting("__reviewSubmitted_null_v328")) {
+            $conf->ql("update PaperReview set reviewSubmitted=0 where reviewSubmitted is null");
+            $conf->save_setting("__reviewSubmitted_null_v328", 1);
+        }
+
+        // remove obsolete S3 settings
+        if ($conf->sversion <= 332
+            && $conf->setting("__s3_scope")) {
+            $conf->ql("delete from Settings where name in ('__s3_scope', '__s3_signing_key')");
         }
 
         if ($conf->sversion === 6
@@ -3279,6 +3358,73 @@ set ordinal=(t.maxOrdinal+1) where commentId={$row[1]}");
             && $conf->ql_ok("alter table Paper add `timeSubmittedReviewable` bigint NOT NULL DEFAULT 0")
             && $conf->ql_ok("alter table Paper add `timeAcceptNotified` bigint NOT NULL DEFAULT 0")) {
             $conf->update_schema_version(324);
+        }
+        if ($conf->sversion === 324
+            && $conf->ql_ok("alter table ContactCounter change `apiLimit` `apiBase` bigint NOT NULL DEFAULT 0")
+            && $conf->ql_ok("alter table ContactCounter change `apiRefreshMtime` `apiBaseMtime` bigint NOT NULL DEFAULT 0")
+            && $conf->ql_ok("alter table ContactCounter change `apiRefreshWindow` `apiRefreshWindow` int DEFAULT NULL")
+            && $conf->ql_ok("alter table ContactCounter change `apiRefreshAmount` `apiRefreshAmount` int DEFAULT NULL")
+            && $conf->ql_ok("alter table ContactCounter change `apiLimit2` `apiBase2` bigint NOT NULL DEFAULT 0")
+            && $conf->ql_ok("alter table ContactCounter change `apiRefreshMtime2` `apiBaseMtime2` bigint NOT NULL DEFAULT 0")
+            && $conf->ql_ok("alter table ContactCounter change `apiRefreshWindow2` `apiRefreshWindow2` int DEFAULT NULL")
+            && $conf->ql_ok("alter table ContactCounter change `apiRefreshAmount2` `apiRefreshAmount2` int DEFAULT NULL")
+            && $conf->ql_ok("update ContactCounter set apiRefreshWindow=NULLIF(apiRefreshWindow,0), apiRefreshAmount=NULLIF(apiRefreshAmount,0), apiRefreshWindow2=NULLIF(apiRefreshWindow2,0), apiRefreshAmount2=NULLIF(apiRefreshAmount2,0), apiBase=0, apiBaseMtime=0, apiBase2=0, apiBaseMtime2=0")) {
+            $conf->update_schema_version(325);
+        }
+        if ($conf->sversion === 325
+            && $conf->ql_ok("alter table ContactCounter add `sensitiveSearchCount` bigint NOT NULL DEFAULT 0")
+            && $conf->ql_ok("alter table ContactCounter add `sensitiveSearchFallbackCount` bigint NOT NULL DEFAULT 0")
+            && $conf->ql_ok("alter table ContactCounter add `sensitiveSearchBase` bigint NOT NULL DEFAULT 0")
+            && $conf->ql_ok("alter table ContactCounter add `sensitiveSearchBaseMtime` bigint NOT NULL DEFAULT 0")) {
+            $conf->update_schema_version(326);
+        }
+        if ($conf->sversion === 326
+            && $conf->ql_ok("insert into Settings (name, value, data) select 'idpermuter_user', value, data from Settings where name='__id_permuter_key' on duplicate key update name='idpermuter_user'")
+            && $conf->ql_ok("insert into Settings (name, value, data) select 'idpermuter_assignment', value, data from Settings where name='__assignment_key' on duplicate key update name='idpermuter_assignment'")
+            && $conf->ql_ok("delete from Settings where name in ('__assignment_key', '__id_permuter_key', '__banal_count')")) {
+            $conf->update_schema_version(327);
+        }
+        if ($conf->sversion === 327
+            && $conf->ql_ok("update PaperReview set reviewSubmitted=0 where reviewSubmitted is null")
+            && $conf->ql_ok("alter table PaperReview change `reviewSubmitted` `reviewSubmitted` bigint NOT NULL DEFAULT 0")) {
+            $conf->update_schema_version(328);
+            $conf->save_setting("__reviewSubmitted_null_v328", null);
+        }
+        if ($conf->sversion === 328
+            && $this->v329_delete_withdrawn_certifications()) {
+            $conf->update_schema_version(329);
+        }
+        if ($conf->sversion === 329) {
+            Dbl::qx($conf->dblink, "DROP TABLE IF EXISTS `WorkItem`");
+            if ($conf->ql_ok("CREATE TABLE `WorkItem` (
+  `workType` varbinary(80) NOT NULL,
+  `workSubtype` varbinary(80) NOT NULL,
+  `work` longblob NOT NULL,
+  PRIMARY KEY (`workType`,`workSubtype`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4")) {
+                $conf->update_schema_version(330);
+            }
+        }
+        if ($conf->sversion === 330
+            // first with default, then without
+            && $conf->ql_ok("alter table WorkItem add `touchedAt` bigint NOT NULL DEFAULT 0")
+            && $conf->ql_ok("alter table WorkItem add `dequeuedAt` bigint NOT NULL DEFAULT 0")
+            && $conf->ql_ok("alter table WorkItem change `touchedAt` `touchedAt` bigint NOT NULL")
+            && $conf->ql_ok("alter table WorkItem change `dequeuedAt` `dequeuedAt` bigint NOT NULL")) {
+            $conf->update_schema_version(331);
+        }
+        if ($conf->sversion === 331
+            && $this->v331_reorder_tag_log_entries()) {
+            $conf->update_schema_version(332);
+        }
+        if ($conf->sversion === 332
+            && $this->v332_listed_unlisted_pc()) {
+            $conf->update_schema_version(333);
+        }
+        if ($conf->sversion === 333
+            && $this->v333_refold_unaccented_name("ContactInfo")
+            && $this->v333_refold_unaccented_name("DeletedContactInfo")) {
+            $conf->update_schema_version(334);
         }
 
         $conf->ql_ok("delete from Settings where name='__schema_lock'");

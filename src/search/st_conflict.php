@@ -23,14 +23,14 @@ final class Conflict_SearchTerm extends SearchTerm {
         $this->self = $ccm->single_cid() === $user->contactXid;
     }
     static function parse($word, SearchWord $sword, PaperSearch $srch) {
-        $a = CountMatcher::unpack_search_comparison($sword->qword);
-        $contacts = $srch->matching_uids($a[0], $sword->quoted, $sword->kwdef->pc_only);
-        $ccm = new ContactCountMatcher(CountMatcher::unparse_comparison($a[1], $a[2]), $contacts);
+        [$usword, $op, $value] = $sword->pop_comparison();
+        // no user means the PC
+        $usrch = $srch->user_search(ContactSearch::F_USER | ($sword->kwdef->pc_only ? ContactSearch::F_PC : 0) | ($usword ? ContactSearch::F_REQUIRED : 0), $usword ?? SearchWord::make_simple(""));
+        $ccm = new ContactCountMatcher(CountMatcher::unparse_comparison($op, $value), $usrch);
         if (($qr = SearchTerm::make_constant($ccm->tautology()))) {
             return $qr;
-        } else {
-            return new Conflict_SearchTerm($srch->user, $ccm, $sword->kwdef->pc_only);
         }
+        return new Conflict_SearchTerm($srch->user, $ccm, $sword->kwdef->pc_only);
     }
     function merge(SearchTerm $st) {
         if ($st instanceof Conflict_SearchTerm
@@ -43,9 +43,8 @@ final class Conflict_SearchTerm extends SearchTerm {
             $this->ispc = $this->ispc && $st->ispc;
             $this->self = $this->self && $st->self;
             return true;
-        } else {
-            return false;
         }
+        return false;
     }
     function paper_requirements(&$options) {
         if (!$this->self) {
@@ -53,17 +52,27 @@ final class Conflict_SearchTerm extends SearchTerm {
         }
     }
     function sqlexpr(SearchQueryInfo $sqi) {
-        if (!$this->self) {
-            $sqi->add_allConflictType_column();
-        }
-        $snc = $this->ccm->simplified_nonnegative_comparison();
         $cidsql = $this->ccm->contact_match_sql("contactId");
-        if ($snc === ">0" || $snc === "=0") {
-            $n = $snc === "=0" ? "not exists" : "exists";
-            return "{$n} (select * from PaperConflict where paperId=Paper.paperId and {$cidsql})";
-        } else {
-            return "coalesce((select count(*) from PaperConflict where paperId=Paper.paperId and {$cidsql}),0){$snc}";
+        if ($this->self) {
+            $sqi->add_my_conflictType_column();
+            // The searcher always sees their own conflicts, so an exact prefilter is safe.
+            $snc = $this->ccm->simplified_nonnegative_comparison();
+            if ($snc === ">0" || $snc === "=0") {
+                $n = $snc === "=0" ? "not exists" : "exists";
+                return "{$n} (select * from PaperConflict where paperId=Paper.paperId and {$cidsql} and conflictType>" . CONFLICT_MAXUNCONFLICTED . ")";
+            }
+            return "coalesce((select count(*) from PaperConflict where paperId=Paper.paperId and {$cidsql} and conflictType>" . CONFLICT_MAXUNCONFLICTED . "),0){$snc}";
         }
+        // For other users the searcher may not be able to view every conflict
+        // (`test()` gates each on `can_view_conflicts`), so the prefilter must be a
+        // conservative superset — never a subtractive `not exists`/upper-bound that
+        // would drop a paper with a hidden conflict that `test()` would keep.
+        $sqi->add_allConflictType_column();
+        $cnc = $this->ccm->conservative_nonnegative_comparison();
+        if ($cnc === ">=0") {
+            return "true";
+        }
+        return "coalesce((select count(*) from PaperConflict where paperId=Paper.paperId and {$cidsql} and conflictType>" . CONFLICT_MAXUNCONFLICTED . "),0){$cnc}";
     }
     function is_sqlexpr_precise() {
         return $this->self;
@@ -73,9 +82,12 @@ final class Conflict_SearchTerm extends SearchTerm {
             $n = $row->has_conflict($this->user->contactXid) ? 1 : 0;
         } else {
             $n = 0;
-            $can_view = $this->user->can_view_conflicts($row);
+            $vc = $this->user->can_view_conflicts($row);
+            $va = $this->ispc || $this->user->can_view_authors($row);
+            $pcm = $va ? null : $this->user->conf->viewable_pc_members($this->user);
             foreach ($this->ccm->contact_set() as $cid) {
-                if (($cid === $this->user->contactXid || $can_view)
+                if (($vc || $cid === $this->user->contactXid)
+                    && ($va || isset($pcm[$cid]))
                     && $row->has_conflict($cid))
                     ++$n;
             }
@@ -97,8 +109,7 @@ final class Conflict_SearchTerm extends SearchTerm {
                 "compar" => $this->ccm->relation(),
                 "value" => $this->ccm->value()
             ];
-        } else {
-            return $this->test($row, null);
         }
+        return $this->test($row, null);
     }
 }

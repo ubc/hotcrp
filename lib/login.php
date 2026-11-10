@@ -60,16 +60,16 @@ class LoginHelper {
         // Look up the account information
         // to determine if the user is registered
         if (isset($qreq->email)) {
+            if (strpos($qreq->email, "@") === false
+                && strpos($qreq->email, "%40") !== false) {
+                foreach ($qreq->keys() as $k) {
+                    $qreq[$k] = rawurldecode($qreq[$k]);
+                }
+            }
             $qreq->email = simplify_whitespace($qreq->email);
         }
         if (!isset($qreq->email) || $qreq->email === "") {
             return ["ok" => false, "email" => true, "noemail" => true];
-        }
-        if (strpos($qreq->email, "@") === false
-            && strpos($qreq->email, "%40") !== false) {
-            foreach ($qreq->keys() as $k) {
-                $qreq[$k] = rawurldecode($qreq[$k]);
-            }
         }
         $u = $conf->user_by_email($qreq->email);
         if (!$u) {
@@ -87,6 +87,10 @@ class LoginHelper {
                 $keys[] = "preferredEmail";
             }
             $u = Contact::make_keyed($conf, $qreq->subset_as_array(...$keys));
+            // A contactdb identity outranks request-supplied props
+            if (($cdbu = $u->cdb_user())) {
+                $u->import_prop($cdbu, $cdbu->is_placeholder() ? 2 : 0);
+            }
         }
         return ["ok" => true, "user" => $u];
     }
@@ -126,6 +130,10 @@ class LoginHelper {
     /** @param Contact $user
      * @return array{ok:true,user:Contact}|array{ok:false,disabled?:true,email?:true} */
     static function check_external_login($user) {
+        // External identities must still be printable ASCII
+        if (!preg_match('/\A[\x21-\x7E]+\z/', $user->email)) {
+            return ["ok" => false, "email" => true, "invalidemail" => true];
+        }
         if ($user->contactdb_disabled()) {
             return ["ok" => false, "disabled" => true, "email" => true];
         }
@@ -148,7 +156,7 @@ class LoginHelper {
     static function login_complete($info, Qrequest $qreq) {
         if (!$info["ok"]) {
             foreach ($info["usec"] ?? [] as $use) {
-                $use->store($qreq->qsession());
+                $use->store($qreq);
             }
             return $info;
         }
@@ -160,13 +168,14 @@ class LoginHelper {
         $xuser = $luser->contactId ? $luser : $luser->cdb_user();
         $xuser->mark_login();
 
-        // store authentication
+        // store authentication and theme
         $qs = $qreq->qsession();
         $qs->open_new_sid();
-        UserSecurityEvent::session_user_add($qs, $xuser->email);
+        $ui = UserSecurityEvent::session_user_add($qs, $xuser->email);
         foreach ($info["usec"] ?? [] as $use) {
-            $use->set_email($xuser->email)->store($qs);
+            $use->set_email($xuser->email)->store($qreq);
         }
+        UpdateSession::apply_theme($qs, $ui, $xuser->theme());
 
         // activate
         $user = $xuser->activate($qreq, false);
@@ -175,7 +184,7 @@ class LoginHelper {
         $nav = $qreq->navigation();
         $url = $nav->server . $nav->base_path;
         if ($qreq->has_gsession("us")) {
-            $url .= "u/" . Contact::session_index_by_email($qs, $user->email) . "/";
+            $url .= "u/{$ui}/";
         }
         $url .= "?postlogin=1";
         if ($qreq->redirect !== null && $qreq->redirect !== "1") {
@@ -190,14 +199,19 @@ class LoginHelper {
         return $info;
     }
 
-    /** @return bool */
+    /** Potentially make the conference’s first user its administrator
+     * (only if no contactdb).
+     * @return bool */
     static private function check_setup_phase(Contact $user) {
-        if ($user->conf->setting("setupPhase")) {
-            $user->ensure_account_here()->save_roles(Contact::ROLE_ADMIN, null);
-            $user->conf->save_setting("setupPhase", null);
-            return true;
+        if (!$user->conf->setting("setupPhase")) {
+            return false;
         }
-        return false;
+        if (($created = !$user->conf->contactdb())) {
+            $user->ensure_account_here()->save_roles(Contact::ROLE_ADMIN, null);
+            SiteURL_SettingParser::record_site_url($user);
+        }
+        $user->conf->save_setting("setupPhase", null);
+        return $created;
     }
 
     static function check_postlogin(Contact $user, Qrequest $qreq) {
@@ -218,13 +232,13 @@ class LoginHelper {
             $where = $login_bounce[1];
         } else {
             $qreq->set_csession("freshlogin", true);
-            $where = $user->conf->hoturl_raw("index");
+            $where = $user->conf->hoturl("index");
         }
         $qreq->redirect($where);
     }
 
 
-    /** @return array{ok:true,user:Contact}|array{ok:false,email?:true} */
+    /** @return array{ok:true,user:Contact,mailtemplate:string}|array{ok:false,email?:true} */
     static function new_account_info(Conf $conf, Qrequest $qreq) {
         assert(!$conf->external_login() && $conf->allow_user_self_register());
         assert($qreq->valid_post());
@@ -315,6 +329,24 @@ class LoginHelper {
     }
 
 
+    /** Return an error message if `$input` can't be a new password.
+     * @param string $input
+     * @return ?string */
+    static function new_password_problem($input) {
+        if (trim($input) !== $input) {
+            return "<0>Passwords cannot begin or end with spaces";
+        } else if (!is_valid_utf8($input)) {
+            return "<0>Invalid UTF-8 in password";
+        } else if (UnicodeHelper::utf8_glyphlen($input) <= 5) {
+            return "<0>Password too short";
+        } else if (strlen($input) > 72) {
+            return "<0>Password too long";
+        } else if (!Contact::valid_password($input)) {
+            return "<0>Invalid password";
+        }
+        return null;
+    }
+
     /** @param bool $explicit
      * @return Contact */
     static function logout(Contact $user, Qrequest $qreq, $explicit) {
@@ -373,7 +405,7 @@ class LoginHelper {
                 && $conf->allow_user_self_register()
                 && $email !== ""
                 && !($info["deleted"] ?? false)) {
-                $args[] = new FmtArg("newaccount", $conf->hoturl_raw("newaccount", ["email" => $email]));
+                $args[] = new FmtArg("newaccount", $conf->hoturl("newaccount", ["email" => $email]));
             }
         } else if ($info["unset"] ?? false) {
             $e = "<0>User {email} has not set a password";
@@ -400,9 +432,9 @@ class LoginHelper {
 
         if ($email !== "") {
             $args[] = new FmtArg("email", $email, 0);
-            $args[] = new FmtArg("signin", $conf->hoturl_raw("signin", ["email" => $email]), 0);
+            $args[] = new FmtArg("signin", $conf->hoturl("signin", ["email" => $email]), 0);
             if ($info["can_reset"] ?? false) {
-                $args[] = new FmtArg("forgotpassword", $conf->hoturl_raw("forgotpassword", ["email" => $email]), 0);
+                $args[] = new FmtArg("forgotpassword", $conf->hoturl("forgotpassword", ["email" => $email]), 0);
             }
         }
         if ($problem) {

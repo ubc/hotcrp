@@ -20,15 +20,8 @@ class GetReviews_ListAction extends GetReviewBase_ListAction {
         $rf = $user->conf->review_form();
         $old_overrides = $user->add_overrides(Contact::OVERRIDE_CONFLICT);
         $texts = $pids = [];
-        $ms = (new MessageSet)->set_ignore_duplicates(true);
+        $ms = (new MessageSet)->set_message_formatter($user->conf);
         foreach ($ssel->paper_set($user) as $prow) {
-            if (($whyNot = $user->perm_view_paper($prow))) {
-                foreach ($whyNot->message_list() as $mi) {
-                    $mi->landmark = "#{$prow->paperId}";
-                    $ms->append_item($mi);
-                }
-                continue;
-            }
             $rctext = "";
             if ($this->include_paper) {
                 $rctext = GetAbstracts_ListAction::render($prow, $user);

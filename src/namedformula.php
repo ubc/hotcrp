@@ -1,6 +1,6 @@
 <?php
 // namedformula.php -- HotCRP helper class for named formulas
-// Copyright (c) 2009-2025 Eddie Kohler; see LICENSE.
+// Copyright (c) 2009-2026 Eddie Kohler; see LICENSE.
 
 class NamedFormula {
     /** @var Conf
@@ -16,12 +16,10 @@ class NamedFormula {
     public $createdBy = 0;
     /** @var int */
     public $timeModified = 0;
+    /** @var bool */
+    public $recursion = false;
     /** @var ?string */
     private $_abbreviation;
-    /** @var ?Formula */
-    private $_fcache;
-    /** @var ?int */
-    private $_fcache_rights_version;
 
     function __construct(Conf $conf) {
         $this->conf = $conf;
@@ -42,12 +40,29 @@ class NamedFormula {
         return $formula;
     }
 
+    /** @return bool */
+    function is_global() {
+        return $this->createdBy <= 0;
+    }
+
+    function populate_abbrev_matcher(AbbreviationMatcher $am) {
+        if (!$this->name) {
+            return;
+        }
+        $amflag = Conf::MFLAG_FORMULA | ($this->createdBy <= 0 ? Conf::MFLAG_GLOBAL : 0);
+        $am->add_phrase($this->name, $this, $amflag);
+    }
+
     function assign_search_keyword(AbbreviationMatcher $am) {
+        if (!$this->name) {
+            return;
+        }
+        $amflag = Conf::MFLAG_FORMULA | ($this->createdBy <= 0 ? Conf::MFLAG_GLOBAL : 0);
         if ($this->_abbreviation === null) {
-            $e = new AbbreviationEntry($this->name, $this, Conf::MFLAG_FORMULA);
+            $e = new AbbreviationEntry($this->name, $this, $amflag);
             $this->_abbreviation = $am->ensure_entry_keyword($e, AbbreviationMatcher::KW_CAMEL);
         } else {
-            $am->add_keyword($this->_abbreviation, $this, Conf::MFLAG_FORMULA);
+            $am->add_keyword($this->_abbreviation, $this, $amflag);
         }
     }
 
@@ -60,14 +75,9 @@ class NamedFormula {
         return $this->_abbreviation;
     }
 
-    /** @return Formula */
-    function realize(Contact $user) {
-        if (!$this->_fcache
-            || $this->_fcache->user !== $user
-            || $this->_fcache_rights_version !== Contact::$rights_version) {
-            $this->_fcache = Formula::make($user, $this->expression);
-            $this->_fcache_rights_version = Contact::$rights_version;
-        }
-        return $this->_fcache;
+    /** @param ?FormulaConfig $config
+     * @return Formula */
+    function realize(Contact $user, $config = null) {
+        return Formula::make($user, $this->expression, $config);
     }
 }

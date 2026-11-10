@@ -9,7 +9,8 @@ class GetReviewForms_ListAction extends GetReviewBase_ListAction {
         $this->all = $fj->all;
     }
     function allow(Contact $user, Qrequest $qreq) {
-        return $this->all ? $user->is_manager() : $user->is_reviewer();
+        return ($this->all ? $user->is_manager() : $user->is_reviewer())
+            && $user->scope_allows_some(TokenScope::S_REV_READ);
     }
     function run(Contact $user, Qrequest $qreq, SearchSelection $ssel) {
         $rf = $user->conf->review_form();
@@ -21,37 +22,37 @@ class GetReviewForms_ListAction extends GetReviewBase_ListAction {
 
         $texts = [];
         '@phan-var-force list<array{int,string,int}> $texts';
-        $ms = (new MessageSet)->set_ignore_duplicates(true);
+        $ms = (new MessageSet)->set_ignore_duplicates(true)
+            ->set_message_formatter($user->conf);
         foreach ($ssel->paper_set($user) as $prow) {
-            $whyNot = $user->perm_edit_some_review($prow);
-            if ($whyNot
-                && !isset($whyNot["deadline"])
-                && !isset($whyNot["reviewNotAssigned"])) {
-                $whyNot->append_to($ms, null, 2);
-                continue;
-            }
-            $t = "";
-            if ($whyNot) {
-                $whyNot->append_to($ms, null, 1);
-                if (!isset($whyNot["deadline"])) {
-                    $t .= prefix_word_wrap("==-== ", strtoupper($whyNot->unparse_text()) . "\n\n", "==-== ");
-                }
-            }
-            if (!$this->all || !$user->allow_admin($prow)) {
-                $rrows = $prow->full_reviews_by_user($user);
-            } else {
+            if ($this->all && $user->allow_admin($prow)) {
                 $prow->ensure_full_reviews();
                 $rrows = $prow->reviews_as_display();
+            } else if ($user->review_tokens() || $user->reviewer_capability($prow)) {
+                // include reviews held by token or reviewer link
+                $prow->ensure_full_reviews();
+                $rrows = [];
+                foreach ($prow->reviews_as_display() as $rrow) {
+                    if ($user->is_my_review($rrow))
+                        $rrows[] = $rrow;
+                }
+            } else {
+                $rrows = $prow->full_reviews_by_user($user);
             }
             $time = null;
-            if (empty($rrows)) {
-                $rrows[] = null;
-            }
+            $t = "";
             foreach ($rrows as $rrow) {
-                $t .= $rf->text_form($prow, $rrow, $user) . "\n";
-                if ($rrow) {
+                if ($user->can_view_review($prow, $rrow)) {
+                    $t .= $rf->text_form($prow, $rrow, $user) . "\n";
                     $time = max($time ?? 0, $rrow->mtime($user));
                 }
+            }
+            if ($t === "") {
+                if (($fr = $user->perm_view_blank_review_form($prow))) {
+                    $fr->append_to($ms, null, 2);
+                    continue;
+                }
+                $t .= $rf->text_form($prow, null, $user) . "\n";
             }
             $texts[] = [$prow->paperId, $t, $time];
         }

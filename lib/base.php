@@ -1,6 +1,6 @@
 <?php
 // base.php -- HotCRP base helper functions
-// Copyright (c) 2006-2024 Eddie Kohler; see LICENSE.
+// Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 /** @phan-file-suppress PhanRedefineFunction */
 
 // type helpers
@@ -75,6 +75,20 @@ function array_sort_unique(&$a) {
 }
 
 
+// math helpers
+
+/** @param null|int|float $n
+ * @return null|int|float */
+function itrunc($n) {
+    if ($n === null || !is_finite($n)) {
+        return null;
+    } else if ($n < PHP_INT_MIN || $n > PHP_INT_MAX) {
+        return $n < 0 ? ceil($n) : floor($n);
+    }
+    return (int) $n;
+}
+
+
 // string helpers
 
 /** @param string $haystack
@@ -117,9 +131,8 @@ function stri_ends_with($haystack, $needle) {
 function preg_matchpos($pattern, $subject) {
     if (preg_match($pattern, $subject, $m, PREG_OFFSET_CAPTURE)) {
         return $m[0][1];
-    } else {
-        return false;
     }
+    return false;
 }
 
 /** @param string $text
@@ -195,9 +208,8 @@ function convert_to_utf8($str) {
         return $str;
     } else if ($has_bom) {
         return UnicodeHelper::utf8_replace_invalid($str);
-    } else {
-        return UnicodeHelper::to_utf8("Windows-1252", $str);
     }
+    return UnicodeHelper::to_utf8("Windows-1252", $str);
 }
 
 /** @param string $str
@@ -205,7 +217,7 @@ function convert_to_utf8($str) {
 function simplify_whitespace($str) {
     // Replace invisible Unicode space-type characters with true spaces,
     // including control characters and DEL.
-    return trim(preg_replace('/(?:[\x00-\x20\x7F]|\xC2[\x80-\xA0]|\xE2\x80[\x80-\x8A\xA8\xA9\xAF]|\xE2\x81\x9F|\xE3\x80\x80)+/', " ", $str));
+    return trim(preg_replace('/(?:[\x00-\x20\x7F]|\xC2[\x80-\xA0]|\xE2\x80[\x80-\x8A\xA8\xA9\xAF]|\xE2\x81\x9F|\xE3\x80\x80|\A\xEF\xBB\xBF)+/', " ", $str));
 }
 
 /** @param string $text
@@ -366,9 +378,22 @@ function glob_to_regex($s, $flags = 0) {
 function friendly_boolean($x) {
     if (is_bool($x)) {
         return $x;
-    } else if (is_string($x) || is_int($x)) {
-        // 0, false, off, no: false; 1, true, on, yes: true
-        return filter_var($x, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+    } else if (is_int($x)) {
+        return $x === 1 ? true : ($x === 0 ? false : null);
+    } else if (is_string($x) && strlen($x) <= 5 /* `false` is longest */) {
+        // Like `filter_var`, but avoid surprising behaviors like whitespace
+        // trimming
+        if ($x === "" || $x === "0") {
+            return false;
+        } else if ($x === "1") {
+            return true;
+        }
+        $s = strtolower($x);
+        if ($s === "on" || $s === "yes" || $s === "true") {
+            return true;
+        } else if ($s === "off" || $s === "no" || $s === "false") {
+            return false;
+        }
     }
     return null;
 }
@@ -399,8 +424,10 @@ function ini_get_bytes($varname, $value = null) {
 /** @param string $email
  * @return bool */
 function validate_email($email) {
-    // Allow @_.com email addresses.  Simpler than RFC822 validation.
+    // Allow @_.com email addresses; simpler than RFC822 validation.
+    // The length limit matches the `email` columns in the schema.
     return $email !== ""
+        && strlen($email) <= 120
         && preg_match('/\A[-!#$%&\'*+.\/0-9=?A-Z^_`a-z{|}~]+@(?:_\.|(?:[-0-9A-Za-z]+\.)+)[0-9A-Za-z]+\z/', $email);
 }
 
@@ -409,7 +436,8 @@ function validate_email($email) {
  * @return ?string */
 function validate_email_at($s, $pos) {
     // Allow @_.com email addresses.  Simpler than RFC822 validation.
-    if (preg_match('/\G[-!#$%&\'*+.\/0-9=?A-Z^_`a-z{|}~]+@(?:_\.|(?:[-0-9A-Za-z]+\.)+)[0-9A-Za-z]+(?=\z|[-,.;:()\[\]{}\s]|–|—)/', $s, $m, 0, $pos)) {
+    if (preg_match('/\G[-!\#$%&\'*+.\/0-9=?A-Z^_`a-z{|}~]+@(?:_\.|(?:[-0-9A-Za-z]+\.)+)[0-9A-Za-z]+(?=\z|[-,.;:()\[\]{}\s]|–|—)/', $s, $m, 0, $pos)
+        && strlen($m[0]) <= 120) {
         return $m[0];
     }
     return null;
@@ -418,17 +446,21 @@ function validate_email_at($s, $pos) {
 /** @param string $word
  * @return string */
 function mime_quote_string($word) {
-    return '"' . preg_replace('/(?=[\x00-\x1F\\"])/', '\\', $word) . '"';
+    return '"' . preg_replace_callback('/[\x00-\x08\x0A-\x1F\\\\"\x7F]/', function ($m) {
+        if ($m[0] === "\\" || $m[0] === "\"") {
+            return "\\" . $m[0];
+        }
+        return "";
+    }, $word) . '"';
 }
 
 /** @param string $word
  * @return string */
 function mime_token_quote($word) {
-    if (preg_match('/\A[^][\x00-\x20\x80-\xFF()<>@,;:\\"\/?=]+\z/', $word)) {
+    if (preg_match('/\A[^\x00-\x20\x7F-\xFF()\[\\]<>@,;:\\\\"\/?=]++\z/', $word)) {
         return $word;
-    } else {
-        return mime_quote_string($word);
     }
+    return mime_quote_string($word);
 }
 
 /** @param string $words
@@ -436,11 +468,10 @@ function mime_token_quote($word) {
 function rfc2822_words_quote($words) {
     // NB: Do not allow `'` in an unquoted <phrase>; Proofpoint can add quotes
     // to names containing `'`, which invalidates a DKIM signature.
-    if (preg_match('/\A[-A-Za-z0-9!#$%&*+\/=?^_`{|}~ \t]*\z/', $words)) {
+    if (preg_match('/\A[-A-Za-z0-9!\#$%&*+\/=?^_`{|}~ \t]*+\z/', $words)) {
         return $words;
-    } else {
-        return mime_quote_string($words);
     }
+    return mime_quote_string($words);
 }
 
 
@@ -487,18 +518,9 @@ function is_base64url_string($text) {
 
 // JSON encoding helpers
 
-if (defined("JSON_UNESCAPED_LINE_TERMINATORS")) {
-    // JSON_UNESCAPED_UNICODE is only safe to send to the browser if
-    // JSON_UNESCAPED_LINE_TERMINATORS is defined.
-    /** @return string */
-    function json_encode_browser($x, $flags = 0) {
-        return json_encode($x, $flags | JSON_UNESCAPED_UNICODE);
-    }
-} else {
-    /** @return string */
-    function json_encode_browser($x, $flags = 0) {
-        return json_encode($x, $flags);
-    }
+/** @return string */
+function json_encode_browser($x, $flags = 0) {
+    return json_encode($x, $flags | JSON_UNESCAPED_UNICODE | JSON_HEX_TAG);
 }
 
 /** @return string */
@@ -506,10 +528,10 @@ function json_encode_db($x, $flags = 0) {
     return json_encode($x, $flags | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
-/** @param ?string $x
+/** @param ?string $s
  * @return ?object */
-function json_decode_object($x) {
-    if ($x === null || $x === "" || !is_object(($j = json_decode($x)))) {
+function json_decode_object($s) {
+    if ($s === null || $s === "" || !is_object(($j = json_decode($s)))) {
         return null;
     }
     return $j;
@@ -536,8 +558,9 @@ function json_encode_object_change(&$s, &$x, $k, $v, $n) {
         return true;
     }
     assert(is_string($k));
-    if ($x === null) {
-        $x = json_decode_object($s);
+    if ($x === null && $s !== null) {
+        $j = json_decode($s);
+        $x = is_object($j) ? $j : null;
     }
     if (($x->$k ?? null) === $v) {
         return false;
@@ -770,16 +793,8 @@ function file_get_contents_throw($filename) {
 
 // setcookie helper
 
-if (PHP_VERSION_ID >= 70300) {
-    function hotcrp_setcookie($name, $value = "", $options = []) {
-        return setcookie($name, $value, $options);
-    }
-} else {
-    function hotcrp_setcookie($name, $value = "", $options = []) {
-        return setcookie($name, $value, $options["expires"] ?? 0,
-                         $options["path"] ?? "", $options["domain"] ?? "",
-                         $options["secure"] ?? false, $options["httponly"] ?? false);
-    }
+function hotcrp_setcookie($name, $value = "", $options = []) {
+    return setcookie($name, $value, $options);
 }
 
 

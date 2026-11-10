@@ -40,10 +40,14 @@ class Tag_Fexpr extends Fexpr {
         $tag = $m[1];
         $pc_indexed = str_starts_with($tag, "_~");
         $tsm = new TagSearchMatcher($ff->user);
-        $tsm->add_check_tag($pc_indexed ? substr($tag, 1) : $tag, true);
-        if (!$tsm->single_tag()
-            && $ff->kwdef->is_value) {
-            $ff->lerror("<0>Tag values are meaningful only for single tags");
+        $tsm->add_check_tag($pc_indexed ? substr($tag, 1) : $tag);
+        foreach ($tsm->error_ftexts() as $e) {
+            $ff->lerror($e);
+        }
+        if (!$tsm->single_tag()) {
+            if (!$tsm->error_ftexts()) {
+                $ff->lerror("<0>Single tag required");
+            }
             return null;
         }
         if (!$pc_indexed
@@ -56,15 +60,21 @@ class Tag_Fexpr extends Fexpr {
         return new Tag_Fexpr($tag, $tsm, $ff->kwdef->is_value);
     }
     static function make_expand_automatic(FormulaCall $ff, TagInfo $ti, $isvalue) {
-        $recursion = FormulaParser::set_current_recursion($ff->parser->recursion + 1);
-        $st = $ti->automatic_search_term();
-        $parser = $ff->parser->make_nested($ti->automatic_formula_expression(), null, $ff->pos1, $ff->pos2);
-        $vfe = $parser->parse();
-        FormulaParser::set_current_recursion($recursion);
+        if ($ti->recursion) {
+            $ff->parser->lerror_circular($ff->pos1, $ff->pos2, "<0>Automatic tag #{} refers to itself", $ti->tag);
+            return Fexpr::cerror();
+        }
+        try {
+            $ti->recursion = true;
+            $st = $ti->automatic_search_term();
+            $parser = $ff->parser->make_nested($ti->automatic_formula_expression(), null, $ff->pos1, $ff->pos2);
+            $vfe = $parser->parse();
+        } finally {
+            $ti->recursion = false;
+        }
 
         if ($st->get_float("circular_reference")) {
-            $ff->lerror("<0>Circular reference in automatic tag #{$ti->tag}");
-            $ff->formula->lerrors[] = MessageItem::error_at("circular_reference");
+            $ff->parser->lerror_circular($ff->pos1, $ff->pos2, "<0>Automatic tag #{} refers to itself", $ti->tag);
             return Fexpr::cerror();
         }
 
@@ -82,10 +92,6 @@ class Tag_Fexpr extends Fexpr {
         $value = (float) substr($tags, $p + strlen($search));
         return $isvalue || $value !== (float) 0 ? $value : true;
     }
-    static function tag_regex_value($tags, $search, $isvalue) {
-        $p = preg_matchpos($search, $tags);
-        return $p !== false;
-    }
     /** @return string */
     function tag() {
         return $this->tag;
@@ -101,33 +107,15 @@ class Tag_Fexpr extends Fexpr {
     }
     function compile(FormulaCompiler $state) {
         $tag = $this->tsm->single_tag();
-        if (!$tag) {
-            return $this->_compile_complex($state);
-        }
         if (str_starts_with($this->tag, "_~")) {
-            $str = "\" \"." . $state->loop_cid() . "."
-                . json_encode(substr($tag, strpos($tag, "~")) . "#");
+            $str = "\" \"." . $state->current_uid() . "."
+                . var_export(substr($tag, strpos($tag, "~")) . "#", true);
         } else {
-            $str = json_encode(" {$tag}#");
+            $str = var_export(" {$tag}#", true);
         }
-        $tags = $state->_add_tags();
+        $tags = $state->prow_tags();
         $jvalue = json_encode($this->isvalue);
         return "Tag_Fexpr::tag_value({$tags},{$str},{$jvalue})";
-    }
-    function _compile_complex(FormulaCompiler $state) {
-        error_log("Tag_Fexpr::_compile_complex deprecated at {$this->tag}");
-        $regex = $this->tsm->regex();
-        if (str_starts_with($this->tag, "_~")) {
-            assert(strpos($regex, "|") === false
-                   && str_starts_with($regex, "{ {$state->user->contactId}~"));
-            $regex = "\"{ \"." . $state->loop_cid() . "."
-                . json_encode(substr($regex, strlen((string) $state->user->contactId) + 2));
-        } else {
-            $regex = json_encode($regex);
-        }
-        $tags = $state->_add_tags();
-        $jvalue = json_encode($this->isvalue);
-        return "Tag_Fexpr::tag_regex_value({$tags},{$regex},{$jvalue})";
     }
     #[\ReturnTypeWillChange]
     function jsonSerialize() {

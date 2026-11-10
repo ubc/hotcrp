@@ -3,16 +3,25 @@
 // Copyright (c) 2006-2025 Eddie Kohler; see LICENSE.
 
 class ReviewSearchMatcher extends ContactCountMatcher {
-    // `status` bits
-    const COMPLETE = 1;
-    const INCOMPLETE = 2;
-    const INPROGRESS = 4;
-    const NOTSTARTED = 8;
-    const NOTACKNOWLEDGED = 16;
-    const PENDINGAPPROVAL = 32;
-    const MYREQUEST = 128;
-    const APPROVED = 256;
-    const SUBMITTED = 512;
+    // `status` bits (completeness_mask()). Review must be:
+    const COMPLETE = 1;             // complete (value must be 1)
+    const INCOMPLETE = 2;           // incomplete (value must be 2)
+    const INPROGRESS = 4;           // in progress
+    const NOTSTARTED = 8;           // possibly accepted, but not otherwise modified
+    const NOTACKNOWLEDGED = 16;     // not accepted or drafted
+    const PENDINGAPPROVAL = 32;     // submitted pending approval
+    const MYREQUEST = 128;          // I requested it
+    const APPROVED = 256;           // approved (but not submitted)
+    const SUBMITTED = 512;          // submitted (= authors will likely see it eventually)
+
+    static private $status_completeness_antirequirements = [
+        /* RS_EMPTY */          self::COMPLETE | self::INPROGRESS | self::PENDINGAPPROVAL | self::APPROVED | self::SUBMITTED,
+        /* RS_ACKNOWLEDGED */   self::COMPLETE | self::INPROGRESS | self::NOTACKNOWLEDGED | self::PENDINGAPPROVAL | self::APPROVED | self::SUBMITTED,
+        /* RS_DRAFTED */        self::COMPLETE | self::NOTSTARTED | self::NOTACKNOWLEDGED | self::PENDINGAPPROVAL | self::APPROVED | self::SUBMITTED,
+        /* RS_DELIVERED */      self::COMPLETE | self::NOTSTARTED | self::NOTACKNOWLEDGED | self::APPROVED | self::SUBMITTED,
+        /* RS_APPROVED */       self::INCOMPLETE | self::INPROGRESS | self::NOTSTARTED | self::NOTACKNOWLEDGED | self::PENDINGAPPROVAL | self::SUBMITTED,
+        /* RS_COMPLETED */      self::INCOMPLETE | self::INPROGRESS | self::NOTSTARTED | self::NOTACKNOWLEDGED | self::PENDINGAPPROVAL | self::APPROVED
+    ];
 
     // `sensitivity` bits
     const HAS_COUNT = 1;
@@ -25,6 +34,7 @@ class ReviewSearchMatcher extends ContactCountMatcher {
     const HAS_RATINGS = 128;
     const HAS_WORDCOUNT = 256;
     const HAS_FIELD = 512;
+    const HAS_BOT = 1024;
 
     /** @var int */
     private $sensitivity = 0;
@@ -32,6 +42,8 @@ class ReviewSearchMatcher extends ContactCountMatcher {
     private $review_type = 0;
     /** @var int */
     private $status = 0;
+    /** @var bool */
+    private $bot = false;
     /** @var ?list<int> */
     public $round_list;
     /** @var ?list<int> */
@@ -107,6 +119,10 @@ class ReviewSearchMatcher extends ContactCountMatcher {
     function review_type() {
         return $this->review_type;
     }
+    /** @return int */
+    function completeness_mask() {
+        return $this->status;
+    }
     /** @return ?ReviewFieldSearch<ReviewField> */
     function field_search() {
         return $this->rfsrch;
@@ -152,6 +168,9 @@ class ReviewSearchMatcher extends ContactCountMatcher {
         if (($this->sensitivity & self::HAS_FIELD) !== 0) {
             $j["field"] = $this->rfsrch->rf->name;
         }
+        if (($this->sensitivity & self::HAS_BOT) !== 0) {
+            $j["bot"] = "yes";
+        }
         return $j;
     }
 
@@ -164,6 +183,18 @@ class ReviewSearchMatcher extends ContactCountMatcher {
         }
         $this->review_type = $rt;
         $this->sensitivity |= self::HAS_RTYPE;
+        return true;
+    }
+    /** Match reviews by whether a bot wrote them. The account kind is stored on
+     * the review as `RF_BOT`, so this needs no join.
+     * @param string $word
+     * @return bool */
+    function apply_bot($word) {
+        if (strcasecmp($word, "ai") !== 0 && strcasecmp($word, "bot") !== 0) {
+            return false;
+        }
+        $this->bot = true;
+        $this->sensitivity |= self::HAS_BOT;
         return true;
     }
     /** @param string $word
@@ -193,7 +224,7 @@ class ReviewSearchMatcher extends ContactCountMatcher {
                 return null;
             }
         } else {
-            $re = '/\A' . str_replace('\*', '.*', preg_quote($word)) . '\z/is';
+            $re = '/\A' . str_replace('\*', '.*', preg_quote($word, '/')) . '\z/is';
             $r = array_keys(preg_grep($re, $conf->defined_rounds()));
         }
         if ($neg) {
@@ -297,6 +328,7 @@ class ReviewSearchMatcher extends ContactCountMatcher {
      * @return bool */
     function apply_review_word($word, $conf) {
         return $this->apply_review_type($word)
+            || $this->apply_bot($word)
             || $this->apply_completeness($word)
             || $this->apply_round($word, $conf);
     }
@@ -323,12 +355,12 @@ class ReviewSearchMatcher extends ContactCountMatcher {
         $where = [];
         $swhere = [];
         if (($this->status & self::SUBMITTED) !== 0) {
-            $swhere[] = "reviewSubmitted is not null";
+            $swhere[] = "reviewSubmitted>0";
         } else if (($this->status & self::COMPLETE) !== 0) {
-            $swhere[] = "reviewSubmitted is not null or timeApprovalRequested<0";
+            $swhere[] = "reviewSubmitted>0 or timeApprovalRequested<0";
         }
         if (($this->status & self::PENDINGAPPROVAL) !== 0) {
-            $swhere[] = "(reviewSubmitted is null and timeApprovalRequested>0)";
+            $swhere[] = "(reviewSubmitted<=0 and timeApprovalRequested>0)";
         }
         if (($this->status & self::NOTACKNOWLEDGED) !== 0) {
             $swhere[] = "reviewModified<1";
@@ -344,14 +376,24 @@ class ReviewSearchMatcher extends ContactCountMatcher {
             $where[] = "reviewType={$this->review_type}";
         }
         if ($this->has_contacts()) {
-            $cm = $this->contact_match_sql("contactId");
+            if ($user->can_view_some_review_identity()) {
+                $cm = $this->contact_match_sql("contactId");
+            } else if ($this->test_contact($user->contactId)) {
+                $cm = "contactId={$user->contactId}";
+            } else {
+                $cm = "false";
+            }
             if ($this->tokens) {
                 $cm = "({$cm} or reviewToken in (" . join(",", $this->tokens) . "))";
             }
             $where[] = $cm;
         }
-        if ($this->rfsrch && ($qx = $this->rfsrch->sqlexpr())) {
-            $where[] = $qx;
+        if ($this->rfsrch) {
+            if ($this->rfsrch->rf->view_score <= $user->permissive_view_score_bound()) {
+                $where[] = "false";
+            } else if (($qx = $this->rfsrch->sqlexpr())) {
+                $where[] = $qx;
+            }
         }
         if ($this->rate_bits > 0) {
             $where[] = "exists (select * from ReviewRating where paperId={$table_name}.paperId and reviewId={$table_name}.reviewId)";
@@ -364,9 +406,8 @@ class ReviewSearchMatcher extends ContactCountMatcher {
         }
         if (empty($where)) {
             return null;
-        } else {
-            return join(" and ", $where);
         }
+        return SearchTerm::andjoin_sqlexpr($where);
     }
     function prepare_reviews(PaperInfo $prow) {
         if ($this->wordcountexpr) {
@@ -380,38 +421,36 @@ class ReviewSearchMatcher extends ContactCountMatcher {
             $this->rfsrch->prepare();
         }
     }
+
+    /** @param int $status
+     * @return bool */
+    static function test_status($status, ReviewInfo $rrow, Contact $user) {
+        return (self::$status_completeness_antirequirements[$rrow->reviewStatus] & $status) === 0
+            && (($status & self::INCOMPLETE) === 0 || $rrow->reviewNeedsSubmit)
+            && (($status & self::MYREQUEST) === 0 || $rrow->requestedBy === $user->contactId);
+    }
+    /** @return bool */
     function test_review(Contact $user, PaperInfo $prow, ReviewInfo $rrow) {
-        if ($this->review_type
-            && $this->review_type !== $rrow->reviewType) {
+        if ($this->status !== 0
+            && !self::test_status($this->status, $rrow, $user)) {
             return false;
         }
-        if ($this->status !== 0) {
-            if ((($this->status & self::COMPLETE) !== 0
-                 && $rrow->reviewStatus < ReviewInfo::RS_APPROVED)
-                || (($this->status & self::SUBMITTED) !== 0
-                    && $rrow->reviewStatus < ReviewInfo::RS_COMPLETED)
-                || (($this->status & self::INCOMPLETE) !== 0
-                    && !$rrow->reviewNeedsSubmit)
-                || (($this->status & self::INPROGRESS) !== 0
-                    && $rrow->reviewStatus !== ReviewInfo::RS_DRAFTED
-                    && $rrow->reviewStatus !== ReviewInfo::RS_DELIVERED)
-                || (($this->status & self::NOTACKNOWLEDGED) !== 0
-                    && $rrow->reviewStatus >= ReviewInfo::RS_ACKNOWLEDGED)
-                || (($this->status & self::NOTSTARTED) !== 0
-                    && $rrow->reviewStatus >= ReviewInfo::RS_DRAFTED)
-                || (($this->status & self::PENDINGAPPROVAL) !== 0
-                    && $rrow->reviewStatus !== ReviewInfo::RS_DELIVERED)
-                || (($this->status & self::APPROVED) !== 0
-                    && $rrow->reviewStatus !== ReviewInfo::RS_APPROVED)
-                || (($this->status & self::MYREQUEST) !== 0
-                    && $rrow->requestedBy != $user->contactId)) {
+        if ($this->bot) {
+            // who wrote it is what `can_view_review_identity` governs, and for
+            // a bot that answer does not depend on anonymity
+            if (($rrow->rflags & ReviewInfo::RF_BOT) === 0
+                || !$user->can_view_review_identity($prow, $rrow)) {
                 return false;
             }
         }
-        if ($this->round_list !== null
-            && !in_array($rrow->reviewRound, $this->round_list, true)) {
-            // XXX can_view_review_round?
-            return false;
+        if ($this->review_type || $this->round_list !== null) {
+            if (($this->review_type
+                 && $this->review_type !== $rrow->reviewType)
+                || ($this->round_list !== null
+                    && !in_array($rrow->reviewRound, $this->round_list, true))
+                || !$user->can_view_review_meta($prow, $rrow)) {
+                return false;
+            }
         }
         if ($this->rfsrch || $this->wordcountexpr || $this->rate_bits !== null
             ? !$user->can_view_review($prow, $rrow)

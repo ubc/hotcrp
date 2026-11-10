@@ -16,16 +16,11 @@ class ReviewRound_Fexpr extends Fexpr {
         return Fexpr::IDX_REVIEW;
     }
     function compile(FormulaCompiler $state) {
-        $rrow = $state->_rrow();
+        $rrow = $state->current_rrow();
         if ($state->index_type === Fexpr::IDX_MY) {
-            return $state->define_gvar("myrevround", "{$rrow} ? {$rrow}->reviewRound : null");
+            return $state->define_gvar('$myrevround', "{$rrow} ? {$rrow}->reviewRound : null");
         }
-        $view_score = $state->user->permissive_view_score_bound();
-        if (VIEWSCORE_REVIEWER <= $view_score) {
-            return "null";
-        }
-        $state->queryOptions["reviewSignatures"] = true;
-        $rrow_vsb = $state->_rrow_view_score_bound(false);
-        return "(" . VIEWSCORE_REVIEWER . " > {$rrow_vsb} ? {$rrow}->reviewRound : null)";
+        $rmv = $state->current_rrow_meta_viewable();
+        return "({$rmv} ? {$rrow}->reviewRound : null)";
     }
 }

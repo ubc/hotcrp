@@ -12,7 +12,7 @@ class GetRank_ListAction extends ListAction {
             return JsonResult::make_permission_error();
         }
         $tagger = new Tagger($user);
-        $tag = $tagger->check($qreq->tag, Tagger::NOVALUE | Tagger::NOCHAIR);
+        $tag = $tagger->check_syntax($qreq->tag, Tagger::NOVALUE | Tagger::NOCHAIR);
         if (!$tag) {
             return JsonResult::make_parameter_error("tag", $tagger->error_ftext());
         }
@@ -27,9 +27,8 @@ class GetRank_ListAction extends ListAction {
                 return $tv1 === null ? 1 : -1;
             } else if ($tv1 != $tv2) {
                 return $tv1 < $tv2 ? -1 : 1;
-            } else {
-                return $p1->paperId - $p2->paperId;
             }
+            return $p1->paperId - $p2->paperId;
         });
         $lastIndex = null;
         foreach ($pset as $prow) {
@@ -69,7 +68,7 @@ tag," . CsvGenerator::quote(trim($qreq->tag)) . "
 # same rank as the preceding paper. Lines starting with \">>\", \">>>\",
 # and so forth indicate rank gaps between papers. When you are done,
 # upload the file here:\n"
-                . "# " . $user->conf->hoturl_raw("offline", null, Conf::HOTURL_ABSOLUTE) . "\n\n"
+                . "# " . $user->conf->hoturl("offline", null, Conf::HOTURL_ABSOLUTE) . "\n\n"
                 . $real . ($real === "" ? "" : "\n") . $null);
     }
 }

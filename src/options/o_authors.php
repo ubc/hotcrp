@@ -5,6 +5,10 @@
 class Authors_PaperOption extends PaperOption {
     /** @var int */
     private $max_count;
+
+    // hard limit on authors per submission
+    const MAX_AUTHORS = 1000;
+
     function __construct(Conf $conf, $args) {
         parent::__construct($conf, $args);
         $this->max_count = $args->max ?? 0;
@@ -12,6 +16,28 @@ class Authors_PaperOption extends PaperOption {
     /** @return list<Author> */
     static function author_list(PaperValue $ov) {
         return PaperInfo::parse_author_list($ov->data() ?? "");
+    }
+    /** @return int */
+    private function effective_max_count() {
+        return $this->max_count > 0 ? min($this->max_count, self::MAX_AUTHORS) : self::MAX_AUTHORS;
+    }
+    /** @return PaperValue */
+    private function make_too_many(PaperInfo $prow) {
+        return PaperValue::make_estop($prow, $this, $this->conf->_("<0>A {submission} may have at most {max} authors", new FmtArg("max", $this->effective_max_count())));
+    }
+    /** @param string $email
+     * @return bool */
+    private function has_confirmed_orcid($email) {
+        $u = $this->conf->user_by_email($email)
+            ?? Contact::make_placeholder($this->conf, $email);
+        if ($u->confirmed_orcid() === ""
+            && ($cdbu = $u->cdb_user())) {
+            $u->import_prop($cdbu, 1);
+            if ($u->contactId > 0 && $u->prop_changed()) {
+                $u->save_prop();
+            }
+        }
+        return $u->confirmed_orcid() !== "";
     }
     function value_force(PaperValue $ov) {
         $ov->set_value_data([1], [$ov->prow->authorInformation]);
@@ -25,22 +51,25 @@ class Authors_PaperOption extends PaperOption {
     }
 
     function value_check(PaperValue $ov, Contact $user) {
+        $admin = $user->allow_admin($ov->prow);
         $aulist = self::author_list($ov);
         $nreal = 0;
-        $lemails = [];
-        foreach ($aulist as $auth) {
+        $lemails = []; // lowercase email => first index
+        foreach ($aulist as $i => $auth) {
             $nreal += $auth->is_empty() ? 0 : 1;
-            $lemails[] = strtolower($auth->email);
+            $le = strtolower($auth->email);
+            $lemails[$le] = $lemails[$le] ?? $i;
         }
         if ($nreal === 0) {
-            if (!$ov->prow->allow_absent()) {
+            if (!$ov->prow->allow_absent()
+                && $ov->problem_status() < MessageSet::ESTOP) {
                 $ov->estop($this->conf->_("<0>Entry required"));
                 $ov->append_item(MessageItem::error_at("authors:1"));
             }
             return;
         }
-        if ($this->max_count > 0 && $nreal > $this->max_count) {
-            $ov->estop($this->conf->_("<0>A {submission} may have at most {max} authors", new FmtArg("max", $this->max_count)));
+        if ($nreal > $this->effective_max_count()) {
+            $ov->estop($this->conf->_("<0>A {submission} may have at most {max} authors", new FmtArg("max", $this->effective_max_count())));
         }
 
         $req_orcid = $this->conf->opt("requireOrcid") ?? 0;
@@ -77,7 +106,7 @@ class Authors_PaperOption extends PaperOption {
                 $ov->append_item(MessageItem::warning_at("authors:{$n}"));
             }
             if ($auth->email !== ""
-                && !Contact::is_plausible_or_example_email($auth->email)
+                && !Contact::is_plausible_author_email($auth->email, $admin)
                 && !$ov->prow->author_by_email($auth->email)) {
                 $status = validate_email($auth->email) ? MessageSet::ERROR : MessageSet::ESTOP;
                 $ov->append_item(new MessageItem($status, "authors"));
@@ -92,10 +121,11 @@ class Authors_PaperOption extends PaperOption {
                 if ($auth->email === "") {
                     $msg_missing = true;
                     $ov->append_item(new MessageItem($status, "authors:{$n}:email"));
-                } else if (!($u = $this->conf->user_by_email($auth->email))
-                           || !$u->confirmed_orcid()) {
-                    $msg_orcid[] = $auth->email;
-                    $ov->append_item(new MessageItem($status, "authors:{$n}"));
+                } else if (!$this->has_confirmed_orcid($auth->email)) {
+                    if (!Contact::is_bot_email($auth->email)) {
+                        $msg_orcid[] = $auth->email;
+                        $ov->append_item(new MessageItem($status, "authors:{$n}"));
+                    }
                 } else {
                     $status = 0;
                 }
@@ -108,10 +138,21 @@ class Authors_PaperOption extends PaperOption {
                 }
             }
             if ($auth->email !== ""
-                && ($n2 = array_search(strtolower($auth->email), $lemails)) !== $n - 1) {
+                && ($n2 = $lemails[strtolower($auth->email)]) !== $n - 1) {
                 $msg_dupemail = true;
                 $ov->append_item(MessageItem::warning_at("authors:{$n}:email"));
                 $ov->append_item(MessageItem::warning_at("authors:" . ($n2 + 1) . ":email"));
+            }
+        }
+
+        // only admins can remove bot authors
+        if (!$admin) {
+            foreach (self::author_list($ov->prow->base_option($this->id)) as $auth) {
+                if (Contact::is_bot_email($auth->email)
+                    && !isset($lemails[strtolower($auth->email)])) {
+                    $ov->error($this->conf->_("<0>Only administrators can remove bot authors"));
+                    break;
+                }
             }
         }
 
@@ -160,7 +201,7 @@ class Authors_PaperOption extends PaperOption {
         $explicit_contacts = [];
         $ps->clear_conflict_values(CONFLICT_AUTHOR);
         foreach (self::author_list($ov) as $i => $auth) {
-            if (Contact::is_plausible_or_example_email($auth->email)) {
+            if (Contact::is_plausible_author_email($auth->email, true)) {
                 $cflags = CONFLICT_AUTHOR;
                 if ($ov->anno("contact:{$auth->email}")) {
                     $cflags |= CONFLICT_CONTACTAUTHOR;
@@ -186,8 +227,18 @@ class Authors_PaperOption extends PaperOption {
         while (!empty($authors) && $authors[count($authors) - 1]->is_empty()) {
             array_pop($authors);
         }
+        // reject lists over the hard limit before any per-author lookup;
+        // value_check reports lists over a configured maximum
+        $nreal = 0;
+        foreach ($authors as $au) {
+            $nreal += $au->is_empty() ? 0 : 1;
+        }
+        if ($nreal > self::MAX_AUTHORS) {
+            return $this->make_too_many($prow);
+        }
         $t = [];
         foreach ($authors as $au) {
+            self::expand_author($au, $prow);
             $t[] = $au->unparse_tabbed();
         }
         return PaperValue::make($prow, $this, 1, join("\n", $t));
@@ -222,9 +273,7 @@ class Authors_PaperOption extends PaperOption {
                 $aue = $aua;
                 $aua = $tmp;
             }
-            $auth = Author::make_nae($auf, $aul, $aue, $aua);
-            self::expand_author($auth, $prow);
-            $authors[] = $auth;
+            $authors[] = Author::make_nae($auf, $aul, $aue, $aua);
         }
         return $this->resolve_parse($prow, $authors);
     }
@@ -243,7 +292,6 @@ class Authors_PaperOption extends PaperOption {
             } else {
                 return PaperValue::make_estop($prow, $this, "<0>Validation error on author #" . ($i + 1));
             }
-            self::expand_author($auth, $prow);
             $authors[] = $auth;
             if ($contact && validate_email($auth->email)) {
                 $cemail[] = $auth->email;
@@ -303,10 +351,7 @@ class Authors_PaperOption extends PaperOption {
             $this->editable_author_component_entry($pt, $n, "email", $au, $reqau, $ignore_diff), ' ',
             $this->editable_author_component_entry($pt, $n, "name", $au, $reqau, $ignore_diff), ' ',
             $this->editable_author_component_entry($pt, $n, "affiliation", $au, $reqau, $ignore_diff),
-            $pt->messages_at("authors:{$n}"),
-            $pt->messages_at("authors:{$n}:email"),
-            $pt->messages_at("authors:{$n}:name"),
-            $pt->messages_at("authors:{$n}:affiliation"),
+            MessageSet::feedback_html($pt->message_list_for("authors:{$n}:*")),
             '</div></div>';
     }
     function print_web_edit(PaperTable $pt, $ov, $reqov) {

@@ -86,6 +86,15 @@ class Navigation_Tester {
         xassert_eqq($nav->resolve_within("/z/q"), "https://y.com/z/q/");
         xassert_eqq($nav->resolve_within("../q/", "https://y.com/z/q/"), "https://y.com/z/q/");
         xassert_eqq($nav->resolve_within("../q/", ""), "https://y.com/z/q/");
+
+        // browsers treat `%2e` as `.` and `\` as `/` in paths
+        xassert_eqq($ns->resolve_within("foo/%2e%2e/%2E%2e/barf", "/fart/"), null);
+        xassert_eqq($ns->resolve_within("foo/.%2e/%2e./barf", "/fart/"), null);
+        xassert_eqq($ns->resolve_within("/fart/%2e%2e/barf", "/fart/"), null);
+        xassert_eqq($ns->resolve_within("foo/%2e%2e/baz?q=%2e%2e", "/fart/"), "http://butt.com/fart/baz?q=%2e%2e");
+        xassert_eqq($ns->resolve_within("foo\\..\\..\\barf", "/fart/"), null);
+        xassert_eqq($ns->resolve_within("\\\\evil.example/", "/fart/"), null);
+        xassert_eqq($ns->resolve_within("foo\\baz", "/fart/"), "http://butt.com/fart/foo/baz");
     }
 
     const FL_OSF = 1;
@@ -137,6 +146,51 @@ class Navigation_Tester {
         xassert_eqq($ns->page, $page);
         xassert_eqq($ns->path, $path);
         xassert_eqq($ns->unproxied, $unproxied);
+    }
+
+    // `resolve_relative_path` merges `$path` with `$ref`, then applies RFC 3986
+    // remove_dot_segments. Two properties matter to `resolve_within`, which uses
+    // the result for a prefix containment check: a `.` or `..` in final position
+    // leaves a trailing slash, and the result is never empty.
+    function test_resolve_relative_path() {
+        $tests = [
+            // no dot segments: returned unchanged
+            ["/a/b", "/base/ref", "/a/b"],
+            ["/", "/base/ref", "/"],
+            ["/.well-known/x", "/base/ref", "/.well-known/x"],
+            ["/a/.b", "/base/ref", "/a/.b"],
+            ["/a/..b", "/base/ref", "/a/..b"],
+            // interior dot segments collapse
+            ["/a/./b", "/base/ref", "/a/b"],
+            ["/a/../b", "/base/ref", "/b"],
+            ["/a/b/../c", "/base/ref", "/a/c"],
+            ["/x/./././y", "/base/ref", "/x/y"],
+            ["/a/b/c/../../d", "/base/ref", "/a/d"],
+            // a trailing dot segment leaves a trailing slash
+            ["/a/.", "/base/ref", "/a/"],
+            ["/a/b/.", "/base/ref", "/a/b/"],
+            ["/a/b/./", "/base/ref", "/a/b/"],
+            ["/a/b/..", "/base/ref", "/a/"],
+            // reduction to the root yields "/", never ""
+            ["/.", "/base/ref", "/"],
+            ["/..", "/base/ref", "/"],
+            ["/a/..", "/base/ref", "/"],
+            ["/a/b/../..", "/base/ref", "/"],
+            // `..` cannot escape the root
+            ["/a/../../b", "/base/ref", "/b"],
+            // a relative path merges with the reference first
+            ["./x", "/base/ref", "/base/x"],
+            ["../y", "/base/ref", "/y"],
+            ["a/../b", "/base/ref", "/base/b"],
+            ["..", "/base/ref", "/"],
+            ["a", "/base/ref", "/base/a"],
+            // empty segments are preserved
+            ["/a//b/..", "/base/ref", "/a//"]
+        ];
+        foreach ($tests as $t) {
+            xassert_eqq(NavigationState::resolve_relative_path($t[0], $t[1]), $t[2],
+                        "resolve_relative_path({$t[0]}, {$t[1]})");
+        }
     }
 
     function test_analyze_apache_fpm_proxy() {
@@ -787,6 +841,144 @@ class Navigation_Tester {
         xassert_eqq($ns->page, "barf");
         xassert_eqq($ns->site_path_relative, "../");
         xassert_eqq($ns->path, "/");
+    }
+
+    function test_server_numbered_host() {
+        $ns = NavigationState::make_server([
+            "HTTP_HOST" => "example.com", "SERVER_PORT" => 8080,
+            "SCRIPT_FILENAME" => __FILE__, "REQUEST_URI" => "/fart", "SCRIPT_NAME" => "/fart"
+        ]);
+        xassert_eqq($ns->host, "example.com");
+        xassert_eqq($ns->server, "http://example.com");
+
+        $ns = NavigationState::make_server([
+            "HTTP_HOST" => "127.0.0.1", "SERVER_PORT" => 80,
+            "SCRIPT_FILENAME" => __FILE__, "REQUEST_URI" => "/fart", "SCRIPT_NAME" => "/fart"
+        ]);
+        xassert_eqq($ns->host, "127.0.0.1");
+        xassert_eqq($ns->server, "http://127.0.0.1");
+
+        $ns = NavigationState::make_server([
+            "HTTP_HOST" => "[::1]", "SERVER_PORT" => 8080,
+            "SCRIPT_FILENAME" => __FILE__, "REQUEST_URI" => "/fart", "SCRIPT_NAME" => "/fart"
+        ]);
+        xassert_eqq($ns->host, "[::1]");
+        xassert_eqq($ns->server, "http://[::1]");
+
+        $ns = NavigationState::make_server([
+            "SERVER_NAME" => "[::1]:8080", "SERVER_PORT" => 8080,
+            "SCRIPT_FILENAME" => __FILE__, "REQUEST_URI" => "/fart", "SCRIPT_NAME" => "/fart"
+        ]);
+        xassert_eqq($ns->host, "[::1]");
+        xassert_eqq($ns->server, "http://[::1]:8080");
+        // `SERVER_NAME` may hold an unbracketed IPv6 address
+        $ns = NavigationState::make_server([
+            "SERVER_NAME" => "::1", "SERVER_PORT" => 8080,
+            "SCRIPT_FILENAME" => __FILE__, "REQUEST_URI" => "/fart", "SCRIPT_NAME" => "/fart"
+        ]);
+        xassert_eqq($ns->host, "[::1]");
+        xassert_eqq($ns->server, "http://[::1]:8080");
+
+        $ns = NavigationState::make_server([
+            "SERVER_NAME" => "2001:db8::5", "SERVER_PORT" => 80,
+            "SCRIPT_FILENAME" => __FILE__, "REQUEST_URI" => "/fart", "SCRIPT_NAME" => "/fart"
+        ]);
+        xassert_eqq($ns->host, "[2001:db8::5]");
+        xassert_eqq($ns->server, "http://[2001:db8::5]");
+    }
+
+    /** @param array<string,mixed> $server
+     * @return NavigationState */
+    private function make_server_at($server) {
+        return NavigationState::make_server($server + [
+            "SCRIPT_FILENAME" => __FILE__, "REQUEST_URI" => "/fart", "SCRIPT_NAME" => "/fart"
+        ]);
+    }
+
+    function test_server_port() {
+        // a `Host` header names the port the client used; without a port, it
+        // means the scheme's default, whatever port the server listens on
+        $ns = $this->make_server_at([
+            "HTTP_HOST" => "hotcrp.example.org", "HTTP_X_FORWARDED_PROTO" => "https",
+            "SERVER_PORT" => 80
+        ]);
+        xassert_eqq($ns->host, "hotcrp.example.org");
+        xassert_eqq($ns->server, "https://hotcrp.example.org");
+        xassert_eqq($ns->resolve("paper/1"), "https://hotcrp.example.org/paper/1");
+
+        $ns = $this->make_server_at([
+            "HTTP_HOST" => "hotcrp.example.org", "HTTPS" => "on", "SERVER_PORT" => 8443
+        ]);
+        xassert_eqq($ns->server, "https://hotcrp.example.org");
+
+        $ns = $this->make_server_at([
+            "HTTP_HOST" => "hotcrp.example.org:8443", "HTTPS" => "on", "SERVER_PORT" => 8443
+        ]);
+        xassert_eqq($ns->host, "hotcrp.example.org");
+        xassert_eqq($ns->server, "https://hotcrp.example.org:8443");
+
+        $ns = $this->make_server_at([
+            "HTTP_HOST" => "[2001:db8::5]", "REQUEST_SCHEME" => "https", "SERVER_PORT" => 8443
+        ]);
+        xassert_eqq($ns->host, "[2001:db8::5]");
+        xassert_eqq($ns->server, "https://[2001:db8::5]");
+
+        // without a `Host` header, a nondefault server port is added
+        $ns = $this->make_server_at([
+            "SERVER_NAME" => "example.com", "SERVER_PORT" => 8080
+        ]);
+        xassert_eqq($ns->host, "example.com");
+        xassert_eqq($ns->server, "http://example.com:8080");
+
+        $ns = $this->make_server_at([
+            "HTTP_HOST" => "", "SERVER_NAME" => "example.com", "HTTPS" => "on", "SERVER_PORT" => 443
+        ]);
+        xassert_eqq($ns->server, "https://example.com");
+
+        $ns = $this->make_server_at([
+            "SERVER_NAME" => "[::1]", "SERVER_PORT" => 8080
+        ]);
+        xassert_eqq($ns->host, "[::1]");
+        xassert_eqq($ns->server, "http://[::1]:8080");
+
+        $ns = $this->make_server_at(["SERVER_PORT" => 8080]);
+        xassert_eqq($ns->host, "localhost");
+        xassert_eqq($ns->server, "http://localhost:8080");
+    }
+
+    function test_base_numbered_host() {
+        $ns = NavigationState::make_base("http://example.com:8080/fart/");
+        xassert_eqq($ns->host, "example.com");
+        xassert_eqq($ns->server, "http://example.com:8080");
+        xassert_eqq($ns->base_path, "/fart/");
+
+        $ns = NavigationState::make_base("http://127.0.0.1/fart/");
+        xassert_eqq($ns->host, "127.0.0.1");
+        xassert_eqq($ns->server, "http://127.0.0.1");
+
+        $ns = NavigationState::make_base("http://[::1]:8080/fart/");
+        xassert_eqq($ns->host, "[::1]");
+        xassert_eqq($ns->server, "http://[::1]:8080");
+
+        $ns = NavigationState::make_base("https://[2001:db8::5]:8080/fart/");
+        xassert_eqq($ns->host, "[2001:db8::5]");
+        xassert_eqq($ns->server, "https://[2001:db8::5]:8080");
+
+        $ns = NavigationState::make_base("https://[2001:db8::5]/fart/");
+        xassert_eqq($ns->host, "[2001:db8::5]");
+        xassert_eqq($ns->server, "https://[2001:db8::5]");
+
+        $ns = NavigationState::make_base("https://example.com/fart/");
+        xassert_eqq($ns->host, "example.com");
+        xassert_eqq($ns->server, "https://example.com");
+
+        $ns = NavigationState::make_base("http://[::1]:8080");
+        xassert_eqq($ns->host, "[::1]");
+        xassert_eqq($ns->server, "http://[::1]:8080");
+
+        $ns = NavigationState::make_base("http://example.com");
+        xassert_eqq($ns->host, "example.com");
+        xassert_eqq($ns->server, "http://example.com");
     }
 
     function test_test_mode() {

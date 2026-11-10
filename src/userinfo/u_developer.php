@@ -7,22 +7,41 @@ class Developer_UserInfo {
     private $us;
     /** @var ?TokenInfo */
     private $_new_token;
+    /** @var ?list<TokenInfo> */
+    private $_recent_tokens;
     /** @var list<array{int,bool,string}> */
     private $_delete_tokens = [];
+    /** @var list<string> */
+    private $_delete_grants = [];
 
     function __construct(UserStatus $us) {
         $this->us = $us;
+    }
+
+    /** Whether whoever is looking may hold this account's credentials.
+     *
+     * Normally only the account itself: an administrator must not be able to
+     * mint a credential that speaks as a person. A bot is the exception, and
+     * not because chairs deserve more power — because a bot has no person to
+     * impersonate and no way to sign in and mint one for itself. Someone has to,
+     * and the chair is who the conference already trusts with the account.
+     * @return bool */
+    private function is_token_principal() {
+        // `$us->user` is null while a new account is being requested
+        $u = $this->us->user;
+        return $this->us->is_auth_self()
+            || ($u && $u->is_bot() && $this->us->viewer->privChair);
     }
 
     function display_if() {
         if ($this->us->is_actas_self()) {
             return "dim";
         }
-        return $this->us->is_auth_self();
+        return $this->is_token_principal();
     }
 
     function allow() {
-        return $this->us->is_auth_self() && !$this->us->user->security_locked();
+        return $this->is_token_principal() && !$this->us->user->security_locked();
     }
 
     function request() {
@@ -37,47 +56,138 @@ class Developer_UserInfo {
         }
     }
 
-    /** @param ?Contact $user
-     * @return list<TokenInfo> */
-    static function active_bearer_tokens($user) {
+    /** @param TokenInfo $tok
+     * @return bool */
+    static function is_recent($tok) {
+        $t = $tok->inactive_at();
+        return $t <= 0 || $t > Conf::$now - 5 * 86400;
+    }
+
+    /** @param ?Contact $user */
+    private function _add_recent_tokens_at($user) {
         if (!$user) {
-            return [];
+            // no contactdb, or no account there
+            return;
         }
         $is_cdb = $user->is_cdb_user();
         $uid = $is_cdb ? $user->contactDbId : $user->contactId;
         if ($uid <= 0) {
-            return [];
+            return;
         }
         $dblink = $is_cdb ? $user->conf->contactdb() : $user->conf->dblink;
-        $result = Dbl::qe($dblink, "select * from Capability where capabilityType=? and contactId=?", TokenInfo::BEARER, $uid);
-        $toks = [];
+        $result = Dbl::qe($dblink, "select * from Capability where capabilityType?a and contactId=?", [TokenInfo::BEARER, TokenInfo::OAUTHREFRESH], $uid);
         while (($tok = TokenInfo::fetch($result, $user->conf, $is_cdb))) {
-            if ($tok->is_active())
-                $toks[] = $tok;
+            if (self::is_recent($tok))
+                $this->_recent_tokens[] = $tok;
         }
         Dbl::free($result);
+    }
+
+    private function recent_tokens() {
+        if ($this->_recent_tokens === null) {
+            $this->_recent_tokens = [];
+            $this->_add_recent_tokens_at($this->us->user);
+            $this->_add_recent_tokens_at($this->us->user->cdb_user());
+        }
+        return $this->_recent_tokens;
+    }
+
+    /** Tokens this user made by hand. A token an OAuth client was issued
+     * carries a `client_id`; it belongs to a grant, not to this list, and
+     * deleting one there would achieve nothing—the client’s next refresh
+     * replaces it.
+     * @return list<TokenInfo> */
+    function recent_bearer_tokens() {
+        $toks = [];
+        foreach ($this->recent_tokens() as $tok) {
+            if ($tok->capabilityType === TokenInfo::BEARER
+                && $tok->data("client_id") === null)
+                $toks[] = $tok;
+        }
         return $toks;
     }
 
-    /** @param Contact $user
-     * @return list<TokenInfo> */
-    static function all_active_bearer_tokens($user) {
-        $toks1 = self::active_bearer_tokens($user->cdb_user());
-        return array_merge($toks1, self::active_bearer_tokens($user));
+    /** Return this user’s OAuth grants, one entry per client, most recently
+     * used first. Every token of a grant is included: an access token, the
+     * refresh token that renews it, and the spent links of the rotation chain,
+     * which have to be revoked together or not at all.
+     * @return list<object> */
+    function recent_grants() {
+        $toks = $this->recent_tokens();
+        // Oldest first, so that “the last one wins” means the newest: one
+        // `client_id` covers every authorization of that client, and the query
+        // that produced these imposed no order. Tokens minted in the same
+        // second tie, so break by salt: an arbitrary winner is fine, a
+        // different winner on every page load is not.
+        usort($toks, function ($a, $b) {
+            return ($a->timeCreated <=> $b->timeCreated)
+                ? : strcmp($a->salt, $b->salt);
+        });
+        $grants = [];
+        foreach ($toks as $tok) {
+            if (!$tok->is_active()
+                || ($client_id = $tok->data("client_id")) === null) {
+                continue;
+            }
+            $key = ($tok->is_cdb ? "A" : "L") . $client_id;
+            $g = $grants[$key] ?? null;
+            if (!$g) {
+                $g = $grants[$key] = (object) [
+                    "client_id" => $client_id, "is_cdb" => $tok->is_cdb,
+                    "name" => null, "tokens" => [],
+                    "timeCreated" => $tok->timeCreated, "timeUsed" => 0,
+                    "scopes" => [], "max_scopes" => []
+                ];
+            }
+            $g->tokens[] = $tok;
+            $g->name = $tok->data("client_name") ?? $g->name;
+            $g->timeCreated = min($g->timeCreated, $tok->timeCreated);
+            $g->timeUsed = max($g->timeUsed, $tok->timeUsed);
+            if ($tok->capabilityType === TokenInfo::BEARER) {
+                // an access token records the scope actually granted
+                $x = $tok->data("scope") ?? "";
+                if (!in_array($x, $g->scopes, true)) {
+                    $g->scopes[] = $x;
+                }
+            } else {
+                // a refresh token records the scope *requested*; the grant is
+                // that capped by the client, so this is an upper bound. It is
+                // all there is once the access token’s row has been dropped,
+                // which happens well before the refresh token’s.
+                [, $x] = TokenScope::scope_str_split_openid($tok->data("scope"));
+                if (!in_array($x, $g->max_scopes, true)) {
+                    $g->max_scopes[] = $x;
+                }
+            }
+        }
+        $grants = array_values($grants);
+        usort($grants, function ($a, $b) {
+            return ($b->timeUsed <=> $a->timeUsed)
+                ? : ($b->timeCreated <=> $a->timeCreated);
+        });
+        return $grants;
     }
 
     function print_bearer_tokens(UserStatus $us) {
-        if (!$us->is_auth_self()) {
+        if (!$this->is_token_principal()) {
             $us->conf->warning_msg('<0>API tokens cannot be edited when acting as another user.');
             return false;
         }
         echo '<p class="w-text">API tokens let you access <a href="https://hotcrp.com/devel/api/">HotCRP’s API</a> programmatically. Supply a token using an HTTP <code>Authorization</code> header, as in “<code>Authorization: Bearer <em>token-name</em></code>”.</p>';
-        $us->conf->warning_msg('<0>Treat tokens like passwords and keep them secret. Anyone who knows your tokens can access this site with your privileges.');
+        if ($us->is_auth_self()) {
+            $us->conf->warning_msg('<0>Treat tokens like passwords and keep them secret. Anyone who knows your tokens can access this site with your privileges.');
+        } else {
+            $us->conf->warning_msg('<0>Treat tokens like passwords and keep them secret. Anyone who knows this bot account’s tokens can act as it on this site. The bot cannot sign in; these tokens are the only way it reaches the site, and the only way to stop it is to delete them.');
+        }
     }
 
     function print_current_bearer_tokens(UserStatus $us) {
-        $toks = self::all_active_bearer_tokens($us->user);
+        $toks = $this->recent_bearer_tokens();
         usort($toks, function ($a, $b) {
+            $aa = $a->is_active();
+            if ($aa !== $b->is_active()) {
+                return $aa ? -1 : 1;
+            }
             $au = floor($a->timeUsed / 86400);
             $bu = floor($b->timeUsed / 86400);
             if (($au > 0) !== ($bu > 0)) {
@@ -89,8 +199,7 @@ class Developer_UserInfo {
         if (empty($toks)) {
             return;
         }
-        Icons::stash_defs("trash");
-        echo '<div class="mt-4">', Ht::unstash();
+        echo '<div class="mt-4">';
         $n = 1;
         foreach ($toks as $tok) {
             if ($tok->timeCreated >= Conf::$now - 10) {
@@ -105,16 +214,17 @@ class Developer_UserInfo {
 
     /** @param int $n */
     private function print_bearer_token_deleter(UserStatus $us, TokenInfo $tok, $n) {
-        if (!$us->is_auth_self()
+        if (!$this->is_token_principal()
             || $us->user->security_locked()
-            || !$us->has_recent_authentication()) {
+            || !$us->has_recent_authentication()
+            || !$tok->is_active()) {
             return;
         }
         $dbid = $tok->is_cdb ? "A" : "L";
         $id = "{$tok->timeCreated}.{$dbid}." . substr($tok->salt, 0, 12);
         echo Ht::hidden("bearer_token/{$n}/id", $id),
             Ht::hidden("bearer_token/{$n}/delete", "", ["class" => "deleter", "data-default-value" => ""]),
-            Ht::button(Icons::ui_use("trash"), [
+            Ht::button(Ht::make_licon("trash", "m"), [
                 "class" => "ml-3 btn-licon-s ui js-profile-token-delete need-tooltip",
                 "aria-label" => "Delete API token"
             ]);
@@ -122,15 +232,21 @@ class Developer_UserInfo {
     }
 
     /** @param int $n */
-    function print_bearer_token(UserStatus $us, TokenInfo $tok, $n) {
-        $short_salt = substr($tok->salt, 0, 10) . (strlen($tok->salt) > 9 ? "…" : "");
+    private function print_bearer_token(UserStatus $us, TokenInfo $tok, $n) {
+        $active = $tok->is_active();
         $note = $tok->data("note") ?? "";
         echo '<div class="f-i w-text"><div class="f-c">';
         if ($note !== "") {
             echo htmlspecialchars($note), ' <span class="barsep">·</span> ';
         }
-        echo '<code>', $short_salt, '</code>';
-        $this->print_bearer_token_deleter($us, $tok, $n);
+        $short_salt = '<code>' . $tok->abbreviation(TokenInfo::ABBREVIATION_ELLIPSIS) . '</code>';
+        if ($active) {
+            echo $short_salt;
+            $this->print_bearer_token_deleter($us, $tok, $n);
+        } else {
+            echo '<del>', $short_salt, '</del>',
+                '<em class="pl-3">(recently expired)</em>';
+        }
         echo '</div>';
         $this->print_bearer_token_info($us->conf, $tok);
         echo '</div>';
@@ -150,8 +266,15 @@ class Developer_UserInfo {
         }
         echo ' <span class="barsep">·</span> ',
             self::unparse_last_used($tok->timeUsed),
-            ' <span class="barsep">·</span> ',
-            $tok->timeExpires > 0 ? "expires " . $conf->unparse_time_point($tok->timeExpires) : "never expires";
+            ' <span class="barsep">·</span> ';
+        $invt = $tok->inactive_at();
+        if ($invt <= 0) {
+            echo "never expires";
+        } else if ($invt <= Conf::$now) {
+            echo "expired ", $conf->unparse_time_point($invt);
+        } else {
+            echo "expires ", $conf->unparse_time_point($invt);
+        }
     }
 
     /** @param int $n */
@@ -171,6 +294,135 @@ class Developer_UserInfo {
         echo '</p></div></div>';
     }
 
+    function print_grants(UserStatus $us) {
+        $grants = $this->recent_grants();
+        if (empty($grants)) {
+            return;
+        }
+        $us->print_start_section("Connected applications");
+        echo '<p class="w-text">These applications may act on your behalf using ',
+            'HotCRP’s API. Disconnecting one revokes every token it holds; ',
+            'it can ask for your authorization again.</p>';
+        echo '<div class="mt-4">';
+        $n = 1;
+        foreach ($grants as $g) {
+            $this->print_grant($us, $g, $n);
+            ++$n;
+        }
+        echo '</div>';
+    }
+
+    /** @param object $g
+     * @param int $n */
+    private function print_grant(UserStatus $us, $g, $n) {
+        $name = $g->name ?? $g->client_id;
+        echo '<div class="f-i w-text"><div class="f-c">',
+            htmlspecialchars($name);
+        if ($this->is_token_principal()
+            && !$us->user->security_locked()
+            && $us->has_recent_authentication()) {
+            echo Ht::hidden("grant/{$n}/id", ($g->is_cdb ? "A." : "L.") . $g->client_id),
+                Ht::hidden("grant/{$n}/delete", "", ["class" => "deleter", "data-default-value" => ""]),
+                Ht::button(Ht::make_licon("trash", "m"), [
+                    "class" => "ml-3 btn-licon-s ui js-profile-token-delete need-tooltip",
+                    "aria-label" => "Disconnect application"
+                ]);
+            $us->mark_inputs_printed();
+        }
+        echo '</div>';
+        // the identifier the action log and the server's access log both name
+        $gids = [];
+        foreach ($g->tokens as $tok) {
+            if (($gid = Authorization_Token::grant_id($tok))
+                && !in_array($gid, $gids, true)) {
+                $gids[] = $gid;
+            }
+        }
+        if (!empty($gids)) {
+            sort($gids);
+            echo '<code>', htmlspecialchars(join(" ", $gids)), '</code>',
+                ' <span class="barsep">·</span> ';
+        }
+        echo plural(count($g->tokens), "token"),
+            ' <span class="barsep">·</span> ',
+            self::unparse_grant_scope($g),
+            ' <span class="barsep">·</span> ',
+            self::unparse_last_used($g->timeUsed),
+            ' <span class="barsep">·</span> authorized ',
+            $us->conf->unparse_time_point($g->timeCreated),
+            '</div>';
+    }
+
+    /** @param object $g
+     * @return string */
+    static private function unparse_grant_scope($g) {
+        $approx = empty($g->scopes);
+        $ss = $approx ? $g->max_scopes : $g->scopes;
+        if (empty($ss)) {
+            return "scope unknown";
+        }
+        $a = [];
+        foreach ($ss as $s) {
+            // `parse` returns null for `all`, which is full scope, and for the
+            // empty string, which is no information at all; those must not
+            // print the same thing
+            $ts = $s === "" ? null : TokenScope::parse($s, null);
+            $x = $s === "" ? "none" : ($ts ? TokenScope::unparse($ts) : "all");
+            if (!in_array($x, $a, true)) {
+                $a[] = $x;
+            }
+        }
+        if (count($a) > 1) {
+            $t = "scopes " . htmlspecialchars(join(", ", $a));
+        } else if ($a[0] === "all") {
+            $t = "full scope";
+        } else if ($a[0] === "none") {
+            // an upper bound of nothing is not approximate
+            return "no API access";
+        } else {
+            $t = "scope " . htmlspecialchars($a[0]);
+        }
+        return $approx ? "at most {$t}" : $t;
+    }
+
+    function request_delete_grants(UserStatus $us) {
+        for ($i = 1; isset($us->qreq["grant/{$i}/id"]); ++$i) {
+            if (friendly_boolean($us->qreq["grant/{$i}/delete"])) {
+                $this->_delete_grants[] = $us->qreq["grant/{$i}/id"];
+            }
+        }
+    }
+
+    function save_delete_grants(UserStatus $us) {
+        if (empty($this->_delete_grants)) {
+            return;
+        }
+        $gids = [];
+        foreach ($this->recent_grants() as $g) {
+            if (!in_array(($g->is_cdb ? "A." : "L.") . $g->client_id, $this->_delete_grants, true)) {
+                continue;
+            }
+            foreach ($g->tokens as $tok) {
+                if (!$tok->is_active()) {
+                    continue;
+                }
+                $gid = Authorization_Token::grant_id($tok) ?? "<unknown>";
+                if (!in_array($gid, $gids, true)) {
+                    $gids[] = $gid;
+                }
+                // Keep the rows: a revoked refresh token presented later is the
+                // replay signal, and the rotation chain is walked through them.
+                $tok->set_invalid()
+                    ->set_expires_in(Authorization_Token::BEARER_RETENTION)
+                    ->update();
+            }
+        }
+        if (!empty($gids)) {
+            sort($gids);
+            $us->diffs["connected applications"] = "revoked " . join(" ", $gids);
+        }
+    }
+
     static function unparse_last_used($time) {
         if ($time <= 0) {
             return "never used";
@@ -185,7 +437,7 @@ class Developer_UserInfo {
     }
 
     function print_new_bearer_token(UserStatus $us) {
-        if (!$us->is_auth_self()
+        if (!$this->is_token_principal()
             || !$us->has_recent_authentication()) {
             return;
         } else if ($us->user->security_locked()) {
@@ -225,17 +477,31 @@ class Developer_UserInfo {
                 ]));
         }
 
+        $default_scope = self::default_token_scope($us->user);
         $us->print_field("bearer_token/new/scope", "Scope",
-            Ht::entry("bearer_token/new/scope", $us->qreq["bearer_token/new/scope"] ?? "", [
-                "size" => 30, "id" => "bearer_token/new/scope", "data-default-value" => "",
+            Ht::entry("bearer_token/new/scope", $us->qreq["bearer_token/new/scope"] ?? $default_scope, [
+                "size" => 30, "id" => "bearer_token/new/scope",
+                "data-default-value" => $default_scope,
                 "placeholder" => "all"
             ]) . '<div class="f-d">What rights should this token have?<br>Examples: ‘read’, ‘read paper:write’, ‘review:admin#10’, ‘submission:write?q=dec:no’</div>');
 
         $us->cs()->print_end_section();
     }
 
+    /** The scope a new token starts with.
+     *
+     * A person's token defaults to their whole account, which they are watching.
+     * A bot's is a credential nobody watches, held by something that acts on its
+     * own, so it starts at what a reviewing bot needs and the chair widens it
+     * deliberately. This is a default, not a limit.
+     * @param ?Contact $user
+     * @return string */
+    static function default_token_scope($user) {
+        return $user && $user->is_bot() ? "read review:write" : "";
+    }
+
     function request_new_bearer_token(UserStatus $us) {
-        assert($us->is_auth_self());
+        assert($this->is_token_principal());
         $cdbu = $us->user->cdb_user();
         if (!$us->qreq["bearer_token/new/enable"]
             || $us->user->security_locked()
@@ -252,32 +518,23 @@ class Developer_UserInfo {
         }
 
         $exp = $us->qreq["bearer_token/new/expiration"] ?? "30";
-        if ($exp === "never") {
-            $expiry = -1;
+        if (($ndays = stonum($exp)) !== null) {
+            $expiry = (int) ($ndays * 86400);
         } else {
-            $expiry = (int) ((stonum($exp) ?? 30) * 86400);
+            $expiry = (int) round(SettingParser::parse_duration($exp) ?? 30 * 86400);
         }
-
         $token = Authorization_Token::prepare_bearer($tuser, $expiry);
         $this->_new_token = $token;
 
-        $note = simplify_whitespace($us->qreq["bearer_token/new/note"] ?? "");
+        $note = simplify_whitespace(convert_to_utf8($us->qreq["bearer_token/new/note"] ?? ""));
         if ($note !== "") {
-            $token->assign_data(["note" => $note]);
+            $token->change_data("note", $note);
         }
 
         $scope = simplify_whitespace($us->qreq["bearer_token/new/scope"] ?? "");
         if ($scope !== ""
             && preg_match('/\A(?:[a-z][!\#-\x5b\x5d-~]*+\s*+)++\z/', $scope)) {
-            $token->assign_data(["scope" => $scope]);
-        }
-
-        $exp = $us->qreq["bearer_token/new/expiration"] ?? "30";
-        if ($exp === "never") {
-            $token->set_invalid_at(0)->set_expires_at(0);
-        } else {
-            $expiry = (ctype_digit($exp) ? intval($exp) : 30) * 86400;
-            $token->set_invalid_in($expiry)->set_expires_in($expiry + 604800);
+            $token->change_data("scope", $scope);
         }
     }
 
@@ -287,7 +544,7 @@ class Developer_UserInfo {
         }
         $this->_new_token->insert();
         if ($this->_new_token->stored()) {
-            $us->diffs["API tokens"] = true;
+            self::add_token_diff($us, "created " . $this->_new_token->abbreviation());
         } else {
             $us->error_at(null, "<0>Error while creating new API token");
             $this->_new_token = null;
@@ -295,7 +552,7 @@ class Developer_UserInfo {
     }
 
     function request_delete_bearer_tokens(UserStatus $us) {
-        assert($us->is_auth_self());
+        assert($this->is_token_principal());
         if ($us->user->security_locked()) {
             return;
         }
@@ -307,27 +564,41 @@ class Developer_UserInfo {
         }
     }
 
+    /** Record a token change for the action log. One save can both create and
+     * revoke, so entries accumulate rather than replace.
+     * @param string $text */
+    static private function add_token_diff(UserStatus $us, $text) {
+        $old = $us->diffs["API tokens"] ?? null;
+        $us->diffs["API tokens"] = is_string($old) && $old !== ""
+            ? "{$old}, {$text}" : $text;
+    }
+
     function save_delete_bearer_tokens(UserStatus $us) {
         if ($this->_delete_tokens === null) {
             return;
         }
-        $toks = self::all_active_bearer_tokens($us->user);
+        $toks = $this->recent_bearer_tokens();
         $deleteables = [];
         foreach ($toks as $tok) {
             foreach ($this->_delete_tokens as $dt) {
                 if ($tok->timeCreated === $dt[0]
                     && $tok->is_cdb === $dt[1]
-                    && str_starts_with($tok->salt, $dt[2])) {
+                    && str_starts_with($tok->salt, $dt[2])
+                    && $tok->is_active()) {
                     $deleteables[] = $tok;
                 }
             }
         }
         if (!empty($deleteables)
             && count($deleteables) <= count($this->_delete_tokens)) {
+            $abbrevs = [];
             foreach ($deleteables as $tok) {
-                $tok->delete();
+                $tok->set_invalid()
+                    ->set_expires_in(Authorization_Token::BEARER_RETENTION)
+                    ->update();
+                $abbrevs[] = $tok->abbreviation();
             }
-            $us->diffs["API tokens"] = true;
+            self::add_token_diff($us, "revoked " . join(" ", $abbrevs));
         }
     }
 }

@@ -19,8 +19,6 @@ class FormulaParser {
      * @readonly */
     public $string_context;
     /** @var int */
-    public $recursion;
-    /** @var int */
     public $nesting = 0;
     /** @var int */
     private $pos = 0;
@@ -33,11 +31,16 @@ class FormulaParser {
     /** @var ?int */
     private $_last_lerror_pos;
 
-    /** @var int */
-    static public $current_recursion = 0;
-
     const MAXNESTING = 100;
-    const MAXRECURSION = 10;
+    const MAXDEPTH = 10;
+    /** Parse budget, on the same scale as PaperSearch::MAX_COST: a formula
+     * parsed within a search shares the search's budget. Each operand and
+     * each named-formula or macro expansion costs NODE_COST (formula nodes
+     * cost more to compile and evaluate than search atoms); each step of
+     * qualified-name resolution costs 1, more for a long name. This bounds
+     * the compiled size whatever the expression or the formulas it expands. */
+    const MAX_COST = 20000;
+    const NODE_COST = 4;
 
     static private $_oprassoc = [
         "**" => true
@@ -75,12 +78,54 @@ class FormulaParser {
 
 
     /** @param string $str */
-    function __construct(Formula $formula, $str) {
+    private function __construct(Formula $formula, $str, SearchStringContext $ssc) {
         $this->conf = $formula->conf;
         $this->user = $formula->user;
         $this->formula = $formula;
         $this->str = $str;
-        $this->recursion = self::$current_recursion;
+        $this->string_context = $ssc;
+    }
+
+    /** @param string $str
+     * @param ?SearchStringContext $ssc
+     * @return FormulaParser */
+    static function make(Formula $formula, $str, $ssc = null) {
+        // A formula parsed within a search nests under the search's string
+        // context (`$parent`, where `$str` occupies [$ppos1, $ppos2)): its
+        // errors expand from the search word, and its parse is charged to
+        // the search's budget.
+        $ssc = SearchStringContext::make($str, $ssc);
+        if (!$ssc->parent) {
+            $ssc->cost = 0;
+        }
+        return new FormulaParser($formula, $str, $ssc);
+    }
+
+    /** @return int */
+    function cost() {
+        return $this->string_context->cost() ?? 0;
+    }
+
+    /** @return bool */
+    function too_complex() {
+        return $this->cost() > self::MAX_COST;
+    }
+
+    /** Charge `$cost` against the formula's parse budget, shared by nested
+     * parsers. Returns false once the budget is exceeded; callers then stop
+     * producing nodes, and Formula::make reports the formula too complex.
+     * @param int $cost
+     * @return bool */
+    private function charge($cost = 1) {
+        return $this->string_context->charge($cost) <= self::MAX_COST;
+    }
+
+    /** Report that the formula exceeded its parse budget, and return an
+     * error expression spanning the whole formula to stand in for it.
+     * @return Fexpr */
+    function lerror_too_complex() {
+        $this->formula->lcerror(0, strlen($this->str), $this->string_context, "<0>Formula too complex");
+        return $this->cerror(0, strlen($this->str));
     }
 
     /** @param string $str
@@ -90,25 +135,15 @@ class FormulaParser {
      * @return FormulaParser
      * @suppress PhanAccessReadOnlyProperty */
     function make_nested($str, $macro, $ppos1, $ppos2) {
-        $fp = new FormulaParser($this->formula, $str);
-        $fp->recursion = $this->recursion + 1;
+        $ssc = SearchStringContext::make($str, $this->string_context->child($ppos1, $ppos2));
+        $fp = new FormulaParser($this->formula, $str, $ssc);
         if ($macro) {
             $fp->_macro = $macro;
             $fp->_free_bind = &$this->_free_bind;
             $fp->_bind = $this->_bind;
         }
-        $fp->string_context = new SearchStringContext($str, $ppos1, $ppos2, $this->string_context);
         return $fp;
     }
-
-    /** @param int $recursion
-     * @return int */
-    static function set_current_recursion($recursion) {
-        $r = self::$current_recursion;
-        self::$current_recursion = $recursion;
-        return $r;
-    }
-
 
     /** @param VarDef_Fexpr $vare
      * @return $this */
@@ -134,10 +169,24 @@ class FormulaParser {
 
     /** @param int $pos1
      * @param int $pos2
-     * @param string $message */
-    function lerror($pos1, $pos2, $message) {
+     * @param string $message
+     * @param mixed ...$args */
+    function lerror($pos1, $pos2, $message, ...$args) {
+        // (past the budget, parsing is abandoned; only that is reported)
+        if ($this->too_complex()) {
+            return;
+        }
         $this->_last_lerror_pos = $pos1;
-        $this->formula->lcerror($pos1, $pos2, $this->string_context, $message);
+        $this->formula->lcerror($pos1, $pos2, $this->string_context, $message, ...$args);
+    }
+
+    /** @param int $pos1
+     * @param int $pos2
+     * @param string $message
+     * @param mixed ...$args */
+    function lerror_circular($pos1, $pos2, $message, ...$args) {
+        $this->_last_lerror_pos = $pos1;
+        $this->formula->lcerror_at("circular_reference", $pos1, $pos2, $this->string_context, $message, ...$args);
     }
 
     /** @param int $pos
@@ -154,6 +203,10 @@ class FormulaParser {
     private function _find_formula_function(&$name) {
         $s = $name;
         while ($s !== "") {
+            // each step rescans the name, so a long one is charged for its length
+            if (!$this->charge(1 + intdiv(strlen($s), 256))) {
+                return null;
+            }
             if (($kwdef = $this->conf->formula_function($s, $this->user))) {
                 $name = $s;
                 return $kwdef;
@@ -244,7 +297,7 @@ class FormulaParser {
 
         if ($kwdef->parse_modifier_function ?? false) {
             $mpos = $name === "#" ? $pos1 : $this->pos;
-            while (preg_match('/\G[.#:](?:"[^"]*(?:"|\z)|[-a-zA-Z0-9_.@!*?~:\/#]+)/s', $this->str, $m, 0, $mpos)
+            while (preg_match('/\G[.#:](?:"[^"]*(?:"|\z)|[-a-zA-Z0-9_.@*~:\/#]++(?:\?|!(?!=))*+)/s', $this->str, $m, 0, $mpos)
                    && ($args !== false
                        || !preg_match('/\G\s*\(/', $this->str, $mx, 0, $mpos + strlen($m[0])))) {
                 $ff->pos2 = $mpos + strlen($m[0]);
@@ -289,8 +342,20 @@ class FormulaParser {
         }
 
         if (isset($kwdef->macro)) {
-            $parser = $this->make_nested($kwdef->macro, $ff, $ff->pos1, $ff->pos2);
-            return $parser->parse();
+            if (!$this->charge(self::NODE_COST)) {
+                return null;
+            }
+            if ($kwdef->__recursion ?? false) {
+                $this->lerror_circular($ff->pos1, $ff->pos2, "<0>Formula macro ‘{}’ refers to itself", $ff->name);
+                return null;
+            }
+            try {
+                $kwdef->__recursion = true;
+                $parser = $this->make_nested($kwdef->macro, $ff, $ff->pos1, $ff->pos2);
+                return $parser->parse();
+            } finally {
+                $kwdef->__recursion = false;
+            }
         }
 
         return null;
@@ -326,17 +391,44 @@ class FormulaParser {
      * @return ?Fexpr */
     private function _reviewer_base($t) {
         $t = strtolower($t);
-        if (preg_match('/\A(?:r|re|rev|review)type\z/i', $t)) {
-            return Revtype_Fexpr::make($this->user);
-        } else if (preg_match('/\A(?:|r|re|rev|review)round\z/i', $t)) {
-            return ReviewRound_Fexpr::make($this->user);
-        } else if (preg_match('/\A(?:|r|re|rev)reviewer\z/i', $t)) {
+        $len = strlen($t);
+        if (str_ends_with($t, "type")) {
+            if ($len === 4 || in_array($t, ["rtype", "retype", "revtype", "reviewtype"], true)) {
+                return Revtype_Fexpr::make($this->user);
+            }
+        } else if (str_ends_with($t, "round")) {
+            if ($len === 5 || in_array($t, ["rround", "reround", "revround", "reviewround"], true)) {
+                return ReviewRound_Fexpr::make($this->user);
+            }
+        } else if ($t === "reviewer") {
             if (!$this->user->can_view_some_review_identity()) {
                 return Fexpr::cnever();
             }
             return new Reviewer_Fexpr;
-        } else if (preg_match('/\A(?:|r|re|rev|review)(?:|au)words\z/i', $t)) {
-            return ReviewWordCount_Fexpr::make($this->user);
+        } else if (str_ends_with($t, "auwords")) {
+            if ($len === 7 || in_array($t, ["rauwords", "reauwords", "revauwords", "reviewauwords"], true)) {
+                return ReviewWordCount_Fexpr::make($this->user);
+            }
+        } else if (str_ends_with($t, "words")) {
+            if ($len === 5 || in_array($t, ["rwords", "rewords", "revwords", "reviewwords"], true)) {
+                return ReviewWordCount_Fexpr::make($this->user);
+            }
+        } else if ($t !== "") {
+            if ($t[0] === "c") {
+                $completeness = ReviewSearchMatcher::COMPLETE;
+                $t = substr($t, 1);
+            } else if ($t[0] === "i") {
+                $completeness = ReviewSearchMatcher::INCOMPLETE;
+                $t = substr($t, 1);
+            } else if ($t[0] === "p") {
+                $completeness = ReviewSearchMatcher::INPROGRESS;
+                $t = substr($t, 1);
+            } else {
+                $completeness = 0;
+            }
+            if (in_array($t, ["re", "rev", "review"], true)) {
+                return new ReviewStatus_Fexpr($completeness);
+            }
         }
         return null;
     }
@@ -348,20 +440,29 @@ class FormulaParser {
         $rsm = new ReviewSearchMatcher;
         $t = $this->str;
         $len = strlen($t);
+        $completeness = 0;
+        if (($had_revexists = $e0 instanceof ReviewStatus_Fexpr)) {
+            $completeness = $e0->status;
+            $e0 = null;
+        }
         while ($this->pos !== $len) {
-            if (!preg_match('/\G:((?:"[^"]*(?:"|\z)|~*[-A-Za-z0-9_.\#@]+(?!\s*\())+)/si', $t, $m, 0, $this->pos)
-                || preg_match('/\A(?:null|false|true|pid|paperid)\z/i', $m[1])) {
+            if (!preg_match('/\G:((?:"[^"]*(?:"|\z)|~*[-A-Za-z0-9_.\#@]+(?!\s*\())+)/si', $t, $m, 0, $this->pos)) {
                 break;
             }
-            if (preg_match('/\A(?:type|round|reviewer|words|auwords)\z/i', $m[1])) {
+            $lcword = strtolower($m[1]);
+            if (in_array($lcword, ["null", "false", "true", "pid", "paperid"], true)) {
+                break;
+            }
+            if (in_array($lcword, ["type", "round", "reviewer", "words", "auwords"], true)) {
                 if ($e0) {
                     break;
                 }
                 $e0 = $this->_reviewer_base($m[1]);
             } else if ($rsm->apply_review_type($m[1])
-                       || $rsm->apply_round($m[1], $this->conf)) {
+                       || $rsm->apply_round($m[1], $this->conf)
+                       || $rsm->apply_completeness($m[1])) {
                 // nothing
-            } else if ($m[1] === "pc") {
+            } else if ($lcword === "pc") {
                 $es[] = new Inequality_Fexpr(">=", Revtype_Fexpr::make($this->user), new Constant_Fexpr(REVIEW_PC, Fexpr::FREVTYPE));
             } else {
                 if (strpos($m[1], "\"") !== false) {
@@ -379,27 +480,39 @@ class FormulaParser {
         if ($rsm->round_list !== null) {
             $es[] = new In_Fexpr(ReviewRound_Fexpr::make($this->user), $rsm->round_list);
         }
+        if ($completeness || $rsm->completeness_mask() !== 0) {
+            $es[] = new ReviewStatus_Fexpr($completeness | $rsm->completeness_mask());
+        }
 
         $e1 = empty($es) ? null : $es[0];
         for ($i = 1; $i < count($es); ++$i) {
             $e1 = new And_Fexpr($e1, $es[$i]);
         }
 
-        if ($e0 && $e1) {
-            return new Ternary_Fexpr($e1, $e0, Fexpr::cnull());
+        if (!$e0 || !$e1) {
+            return $e0 ?? $e1;
+        } else if ($e0->format() === Fexpr::FBOOL) {
+            return new And_Fexpr($e0, $e1);
         }
-        return $e0 ?? $e1;
+        return new Ternary_Fexpr($e1, $e0, Fexpr::cnull());
+    }
+
+    /** @param string $text
+     * @return list<PaperOption|ReviewField|NamedFormula> */
+    function find_all_fields($text) {
+        $amflag = $this->user->is_root_user() ? Conf::MFLAG_GLOBAL : 0;
+        return $this->conf->find_all_fields($text, $amflag);
     }
 
     /** @param string &$field
-     * @return ?object */
+     * @return null|PaperOption|ReviewField|NamedFormula */
     private function _find_formula_field(&$field) {
         $s = $field;
         if (($colon = strpos($s, ":")) !== false) {
             $s = substr($s, 0, $colon);
         }
         while (strlen($s) > 1) {
-            $fs = $this->conf->find_all_fields($s);
+            $fs = $this->find_all_fields($s);
             if (count($fs) === 1) {
                 $field = $s;
                 return $fs[0];
@@ -457,11 +570,13 @@ class FormulaParser {
     }
 
     /** @param int $pos1
+     * @param PaperOption|ReviewField|NamedFormula $f
      * @return Fexpr */
     private function _parse_field($pos1, $f) {
         if ($f instanceof PaperOption) {
             return $this->_parse_one_option($pos1, $f);
-        } else if ($f instanceof ReviewField) {
+        }
+        if ($f instanceof ReviewField) {
             if ($f->view_score <= $this->user->permissive_view_score_bound()) {
                 return Fexpr::cnever();
             } else if ($f instanceof Score_ReviewField
@@ -469,12 +584,25 @@ class FormulaParser {
                 return $this->_reviewer_decoration(new Score_Fexpr($f));
             }
             $this->lerror($pos1, $this->pos, "<0>Review field ‘{$f->name}’ can’t be used in formulas");
-        } else if ($f instanceof NamedFormula) {
-            $parser = $this->make_nested($f->expression, null, $pos1, $this->pos);
-            return $parser->parse();
-        } else {
-            $this->lerror($pos1, $this->pos, "<0>Field not found");
+            return $this->cerror($pos1, $this->pos);
         }
+        if ($f instanceof NamedFormula) {
+            if (!$this->charge(self::NODE_COST)) {
+                return $this->cerror($pos1, $this->pos);
+            }
+            if ($f->recursion) {
+                $this->lerror_circular($pos1, $this->pos, "<0>Saved formula ‘{}’ refers to itself", $f->name);
+                return $this->cerror($pos1, $this->pos);
+            }
+            try {
+                $f->recursion = true;
+                $parser = $this->make_nested($f->expression, null, $pos1, $this->pos);
+                return $parser->parse();
+            } finally {
+                $f->recursion = false;
+            }
+        }
+        $this->lerror($pos1, $this->pos, "<0>Field not found");
         return $this->cerror($pos1, $this->pos);
     }
 
@@ -550,6 +678,9 @@ class FormulaParser {
         $this->pos = self::skip_whitespace($t, $this->pos);
         if ($this->pos === $len) {
             return null;
+        } else if (!$this->charge(self::NODE_COST)) {
+            $this->pos = $len;
+            return null;
         }
         $pos1 = $this->pos;
 
@@ -622,11 +753,19 @@ class FormulaParser {
             $this->pos += strlen($m[0]);
             $e = $this->field_search_fexpr(PaperSearch::status_field_matcher($this->conf, $m[1]));
         } else if ($ch === "r"
-                   && preg_match('/\G(?:(?:r|re|rev|review)(?:type|round|words|auwords|)|round|reviewer)(?=[:\#])/is', $t, $m, 0, $this->pos)) {
+                   && preg_match('/\G(?:r(?:|e|ev|eview)(?:|type|round|words|auwords)|round|reviewer)(?=[:\#])/is', $t, $m, 0, $this->pos)) {
             $this->pos += strlen($m[0]);
             $e = $this->_reviewer_decoration($this->_reviewer_base($m[0]));
         } else if ($ch === "r"
-                   && preg_match('/\G((?:r|re|rev|review)(?:type|round|words|auwords)|round|reviewer|re|rev|review)\b\s*(?!\()/is', $t, $m, 0, $this->pos)) {
+                   && preg_match('/\G(r(?:|e|ev|eview)(?:|type|round|words|auwords)|round|reviewer)\b\s*(?![\(\s])/is', $t, $m, 0, $this->pos)) {
+            $this->pos += strlen($m[0]);
+            $e = $this->_reviewer_base($m[1]);
+        } else if (($ch === "i" || $ch === "c" || $ch === "p")
+                   && preg_match('/\G[icp]re(?:|v|view)(?=[:\#])/is', $t, $m, 0, $this->pos)) {
+            $this->pos += strlen($m[0]);
+            $e = $this->_reviewer_decoration($this->_reviewer_base($m[0]));
+        } else if (($ch === "i" || $ch === "c" || $ch === "p")
+                   && preg_match('/\G([icp]re(?:|v|view))\b\s*(?![\(\s])/is', $t, $m, 0, $this->pos)) {
             $this->pos += strlen($m[0]);
             $e = $this->_reviewer_base($m[1]);
         } else if ($ch === "l"
@@ -645,7 +784,7 @@ class FormulaParser {
         } else if (($ch === "\"" && preg_match('/\G"(.*?)"/s', $t, $m, 0, $this->pos))
                    || ($ch === "\xE2" && preg_match('/\G(?:“|”)(.*?)(?:"|“|”)/s', $t, $m, 0, $this->pos))) {
             $this->pos += strlen($m[0]);
-            $fs = $m[1] === "" ? [] : $this->conf->find_all_fields($m[1]);
+            $fs = $m[1] === "" ? [] : $this->find_all_fields($m[1]);
             if (count($fs) === 1) {
                 $e = $this->_parse_field($pos1, $fs[0]);
             } else {
@@ -663,6 +802,11 @@ class FormulaParser {
                 $e = new VarUse_Fexpr($vd);
             } else if (($kwdef = $this->_find_formula_function($m[1]))) {
                 $e = $this->_parse_function($m[1], $kwdef);
+            } else if ($this->too_complex()) {
+                // budget exhausted resolving the name: stop here rather
+                // than trying it as a field
+                $this->pos = $len;
+                return null;
             } else if (!$isfunc && ($f = $this->_find_formula_field($m[0]))) {
                 $this->pos += strlen($m[0]);
                 $e = $this->_parse_field($pos1, $f);
@@ -741,7 +885,7 @@ class FormulaParser {
             } else if ($opx === "<<" || $opx === ">>") {
                 $e = new Shift_Fexpr($opx, $e, $e2);
             } else if ($opx === "**") {
-                $e = new Pow_Fexpr($e, $e2);
+                $e = new Pow_Fexpr(FormulaCall::make_args($this, "**", [$e, $e2]));
             } else {
                 throw new Exception("Unknown operator {$opx}");
             }
@@ -801,18 +945,16 @@ class FormulaParser {
 
     /** @return ?Fexpr */
     function parse() {
-        if ($this->recursion >= self::MAXRECURSION) {
+        if ($this->string_context->depth >= self::MAXDEPTH) {
             $fe = Fexpr::cerror();
-            if (($sc = $this->string_context)) {
-                $fe->apply_strspan($sc->ppos1, $sc->ppos2, $sc->parent);
-            } else {
-                $fe->apply_strspan(0, strlen($this->str), null);
-            }
-            $this->formula->fexpr_lerror($fe, "<0>Circular reference in formula");
-            $this->formula->lerrors[] = MessageItem::error_at("circular_reference");
-        } else if ((string) $this->str === "") {
+            $fe->apply_strspan(0, strlen($this->str), $this->string_context);
+            $this->formula->fexpr_lerror($fe, "<0>Formula too complex: nested too deeply");
+            return $fe;
+        }
+        $s = (string) $this->str;
+        if (trim($s) === "") {
             $fe = Fexpr::cerror();
-            $fe->apply_strspan(0, 0, $this->string_context);
+            $fe->apply_strspan(0, strlen($this->str), $this->string_context);
             $this->formula->fexpr_lerror($fe, "<0>Empty formula");
         } else {
             $fe = $this->_parse_ternary(false)

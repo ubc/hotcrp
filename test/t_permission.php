@@ -137,7 +137,6 @@ class Permission_Tester {
         ConfInvariants::test_all($this->conf);
 
         $this->conf->save_setting("sub_open", 1);
-        $this->conf->save_setting("sub_update", Conf::$now + 10);
         $this->conf->save_setting("sub_sub", Conf::$now + 10);
         $this->conf->save_setting("rev_open", 1);
         $this->conf->refresh_settings();
@@ -207,7 +206,6 @@ class Permission_Tester {
         xassert_eq($this->conf->setting("paperacc") ?? 0, 0);
 
         // change submission date
-        $this->conf->save_setting("sub_update", Conf::$now - 5);
         $this->conf->save_refresh_setting("sub_sub", Conf::$now - 5);
         $paper1 = $user_chair->checked_paper_by_id(1);
         xassert($user_chair->can_edit_paper($paper1));
@@ -277,9 +275,10 @@ class Permission_Tester {
         // check comment identity
         xassert_eqq($this->conf->_au_seerev, null);
         xassert_eqq($this->conf->setting("rev_blind"), Conf::BLIND_ALWAYS);
-        $comment1 = new CommentInfo($paper1);
-        $c1ok = $comment1->save_comment(["text" => "test", "visibility" => "a", "blind" => false], $user_mgbaker);
-        xassert($c1ok);
+        $j = call_api("=comment", $user_mgbaker, ["c" => "new", "text" => "test", "visibility" => "a", "blind" => 0], $paper1);
+        xassert($j->ok);
+        $cid1 = $j->comment->cid;
+        $comment1 = $paper1->fetch_comments("commentId={$cid1}")[0];
         $paper1->load_comments();
         xassert(!$user_van->can_view_comment($paper1, $comment1));
         xassert(!$user_van->can_view_comment_identity($paper1, $comment1));
@@ -298,8 +297,9 @@ class Permission_Tester {
         $this->conf->save_refresh_setting("rev_blind", Conf::BLIND_OPTIONAL);
         xassert($user_van->can_view_comment($paper1, $comment1));
         xassert(!$user_van->can_view_comment_identity($paper1, $comment1));
-        $c1ok = $comment1->save_comment(["text" => "test", "visibility" => "a", "blind" => false], $user_mgbaker);
-        xassert($c1ok);
+        $j = call_api("=comment", $user_mgbaker, ["c" => (string) $cid1, "text" => "test", "visibility" => "a", "blind" => 0], $paper1);
+        xassert($j->ok);
+        $comment1 = $paper1->fetch_comments("commentId={$cid1}")[0];
         xassert($user_van->can_view_comment_identity($paper1, $comment1));
         $this->conf->save_refresh_setting("rev_blind", null);
         xassert(!$user_van->can_view_comment_identity($paper1, $comment1));
@@ -404,6 +404,46 @@ class Permission_Tester {
 
         $this->conf->save_refresh_setting("tracks", null);
         self::check_rights_version($users);
+    }
+
+    function test_ghost_review_confers_no_track_view() {
+        $user_chair = $this->u_chair;
+        $user_pfrancis = $this->conf->checked_user_by_email("pfrancis@ntt.jp"); // pc, blue
+
+        // find a paper pfrancis is unrelated to
+        $pid = null;
+        foreach ($this->conf->paper_set(["finalized" => true], $user_chair) as $prow) {
+            $p = $this->conf->checked_paper_by_id($prow->paperId, $user_pfrancis);
+            $ci = $p->contact_info($user_pfrancis);
+            if ($ci->reviewType === 0
+                && $ci->conflictType <= CONFLICT_MAXUNCONFLICTED
+                && !$p->has_author($user_pfrancis)) {
+                $pid = $prow->paperId;
+                break;
+            }
+        }
+        xassert_neqq($pid, null);
+
+        // restrict viewing to PC members tagged red; pfrancis is blue
+        $this->conf->save_refresh_setting("tracks", 1, json_encode_db(["_" => ["view" => "+red"]]));
+        // chair records a tentative (ghost) review assignment for pfrancis
+        self::run_assignment($user_chair, "paper,action,email,ghost\n{$pid},primary,pfrancis@ntt.jp,yes\n", true);
+        $user_pfrancis = $this->conf->checked_user_by_email("pfrancis@ntt.jp");
+
+        // the ghost confers no rights on pfrancis: the paper stays invisible on
+        // every path, including review-keyword search (which loads review
+        // signatures rather than the masked myReviewPermissions)
+        $ppf = $this->conf->checked_paper_by_id($pid, $user_pfrancis);
+        xassert(!$user_pfrancis->can_view_paper($ppf));
+        xassert(!in_array($pid, (new PaperSearch($user_pfrancis, ""))->paper_ids(), true));
+        xassert(!in_array($pid, (new PaperSearch($user_pfrancis, "re:any"))->paper_ids(), true));
+        xassert(!in_array($pid, (new PaperSearch($user_pfrancis, "re:none OR re:any"))->paper_ids(), true));
+
+        // but a manager can still find the ghost assignment through search
+        xassert(in_array($pid, (new PaperSearch($user_chair, "re:pfrancis@ntt.jp"))->paper_ids(), true));
+
+        self::run_assignment($user_chair, "paper,action,email\n{$pid},clearreview,pfrancis@ntt.jp\n", true);
+        $this->conf->save_refresh_setting("tracks", null);
     }
 
     function test_tags() {
@@ -635,8 +675,9 @@ class Permission_Tester {
         xassert_search($user_chair, "#none", "11 12 14 15 16 18 19 20 21 22 23 24 25 26 27 28 29 30");
         xassert_search($user_mgbaker, "#none", "3 9 10 11 12 14 15 16 18 19 20 21 22 23 24 25 26 27 28 29 30");
 
-        // restore chair tag setting
+        // restore chair tag settings
         $this->conf->save_refresh_setting("tag_chair", 1, "accept pcpaper reject");
+        $this->conf->save_refresh_setting("tag_hidden", null);
     }
 
     function test_review_rounds() {
@@ -699,14 +740,12 @@ class Permission_Tester {
         xassert_search($this->u_chair, "has:comment", "1");
         xassert_search($this->u_chair, "has:response", "");
         xassert_search($this->u_chair, "has:author-comment", "1");
-        $comment2 = new CommentInfo($paper18);
-        $c2ok = $comment2->save_comment(["text" => "test", "visibility" => "a", "blind" => false], $this->u_marina);
-        xassert($c2ok);
+        $j = call_api("=comment", $this->u_marina, ["c" => "new", "text" => "test", "visibility" => "a", "blind" => 0], $paper18);
+        xassert($j->ok);
         xassert_search($this->u_chair, "cmt:any", "1 18");
         xassert_search($this->u_chair, "cmt:any>1", "");
-        $comment3 = new CommentInfo($paper18);
-        $c3ok = $comment3->save_comment(["text" => "test", "visibility" => "a", "blind" => false, "tags" => "redcmt"], $this->u_marina);
-        xassert($c3ok);
+        $j = call_api("=comment", $this->u_marina, ["c" => "new", "text" => "test", "visibility" => "a", "blind" => 0, "tags" => "redcmt"], $paper18);
+        xassert($j->ok);
         xassert_search($this->u_chair, "cmt:any>1", "18");
         xassert_search($this->u_chair, "cmt:jon", "");
         xassert_search($this->u_chair, "cmt:marina", "18");
@@ -745,8 +784,9 @@ class Permission_Tester {
     function test_comment_notification() {
         $paper2 = $this->u_chair->checked_paper_by_id(2);
         xassert($paper2->has_reviewer($this->u_chair));
-        $comment4 = new CommentInfo($paper2);
-        $comment4->save_comment(["text" => "test", "visibility" => "p", "topic" => "paper", "blind" => false], $this->u_mgbaker);
+        MailChecker::clear();
+        $j = call_api("=comment", $this->u_mgbaker, ["c" => "new", "text" => "test", "visibility" => "p", "topic" => "paper", "blind" => 0], $paper2);
+        xassert($j->ok);
         MailChecker::check_db("test01-comment2");
         xassert_search($this->u_chair, "has:comment", "1 2 18");
         xassert_search($this->u_chair, "has:response", "");
@@ -757,8 +797,8 @@ class Permission_Tester {
         $this->conf->save_refresh_setting("cmt_revid", 1);
         Contact::update_rights();
 
-        $comment4x = new CommentInfo($paper2);
-        $comment4x->save_comment(["text" => "my identity should be hidden", "visibility" => "p", "topic" => "paper", "blind" => false], $this->u_mgbaker);
+        $j = call_api("=comment", $this->u_mgbaker, ["c" => "new", "text" => "my identity should be hidden", "visibility" => "p", "topic" => "paper", "blind" => 0], $paper2);
+        xassert($j->ok);
         MailChecker::check_db("test01-comment2-noid");
 
         $this->conf->save_refresh_setting("viewrevid", 1);
@@ -768,14 +808,14 @@ class Permission_Tester {
         // turn off chair notification and insert comment
         $this->conf->qe("insert into PaperWatch (paperId, contactId, watch) values (2,?,?) ?U on duplicate key update watch=?U(watch)", $this->u_chair->contactId, Contact::WATCH_REVIEW_EXPLICIT);
         $paper2->load_watch();
-        $comment5 = new CommentInfo($paper2);
-        $comment5->save_comment(["text" => "second test", "visibility" => "p", "blind" => false], $this->u_mgbaker);
-        MailChecker::check0();
+        $j = call_api("=comment", $this->u_mgbaker, ["c" => "new", "text" => "second test", "visibility" => "p", "blind" => 0], $paper2);
+        xassert($j->ok);
+        MailChecker::check_db("Permission_Tester::test_comment_notification-3");
 
         // explicit mention overrides no-notification
-        $comment6 = new CommentInfo($paper2);
-        $comment6->save_comment(["text" => "third test, @Jane Chair", "visibility" => "p", "blind" => false], $this->u_mgbaker);
-        MailChecker::check_db("test01-comment6");
+        $j = call_api("=comment", $this->u_mgbaker, ["c" => "new", "text" => "third test, @Jane Chair", "visibility" => "p", "blind" => 0], $paper2);
+        xassert($j->ok);
+        MailChecker::check_db("Permission_Tester::test_comment_notification-4");
 
         // restore watch
         $this->conf->qe("delete from PaperWatch where paperId=2 and contactId=?", $this->u_chair->contactId);
@@ -838,36 +878,36 @@ class Permission_Tester {
         // Previous notifications did not include chair because chair's own
         // review was incomplete. Changing chair watch should change
         // notification
-        $comment7 = new CommentInfo($paper2);
-        $comment7->save_comment(["text" => "Do not notify chair", "visibility" => "r", "blind" => false], $this->u_mgbaker);
+        $j = call_api("=comment", $this->u_mgbaker, ["c" => "new", "text" => "Do not notify chair", "visibility" => "r", "blind" => 0], $paper2);
+        xassert($j->ok);
         MailChecker::check_db("test01-comment7");
 
         $this->conf->qe("insert into PaperWatch (paperId, contactId, watch) values (?,?,?) ?U on duplicate key update watch=?U(watch)", $paper2->paperId, $this->u_chair->contactId, Contact::WATCH_REVIEW_EXPLICIT | Contact::WATCH_REVIEW);
         $paper2->load_watch();
-        $comment8 = new CommentInfo($paper2);
-        $comment8->save_comment(["text" => "Do notify chair", "visibility" => "r", "blind" => false], $this->u_mgbaker);
+        $j = call_api("=comment", $this->u_mgbaker, ["c" => "new", "text" => "Do notify chair", "visibility" => "r", "blind" => 0], $paper2);
+        xassert($j->ok);
         MailChecker::check_db("test01-comment8");
 
         $this->conf->qe("delete from PaperWatch where paperId=? and contactId=?", $paper2->paperId, $this->u_chair->contactId);
         $paper2->load_watch();
         $this->u_chair->set_prop("defaultWatch", Contact::WATCH_REVIEW | Contact::WATCH_REVIEW_MANAGED);
         $this->u_chair->save_prop();
-        $comment9 = new CommentInfo($paper2);
-        $comment9->save_comment(["text" => "Do notify chair #2", "visibility" => "r", "blind" => false], $this->u_mgbaker);
+        $j = call_api("=comment", $this->u_mgbaker, ["c" => "new", "text" => "Do notify chair #2", "visibility" => "r", "blind" => 0], $paper2);
+        xassert($j->ok);
         MailChecker::check_db("test01-comment9");
 
         $this->u_chair->set_prop("defaultWatch", Contact::WATCH_REVIEW);
         $this->u_chair->save_prop();
-        $comment10 = new CommentInfo($paper2);
-        $comment10->save_comment(["text" => "Do not notify chair #2", "visibility" => "r", "blind" => false], $this->u_mgbaker);
+        $j = call_api("=comment", $this->u_mgbaker, ["c" => "new", "text" => "Do not notify chair #2", "visibility" => "r", "blind" => 0], $paper2);
+        xassert($j->ok);
         MailChecker::check_db("test01-comment10");
 
         $revreq = ["s01" => 5, "s02" => 4, "ready" => true];
         save_review(2, $this->u_chair, $revreq);
         MailChecker::check_db("test01-review2D");
 
-        $comment11 = new CommentInfo($paper2);
-        $comment11->save_comment(["text" => "Do notify chair #3", "visibility" => "r", "blind" => false], $this->u_mgbaker);
+        $j = call_api("=comment", $this->u_mgbaker, ["c" => "new", "text" => "Do notify chair #3", "visibility" => "r", "blind" => 0], $paper2);
+        xassert($j->ok);
         MailChecker::check_db("test01-comment11");
     }
 
@@ -1016,7 +1056,7 @@ class Permission_Tester {
 
     function test_assign_external_review() {
         xassert(!$this->conf->fresh_user_by_email("newexternal@_.com"));
-        xassert_search($this->u_chair, "re:newexternal@_.com", "");
+        xassert_search_ignore_warnings($this->u_chair, "re:newexternal@_.com", "");
         xassert_assign($this->u_chair, "action,paper,email\nreview,3,newexternal@_.com");
         xassert(!!$this->conf->fresh_user_by_email("newexternal@_.com"));
         xassert_search($this->u_chair, "re:newexternal@_.com", "3");
@@ -1024,6 +1064,80 @@ class Permission_Tester {
         xassert_search($this->u_chair, "re:external@_.com", "2");
         xassert_assign($this->u_chair, "action,paper,email\nreview,3,external@_.com");
         xassert_search($this->u_chair, "re:external@_.com", "2 3");
+    }
+
+    function test_revpref_get_respects_paper_visibility() {
+        // Exporting one's own review preferences must not leak the content of
+        // papers the exporter cannot view
+        $user = $this->u_marina;
+        xassert($user->isPC);
+        xassert(!$user->is_manager());
+
+        $p3 = $this->conf->checked_paper_by_id(3);
+        $title3 = $p3->title;
+        $sub3 = $p3->timeSubmitted;
+        // withdraw paper 3 -> a non-manager PC member can no longer view it
+        $this->conf->qe("update Paper set timeWithdrawn=?, timeSubmitted=? where paperId=3", 100, -100);
+        xassert(!$user->can_view_paper($this->conf->checked_paper_by_id(3)));
+
+        $la = new Revpref_ListAction($this->conf, (object) ["name" => "get/revprefx"]);
+        $ssel = new SearchSelection([1, 3]);
+        $qreq = TestQreq::get(["reviewer" => $user->email]);
+        $csv = $la->run_get($user, $qreq, $ssel, $user, true)->unparse();
+        // paper 1 is present, but the hidden paper 3's title must not leak
+        xassert_str_contains($csv, "Scalable Timers");
+        xassert(!str_contains($csv, $title3));
+        xassert(!preg_match('/^3,/m', $csv));
+
+        // restore paper 3
+        $this->conf->qe("update Paper set timeWithdrawn=0, timeSubmitted=? where paperId=3", $sub3);
+    }
+
+    function test_reviewer_pdf_needs_active_review_of_submitted_paper() {
+        // Reviewers can view the papers they review, but they can view PDFs
+        // only for submitted papers and only while their review is active.
+        // A PC member who fails that test may still view the PDF through the
+        // ordinary PC rules.
+        $pid = 25;
+        $p = $this->conf->checked_paper_by_id($pid);
+        $sub = $p->timeSubmitted;
+        xassert($sub > 0);
+        foreach ([$this->u_marina, $this->u_estrin, $this->u_kohler] as $u) {
+            xassert(!$p->has_conflict($u));
+            xassert(!$p->review_by_user($u));
+        }
+        xassert(!$this->u_kohler->isPC);
+
+        // reviewers of a draft see the paper, but not the PDF
+        xassert_assign($this->u_chair, "paper,action,email\n{$pid},primary,marina@poema.ru\n{$pid},external,kohler@seas.harvard.edu\n");
+        $this->conf->qe("update Paper set timeSubmitted=0 where paperId=?", $pid);
+        $p = $this->conf->checked_paper_by_id($pid);
+        foreach ([$this->u_marina, $this->u_kohler] as $u) {
+            xassert($u->can_view_paper($p));
+            xassert(!$u->can_view_paper($p, true));
+        }
+        $this->conf->qe("update Paper set timeSubmitted=? where paperId=?", $sub, $pid);
+        $p = $this->conf->checked_paper_by_id($pid);
+        foreach ([$this->u_marina, $this->u_kohler] as $u) {
+            xassert($u->can_view_paper($p, true));
+        }
+
+        // a review-accept link whose review is gone grants paper view only
+        xassert_assign($this->u_chair, "paper,action,email\n{$pid},clearreview,kohler@seas.harvard.edu\n");
+        $p = $this->conf->checked_paper_by_id($pid);
+        xassert(!$p->review_by_user($this->u_kohler));
+        $blank = Contact::make($this->conf);
+        $blank->set_capability("@ra{$pid}", $this->u_kohler->contactId);
+        xassert($blank->can_view_paper($p));
+        xassert(!$blank->can_view_paper($p, true));
+
+        // ...but a PC member holding such a link still gets PC access
+        $this->u_estrin->set_capability("@ra{$pid}", $this->u_kohler->contactId);
+        xassert($this->u_estrin->can_view_paper($p));
+        xassert($this->u_estrin->can_view_paper($p, true));
+        $this->u_estrin->set_capability("@ra{$pid}", null);
+
+        xassert_assign($this->u_chair, "paper,action,email\n{$pid},clearreview,marina@poema.ru\n");
     }
 
     function test_assign_administrator() {
@@ -1041,6 +1155,194 @@ class Permission_Tester {
         xassert_search($this->u_marina, "admin:me", "4");
         xassert($this->u_marina->is_manager());
     }
+
+    /** `hidden_papers` (set by Contact::actas_user when a chair conflicted with
+     * a paper managed by someone else "becomes" a user) forces can_view_paper()
+     * to false at the top, but the rights/admin computation never consults it,
+     * so can_manage() stays true. A principal who may not view a paper must not
+     * be able to administer it (or the assignment paths leak its conflicts and
+     * authors). This test FAILS until the hole is plugged. */
+    function test_hidden_papers_block_management() {
+        $paper4 = $this->conf->checked_paper_by_id(4);
+        xassert_eqq($paper4->managerContactId, $this->u_marina->contactId);
+
+        // baseline: as the paper's manager, marina may view and manage #4
+        $marina = $this->conf->fresh_user_by_email("marina@poema.ru");
+        xassert($marina->can_view_paper($paper4));
+        xassert($marina->can_manage($paper4));
+
+        // the state Contact::actas_user() produces for a hidden paper (set on a
+        // fresh user object so it is applied before any rights are cached)
+        $marina->hidden_papers = [$paper4->paperId => false];
+        Contact::update_rights();
+        xassert(!$marina->can_view_paper($paper4));
+        xassert(!$marina->can_manage($paper4));
+
+        // a hidden paper's failure doesn't depend on token scope, so a scoped
+        // token doesn't learn that the paper is there
+        $unscoped = $marina->perm_view_paper($paper4)->unparse_text();
+        $marina->set_scope("settings:read");
+        $fr = $marina->perm_view_paper($paper4);
+        xassert(!isset($fr["scope"]));
+        xassert_eqq($fr->unparse_text(), $unscoped);
+        xassert(!$marina->can_view_paper($paper4));
+        $marina->set_scope();
+
+        Contact::update_rights(); // forget Marina's cached rights
+    }
+
+    /** @param Contact $user
+     * @param string $pids
+     * @return string */
+    private function get_pcconf_csv($user, $pids = "1") {
+        $qreq = TestQreq::get(["p" => $pids]);
+        $ssel = SearchSelection::make_papers($qreq, $user);
+        $la = ListAction::lookup("get/pcconf", $user, $qreq, $ssel);
+        xassert($la instanceof ListAction);
+        $csvg = $la->run($user, $qreq, $ssel);
+        xassert($csvg instanceof CsvGenerator);
+        return $csvg->unparse();
+    }
+
+    /** @param Contact $viewer
+     * @param Contact $pc
+     * @param bool $force
+     * @return string */
+    private function revtype_description_html($viewer, $pc, $force = false) {
+        $pl = new PaperList("empty", new PaperSearch($viewer, "1"));
+        $pl->parse_view("revtype[description,user={$pc->email}]", ViewCommand::ORIGIN_MAX);
+        if ($force) {
+            $pl->add_view(ViewCommand::make_visibility("force", true));
+        }
+        xassert(!$pl->has_problem());
+        if ($force) {
+            // HTML output never renders overridden content
+            return $pl->text_json()[1]["revtype"] ?? "";
+        }
+        return paper_list_html_cells($pl)[1]["revtype"] ?? "";
+    }
+
+    function test_conflict_column_sort_shows_pins_to_managers() {
+        // Pinned non-conflicts sort apart from ordinary non-conflicts only
+        // for a manager editing conflicts; others can't tell them apart.
+        $conf = $this->conf;
+        $pcm = $this->u_mgbaker;
+        $pids = [7, 9];
+        foreach ($pids as $pid) {
+            xassert(!$conf->checked_paper_by_id($pid)->has_conflict($pcm));
+        }
+        $conf->qe("insert into PaperConflict (paperId,contactId,conflictType) values (7,?,?),(9,?,?)",
+            $pcm->contactId, Conflict::F_PIN, $pcm->contactId, Conflict::F_PIN);
+        Contact::update_rights();
+        $order = function (Contact $viewer, $col) use ($conf, $pcm) {
+            $srch = new PaperSearch($viewer, ["t" => "s", "q" => "6-10", "reviewer" => $pcm]);
+            $pl = new PaperList("empty", $srch, ["sort" => true]);
+            $pl->set_reviewer_user($pcm);
+            $pl->parse_view("show:{$col} sort:{$col}", ViewCommand::ORIGIN_MAX);
+            return $pl->paper_ids();
+        };
+        try {
+            $pcm = $conf->checked_user_by_email($pcm->email);
+            xassert(!$pcm->is_manager());
+            xassert_eqq($order($pcm, "editconf"), $order($pcm, "conf"));
+            xassert_neqq($order($this->u_chair, "editconf"), $order($this->u_chair, "conf"));
+        } finally {
+            $conf->qe("delete from PaperConflict where paperId?a and contactId=?", $pids, $pcm->contactId);
+            Contact::update_rights();
+        }
+    }
+
+    function test_pc_conflict_kind_hidden_with_authors() {
+        // When PC conflicts are visible but (blind) authors are not,
+        // neither get/pcconf nor revtype[description] may reveal which
+        // conflicted PC members are authors
+        xassert_eqq($this->conf->setting("sub_blind"), Conf::BLIND_ALWAYS);
+        $pccv = $this->conf->setting("sub_pcconfvis");
+        $pccs = $this->conf->setting("sub_pcconfsel");
+        $this->conf->save_refresh_setting("sub_pcconfvis", 2);
+        $u_mjh = $this->conf->checked_user_by_email("mjh@isi.edu");
+        $u_vera = $this->conf->checked_user_by_email("vera@bombay.com");
+        xassert(!$this->conf->checked_paper_by_id(2)->has_conflict($this->u_estrin));
+        xassert(!$this->conf->checked_paper_by_id(6)->managerContactId);
+        xassert_assign($this->u_chair, "paper,action,user,conflict\n1,conflict,vera@bombay.com,collaborator\n2,conflict,estrin@usc.edu,collaborator\n6,administrator,marina@poema.ru\n");
+
+        // marina administers other papers, but not paper 1, where estrin
+        // and floyd are PC authors, mjh has an administrative conflict,
+        // and vera has a declared conflict
+        $user = $this->u_marina;
+        xassert($user->is_manager());
+        $paper1 = $user->checked_paper_by_id(1);
+        xassert(!$user->allow_admin($paper1));
+        xassert($user->can_view_conflicts($paper1));
+        xassert(!$user->allow_view_authors($paper1));
+        xassert($paper1->has_author($this->u_estrin));
+        xassert_eqq($paper1->conflict_type($u_mjh), Conflict::CT_ADMINISTRATIVE);
+        xassert_eqq($paper1->conflict_type($u_vera), Conflict::CT_DEFAULT);
+
+        foreach ([null, 1] as $sel) {
+            $this->conf->save_refresh_setting("sub_pcconfsel", $sel);
+
+            $csv = $this->get_pcconf_csv($this->u_chair);
+            xassert_match($csv, '/^1,.*,estrin@usc\.edu,Author$/m');
+            xassert_match($csv, '/^1,.*,floyd@ee\.lbl\.gov,Author$/m');
+            xassert_match($csv, $sel ? '/^1,.*,mjh@isi\.edu,Administrative$/m' : '/^1,.*,mjh@isi\.edu,Conflict$/m');
+            xassert_match($csv, $sel ? '/^1,.*,vera@bombay\.com,Recent collaborator$/m' : '/^1,.*,vera@bombay\.com,Conflict$/m');
+
+            $csv = $this->get_pcconf_csv($user);
+            xassert_match($csv, '/^1,.*,estrin@usc\.edu,Conflict$/m');
+            xassert_match($csv, '/^1,.*,floyd@ee\.lbl\.gov,Conflict$/m');
+            xassert_match($csv, '/^1,.*,mjh@isi\.edu,Conflict$/m');
+            xassert_match($csv, '/^1,.*,vera@bombay\.com,Conflict$/m');
+            xassert_not_str_contains($csv, "Author");
+        }
+
+        // get/pcconf must also skip submissions the user cannot view
+        $p3 = $this->conf->checked_paper_by_id(3);
+        $title3 = $p3->title;
+        $sub3 = $p3->timeSubmitted;
+        $wd3 = $p3->timeWithdrawn;
+        xassert($p3->has_conflict($this->u_mgbaker));
+        $this->conf->qe("update Paper set timeWithdrawn=?, timeSubmitted=? where paperId=3", 100, -100);
+        xassert(!$user->can_view_paper($this->conf->checked_paper_by_id(3)));
+        $csv = $this->get_pcconf_csv($user, "1 3");
+        xassert_str_contains($csv, "Scalable Timers");
+        xassert_not_str_contains($csv, $title3);
+        xassert(!preg_match('/^3,/m', $csv));
+        xassert_match($this->get_pcconf_csv($this->u_chair, "1 3"), '/^3,.*,mgbaker@cs\.stanford\.edu,/m');
+        $this->conf->qe("update Paper set timeWithdrawn=?, timeSubmitted=? where paperId=3", $wd3, $sub3);
+
+        // With conflict descriptions enabled, `revtype[description]` must
+        // not render or sort a PC author’s conflict differently from a
+        // declared conflict for a PC member who cannot see authors...
+        xassert_eqq($this->conf->setting("sub_pcconfsel"), 1);
+        $pc = $this->u_mgbaker;
+        xassert(!$pc->is_manager());
+        xassert($pc->can_view_conflicts($paper1));
+        xassert(!$pc->allow_view_authors($paper1));
+        $h = $this->revtype_description_html($pc, $u_vera);
+        xassert_str_contains($h, "Conflict");
+        xassert_not_str_contains($h, "collaborator");
+        xassert_eqq($this->revtype_description_html($pc, $this->u_estrin), $h);
+        xassert_eqq($this->revtype_description_html($user, $this->u_estrin), $h);
+        xassert_search($pc, "1 2 sort:revtype[description,user=estrin@usc.edu]", "1 2");
+        xassert_search($pc, "1 2 sort:-revtype[description,user=estrin@usc.edu]", "1 2");
+        // ...but administrators still see declared conflict kinds (the
+        // list censors the chair too until conflicts are overridden)
+        xassert_eqq($this->revtype_description_html($this->u_chair, $u_vera), $h);
+        xassert_eqq($this->revtype_description_html($this->u_chair, $u_vera, true), "Recent collaborator");
+        xassert_eqq($this->revtype_description_html($this->u_chair, $this->u_estrin, true), "Author");
+        // text output is censored the same way
+        $pl = new PaperList("empty", new PaperSearch($pc, "1"));
+        $pl->parse_view("revtype[description,user=estrin@usc.edu]", ViewCommand::ORIGIN_MAX);
+        xassert_eqq($pl->text_json()[1]["revtype"] ?? "", "Conflict");
+
+        xassert_assign($this->u_chair, "paper,action,user\n1,clearconflict,vera@bombay.com\n2,clearconflict,estrin@usc.edu\n6,clearadministrator,marina@poema.ru\n");
+        xassert_eqq($this->conf->checked_paper_by_id(1)->conflict_type($u_vera), 0);
+        xassert(!$this->conf->checked_paper_by_id(6)->managerContactId);
+        $this->conf->save_refresh_setting("sub_pcconfsel", $pccs);
+        $this->conf->save_refresh_setting("sub_pcconfvis", $pccv);
+    }
+
 
     function test_override_conflicts() {
         xassert_assign($this->conf->root_user(), "action,paper,user,tag\nconflict,4 5,chair@_.com\ntag,4 5,,testtag");
@@ -1107,6 +1409,99 @@ class Permission_Tester {
         xassert_search($this->u_chair, "admin:marina", "");
     }
 
+    function test_remove_pc_clears_manager() {
+        // Removing a paper administrator from the PC (UserActions::remove_pc)
+        // must also drop their manager assignments, not just the PC role.
+        $us = new UserStatus($this->conf->root_user());
+        $u = $us->save_user((object) ["email" => "pcmgr@_.com", "name" => "PC Manager", "roles" => ["pc"]]);
+        xassert(!!$u, $us->full_feedback_text());
+        $this->conf->invalidate_caches("users", "pc");
+        $cid = $u->contactId;
+
+        xassert_assign($this->u_chair, "action,paper,user\nadministrator,3,pcmgr@_.com\n");
+        xassert_eqq((int) $this->conf->fetch_ivalue("select managerContactId from Paper where paperId=3"), $cid);
+
+        (new UserActions($this->u_chair))->remove_pc([$cid]);
+        $this->conf->invalidate_caches("users", "pc");
+
+        // PC role removed...
+        xassert_eqq((int) $this->conf->fetch_ivalue("select roles from ContactInfo where contactId=?", $cid) & Contact::ROLE_PCLIKE, 0);
+        // ...and no longer paper 3's manager
+        xassert_eqq((int) $this->conf->fetch_ivalue("select managerContactId from Paper where paperId=3"), 0);
+
+        $this->conf->qe("delete from PaperConflict where contactId=?", $cid);
+        $this->conf->qe("delete from ContactInfo where contactId=?", $cid);
+        $this->conf->invalidate_caches("users", "pc");
+    }
+
+    function test_userstatus_remove_pc_clears_manager() {
+        // Same as above, but via a normal profile save (UserStatus), not the
+        // bulk remove-from-PC action.
+        $us = new UserStatus($this->conf->root_user());
+        $u = $us->save_user((object) ["email" => "pcmgr2@_.com", "name" => "PC Manager 2", "roles" => ["pc"]]);
+        xassert(!!$u, $us->full_feedback_text());
+        $this->conf->invalidate_caches("users", "pc");
+        $cid = $u->contactId;
+
+        xassert_assign($this->u_chair, "action,paper,user\nadministrator,3,pcmgr2@_.com\n");
+        xassert_eqq((int) $this->conf->fetch_ivalue("select managerContactId from Paper where paperId=3"), $cid);
+
+        $us2 = new UserStatus($this->conf->root_user());
+        xassert($us2->save_user((object) ["email" => "pcmgr2@_.com", "roles" => (object) []]), $us2->full_feedback_text());
+        $this->conf->invalidate_caches("users", "pc");
+
+        xassert_eqq((int) $this->conf->fetch_ivalue("select roles from ContactInfo where contactId=?", $cid) & Contact::ROLE_PCLIKE, 0);
+        xassert_eqq((int) $this->conf->fetch_ivalue("select managerContactId from Paper where paperId=3"), 0);
+
+        $this->conf->qe("delete from PaperConflict where contactId=?", $cid);
+        $this->conf->qe("delete from ContactInfo where contactId=?", $cid);
+        $this->conf->invalidate_caches("users", "pc");
+    }
+
+    function test_admin_explicit_excludes_track_manager() {
+        // `admin:USER:explicit` matches only papers where USER is the literal
+        // managerContactId, never papers USER can administer via a track.
+        $old_tracks = $this->conf->setting("tracks");
+        $old_tracks_data = $this->conf->setting_data("tracks");
+        $this->conf->save_refresh_setting("tracks", 1, '{"green":{"admin":"+red"}}');
+        Contact::update_rights();
+        try {
+            $jon = $this->conf->checked_user_by_email("jon@cs.ucl.ac.uk"); // carries the "red" user tag
+            xassert($jon->is_track_manager());
+            xassert_assign($this->u_chair, "action,paper,tag\ntag,3,green\n");
+            $paper3 = $this->conf->checked_paper_by_id(3);
+            xassert_eqq($paper3->managerContactId, 0);   // no explicit manager
+            xassert($jon->allow_admin($paper3));         // jon administers #3 via the track
+            // non-explicit admin/canadmin match #3 via the track fallback...
+            xassert_in_eqq(3, (new PaperSearch($this->u_chair, "admin:jon@cs.ucl.ac.uk"))->paper_ids());
+            xassert_in_eqq(3, (new PaperSearch($this->u_chair, "canadmin:jon@cs.ucl.ac.uk"))->paper_ids());
+            // ...but `:explicit` matches only the literal managerContactId, never a track manager
+            xassert_not_in_eqq(3, (new PaperSearch($this->u_chair, "admin:jon@cs.ucl.ac.uk:explicit"))->paper_ids());
+        } finally {
+            xassert_assign($this->u_chair, "action,paper,tag\ncleartag,3,green\n");
+            $this->conf->save_refresh_setting("tracks", $old_tracks, $old_tracks_data);
+            Contact::update_rights();
+        }
+    }
+
+    function test_pc_api_assignable_for_conflicted_chair() {
+        // A chair conflicted with a paper that has another administrator
+        // can still change its administrator, so the paper's PC selector
+        // must still get an assignable list.
+        xassert_assign($this->u_chair, "action,paper,user\nconflict,3,chair@_.com\nadministrator,3,marina@poema.ru\n");
+        try {
+            $paper3 = $this->conf->checked_paper_by_id(3);
+            xassert(!$this->u_chair->allow_admin($paper3));
+            $j = call_api("pc", $this->u_chair, ["p" => 3, "ui" => 1], $paper3);
+            xassert($j->ok);
+            $assignable = $j->p[3]["assignable"] ?? null;
+            xassert_eqq(is_array($assignable), true);
+            xassert_in_eqq($this->u_marina->contactId, $assignable);
+        } finally {
+            xassert_assign($this->conf->root_user(), "action,paper,user\nclearadministrator,3\nclearconflict,3,chair@_.com\n");
+        }
+    }
+
     function test_assign_conflicts() {
         $paper3 = $this->u_chair->checked_paper_by_id(3);
         xassert_eqq(sorted_conflicts($paper3, TESTSC_ALL), "mgbaker@cs.stanford.edu nickm@ee.stanford.edu sclin@leland.stanford.edu");
@@ -1115,7 +1510,6 @@ class Permission_Tester {
 
         // reopen submissions: author can update conflicts
         $user_sclin = $this->conf->checked_user_by_email("sclin@leland.stanford.edu");
-        $this->conf->save_setting("sub_update", Conf::$now + 10);
         $this->conf->save_refresh_setting("sub_sub", Conf::$now + 10);
         xassert($user_sclin->can_edit_paper($paper3));
 
@@ -1200,7 +1594,6 @@ class Permission_Tester {
         $paper3->invalidate_conflicts();
         xassert_eqq($paper3->conflict_type($user_rguerin), 2);
 
-        $this->conf->save_setting("sub_update", Conf::$now - 5);
         $this->conf->save_refresh_setting("sub_sub", Conf::$now - 5);
         xassert_assign_fail($user_sclin, "paper,action,user\n3,clearconflict,rguerin@ibm.com\n");
         $paper3 = $this->u_chair->checked_paper_by_id(3);
@@ -1249,6 +1642,505 @@ class Permission_Tester {
         xassert_eqq(sorted_conflicts($paper3, TESTSC_ENABLED), "mgbaker@cs.stanford.edu");
     }
 
+    // Authors may only assign conflicts to PC members, and only while the
+    // PC conflicts field is editable; contacts are unaffected.
+    function test_assign_conflicts_author_limits() {
+        $user_sclin = $this->conf->checked_user_by_email("sclin@leland.stanford.edu");
+        $user_rguerin = $this->conf->checked_user_by_email("rguerin@ibm.com");
+        $user_nonpc = $this->conf->checked_user_by_email("kohler@seas.harvard.edu");
+        xassert($user_rguerin->isPC);
+        xassert(!$user_nonpc->isPC);
+        $old_sub_sub = $this->conf->setting("sub_sub");
+        $this->conf->save_refresh_setting("sub_sub", Conf::$now + 10);
+        xassert_assign($this->u_chair, "paper,action,user\n3,contact,sclin@leland.stanford.edu\n");
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert($paper3->has_author($user_sclin));
+        xassert($user_sclin->can_edit_paper($paper3));
+        xassert_eqq($paper3->conflict_type($user_nonpc), 0);
+
+        // author cannot assign a conflict to a non-PC account, and the
+        // refused assignment reveals nothing about that account
+        $aset = new AssignmentSet($user_sclin);
+        $aset->parse("paper,action,user\n3,conflict,kohler@seas.harvard.edu\n");
+        xassert($aset->has_error());
+        xassert_str_contains($aset->full_feedback_text(), "Only PC members can be assigned conflicts");
+        xassert(!$aset->execute());
+        xassert_eqq($aset->make_acsv()->rows(), []);
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert_eqq($paper3->conflict_type($user_nonpc), 0);
+
+        // nor to an account that does not exist
+        xassert_assign_fail($user_sclin, "paper,action,user\n3,conflict,nobody-here-zzz@example.com\n");
+
+        // nor an author-type conflict
+        xassert_assign_fail($user_sclin, "paper,action,user,conflict\n3,conflict,rguerin@ibm.com,author\n");
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert_eqq($paper3->conflict_type($user_rguerin), 0);
+
+        // PC conflicts still work for authors
+        xassert_assign($user_sclin, "paper,action,user\n3,conflict,rguerin@ibm.com\n");
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert_eqq($paper3->conflict_type($user_rguerin), Conflict::CT_DEFAULT);
+        xassert_assign($user_sclin, "paper,action,user\n3,clearconflict,rguerin@ibm.com\n");
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert_eqq($paper3->conflict_type($user_rguerin), 0);
+
+        // administrators can still conflict non-PC accounts
+        xassert_assign($this->u_chair, "paper,action,user\n3,conflict,kohler@seas.harvard.edu\n");
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert_eqq($paper3->conflict_type($user_nonpc), Conflict::CT_ADMINISTRATIVE);
+        xassert_assign($this->u_chair, "paper,action,user\n3,clearconflict,kohler@seas.harvard.edu\n");
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert_eqq($paper3->conflict_type($user_nonpc), 0);
+
+        // in the final phase the paper is editable but PC conflicts are not
+        $old_au_seedec = $this->conf->setting("au_seedec");
+        $old_final = [$this->conf->setting("final_open"), $this->conf->setting("final_soft"), $this->conf->setting("final_done")];
+        $this->conf->save_refresh_setting("sub_sub", Conf::$now - 5);
+        $this->conf->save_refresh_setting("au_seedec", 2);
+        $this->conf->save_refresh_setting("final_open", 1);
+        $this->conf->save_refresh_setting("final_soft", Conf::$now + 10);
+        $this->conf->save_refresh_setting("final_done", Conf::$now + 10);
+        xassert_assign($this->u_chair, "paper,action,decision\n3,decision,yes\n");
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert_eqq($paper3->viewable_phase($user_sclin), PaperInfo::PHASE_FINAL);
+        xassert($user_sclin->can_edit_paper($paper3));
+        xassert(!$user_sclin->can_edit_option($paper3, $this->conf->option_by_id(PaperOption::PCCONFID)));
+        $aset = new AssignmentSet($user_sclin);
+        $aset->parse("paper,action,user\n3,conflict,rguerin@ibm.com\n");
+        xassert($aset->has_error());
+        xassert_str_contains($aset->full_feedback_text(), "PC conflicts cannot be edited now");
+        xassert(!$aset->execute());
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert_eqq($paper3->conflict_type($user_rguerin), 0);
+        // contacts remain editable
+        xassert_assign($user_sclin, "paper,action,user\n3,contact,rguerin@ibm.com\n");
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert($paper3->has_author($user_rguerin));
+        xassert_assign($user_sclin, "paper,action,user\n3,clearcontact,rguerin@ibm.com\n");
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert(!$paper3->has_author($user_rguerin));
+        xassert_eqq($paper3->conflict_type($user_rguerin), 0);
+
+        // restore
+        xassert_assign($this->u_chair, "paper,action,decision\n3,cleardecision,yes\n");
+        xassert_assign($this->u_chair, "paper,action,user\n3,clearcontact,sclin@leland.stanford.edu\n");
+        $paper3 = $this->u_chair->checked_paper_by_id(3);
+        xassert_eqq(sorted_conflicts($paper3, TESTSC_CONTACTS), "mgbaker@cs.stanford.edu");
+        xassert_eqq(sorted_conflicts($paper3, TESTSC_ENABLED), "mgbaker@cs.stanford.edu");
+        $this->conf->save_refresh_setting("au_seedec", $old_au_seedec);
+        $this->conf->save_refresh_setting("final_open", $old_final[0]);
+        $this->conf->save_refresh_setting("final_soft", $old_final[1]);
+        $this->conf->save_refresh_setting("final_done", $old_final[2]);
+        $this->conf->save_refresh_setting("sub_sub", $old_sub_sub);
+    }
+
+    function test_decision_condition_field() {
+        // A submission field whose presence condition names the decision
+        // (`dec:yes`) must not disclose the decision: field presence tracks
+        // the decision only through each viewer's own decision-visibility.
+        // Field conditions are compiled and evaluated as the root user, so
+        // this works only because Decision_SearchTerm consults Conf::viewer(),
+        // which is null in tests unless swapped in.
+        $chair = $this->u_chair;
+        $author = $this->conf->checked_user_by_email("puneet@catarina.usc.edu"); // contact of #1
+        $reviewer = $this->conf->checked_user_by_email("mgbaker@cs.stanford.edu"); // PC reviewer of #1
+
+        $view_opt = function ($u, $prow, $opt) {
+            $old = $this->conf->swap_viewer($u);
+            try {
+                return $u->can_view_option($prow, $opt);
+            } finally {
+                $this->conf->swap_viewer($old);
+            }
+        };
+        // explicit limits ("s" for the PC reviewer, "a" for the author) so the
+        // assertion turns only on field presence, not on the viewer's default
+        // paper list (e.g. which papers they happen to review)
+        $search = function ($u, $q, $t) {
+            $old = $this->conf->swap_viewer($u);
+            try {
+                return (new PaperSearch($u, ["q" => $q, "t" => $t]))->paper_ids();
+            } finally {
+                $this->conf->swap_viewer($old);
+            }
+        };
+
+        $old_seedec = $this->conf->setting("seedec");
+        $old_au_seedec = $this->conf->setting("au_seedec");
+        $sv = SettingValues::make_request($chair, [
+            "has_sf" => 1, "sf/1/id" => "new", "sf/1/name" => "Camera",
+            "sf/1/order" => 100, "sf/1/type" => "text", "sf/1/visibility" => "all",
+            "sf/1/presence" => "custom", "sf/1/condition" => "dec:yes"
+        ]);
+        xassert($sv->execute(), $sv->full_feedback_text());
+        $opt = $this->conf->options()->find("Camera");
+        xassert(!!$opt);
+
+        try {
+            // decisions hidden from authors and reviewers; accept #1 and store a value
+            $this->conf->save_refresh_setting("seedec", 0);
+            $this->conf->save_refresh_setting("au_seedec", null);
+            xassert_assign($chair, "paper,action,decision\n1,decision,yes\n");
+            $ps = new PaperStatus($this->conf->root_user());
+            xassert($ps->save_paper_json(json_decode('{"id":1,"Camera":"Snapshot"}')), $ps->full_feedback_text());
+            $paper1 = $this->conf->checked_paper_by_id(1);
+            xassert($paper1->outcome > 0);
+            xassert($paper1->option_present($opt));
+
+            // chair sees the decision, so the field is present
+            xassert($view_opt($chair, $paper1, $opt));
+
+            // author and reviewer cannot see the decision, so the field is absent for them
+            xassert(!$author->can_view_decision($paper1));
+            xassert(!$view_opt($author, $paper1, $opt));
+            xassert_not_in_eqq(1, $search($author, "has:Camera", "a"));
+            xassert(!$reviewer->can_view_decision($paper1));
+            xassert(!$view_opt($reviewer, $paper1, $opt));
+            xassert_not_in_eqq(1, $search($reviewer, "has:Camera", "s"));
+
+            // let reviewers see decisions: field appears for the reviewer, still hidden from the author
+            $this->conf->save_refresh_setting("seedec", Conf::SEEDEC_REV);
+            $paper1 = $this->conf->checked_paper_by_id(1);
+            xassert($reviewer->can_view_decision($paper1));
+            xassert($view_opt($reviewer, $paper1, $opt));
+            xassert_in_eqq(1, $search($reviewer, "has:Camera", "s"));
+            xassert(!$author->can_view_decision($paper1));
+            xassert(!$view_opt($author, $paper1, $opt));
+            xassert_not_in_eqq(1, $search($author, "has:Camera", "a"));
+
+            // let authors see decisions too: field now appears for the author
+            $this->conf->save_refresh_setting("au_seedec", 2);
+            $paper1 = $this->conf->checked_paper_by_id(1);
+            xassert($author->can_view_decision($paper1));
+            xassert($view_opt($author, $paper1, $opt));
+            xassert_in_eqq(1, $search($author, "has:Camera", "a"));
+        } finally {
+            xassert_assign($chair, "paper,action,decision\n1,cleardecision,yes\n");
+            $sv = SettingValues::make_request($chair, ["has_sf" => 1, "sf/1/id" => $opt->id, "sf/1/delete" => 1]);
+            $sv->execute();
+            $this->conf->save_refresh_setting("seedec", $old_seedec);
+            $this->conf->save_refresh_setting("au_seedec", $old_au_seedec);
+        }
+    }
+
+    function test_decision_condition_field_mail() {
+        // Mail expansion must describe a decision-conditioned field from the
+        // recipient's perspective: Mailer::_expand swaps in the permuser, so a
+        // `{{Camera}}` keyword expands only when the recipient may view the
+        // decision the field is conditioned on.
+        $chair = $this->u_chair;
+        $author = $this->conf->checked_user_by_email("puneet@catarina.usc.edu");
+
+        $old_seedec = $this->conf->setting("seedec");
+        $old_au_seedec = $this->conf->setting("au_seedec");
+        $sv = SettingValues::make_request($chair, [
+            "has_sf" => 1, "sf/1/id" => "new", "sf/1/name" => "Camera",
+            "sf/1/order" => 100, "sf/1/type" => "text", "sf/1/visibility" => "all",
+            "sf/1/presence" => "custom", "sf/1/condition" => "dec:yes"
+        ]);
+        xassert($sv->execute(), $sv->full_feedback_text());
+        $opt = $this->conf->options()->find("Camera");
+        xassert(!!$opt);
+
+        try {
+            $this->conf->save_refresh_setting("seedec", 0);
+            $this->conf->save_refresh_setting("au_seedec", null);
+            xassert_assign($chair, "paper,action,decision\n1,decision,yes\n");
+            $ps = new PaperStatus($this->conf->root_user());
+            xassert($ps->save_paper_json(json_decode('{"id":1,"Camera":"Snapshot"}')), $ps->full_feedback_text());
+            $paper1 = $this->conf->checked_paper_by_id(1);
+            xassert($paper1->option_present($opt));
+
+            // recipient (author) cannot see the decision: the field is not expanded
+            $mailer = new HotCRPMailer($chair, $author, ["prow" => $paper1]);
+            xassert_not_str_contains($mailer->expand("[{{Camera}}]", "body"), "Snapshot");
+
+            // once authors may see decisions, the same mail expands the field
+            $this->conf->save_refresh_setting("au_seedec", 2);
+            $paper1 = $this->conf->checked_paper_by_id(1);
+            $mailer = new HotCRPMailer($chair, $author, ["prow" => $paper1]);
+            xassert_str_contains($mailer->expand("[{{Camera}}]", "body"), "Snapshot");
+        } finally {
+            xassert_assign($chair, "paper,action,decision\n1,cleardecision,yes\n");
+            $sv = SettingValues::make_request($chair, ["has_sf" => 1, "sf/1/id" => $opt->id, "sf/1/delete" => 1]);
+            $sv->execute();
+            $this->conf->save_refresh_setting("seedec", $old_seedec);
+            $this->conf->save_refresh_setting("au_seedec", $old_au_seedec);
+        }
+    }
+
+    function test_decision_formula_condition_field() {
+        // Same decision-visibility guarantee as test_decision_condition_field,
+        // but the field's presence condition is a *formula* that reads the
+        // decision. Formula conditions compile as the root user, so this relies
+        // on FormulaCompiler::prow_decision honoring Conf::viewer() when the
+        // formula is realized with USE_VIEWER_PERMISSIONS (set for field
+        // conditions).
+        $chair = $this->u_chair;
+        $author = $this->conf->checked_user_by_email("puneet@catarina.usc.edu");
+        $reviewer = $this->conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+
+        $view_opt = function ($u, $prow, $opt) {
+            $old = $this->conf->swap_viewer($u);
+            try {
+                return $u->can_view_option($prow, $opt);
+            } finally {
+                $this->conf->swap_viewer($old);
+            }
+        };
+
+        $old_seedec = $this->conf->setting("seedec");
+        $old_au_seedec = $this->conf->setting("au_seedec");
+        $sv = SettingValues::make_request($chair, [
+            "has_sf" => 1, "sf/1/id" => "new", "sf/1/name" => "Gizmo",
+            "sf/1/order" => 100, "sf/1/type" => "text", "sf/1/visibility" => "all",
+            "sf/1/presence" => "custom", "sf/1/condition" => "f:(decision>0)"
+        ]);
+        xassert($sv->execute(), $sv->full_feedback_text());
+        $opt = $this->conf->options()->find("Gizmo");
+        xassert(!!$opt);
+        xassert($opt->has_complex_exists_condition());
+
+        try {
+            // decisions hidden from authors and reviewers; accept #1
+            $this->conf->save_refresh_setting("seedec", 0);
+            $this->conf->save_refresh_setting("au_seedec", null);
+            xassert_assign($chair, "paper,action,decision\n1,decision,yes\n");
+            $paper1 = $this->conf->checked_paper_by_id(1);
+            xassert($paper1->outcome > 0);
+
+            // chair sees the decision, so the formula condition holds; author
+            // and reviewer cannot, so the field is absent for them
+            xassert($view_opt($chair, $paper1, $opt));
+            xassert(!$view_opt($author, $paper1, $opt));
+            xassert(!$view_opt($reviewer, $paper1, $opt));
+
+            // let reviewers see decisions: field appears for the reviewer, not the author
+            $this->conf->save_refresh_setting("seedec", Conf::SEEDEC_REV);
+            $paper1 = $this->conf->checked_paper_by_id(1);
+            xassert($view_opt($reviewer, $paper1, $opt));
+            xassert(!$view_opt($author, $paper1, $opt));
+
+            // let authors see decisions: field now appears for the author too
+            $this->conf->save_refresh_setting("au_seedec", 2);
+            $paper1 = $this->conf->checked_paper_by_id(1);
+            xassert($view_opt($author, $paper1, $opt));
+        } finally {
+            xassert_assign($chair, "paper,action,decision\n1,cleardecision,yes\n");
+            $sv = SettingValues::make_request($chair, ["has_sf" => 1, "sf/1/id" => $opt->id, "sf/1/delete" => 1]);
+            $sv->execute();
+            $this->conf->save_refresh_setting("seedec", $old_seedec);
+            $this->conf->save_refresh_setting("au_seedec", $old_au_seedec);
+        }
+    }
+
+    function test_hidden_decision_edit_withdraw() {
+        // With decisions hidden from authors, a contact author's edit/withdraw
+        // permissions must not reveal the decision: author_edit_state,
+        // perm_edit_paper and perm_withdraw_paper give an identical result for
+        // a hidden accept and a hidden reject. A decision the author can see
+        // may legitimately differ -- a visible accept stays editable, while a
+        // visible reject and a desk reject freeze.
+        $chair = $this->u_chair;
+        $author = $this->conf->checked_user_by_email("puneet@catarina.usc.edu"); // contact of #1
+
+        $old_seedec = $this->conf->setting("seedec");
+        $old_au_seedec = $this->conf->setting("au_seedec");
+        $old_sub_open = $this->conf->setting("sub_open");
+        $old_sub_sub = $this->conf->setting("sub_sub");
+
+        // set a decision on #1, read the author-facing permissions
+        $probe = function ($decision) use ($chair, $author) {
+            xassert_assign($chair, "paper,action,decision\n1,decision,{$decision}\n");
+            $prow = $this->conf->checked_paper_by_id(1);
+            $pw = $author->perm_withdraw_paper($prow);
+            return [
+                "edit_state" => $prow->author_edit_state(),
+                "edit_denied" => $author->perm_edit_paper($prow) !== null,
+                "withdraw_denied" => $pw !== null,
+                "withdraw_decided" => $pw !== null && ($pw["decided"] ?? false),
+                "author_sees" => $prow->can_author_view_decision()
+            ];
+        };
+
+        try {
+            // submissions still editable; decisions hidden from authors
+            $this->conf->save_refresh_setting("sub_open", 1);
+            $this->conf->save_refresh_setting("sub_sub", Conf::$now + 100);
+            $this->conf->save_refresh_setting("seedec", 0);
+            $this->conf->save_refresh_setting("au_seedec", null);
+
+            // baseline: an undecided paper is editable and withdrawable
+            xassert_assign($chair, "paper,action,decision\n1,cleardecision,any\n");
+            $prow = $this->conf->checked_paper_by_id(1);
+            xassert_gt($prow->author_edit_state(), 0);
+            xassert_eqq($author->perm_edit_paper($prow), null);
+            xassert_eqq($author->perm_withdraw_paper($prow), null);
+
+            // hidden accept and hidden reject are indistinguishable: both frozen,
+            // both edit-denied, both withdraw-denied for the same `decided` reason
+            $acc = $probe("accept");
+            $rej = $probe("reject");
+            xassert(!$acc["author_sees"] && !$rej["author_sees"]);
+            xassert_le($acc["edit_state"], 0);
+            xassert($acc["edit_denied"] && $acc["withdraw_denied"] && $acc["withdraw_decided"]);
+            xassert_eqq($acc, $rej);
+
+            // authors can see decisions: a visible accept becomes editable again,
+            // a visible reject stays frozen and withdraw-blocked
+            $this->conf->save_refresh_setting("au_seedec", 2);
+            $vacc = $probe("accept");
+            $vrej = $probe("reject");
+            xassert($vacc["author_sees"] && $vrej["author_sees"]);
+            xassert_gt($vacc["edit_state"], 0);
+            xassert(!$vacc["edit_denied"]);
+            xassert_le($vrej["edit_state"], 0);
+            xassert($vrej["edit_denied"] && $vrej["withdraw_denied"]);
+
+            // a desk reject is always author-visible and freezes even with
+            // decisions otherwise hidden from authors
+            $this->conf->save_refresh_setting("au_seedec", null);
+            $sv = SettingValues::make_request($chair, [
+                "has_decision" => 1, "decision/1/id" => "new",
+                "decision/1/name" => "Desk reject", "decision/1/category" => "desk_reject"
+            ]);
+            xassert($sv->execute(), $sv->full_feedback_text());
+            xassert_assign($chair, "paper,action,decision\n1,decision,Desk reject\n");
+            $prow = $this->conf->checked_paper_by_id(1);
+            xassert($prow->can_author_view_decision());
+            xassert_le($prow->author_edit_state(), 0);
+            xassert($author->perm_edit_paper($prow) !== null);
+        } finally {
+            xassert_assign($chair, "paper,action,decision\n1,cleardecision,any\n");
+            foreach ($this->conf->decision_set() as $dec) {
+                if ($dec->name === "Desk reject") {
+                    $sv = SettingValues::make_request($chair, [
+                        "has_decision" => 1, "decision/1/id" => (string) $dec->id, "decision/1/delete" => "1"
+                    ]);
+                    $sv->execute();
+                }
+            }
+            $this->conf->save_refresh_setting("seedec", $old_seedec);
+            $this->conf->save_refresh_setting("au_seedec", $old_au_seedec);
+            $this->conf->save_refresh_setting("sub_open", $old_sub_open);
+            $this->conf->save_refresh_setting("sub_sub", $old_sub_sub);
+        }
+    }
+
+    function test_rejected_author_cannot_comment() {
+        $chair = $this->u_chair;
+        $author = $this->conf->checked_user_by_email("puneet@catarina.usc.edu"); // contact of #1
+
+        $old_seedec = $this->conf->setting("seedec");
+        $old_au_seedec = $this->conf->setting("au_seedec");
+        $old_cmt_author = $this->conf->setting("cmt_author");
+        $old_cmt_always = $this->conf->setting("cmt_always");
+        $old_chair_ct = $this->conf->fetch_ivalue("select conflictType from PaperConflict where paperId=1 and contactId=?", $chair->contactId);
+        $restore_chair_conflict = function () use ($chair, $old_chair_ct) {
+            if ($old_chair_ct === null) {
+                $this->conf->qe("delete from PaperConflict where paperId=1 and contactId=?", $chair->contactId);
+            } else {
+                $this->conf->qe("update PaperConflict set conflictType=? where paperId=1 and contactId=?", $old_chair_ct, $chair->contactId);
+            }
+            Contact::update_rights();
+        };
+
+        try {
+            $this->conf->save_refresh_setting("cmt_author", 2);
+            $this->conf->save_refresh_setting("cmt_always", 1);
+            $this->conf->save_refresh_setting("seedec", 0);
+            $this->conf->save_refresh_setting("au_seedec", null);
+
+            // undecided: author can initiate a comment
+            xassert_assign($chair, "paper,action,decision\n1,cleardecision,any\n");
+            $prow = $this->conf->checked_paper_by_id(1);
+            xassert_neqq($author->new_comment_flags($prow), 0);
+            $j = call_api("=comment", $author, ["c" => "new", "text" => "Author comment"], $prow);
+            xassert($j->ok);
+            $cid = $j->comment->cid;
+
+            $j = call_api("=comment", $chair, ["c" => "new", "text" => "Chair comment", "visibility" => "a"], $prow);
+            xassert($j->ok);
+            $cid2 = $j->comment->cid;
+            $crow2 = $prow->fetch_comments("commentId={$cid2}")[0];
+
+            // without comment:write scope, the failure names the scope,
+            // plus any other reasons
+            $author->set_scope("comment:read");
+            xassert_eqq($author->new_comment_flags($prow), 0);
+            $whyNot = $author->perm_edit_comment($prow, CommentInfo::make_new_template($author, $prow));
+            xassert_eqq($whyNot["scope"] ?? null, TokenScope::S_CMT_WRITE);
+            xassert(!($whyNot["differentReviewer"] ?? false));
+            xassert_eqq($whyNot["permission"] ?? null, null);
+            $whyNot = $author->perm_edit_comment($prow, $crow2);
+            xassert_eqq($whyNot["scope"] ?? null, TokenScope::S_CMT_WRITE);
+            xassert($whyNot["differentReviewer"] ?? false);
+            $author->set_scope();
+
+            // hidden reject: author can still comment
+            xassert_assign($chair, "paper,action,decision\n1,decision,reject\n");
+            $prow = $this->conf->checked_paper_by_id(1);
+            xassert(!$author->can_view_decision($prow));
+            xassert_neqq($author->new_comment_flags($prow), 0);
+
+            // visible reject: author cannot create or edit comments
+            $this->conf->save_refresh_setting("au_seedec", 2);
+            $prow = $this->conf->checked_paper_by_id(1);
+            xassert($author->can_view_decision($prow));
+            xassert_eqq($author->new_comment_flags($prow), 0);
+            $whyNot = $author->perm_edit_comment($prow, CommentInfo::make_new_template($author, $prow));
+            xassert_eqq($whyNot["permission"] ?? null, "comment:edit");
+            xassert(!($whyNot["differentReviewer"] ?? false));
+            $j = call_api("=comment", $author, ["c" => "new", "text" => "Another comment"], $prow);
+            xassert(!$j->ok);
+            $crow = $prow->fetch_comments("commentId={$cid}")[0];
+            xassert(!$author->can_edit_comment($prow, $crow));
+            $j = call_api("=comment", $author, ["c" => (string) $cid, "text" => "Edited comment"], $prow);
+            xassert(!$j->ok);
+
+            // visible reject, chair author: commenting requires a conflict override
+            xassert_assign($chair, "paper,action,user\n1,contact,chair@_.com\n");
+            $prow = $this->conf->checked_paper_by_id(1);
+            xassert($chair->can_view_decision($prow));
+            xassert_eqq($chair->new_comment_flags($prow), 0);
+            $whyNot = $chair->perm_edit_comment($prow, CommentInfo::make_new_template($chair, $prow));
+            xassert_eqq($whyNot["permission"] ?? null, "comment:edit");
+            xassert($whyNot["override"] ?? false);
+            $overrides = $chair->add_overrides(Contact::OVERRIDE_CONFLICT);
+            xassert_neqq($chair->new_comment_flags($prow), 0);
+            xassert_eqq($chair->perm_edit_comment($prow, CommentInfo::make_new_template($chair, $prow)), null);
+            $chair->set_overrides($overrides);
+            unset($overrides);
+            $restore_chair_conflict();
+
+            // visible accept: author can comment
+            xassert_assign($chair, "paper,action,decision\n1,decision,accept\n");
+            $prow = $this->conf->checked_paper_by_id(1);
+            xassert($author->can_view_decision($prow));
+            xassert_neqq($author->new_comment_flags($prow), 0);
+            xassert($author->can_edit_comment($prow, $crow));
+        } finally {
+            $author->set_scope();
+            if (isset($overrides)) {
+                $chair->set_overrides($overrides);
+            }
+            if (isset($cid)) {
+                $this->conf->qe("delete from PaperComment where paperId=1 and commentId=?", $cid);
+            }
+            if (isset($cid2)) {
+                $this->conf->qe("delete from PaperComment where paperId=1 and commentId=?", $cid2);
+            }
+            $restore_chair_conflict();
+            xassert_assign($chair, "paper,action,decision\n1,cleardecision,any\n");
+            MailChecker::clear();
+            $this->conf->save_refresh_setting("seedec", $old_seedec);
+            $this->conf->save_refresh_setting("au_seedec", $old_au_seedec);
+            $this->conf->save_refresh_setting("cmt_author", $old_cmt_author);
+            $this->conf->save_refresh_setting("cmt_always", $old_cmt_always);
+        }
+    }
+
     function test_tracker_permissionizer() {
         $user_jon = $this->conf->checked_user_by_email("jon@cs.ucl.ac.uk"); // pc, red
 
@@ -1266,12 +2158,31 @@ class Permission_Tester {
         xassert($permissionizer->check_admin_perm($this->conf->root_user()));
         xassert($permissionizer->check_admin_perm($user_jon));
 
-        xassert_eqq($permissionizer->default_visibility(), "");
+        xassert_eqq($permissionizer->default_visibility(), "all");
         $this->conf->save_refresh_setting("tracks", 1, '{"green":{"admin":"+red","view":"-blue"}}');
         $permissionizer = new MeetingTracker_Permissionizer($this->conf, [3, 9, 13]);
         xassert_eqq($permissionizer->default_visibility(), "-blue");
 
         $this->conf->save_refresh_setting("tracks", null);
+    }
+
+    /** `has_permission(null)` must stay true for every user, PC or not.
+     * `Conf::permissive_track_tag_for` passes an unrestricted (null) track perm to
+     * it, and `Contact::can_view_some_review_identity` uses that so an external
+     * (non-PC) reviewer gets review-identity visibility from a track that does not
+     * restrict VIEWREVID. This pins the invariant noted in Contact::has_permission. */
+    function test_has_permission_null_invariant() {
+        xassert(!$this->u_kohler->isPC);
+        xassert($this->u_kohler->has_permission(null));
+        xassert($this->u_nobody->has_permission(null));
+
+        // a non-default track with no VIEWREVID restriction is "permissively"
+        // matched by a non-PC user precisely because has_permission(null) is true
+        $this->conf->save_refresh_setting("tracks", 1, '{"green":{"admin":"+red"}}');
+        Contact::update_rights();
+        xassert_neqq($this->conf->permissive_track_tag_for($this->u_kohler, Track::VIEWREVID), null);
+        $this->conf->save_refresh_setting("tracks", null);
+        Contact::update_rights();
     }
 
     function test_tracks() {
@@ -1553,7 +2464,6 @@ class Permission_Tester {
         xassert_eqq($paper16->sorted_viewable_tags($this->u_marina), " app#2 crap#3 vote#6");
         xassert_eqq($paper16->sorted_searchable_tags($this->u_chair), " 2~vote#5 4~app#0 4~bar#0 4~crap#1 8~crap#2 8~vote#1 17~app#0 app#2 crap#3 vote#6");
 
-        $this->conf->invalidate_caches("pc");
         xassert(SettingValues::make_request($this->u_chair, [
             "has_tag_vote_approval" => 1, "tag_vote_approval" => "app app2"
         ])->execute());
@@ -1665,6 +2575,34 @@ class Permission_Tester {
         $this->u_mogul->set_capability("@av12", true);
         $pset = $this->u_mogul->paper_set(["author" => true]);
         xassert_array_eqq($pset->paper_ids(), [12, 16]);
+    }
+
+    function test_share_link_without_expiration() {
+        // `expires_in` values meaning "no expiration" create a link that
+        // never expires
+        foreach (["0", "none", "never", ""] as $ei) {
+            $jr = call_api("=share", $this->u_chair, TestQreq::post(["p" => 19, "share" => "new", "expires_in" => $ei]));
+            xassert_eqq($jr->ok, true);
+            xassert(is_string($jr->token ?? null));
+            xassert(!isset($jr->expires_at));
+            $tok = AuthorView_Capability::find($this->conf->checked_paper_by_id(19));
+            xassert($tok && $tok->salt === $jr->token);
+            xassert_eqq($tok->timeInvalid, 0);
+        }
+        foreach (["0", "none"] as $ei) {
+            xassert_assign($this->u_chair, "action,paper,share,expires_in\nshare,19,new,{$ei}\n");
+            $tok = AuthorView_Capability::find($this->conf->checked_paper_by_id(19));
+            xassert($tok && $tok->timeInvalid === 0);
+        }
+
+        // a positive duration still expires
+        $jr = call_api("=share", $this->u_chair, TestQreq::post(["p" => 19, "share" => "new", "expires_in" => "3600"]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->expires_at ?? null, Conf::$now + 3600);
+
+        $jr = call_api("=share", $this->u_chair, TestQreq::post(["p" => 19, "share" => "no"]));
+        xassert_eqq($jr->ok, true);
+        xassert(!AuthorView_Capability::find($this->conf->checked_paper_by_id(19)));
     }
 
     function test_make_anonymous_user_nologin() {
@@ -1852,7 +2790,6 @@ class Permission_Tester {
 
     function test_search_submission_field_edit_condition() {
         $this->conf->save_refresh_setting("options", 1, '[{"id":1,"name":"Calories","abbr":"calories","type":"numeric","position":1,"display":"default"},{"id":2,"name":"Fattening","type":"numeric","position":2,"display":"default","exists_if":"calories>200"}]');
-        $this->conf->invalidate_caches("options");
         $this->conf->qe("insert into PaperOption (paperId,optionId,value) values (1,2,1),(2,2,1),(3,2,1),(4,2,1),(5,2,1)");
         xassert_search($this->u_chair, "has:fattening", "1 3 4");
     }
@@ -2000,9 +2937,583 @@ class Permission_Tester {
         $this->conf->refresh_settings();
     }
 
+    function test_review_identity_implies_assignment() {
+        // Invariant: seeing a review's reviewer identity entails being allowed to
+        // know the review exists, so `can_view_review_identity` must imply
+        // `can_view_review_assignment` — both for a specific review and for the
+        // null "can view all identities" form. The historical gap was an author of
+        // a NON-BLIND review whose content wasn't released to authors (`au_seerev`
+        // off): they saw the reviewer's identity without clearing the existence
+        // gate. The BLIND_NEVER + au_seerev=off configuration below exercises that
+        // case against every paper an author-viewer owns.
+        $conf = $this->conf;
+        $old_revblind = $conf->setting("rev_blind");
+        $old_auseerev = $conf->setting("au_seerev");
+
+        $viewers = [$this->u_chair, $this->u_estrin, $this->u_mgbaker, $this->u_marina,
+                    $this->u_van, $this->u_shenker, $this->u_mogul];
+        $configs = [[Conf::BLIND_ALWAYS, null], [Conf::BLIND_NEVER, null],
+                    [Conf::BLIND_NEVER, 1], [Conf::BLIND_OPTIONAL, 1]];
+        $identity_seen = 0;
+        foreach ($configs as list($rb, $au)) {
+            $conf->save_refresh_setting("rev_blind", $rb);
+            $conf->save_refresh_setting("au_seerev", $au);
+            foreach ($conf->paper_set(["allConflictType" => true]) as $prow) {
+                foreach ($viewers as $v0) {
+                    $v = $conf->checked_user_by_email($v0->email);
+                    if ($v->can_view_review_identity($prow, null)) {
+                        ++$identity_seen;
+                        xassert($v->can_view_review_assignment($prow, null));
+                    }
+                    foreach ($prow->all_reviews() as $rrow) {
+                        if ($v->can_view_review_identity($prow, $rrow)) {
+                            ++$identity_seen;
+                            xassert($v->can_view_review_assignment($prow, $rrow));
+                        }
+                    }
+                }
+            }
+        }
+        // Non-vacuous: the assertion body actually fired for real visible identities.
+        xassert_gt($identity_seen, 0);
+
+        $conf->save_refresh_setting("rev_blind", $old_revblind);
+        $conf->save_refresh_setting("au_seerev", $old_auseerev);
+    }
+
+    /** @param Contact $who
+     * @param int|string $pid
+     * @param string $action
+     * @param string $user
+     * @return string */
+    private function assign_feedback($who, $pid, $action, $user) {
+        $aset = new AssignmentSet($who);
+        $aset->parse("paper,action,user\n{$pid},{$action},{$user}\n");
+        // feedback may echo the looked-up user; normalize that away
+        return str_replace($user, "<user>", $aset->full_feedback_text());
+    }
+
+    // User lookup errors in bulk assignment must not reveal whether an email
+    // address has an account. For a viewer who cannot administer the paper, an
+    // unknown address, a non-PC account, and a placeholder author account all
+    // produce the same feedback; only visible PC membership may show through.
+    function test_assignment_user_lookup_oracle() {
+        $conf = $this->conf;
+        $unknown = "nobody-at-all@_.com";
+        $placeholder = "puneet@catarina.usc.edu"; // author of #1, never signed in
+        $nonpc = $this->u_van->email;             // registered, not PC
+        $pc = $this->u_estrin->email;
+        xassert_eqq($conf->fetch_ivalue("select count(*) from ContactInfo where email=?", $unknown), 0);
+        $u_placeholder = $conf->checked_user_by_email($placeholder);
+        xassert($u_placeholder->is_placeholder());
+        xassert(!$u_placeholder->isPC);
+        xassert(!$this->u_van->isPC);
+        xassert($this->u_estrin->isPC);
+
+        // an unlisted PC member is visible only to viewers with full PC
+        // visibility
+        $unlisted = "unlisted-oracle@_.com";
+        $us = new UserStatus($conf->root_user());
+        $u_unlisted = $us->save_user((object) ["email" => $unlisted, "roles" => ["unlistedpc"]]);
+        xassert(!!$u_unlisted, $us->full_feedback_text());
+        $conf->invalidate_caches("users", "pc");
+        Contact::update_rights();
+
+        $viewer = $this->u_kohler; // registered, not PC, not an author of #1
+        $prow1 = $conf->checked_paper_by_id(1);
+        xassert(!$viewer->isPC);
+        xassert(!$prow1->has_author($viewer));
+        xassert(!$viewer->can_manage($prow1));
+        xassert($viewer->can_view_pc());
+        xassert(!isset($conf->viewable_pc_members($viewer)[$u_unlisted->contactId]));
+
+        foreach (["lead", "conflict", "pref", "follow"] as $action) {
+            $expected = $this->assign_feedback($viewer, 1, $action, $unknown);
+            xassert_neqq($expected, "");
+            foreach ([$placeholder, $nonpc, $unlisted] as $email) {
+                xassert_eqq($this->assign_feedback($viewer, 1, $action, $email), $expected);
+            }
+            // name lookups are in the same boat
+            $expected = $this->assign_feedback($viewer, 1, $action, "Nobody");
+            xassert_eqq($this->assign_feedback($viewer, 1, $action, "Sharma"), $expected);
+        }
+
+        // a PC member who can see the papers but cannot administer them, and
+        // a paper range rather than a single paper (messages are downgraded
+        // and then re-marked for non-exact paper specifications)
+        $pcviewer = $conf->checked_user_by_email("lixia@cs.ucla.edu");
+        xassert($pcviewer->isPC && !$pcviewer->privChair);
+        foreach ([1, 2] as $pid) {
+            $prow = $conf->checked_paper_by_id($pid);
+            xassert($pcviewer->can_view_paper($prow) && !$pcviewer->can_manage($prow));
+        }
+        foreach (["lead", "conflict", "pref", "follow"] as $action) {
+            $expected = $this->assign_feedback($pcviewer, "1-2", $action, $unknown);
+            xassert_neqq($expected, "");
+            foreach ([$placeholder, $nonpc, $unlisted] as $email) {
+                xassert_eqq($this->assign_feedback($pcviewer, "1-2", $action, $email), $expected);
+            }
+            $expected = $this->assign_feedback($pcviewer, "1-2", $action, "Nobody");
+            xassert_eqq($this->assign_feedback($pcviewer, "1-2", $action, "Sharma"), $expected);
+        }
+
+        // nor does a nonexistent paper change the answer
+        $expected = $this->assign_feedback($viewer, 9999, "lead", $unknown);
+        xassert_neqq($expected, "");
+        foreach ([$placeholder, $nonpc, $unlisted] as $email) {
+            xassert_eqq($this->assign_feedback($viewer, 9999, "lead", $email), $expected);
+        }
+
+        // with a secret PC, even PC membership is hidden
+        $conf->set_opt("secretPC", true);
+        Contact::update_rights();
+        $viewer = $conf->checked_user_by_email($viewer->email);
+        xassert(!$viewer->can_view_pc());
+        foreach (["lead", "pref"] as $action) {
+            $expected = $this->assign_feedback($viewer, 1, $action, $unknown);
+            xassert_neqq($expected, "");
+            foreach ([$placeholder, $nonpc, $unlisted, $pc] as $email) {
+                xassert_eqq($this->assign_feedback($viewer, 1, $action, $email), $expected);
+            }
+            $expected = $this->assign_feedback($viewer, 1, $action, "Nobody");
+            xassert_eqq($this->assign_feedback($viewer, 1, $action, "Estrin"), $expected);
+        }
+
+        // a non-PC author can still follow their own paper by email
+        $u_van = $conf->checked_user_by_email($this->u_van->email);
+        xassert($prow1->has_author($u_van));
+        xassert_assign($u_van, "paper,action,user\n1,follow,{$u_van->email}\n");
+        xassert_assign($u_van, "paper,action,user\n1,clearfollow,{$u_van->email}\n");
+
+        $conf->set_opt("secretPC", null);
+        Contact::update_rights();
+        $u_van = $conf->checked_user_by_email($this->u_van->email);
+        xassert_assign($u_van, "paper,action,user\n1,follow,{$u_van->email}\n");
+        xassert_assign($u_van, "paper,action,user\n1,clearfollow,{$u_van->email}\n");
+
+        // administrators still get useful feedback
+        $t = $this->assign_feedback($this->u_chair, 1, "lead", $unknown);
+        xassert_str_contains($t, "not found");
+        xassert_assign($this->u_chair, "paper,action,user\n1,lead,{$unlisted}\n");
+        // ...but a conflicted PC member cannot replace an existing lead
+        xassert_str_contains($this->assign_feedback($this->u_chair, 1, "lead", $pc), "conflicted");
+        xassert_assign_fail($this->u_chair, "paper,action,user\n1,lead,{$pc}\n");
+        xassert_assign($this->u_chair, "paper,action,user\n1,clearlead,any\n");
+        // ...and a missing user is reported as missing, not as a non-PC user
+        foreach ([1, "1-2"] as $pid) {
+            $t = $this->assign_feedback($this->u_chair, $pid, "pref", $unknown);
+            xassert_str_contains($t, "not found");
+            xassert_not_str_contains($t, "Only PC members");
+            $t = $this->assign_feedback($this->u_chair, $pid, "pref", $nonpc);
+            xassert_str_contains($t, "Only PC members");
+            xassert_not_str_contains($t, "not found");
+        }
+
+        $conf->qe("delete from ContactInfo where email=?", $unlisted);
+        $conf->invalidate_caches("users", "pc");
+        Contact::update_rights();
+    }
+
+    function test_lead_replacement_checks_conflicts() {
+        // Replacing an existing lead with a conflicted PC member is rejected,
+        // just as a fresh assignment would be. Reassigning the same lead,
+        // clearing the lead, and an explicit override still work.
+        $conf = $this->conf;
+        $p1 = $conf->checked_paper_by_id(1);
+        $estrin = $this->u_estrin;
+        xassert($estrin->isPC && $p1->has_author($estrin));
+        $lixia = $conf->checked_user_by_email("lixia@cs.ucla.edu");
+        xassert($lixia->isPC && !$p1->has_conflict($lixia));
+        $lead = function () use ($conf) {
+            return $conf->fetch_ivalue("select leadContactId from Paper where paperId=1");
+        };
+
+        xassert_assign($this->u_chair, "paper,action,user\n1,clearlead,any\n");
+        xassert_assign($this->u_chair, "paper,action,user\n1,lead,{$lixia->email}\n");
+        xassert_eqq($lead(), $lixia->contactId);
+
+        xassert_assign_fail($this->u_chair, "paper,action,user\n1,lead,{$estrin->email}\n");
+        xassert_eqq($lead(), $lixia->contactId);
+        xassert_str_contains($this->assign_feedback($this->u_chair, 1, "lead", $estrin->email), "conflicted");
+        xassert_eqq($lead(), $lixia->contactId);
+
+        xassert_assign($this->u_chair, "paper,action,user\n1,lead,{$lixia->email}\n");
+        xassert_eqq($lead(), $lixia->contactId);
+        xassert_assign($this->u_chair, "paper,action,user,override\n1,lead,{$estrin->email},yes\n");
+        xassert_eqq($lead(), $estrin->contactId);
+        xassert_assign($this->u_chair, "paper,action,user\n1,clearlead,any\n");
+        xassert_eqq($lead(), 0);
+    }
+
+    // `shepherd` maps to UU_PC_REVIEWERS when `extrev_shepherd` is set, so
+    // `resolve_users` unions the viewable PC with the paper's reviewers and
+    // resolves a `uid` column against that set through ContactSearch. The union
+    // must preserve contactId keys: `array_merge` renumbers them, which both
+    // drops valid reviewers and admits any uid smaller than the set's size,
+    // since the set is only an existence gate and the raw uid is what gets
+    // assigned. Only a numeric uid covers this path; a bare email, the form the
+    // UI sends, short-circuits on the exact-email match in `pre_resolve_users`
+    // and never reaches ContactSearch.
+    function test_assign_uid_pc_reviewers_universe() {
+        $conf = $this->conf;
+        $chair = $this->u_chair;
+        $old_extrev = $conf->setting("extrev_shepherd");
+        $conf->save_refresh_setting("extrev_shepherd", 1);
+
+        $email = "extshep@example.edu";
+        $conf->qe("delete from ContactInfo where email=?", $email);
+        $conf->invalidate_caches("users", "pc");
+        xassert_assign($chair, "paper,action,email,name\n1,review,{$email},Ext Shepherd\n");
+        $conf->invalidate_caches("users", "pc");
+
+        $ext = $conf->checked_user_by_email($email);
+        $marina = $this->u_marina;   // PC, not a reviewer of #1
+        $kohler = $this->u_kohler;   // neither PC nor a reviewer of #1
+        $p1 = $conf->checked_paper_by_id(1);
+        xassert(!$ext->isPC);
+        xassert_eqq($p1->review_type($ext), REVIEW_EXTERNAL);
+        xassert($marina->isPC);
+        xassert_eqq($p1->review_type($marina), 0);
+        xassert(!$kohler->isPC);
+        xassert_eqq($p1->review_type($kohler), 0);
+
+        $shepherd = function () use ($conf) {
+            return $conf->fetch_ivalue("select shepherdContactId from Paper where paperId=1");
+        };
+
+        // the PC side of the union resolves by uid
+        xassert_assign($chair, "paper,action,uid\n1,shepherd,{$marina->contactId}\n");
+        xassert_eqq($shepherd(), $marina->contactId);
+
+        // so does the reviewer side
+        xassert_assign($chair, "paper,action,uid\n1,shepherd,{$ext->contactId}\n");
+        xassert_eqq($shepherd(), $ext->contactId);
+
+        // a uid outside the union is refused, even though it is smaller than
+        // the set's size
+        xassert_assign_fail($chair, "paper,action,uid\n1,shepherd,{$kohler->contactId}\n");
+        xassert_eqq($shepherd(), $ext->contactId);
+
+        // without `extrev_shepherd` the universe narrows to UU_PC, so the
+        // external reviewer stops being nameable and the PC member does not
+        xassert_assign($chair, "paper,action,user\n1,clearshepherd,any\n");
+        $conf->save_refresh_setting("extrev_shepherd", null);
+        xassert_assign_fail($chair, "paper,action,uid\n1,shepherd,{$ext->contactId}\n");
+        xassert_eqq($shepherd(), 0);
+        xassert_assign($chair, "paper,action,uid\n1,shepherd,{$marina->contactId}\n");
+        xassert_eqq($shepherd(), $marina->contactId);
+
+        xassert_assign($chair, "paper,action,user\n1,clearshepherd,any\n");
+        $conf->qe("delete from PaperReview where contactId=?", $ext->contactId);
+        $conf->qe("delete from ContactInfo where contactId=?", $ext->contactId);
+        $conf->save_refresh_setting("extrev_shepherd", $old_extrev);
+        $conf->invalidate_caches("users", "pc");
+    }
+
+    function test_reviewers_only_uid_outside_reviewers_is_noop() {
+        // A reviewers-only row whose uid names no reviewer of the paper has
+        // nothing to do. It succeeds silently whether or not the uid is an
+        // account, so it reveals nothing about which accounts exist.
+        $conf = $this->conf;
+        $chair = $this->u_chair;
+        $marina = $this->u_marina;   // PC
+        $kohler = $this->u_kohler;   // not PC
+        $p1 = $conf->checked_paper_by_id(1);
+        xassert_eqq($p1->review_type($marina), 0);
+        xassert_eqq($p1->review_type($kohler), 0);
+        xassert(!$p1->has_conflict($marina));
+        foreach ([$marina->contactId, $kohler->contactId, 999999] as $uid) {
+            foreach (["clearreview", "unsubmitreview"] as $action) {
+                $aset = (new AssignmentSet($chair))->set_override_conflicts(true);
+                $aset->parse("paper,action,uid\n1,{$action},{$uid}\n");
+                xassert(!$aset->has_error());
+                xassert_eqq($aset->message_list(), []);
+                xassert_eqq(count($aset->assignments()), 0);
+            }
+        }
+
+        // the assignment select sends clearreview + conflict by uid
+        $select = function ($conflict) use ($chair, $marina, $p1) {
+            $j = call_api("=assign", $chair, TestQreq::post(["p" => 1, "format" => "none", "assignments" => json_encode([
+                ["pid" => 1, "uid" => $marina->contactId, "action" => "clearreview"],
+                ["pid" => 1, "uid" => $marina->contactId, "action" => "conflict", "conflict" => $conflict]
+            ])]), $p1);
+            xassert_eqq($j->ok, true);
+        };
+        $select("conflict");
+        xassert($conf->checked_paper_by_id(1)->has_conflict($marina));
+        $select(false);
+        xassert(!$conf->checked_paper_by_id(1)->has_conflict($marina));
+    }
+
+    function test_uid_must_be_numeric() {
+        // the uid column takes user IDs, not search keywords like `me`
+        foreach (["me", "chair", "pc", "12x", "1.5", "-3"] as $uid) {
+            foreach (["shepherd", "clearreview", "contact"] as $action) {
+                $aset = (new AssignmentSet($this->u_chair))->set_override_conflicts(true);
+                $aset->parse("paper,action,uid\n1,{$action},{$uid}\n");
+                xassert($aset->has_error(), "{$action} {$uid}");
+                xassert_str_contains($aset->full_feedback_text(), "Invalid user ID");
+                xassert_eqq(count($aset->assignments()), 0);
+            }
+        }
+    }
+
+    function test_uid_any_user_resolution_depends_on_viewer() {
+        // A uid in a row with no candidate set, such as a contact, resolves
+        // any account for a chair, who can list all users anyway. Other
+        // administrators resolve only viewable PC members, and every other
+        // uid gets the same message whether or not it is an account.
+        $conf = $this->conf;
+        $chair = $this->u_chair;
+        $marina = $this->u_marina;   // PC, not chair
+        $kohler = $this->u_kohler;   // not PC
+        $estrin = $this->u_estrin;   // PC
+        $none = $conf->fetch_ivalue("select max(contactId) from ContactInfo") + 1000;
+        xassert_eqq($conf->checked_paper_by_id(1)->managerContactId, 0);
+        xassert_assign($chair, "paper,action,email\n1,manager,{$marina->email}\n");
+        $marina = $conf->checked_user_by_email($marina->email);
+        xassert(!$marina->privChair);
+        xassert($marina->can_manage($marina->checked_paper_by_id(1)));
+
+        $parse = function (Contact $user, $uid) {
+            $aset = (new AssignmentSet($user))->set_override_conflicts(true);
+            $aset->parse("paper,action,uid\n1,contact,{$uid}\n");
+            $msgs = [];
+            foreach ($aset->message_list() as $mi) {
+                $msgs[] = preg_replace('/#\d+/', "#N", $mi->message);
+            }
+            return [$aset->has_error(), count($aset->assignments()), $msgs];
+        };
+
+        // a chair can name any account
+        xassert_eqq($parse($chair, $kohler->contactId), [false, 1, []]);
+        xassert_eqq($parse($chair, $estrin->contactId), [false, 1, []]);
+        xassert_eqq($parse($chair, $none)[0], true);
+
+        // a non-chair manager can name PC members; other accounts look
+        // exactly like nonexistent ones
+        xassert_eqq($parse($marina, $estrin->contactId), [false, 1, []]);
+        $nonpc = $parse($marina, $kohler->contactId);
+        xassert_eqq($nonpc[0], true);
+        xassert_eqq($nonpc, $parse($marina, $none));
+
+        xassert_assign($chair, "paper,action\n1,clearmanager\n");
+        xassert_eqq($conf->checked_paper_by_id(1)->managerContactId, 0);
+    }
+
+    function test_conflicted_chair_on_managed_paper() {
+        // A chair conflicted with a paper that another user manages sees it
+        // as a chair, whatever `pc_confpdf` says, and searches agree
+        $conf = $this->conf;
+        $old_confpdf = $conf->setting("pc_confpdf");
+        xassert($this->u_shenker->privChair);
+        xassert_assign($this->u_chair, "paper,action,user\n1,manager,{$this->u_marina->email}\n1,conflict,{$this->u_shenker->email}\n");
+        foreach ([1, 2] as $confpdf) {
+            $conf->save_refresh_setting("pc_confpdf", $confpdf);
+            Contact::update_rights();
+            $chair = $conf->checked_user_by_email($this->u_shenker->email);
+            $p1 = $conf->checked_paper_by_id(1, $chair);
+            xassert($p1->has_conflict($chair));
+            xassert(!$chair->allow_admin($p1));
+            xassert($chair->can_view_paper($p1));
+            xassert($chair->can_view_pdf($p1));
+            xassert($chair->can_view_all(true));
+            xassert_in_eqq(1, (new PaperSearch($chair, "has:submission"))->paper_ids());
+            xassert_not_in_eqq(1, (new PaperSearch($chair, "submission:none"))->paper_ids());
+            xassert_not_in_eqq(1, (new PaperSearch($chair, "NOT has:submission"))->paper_ids());
+        }
+        $conf->save_refresh_setting("pc_confpdf", $old_confpdf);
+
+        // ...but tracks that exclude the chair by tag still apply
+        $old_tracks = $conf->setting_data("tracks");
+        $chair = $conf->checked_user_by_email($this->u_shenker->email);
+        $old_tags = $chair->contactTags;
+        $chair->set_prop("contactTags", " red#0");
+        $chair->save_prop();
+        $conf->invalidate_caches("users", "pc");
+        foreach ([["viewpdf", true, false], ["view", false, false]] as $t) {
+            list($perm, $view, $pdf) = $t;
+            $conf->save_refresh_setting("tracks", 1, json_encode(["_" => [$perm => "-red"]]));
+            Contact::update_rights();
+            $chair = $conf->checked_user_by_email($this->u_shenker->email);
+            xassert($chair->has_tag("red"));
+            $p1 = $conf->checked_paper_by_id(1);
+            xassert(!$chair->allow_admin($p1));
+            xassert_eqq($chair->can_view_paper($p1), $view, $perm);
+            xassert_eqq($chair->can_view_pdf($p1), $pdf, $perm);
+        }
+
+        // ...while tracks that include by tag do not restrict chairs
+        $chair->set_prop("contactTags", null);
+        $chair->save_prop();
+        $conf->invalidate_caches("users", "pc");
+        foreach (["view", "viewpdf"] as $perm) {
+            $conf->save_refresh_setting("tracks", 1, json_encode(["_" => [$perm => "+red"]]));
+            Contact::update_rights();
+            $chair = $conf->checked_user_by_email($this->u_shenker->email);
+            xassert(!$chair->has_tag("red"));
+            $p1 = $conf->checked_paper_by_id(1);
+            xassert(!$chair->allow_admin($p1));
+            xassert_eqq($chair->can_view_paper($p1), true, $perm);
+            xassert_eqq($chair->can_view_pdf($p1), true, $perm);
+            xassert($chair->can_view_all(true));
+            xassert_in_eqq(1, (new PaperSearch($chair, "has:submission"))->paper_ids());
+        }
+        $conf->save_refresh_setting("tracks", $old_tracks === null ? null : 1, $old_tracks);
+        $chair->set_prop("contactTags", $old_tags);
+        $chair->save_prop();
+        $conf->invalidate_caches("users", "pc");
+
+        xassert_assign($this->u_chair, "paper,action,user\n1,clearmanager\n1,noconflict,{$this->u_shenker->email}\n");
+        Contact::update_rights();
+    }
+
+    function test_ambiguous_reviewer_name_requires_visible_identity() {
+        // When two reviewers of a paper share a name, reviewer lists
+        // append “ <email>” to tell them apart. That disambiguation must
+        // only consider reviewers whose identities the viewer can see:
+        // otherwise a PC reviewer who cannot see co-reviewer names can
+        // request an external review from a throwaway account named
+        // after a PC member and learn, from the presence of the email
+        // suffix on their own requestee, whether that PC member reviews
+        // the paper.
+        $conf = $this->conf;
+        $old_revopen = $conf->setting("rev_open");
+        $old_viewrevid = $conf->setting("viewrevid");
+        $conf->save_refresh_setting("rev_open", 1);
+        $conf->save_refresh_setting("viewrevid", Conf::VIEWREV_NEVER);
+        Contact::update_rights();
+
+        $paper1 = $this->u_chair->checked_paper_by_id(1);
+        $mrow = $paper1->review_by_user($this->u_mgbaker);
+        xassert($mrow && $mrow->reviewType >= REVIEW_PC);
+        $victim = null;
+        foreach ($paper1->all_reviews() as $rrow) {
+            if ($rrow->reviewType >= REVIEW_PC
+                && $rrow->contactId !== $this->u_mgbaker->contactId) {
+                $victim = $conf->user_by_id($rrow->contactId);
+                break;
+            }
+        }
+        xassert(!!$victim);
+        xassert($victim->firstName !== "" && $victim->lastName !== "");
+        $vrow = $paper1->review_by_user($victim);
+
+        // mgbaker cannot see the victim's identity...
+        $mgbaker = $conf->checked_user_by_email($this->u_mgbaker->email);
+        xassert(!$mgbaker->can_view_review_identity($mgbaker->checked_paper_by_id(1), $vrow));
+
+        // ...and requests a review from a lookalike account
+        $probe = Contact::make_keyed($conf, [
+            "email" => "probe-lookalike@_.com",
+            "firstName" => $victim->firstName,
+            "lastName" => $victim->lastName
+        ])->store();
+        $rid = $this->u_mgbaker->assign_review(1, $probe, REVIEW_EXTERNAL);
+        xassert($rid > 0);
+        MailChecker::clear();
+        $paper1 = $conf->checked_paper_by_id(1);
+        $prrow = $paper1->review_by_id($rid);
+        xassert($prrow && $prrow->requestedBy === $this->u_mgbaker->contactId);
+
+        $args = ["q" => "1", "t" => "s", "reviewer" => $this->u_mgbaker->email,
+                 "f" => "show:revdelegation", "format" => "html", "report" => "pl"];
+        $cell = function ($j) {
+            xassert($j->ok);
+            xassert_eqq(count($j->papers), 1);
+            return $j->papers[0]["revdelegation"] ?? "";
+        };
+        $probe_name = htmlspecialchars(Text::nameo($probe, NAME_P));
+        $probe_email = htmlspecialchars($probe->email);
+
+        // the requester sees the requestee, but no disambiguating email
+        $mgbaker = $conf->checked_user_by_email($this->u_mgbaker->email);
+        $t = $cell(call_api("search", $mgbaker, $args));
+        xassert_str_contains($t, $probe_name);
+        xassert_not_str_contains($t, $probe_email);
+        $rrow = $mgbaker->checked_paper_by_id(1)->review_by_id($rid);
+        xassert_not_str_contains($mgbaker->reviewer_html_for($rrow), $probe_email);
+
+        // the chair sees both identities, so the email is useful
+        $t = $cell(call_api("search", $this->u_chair, $args));
+        xassert_str_contains($t, $probe_name);
+        xassert_str_contains($t, $probe_email);
+
+        // so does mgbaker once reviewer names are open to the PC
+        $conf->save_refresh_setting("viewrevid", Conf::VIEWREV_ALWAYS);
+        Contact::update_rights();
+        $mgbaker = $conf->checked_user_by_email($this->u_mgbaker->email);
+        xassert($mgbaker->can_view_review_identity($mgbaker->checked_paper_by_id(1), $vrow));
+        $t = $cell(call_api("search", $mgbaker, $args));
+        xassert_str_contains($t, $probe_name);
+        xassert_str_contains($t, $probe_email);
+
+        $rrow = $this->u_chair->checked_paper_by_id(1)->review_by_id($rid);
+        xassert($rrow->delete($this->u_chair));
+        xassert(!$conf->checked_paper_by_id(1)->review_by_user($probe));
+        $conf->qe("delete from ContactInfo where email=?", $probe->email);
+        if (($cdb = $conf->contactdb())) {
+            Dbl::qe($cdb, "delete from ContactInfo where email=?", $probe->email);
+        }
+        $conf->invalidate_user($probe);
+        MailChecker::clear();
+        $conf->save_refresh_setting("rev_open", $old_revopen);
+        $conf->save_refresh_setting("viewrevid", $old_viewrevid);
+        Contact::update_rights();
+    }
+
+    function test_deadline_failure_names_failing_deadline() {
+        $conf = $this->conf;
+        $names = ["rev_open", "pcrev_hard", "extrev_hard", "pcrev_hard_1", "extrev_hard_1", "final_open", "final_done"];
+        $old = [];
+        foreach ($names as $n) {
+            $old[$n] = $conf->setting($n);
+        }
+        $conf->save_setting("rev_open", 1);
+        $conf->save_setting("pcrev_hard", Conf::$now - 100);
+        $conf->save_setting("extrev_hard", Conf::$now + 100);
+        $conf->save_setting("pcrev_hard_1", Conf::$now + 100);
+        $conf->save_setting("extrev_hard_1", Conf::$now - 100);
+        $conf->save_setting("final_open", Conf::$now - 200);
+        $conf->save_refresh_setting("final_done", Conf::$now - 100);
+
+        $text = function ($a) use ($conf) {
+            return (new FailureReason($conf, $a + ["paperId" => 1]))->unparse_text();
+        };
+        xassert_str_contains($text(["deadline" => "pcrev_hard", "reviewRound" => 0]), "deadline for this review has passed");
+        xassert_not_str_contains($text(["deadline" => "extrev_hard", "reviewRound" => 0]), "has passed");
+        xassert_not_str_contains($text(["deadline" => "pcrev_hard", "reviewRound" => 1]), "has passed");
+        xassert_str_contains($text(["deadline" => "extrev_hard", "reviewRound" => 1]), "deadline for this external review has passed");
+        xassert_str_contains($text(["deadline" => "extrev_chairreq", "reviewRound" => 1]), "deadline for requesting reviews has passed");
+        xassert_str_contains($text(["deadline" => "final_done"]), "deadline to update final versions has passed");
+
+        // the round comes from the failing review
+        $conf->save_setting("pcrev_hard", Conf::$now + 100);
+        $conf->save_refresh_setting("pcrev_hard_1", Conf::$now - 100);
+        $paper = $conf->checked_paper_by_id(1);
+        $rrow = null;
+        foreach ($paper->reviews_as_list() as $r) {
+            if ($r->reviewType >= REVIEW_PC) {
+                $rrow = $r;
+                break;
+            }
+        }
+        $conf->qe("update PaperReview set reviewRound=1 where paperId=1 and reviewId=?", $rrow->reviewId);
+        $paper = $conf->checked_paper_by_id(1);
+        $reviewer = $conf->user_by_id($rrow->contactId);
+        $fr = $reviewer->perm_edit_review($paper, $paper->review_by_id($rrow->reviewId));
+        xassert_str_contains($fr ? $fr->unparse_text() : "", "deadline for this review has passed");
+        $conf->qe("update PaperReview set reviewRound=? where paperId=1 and reviewId=?", $rrow->reviewRound, $rrow->reviewId);
+
+        foreach ($names as $n) {
+            $conf->save_setting($n, $old[$n]);
+        }
+        $conf->refresh_settings();
+    }
+
     function test_reset_deadlines() {
         $this->conf->save_setting("sub_reg", Conf::$now + 10);
-        $this->conf->save_setting("sub_update", Conf::$now + 10);
         $this->conf->save_setting("sub_sub", Conf::$now + 10);
     }
 

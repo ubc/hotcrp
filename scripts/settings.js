@@ -507,6 +507,8 @@ hotcrp.tooltip.add_builder("settings-sf", function (info) {
         x = "#settings-sf-caption-name";
     else if (this.name.endsWith("/condition"))
         x = "#settings-sf-caption-condition";
+    else if (this.name.endsWith("/edit_condition"))
+        x = "#settings-sf-caption-edit-condition";
     else if (this.name.endsWith("/description"))
         x = "#settings-sf-caption-description";
     return $.extend({anchor: "h", content: $(x).html(), className: "gray"}, info);
@@ -879,7 +881,7 @@ function rf_render_view(fld, example) {
     // header
     labele = $e("label", "revfn" + (fld.required ? " field-required" : ""),
         fld.name || (example ? "Field name" : "<unnamed>"));
-    xfv.append((e = $e("h3", "s-rf-head", labele)));
+    xfv.append((e = $e("h3", "s-rf-title", labele)));
     if ((t = rf_visibility_text(fld.visibility))) {
         e.append($e("div", "field-visibility", t));
     }

@@ -64,10 +64,10 @@ class RewindReviews_Batch {
                     continue;
                 }
                 foreach ($rf->all_fields() as $f) {
-                    $rrow->set_fval_prop($f, $xrow->finfoval($f), true);
+                    $rrow->set_fval_prop($f, $xrow->finfoval($f));
                 }
-                if ($rrow->prop_changed()) {
-                    $rrow->save_prop($stager);
+                if ($rrow->save_prop($stager) >= 0) {
+                    $rrow->commit_prop();
                 }
             }
         }
@@ -81,7 +81,7 @@ class RewindReviews_Batch {
             "name:,n: !",
             "config: !",
             "help,h !",
-            "type:,t: =COLLECTION Search COLLECTION “s” (submitted) or “all” [s]",
+            "type:,t: =SCOPE Scope of search [s]",
             "query:,q: =SEARCH",
             "all,a Include all reviews, not just submitted ones",
             "before: =TIME Return reviews as of TIME",

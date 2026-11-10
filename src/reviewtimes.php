@@ -41,23 +41,20 @@ class ReviewTimes {
 
         $this->dl = [];
         foreach ($this->conf->round_list() as $rn => $r) {
-            $dl = $this->conf->review_deadline_name($rn, true, false);
-            $this->dl[$rn] = +$this->conf->setting($dl);
+            $this->dl[$rn] = +$this->conf->review_deadline($rn, true, false);
         }
 
         $rs = $rs_nvis = [];
         foreach ($user->paper_set(["reviewSignatures" => true]) as $prow) {
             if (!$user->can_view_paper($prow)
                 || ($prow->has_conflict($user)
-                    && (!$user->can_view_review_assignment($prow, null)
-                        || !$user->can_view_review_identity($prow, null)))) {
+                    && !$user->can_view_review_identity($prow, null))) {
                 continue;
             }
             foreach ($prow->all_reviews() as $rrow) {
                 if ($this->count_review($prow, $rrow)) {
                     $viewable = $user->privChair
-                        || ($user->can_view_review_assignment($prow, $rrow)
-                            && $user->can_view_review_identity($prow, $rrow));
+                        || $user->can_view_review_identity($prow, $rrow);
                     $rs[$rrow->contactId][] = [(int) $rrow->reviewSubmitted, (int) $rrow->reviewRound, $viewable];
                     if ($viewable) {
                         $rs_nvis[$rrow->contactId] = ($rs_nvis[$rrow->contactId] ?? 0) + 1;
@@ -145,6 +142,6 @@ class ReviewTimes {
             }
         }
 
-        return (object) ["type" => "procrastination", "reviews" => $this->r, "deadlines" => $this->dl, "users" => $users];
+        return (object) ["gtype" => "procrastination", "reviews" => $this->r, "deadlines" => $this->dl, "users" => $users];
     }
 }

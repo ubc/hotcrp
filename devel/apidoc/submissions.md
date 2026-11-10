@@ -14,6 +14,21 @@ Submission endpoints always return complete submission objects. To select
 specific fields of submissions, or to return computed fields, use the
 `/search` or `/searchaction` endpoints.
 
+## Downloads
+
+`download=1` returns the response as a file, and drops HotCRP’s JSON envelope
+in favor of the bare payload that the matching `POST` accepts—so a client can
+download a submission, edit it, and upload it again:
+
+* [`paper`](#get-paper) with `download=1` returns one submission object, ready
+  to `POST` to [`paper`](#post-paper).
+* [`papers`](#get-papers) with `download=1` returns a bare array of submission
+  objects, ready to `POST` to [`papers`](#post-papers).
+
+The parameter means the same thing on the [review](#tag-reviews) endpoints.
+Because a bare payload has no `message_list`, `download=1` discards search
+diagnostics; errors still arrive in the usual envelope.
+
 
 # get /{p}/paper
 
@@ -24,10 +39,19 @@ object is returned in the `paper` response field. Error messages—for
 instance, about permission errors or nonexistent submissions—are returned in
 `message_list`.
 
-* param ?forceShow boolean: Whether administrators override their own conflicts. Defaults to `true`; set `forceShow=false` to respect conflicts instead.
+* scope submeta:read
+* param ?forceShow
+* param ?word_limit =soft|hard: Which word limit applies to long text fields.
+  `soft` (the default) returns each field cut at its word limit; `hard` returns
+  the full text, cut only at the hard word limit (if any). Fields over a limit
+  are named in the response’s `overlong` and `truncated` keys.
 
-    * default true
+    * default soft
+* param ?download boolean: True returns the bare submission object as a file
+  (see [Downloads](#tag-submissions)) instead of the usual response envelope.
 * response ?paper paper: The requested submission object.
+
+    * condition !download
 * badge featured
 
 
@@ -40,30 +64,41 @@ Create or modify a submission specified by `p`, a submission ID.
 Setting `p=new` will create a new submission; the response will contain the
 chosen submission ID.
 
-The modification may be specified:
+The modification is specified in JSON in any of these forms:
 
-1. As a JSON request body (when the request body has content-type
+1. In a JSON-formatted request parameter named `json`.
+2. As a JSON request body (when the request body has content-type
    `application/json`).
-2. As a ZIP archive (when the request body has content-type
+3. As a ZIP archive (when the request body has content-type
    `application/zip`). The archive must contain a file named `data.json`; it
    may contain other files too.
-3. As a JSON-formatted request parameter named `json` (when the request body
-   has content-type `application/x-www-form-urlencoded` or
-   `multipart/form-data`).
-4. As a previously-uploaded JSON or ZIP file, represented by an [upload token](#post-upload) in
-   the `upload` parameter.
+4. As a previously-uploaded JSON or ZIP file, represented by an [upload
+   token](#post-upload) in the `upload` parameter.
 
-In all of these, the modification is defined by a JSON submission object. The
-fields of this object define the modifications applied to the submission.
-The object need not specify all submission fields; absent fields
-remain unchanged.
+The JSON object is a submission object whose fields define the modifications
+applied to the submission. The object need not specify all submission fields;
+absent fields remain unchanged.
 
 The `p` request parameter is optional. If it is unset, HotCRP uses the `pid`
 from the supplied JSON. If both the `p` parameter and the JSON `pid` field
 are present, then they must match.
 
-To test a modification, supply a `dry_run=1` parameter. This will test the
-uploaded JSON but make no changes to the database.
+The API also supports form upload using the parameter conventions of the HotCRP
+web application. These conventions are subject to change, and third-party
+applications should prefer JSON.
+
+The [`GET /paper`](#get-paper) endpoint defaults to truncating word-limited text
+fields at their soft word limits. A field truncated this way (marked `soft`
+under the uploaded JSON‘s `truncated` key) is not saved, and is reported as an
+error. Provide `word_limit=hard` to `GET /paper` to avoid this error.
+
+To test a modification without saving, supply a `dry_run=1` parameter. This
+will test the uploaded JSON but make no visible changes to the database.
+Supply `dry_run=if_warning` to save only if the modification produces no
+warnings, or `dry_run=if_error` to save unless it produces an error (some
+mistakes, such as missing required fields or fields with invalid values, are
+reported as errors but do not ordinarily prevent saving). The response reports
+`dry_run` when a save was withheld.
 
 
 ## ZIP and form uploads
@@ -93,6 +128,11 @@ This shell session does the same, but using `multipart/form-data`.
 $ curl -H "Authorization: bearer hct_XXX" -F "json=<data.json" -F paper.pdf=@paper.pdf SITEURL/api/paper
 ```
 
+> [!CAUTION]
+> `multipart/form-data` uploads are processed by PHP, which mangles field names
+> containing spaces, periods, and brackets (for instance, `paper.pdf` becomes
+> `paper_pdf`). The example above works, but an upload may fail or have
+> unexpected results if mangled names collide.
 
 ## Administrator use
 
@@ -102,22 +142,28 @@ such as `decision`, that have other endpoints as well.
 Site administrators can choose specific IDs for new submissions by setting `p`
 (or JSON `pid`) to the chosen ID. Such a request will either modify an existing
 submission or create a new submission with that ID. To avoid overwriting an
-existing submission, set the submission JSON’s `status`.`if_unmodified_since` to
+existing submission, set the submission JSON’s `if_unmodified_since` to
 `0`.
 
+* scope submeta:write
 * body application/json paper: A submission object sent as a raw JSON body.
 
     * oneof body
 * body application/zip: A ZIP archive containing `data.json` (and any files it references).
 
     * oneof body
-* param ?=json string: A submission object supplied in the `json` form field.
+* param ?=json string: A submission object supplied in a `json` request parameter.
 
     * oneof body
 * param ?upload upload_token: An [upload token](#post-upload) for a previously-uploaded JSON or ZIP file.
 
     * oneof body
-* param dry_run boolean: True checks input for errors, but does not save changes
+* param dry_run dry_run_mode: True checks input for errors, but does not save changes; `if_warning` saves only if there are no errors or warnings, `if_error` only if there are no errors
+* param ?if_unmodified_since string: Reject the modification if the submission has
+  been modified since this time (a Unix timestamp, or `0`). If set, a submission
+  JSON’s `if_unmodified_since` takes precedence over this parameter.
+* param ignore_unwritable_fields boolean: True ignores attempts to modify
+  unwritable fields.
 * param disable_users boolean: True disables any newly-created users.
 
     When an administrator creates submissions on behalf of other people, HotCRP
@@ -141,6 +187,10 @@ existing submission, set the submission JSON’s `status`.`if_unmodified_since` 
 
     * default true
     * badge admin
+* param ?word_limit =soft|hard: Which word limit applies to long text fields
+  in the returned submission object.
+
+    * default hard
 * response ?dry_run boolean: True for `dry_run` requests.
 * response ?pid pid: ID of the modified or newly created submission.
 * response ?+valid boolean: True if and only if the modification was valid.
@@ -150,10 +200,12 @@ existing submission, set the submission JSON’s `status`.`if_unmodified_since` 
 
 * response ?+change_list [string]: Names of the fields the request attempted to modify.
 
-    New submissions list `pid` first. `change_list` reflects what the request
-    *attempted* to change, so successful, failed, and dry-run requests can all
-    return a nonempty list.
+    `change_list` reflects what the request *attempted* to change, so
+    successful, failed, and dry-run requests can all return a nonempty list. If
+    the submission is new, the `change_list` will begin with `"new"`.
 
+* response ?conflict boolean: True when the modification was rejected by an
+  `if_unmodified_since` edit-conflict check.
 * response ?paper paper: The modified submission object.
 
     * condition valid
@@ -166,13 +218,13 @@ existing submission, set the submission JSON’s `status`.`if_unmodified_since` 
 
 > Delete submission
 
-Delete the submission specified by `p`, a submission ID.
+Delete the submission specified by `p`, a submission ID. Deleting a submission
+deletes its reviews and comments too.
 
+* scope paper:admin
 * param ?if_unmodified_since string: Don’t delete if modified since this time
-* param ?forceShow boolean: Whether administrators override their own conflicts. Defaults to `true`; set `forceShow=false` to respect conflicts instead.
-
-    * default true
-* param ?dry_run boolean: True checks input for errors, but does not save changes
+* param ?forceShow
+* param ?dry_run dry_run_mode: True checks the request but does not delete; `if_warning` deletes only if there are no errors or warnings, `if_error` only if there are no errors
 * param ?notify boolean: False disables all email notifications
 
     * default true
@@ -184,6 +236,9 @@ Delete the submission specified by `p`, a submission ID.
 * response ?dry_run boolean: True for `dry_run` requests
 * response valid boolean: True if the delete request was valid
 * response change_list [string]: Always `["delete"]`.
+* response ?conflict boolean: True when the delete was rejected by the
+  `if_unmodified_since` edit-conflict check.
+* response ?pid pid: The deleted submission’s ID.
 * badge featured
 * badge admin
 
@@ -205,6 +260,7 @@ allowed to view submission #1010”, whereas the `/papers` request will return
 no errors. To obtain warnings for missing submissions that were explicitly
 listed in a query, supply a `warn_missing=1` parameter.
 
+* scope submeta:read
 * param q search_string: The search expression.
 * param t
 
@@ -223,7 +279,14 @@ listed in a query, supply a `warn_missing=1` parameter.
 
     * group Search modifiers
 * param warn_missing boolean: Get warnings for missing submissions
+* param ?word_limit =soft|hard: Which word limit applies to long text fields.
+
+    * default soft
+* param ?download boolean: True returns a bare array of submission objects as a
+  file (see [Downloads](#tag-submissions)) instead of the usual response envelope.
 * response ?papers [paper]: The matching submission objects.
+
+    * condition !download
 * badge featured
 
 
@@ -238,44 +301,43 @@ request formats are similar to that of `POST /{p}/paper`: it can accept a
 JSON, ZIP, or form-encoded request body with a `json` parameter, and ZIP and
 form-encoded requests can also include attached files.
 
-## Modify submissions independently
-
 The JSON provided for `/papers` should be an *array* of JSON objects; each
-object is applied independently. The per-submission results are returned in the
-`status_list` response field (described below).
+object is applied independently. The per-submission results are returned in
+the `status_list` response field (described below). The response
+`message_list` contains all messages relating to the save; each message’s
+`landmark` field is set to the integer index of the relevant submission in the
+input array.
 
-The response `message_list` contains messages relating to all modified
-submissions. To filter out the messages for a single submission, use the
-messages’ `landmark` fields. `landmark` is set to the integer index of the
-relevant submission in the input JSON.
+## Modify matching submissions
 
-## Modify all matching submissions
-
-Alternately, you can provide a `q` search query parameter and a *single* JSON
-modification object lacking the `pid` field. The JSON modification will be
-applied to all papers returned by the `q` search query.
+Alternatively, you can provide a `q` search query parameter and a *single*
+JSON modification object lacking the `pid` field. The JSON modification will
+be applied to all papers returned by the `q` search query.
 
 
+* scope submeta:admin
 * body application/json [paper]: An array of submission objects sent as a raw JSON body.
 
     * oneof body
 * body application/zip: A ZIP archive containing `data.json` (and any files it references).
 
     * oneof body
-* param ?=json string: Submission objects supplied in the `json` form field.
+* param ?=json string: Submission objects supplied in a `json` request parameter.
 
     * oneof body
 * param ?upload upload_token: An [upload token](#post-upload) for a previously-uploaded JSON or ZIP file.
 
     * oneof body
-* param dry_run boolean: True checks input for errors, but does not save changes
+* param dry_run dry_run_mode: True checks input for errors, but does not save changes; `if_warning` saves only if there are no errors or warnings, `if_error` only if there are no errors
+* param ignore_unwritable_fields boolean: True ignores attempts to modify
+  unwritable fields.
 * param disable_users boolean: True disables any newly-created users
 
     * badge siteadmin
 * param add_topics boolean: True automatically adds topics from input papers
 
     * badge siteadmin
-* param notify boolean: False does not notify contacts of changes
+* param notify boolean: False disables all email notifications
 
     * default true
     * badge siteadmin
@@ -296,12 +358,18 @@ applied to all papers returned by the `q` search query.
 * param reviewer
 
     * group Search modifiers
-* response ?dry_run boolean: True for `dry_run` requests.
+* param ?word_limit =soft|hard: Which word limit applies to long text fields
+  in the returned submission objects.
+
+    * default hard
 * response ?papers [paper]: The modified submission objects.
+
+    * condition !dry_run
 * response ?+status_list [update_status]: Per-submission results, one entry per input object.
 
     For array input, `status_list` has the same length and order as the input:
-    entry *i* reports the `valid` flag, `change_list`, and `pid` of update *i*.
+    entry *i* reports the `valid` flag, `change_list`, `pid`, and (for an
+    edit-conflict rejection) `conflict` of update *i*.
 
 * badge featured
 * badge siteadmin
@@ -337,6 +405,7 @@ Each entry in `potential_conflicts` carries the conflicting PC member’s `uid` 
 `potentialconflict` entry also includes a `description` (plain-text explanation)
 and a `tooltip` (HTML).
 
+* scope submeta:read
 * param ?p pid: Submission to analyze; use `new` for an unsaved submission.
 * param ?sclass string: Submission class, used when `p=new`.
 * param ?json string: JSON object of prospective `authors` and/or `collaborators` to apply to the submission before analysis.
@@ -362,6 +431,7 @@ Retrieve the share link for a submission. This link can be accessed by users not
 signed in to HotCRP; it grants view-only access to the submission and its
 documents. Only authors and submission administrators can fetch the share link.
 
+* scope submeta:admin document:read review:read comment:read
 * response ?url: The share link
 * response ?token author_view_token: Token for this share link
 * response ?token_type string: `"author_view"`
@@ -390,6 +460,7 @@ whether a link should be created; it must be one of:
 
 Only authors and submission administrators can modify a share link.
 
+* scope submeta:admin document:read review:read comment:read
 * param !share share_action
 * param ?expires_in integer
 * response !token ?author_view_token
@@ -404,4 +475,5 @@ Only authors and submission administrators can modify a share link.
 
 Delete the share link for a submission, if any has been created.
 
+* scope submeta:admin document:read review:read comment:read
 * response !token null

@@ -147,7 +147,7 @@ class Paper_CLIBatch implements CLIBatchCommand {
                 $clib->error_at(null, "<0>{$pfx}Changes invalid");
             } else if (empty($sobj->change_list)) {
                 $clib->success("<0>{$pfx}No changes");
-            } else if ($sobj->dry_run ?? false) {
+            } else if ($cj->dry_run ?? false) {
                 $clib->success("<0>{$pfx}Would change " . commajoin($sobj->change_list));
             } else {
                 $clib->success("<0>{$pfx}Saved changes to " . commajoin($sobj->change_list));
@@ -303,7 +303,7 @@ Usage: php batch/hotcrapi.php paper [PID | -q SEARCH]
         )->long(
             "p:,paper: =PID !paper Submission ID",
             "q:,query: =SEARCH !paper Submission search",
-            "t:,type: =TYPE !paper Collection to search [viewable]",
+            "t:,type: =SCOPE !paper Scope of search [viewable]",
             "F[],file[] =FILE !paper Add attachment",
             "dry-run,d !paper Don’t actually save changes",
             "disable-users !paper Disable newly created users",

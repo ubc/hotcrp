@@ -41,8 +41,8 @@ class PaperJson_Batch {
 
         $pj_first = [];
         if ($this->sitename) {
-            if ($conf->opt("confid")) {
-                $pj_first["sitename"] = $conf->opt("confid");
+            if ($conf->confid) {
+                $pj_first["sitename"] = $conf->confid;
             }
             if ($conf->opt("siteclass")) {
                 $pj_first["siteclass"] = $conf->opt("siteclass");
@@ -55,7 +55,8 @@ class PaperJson_Batch {
 
         $apj = [];
         $pex = new PaperExport($this->user);
-        $pex->set_include_permissions(false);
+        $pex->set_include_permissions(false)
+            ->set_ignore_soft_word_limits(true);
         $rf = $conf->review_form();
         foreach ($pset as $prow) {
             $pj1 = $pex->paper_json($prow);
@@ -91,7 +92,7 @@ class PaperJson_Batch {
             "config: !",
             "r,reviews Include reviews in output",
             "N,sitename Include site name and class in output",
-            "t:,type: =COLLECTION Search COLLECTION ‘s’ or ‘all’ [submitted]",
+            "t:,type: =SCOPE Scope of search [submitted]",
             "1,single Output first matching paper rather than an array",
             "help,h"
         )->description("Output a JSON file with papers matching SEARCH.

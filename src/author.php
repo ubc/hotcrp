@@ -210,7 +210,7 @@ class Author {
             $this->email = $email ?? "";
             $this->_name = $email === null ? $name : null;
         }
-        $this->affiliation = $affiliation;
+        $this->affiliation = simplify_whitespace($affiliation);
         $this->seal_nea();
     }
 
@@ -251,8 +251,8 @@ class Author {
             throw new Exception("invalid Author::make_keyed");
         }
         $arr = is_object($x) ? get_object_vars($x) : $x;
-        $f = $arr["firstName"] ?? $arr["first"] ?? $arr["givenName"] ?? $arr["given"] ?? null;
-        $l = $arr["lastName"] ?? $arr["last"] ?? $arr["familyName"] ?? $arr["family"] ?? null;
+        $f = $arr["given_name"] ?? $arr["firstName"] ?? $arr["first"] ?? $arr["givenName"] ?? $arr["given"] ?? null;
+        $l = $arr["family_name"] ?? $arr["lastName"] ?? $arr["last"] ?? $arr["familyName"] ?? $arr["family"] ?? null;
         $e = $arr["email"] ?? null;
         $a = $arr["affiliation"] ?? null;
         if (($n = $arr["name"] ?? $arr["fullName"] ?? null) !== null) {

@@ -23,14 +23,50 @@ class Autoassign_Page {
     private $_bp_pcselector_options;
     /** @var bool */
     private $_aset_ok;
+    /** @var list<int> */
+    private $_pcids = [];
+    /** @var list<int> */
+    private $_enabled_pcids = [];
+    /** @var list<int> */
+    private $_listed_pcids = [];
+    /** @var list<int> */
+    private $_unlisted_pcids = [];
+    /** @var array<string,list<int>> */
+    private $_pcids_by_ltag = [];
 
     function __construct(Contact $user, Qrequest $qreq) {
         assert($user->is_manager());
         $this->conf = $user->conf;
         $this->user = $user;
+        $this->ms = new MessageSet;
+        $this->ms->set_message_formatter($this->conf);
+
+        $vroles = $user->viewable_roles_mask();
+        foreach ($this->conf->pc_members() as $id => $pc) {
+            if (($pc->roles & $vroles) === 0) {
+                continue;
+            }
+            $this->_pcids[] = $id;
+            if (!$pc->is_disabled()) {
+                $this->_enabled_pcids[] = $id;
+            }
+            if (($pc->roles & Contact::ROLE_PC) !== 0) {
+                $this->_listed_pcids[] = $id;
+            } else {
+                $this->_unlisted_pcids[] = $id;
+            }
+            foreach (Tagger::split_unpack(strtolower($pc->viewable_tags($user))) as $tv) {
+                $this->_pcids_by_ltag[$tv[0]][] = $id;
+            }
+        }
+
         $this->qreq = $qreq;
         $this->clean_qreq($qreq);
-        $this->ms = new MessageSet;
+    }
+
+    /** @return bool */
+    function has_disabled_pc_members() {
+        return count($this->_enabled_pcids) < count($this->_pcids);
     }
 
     function print_header() {
@@ -52,7 +88,9 @@ class Autoassign_Page {
             && $this->conf->can_pc_view_some_incomplete()) {
             $qreq->t = "all";
         }
-        $limits = PaperSearch::viewable_manager_limits($this->user);
+        // Since autoassignment can expose information about preferences,
+        // users can only search within manager limits
+        $limits = PaperSearch::viewable_manager_limits($this->user, $qreq->t);
         if (!isset($qreq->t) || !in_array($qreq->t, $limits, true)) {
             $qreq->t = $limits[0];
         }
@@ -68,17 +106,21 @@ class Autoassign_Page {
             }
             unset($qreq->has_pap, $qreq->assign);
         }
-        $search = new PaperSearch($this->user, ["t" => $qreq->t, "q" => $qreq->q]);
+        $search = new PaperSearch($this->user, [
+            "q" => $qreq->q,
+            "t" => $qreq->t,
+            "tsoft" => $this->user->privChair
+        ]);
         if (isset($qreq->asel)) {
-            $this->asel = SearchSelection::make($qreq, $this->user, "asel");
+            $this->asel = SearchSelection::make_papers($qreq, $this->user, "asel");
         } else if (isset($qreq->has_pap) && !isset($qreq->saveassignment)) {
-            $this->asel = SearchSelection::make($qreq, $this->user, "pap");
+            $this->asel = SearchSelection::make_papers($qreq, $this->user, "pap");
         } else {
             $this->asel = new SearchSelection($search->paper_ids());
         }
         $this->asel->reset_default($search);
         if (isset($qreq->has_pap) && isset($qreq->saveassignment)) {
-            $this->ssel = SearchSelection::make($qreq, $this->user, "pap");
+            $this->ssel = SearchSelection::make_papers($qreq, $this->user, "pap");
         } else {
             $this->ssel = $this->asel;
         }
@@ -93,9 +135,9 @@ class Autoassign_Page {
             }
         }
         if (!isset($qreq->pctyp)
-            || ($qreq->pctyp !== "all" && $qreq->pctyp !== "enabled" && $qreq->pctyp !== "sel")) {
-            if ($this->conf->has_disabled_pc_members()
-                && count($this->conf->enabled_pc_members()) > 2) {
+            || !in_array($qreq->pctyp, ["all", "enabled", "listed", "unlisted", "sel"], true)) {
+            if ($this->has_disabled_pc_members()
+                && count($this->_enabled_pcids) > 2) {
                 $qreq->pctyp = "enabled";
             } else {
                 $qreq->pctyp = "all";
@@ -156,8 +198,8 @@ class Autoassign_Page {
         foreach ($this->conf->all_review_fields() as $f) {
             if ($f instanceof Score_ReviewField) {
                 $kw = $f->search_keyword();
-                $opt["+{$kw}"] = $f->name_html . " " . $f->unparse_value($f->nvalues());
-                $opt["-{$kw}"] = $f->name_html . " " . $f->unparse_value(1);
+                $opt["+{$kw}"] = $f->name . " " . $f->unparse_value($f->nvalues());
+                $opt["-{$kw}"] = $f->name . " " . $f->unparse_value(1);
             }
         }
         $opt["random"] = "random completed reviews";
@@ -256,7 +298,7 @@ class Autoassign_Page {
             if (count($rev_rounds) > 1) {
                 echo '&nbsp;', Ht::select("all:round", $rev_rounds, $expected_round);
             } else {
-                echo $expected_round;
+                echo htmlspecialchars($expected_round);
             }
             echo "</div>";
         }
@@ -300,7 +342,7 @@ class Autoassign_Page {
                 }
             }
             if (!empty($selectable_tags)) {
-                $options = make_array("(PC member)", "PC tagged:", ...$selectable_tags);
+                $options = ["(PC member)", "PC tagged:", ...$selectable_tags];
                 array_push($options, "PC member:", "*");
             } else {
                 $options = ["(PC member)", "*"];
@@ -342,33 +384,31 @@ class Autoassign_Page {
         $this->_pcsel_sep = ", ";
     }
 
+    private function print_pctyp_div($value, $label, $checked) {
+        echo '<div class="js-radio-focus checki"><label>',
+            '<span class="checkc">', Ht::radio("pctyp", $value, $checked), '</span>',
+            $label, '</label></div>';
+    }
+
     private function print_pc_members() {
         $pctyp = $this->qreq->pctyp;
         echo '<div class="form-section"><h3 class="form-h">PC members</h3>';
 
-        $pclist = [];
-        foreach ($this->conf->pc_members() as $pc) {
-            $pclist["all"][] = $pc->contactId;
-            if (!$pc->is_dormant()) {
-                $pclist["enabled"][] = $pc->contactId;
-            }
-            foreach (Tagger::split_unpack(strtolower($pc->viewable_tags($this->user))) as $tv) {
-                $pclist[$tv[0]][] = $pc->contactId;
-            }
-        }
-        if (empty($pclist)) {
+        if (empty($this->_pcids)) {
             echo '<p class="is-warning">There are no PC members</p></div>';
             return;
         }
 
-        echo '<div class="js-radio-focus checki"><label>',
-            '<span class="checkc">', Ht::radio("pctyp", "all", $pctyp === "all"), '</span>',
-            'Use entire PC</label></div>';
-
-        if ($pctyp === "enabled" || $this->conf->has_disabled_pc_members()) {
-            echo '<div class="js-radio-focus checki"><label>',
-                '<span class="checkc">', Ht::radio("pctyp", "enabled", $pctyp === "enabled"), '</span>',
-                'Use enabled PC members</label></div>';
+        $this->print_pctyp_div("all", "Use entire PC", $pctyp === "all");
+        if ($pctyp === "listed"
+            || $pctyp === "unlisted"
+            || (!empty($this->_listed_pcids) && !empty($this->_unlisted_pcids))) {
+            $this->print_pctyp_div("listed", "Use listed PC", $pctyp === "listed");
+            $this->print_pctyp_div("unlisted", "Use unlisted PC", $pctyp === "unlisted");
+        }
+        if ($pctyp === "enabled"
+            || $this->has_disabled_pc_members()) {
+            $this->print_pctyp_div("enabled", "Use enabled PC members", $pctyp === "enabled");
         }
 
         echo '<div class="js-radio-focus js-pcsel-container checki"><label>',
@@ -376,14 +416,18 @@ class Autoassign_Page {
             'Use selected PC members:</label>',
             " &nbsp; (select ";
         $this->_pcsel_sep = "";
-        $this->print_pc_selection_link("all", $pclist["all"]);
+        $this->print_pc_selection_link("all", $this->_pcids);
         $this->print_pc_selection_link("none", []);
-        if ($this->conf->has_disabled_pc_members()) {
-            $this->print_pc_selection_link("enabled", $pclist["enabled"]);
+        if ($this->has_disabled_pc_members()) {
+            $this->print_pc_selection_link("enabled", $this->_enabled_pcids);
+        }
+        if (!empty($this->_listed_pcids) && !empty($this->_unlisted_pcids)) {
+            $this->print_pc_selection_link("listed", $this->_listed_pcids);
+            $this->print_pc_selection_link("unlisted", $this->_unlisted_pcids);
         }
         foreach ($this->conf->viewable_user_tags($this->user) as $pctag) {
-            if ($pctag !== "pc")
-                $this->print_pc_selection_link("#{$pctag}", $pclist[strtolower($pctag)] ?? []);
+            if (($ids = $this->_pcids_by_ltag[strtolower($pctag)] ?? null))
+                $this->print_pc_selection_link("#{$pctag}", $ids);
         }
         $this->print_pc_selection_link("flip", ["flip"]);
         echo ")";
@@ -391,13 +435,14 @@ class Autoassign_Page {
 
         $summary = [];
         $nrev = AssignmentCountSet::load($this->user, AssignmentCountSet::HAS_REVIEW);
-        foreach ($this->conf->pc_members() as $id => $p) {
+        foreach ($this->_pcids as $id) {
+            $pc = $this->conf->pc_user_by_id($id);
             $t = '<div class="ctelt"><label class="checki ctelti"><span class="checkc">'
                 . Ht::checkbox("pcc{$id}", 1, friendly_boolean($this->qreq["pcc{$id}"]), [
                     "id" => "pcc{$id}", "data-range-type" => "pcc",
                     "class" => "uic js-range-click js-pcsel"
-                ]) . '</span>' . $this->user->reviewer_html_for($p)
-                . $nrev->unparse_counts_for($p)
+                ]) . '</span>' . $this->user->reviewer_html_for($pc)
+                . $nrev->unparse_counts_for($pc)
                 . "</label></div>";
             $summary[] = $t;
         }
@@ -447,10 +492,10 @@ class Autoassign_Page {
                 "data-submit-fn" => "requery",
                 "spellcheck" => false, "autocomplete" => "off"
             ]), " &nbsp;in &nbsp;",
-            PaperSearch::limit_selector($conf, PaperSearch::viewable_manager_limits($this->user), $qreq->t),
+            PaperSearch::limit_selector($conf, PaperSearch::viewable_manager_limits($this->user, $qreq->t), $qreq->t),
             " &nbsp; ", Ht::submit("requery", "List", ["id" => "requery"]);
         if (isset($qreq->requery) || isset($qreq->has_pap)) {
-            $search = (new PaperSearch($this->user, ["t" => $qreq->t, "q" => $qreq->q]))->set_urlbase("autoassign");
+            $search = (new PaperSearch($this->user, ["t" => $qreq->t, "q" => $qreq->q, "tsoft" => $this->user->privChair]))->set_urlbase("autoassign");
             $plist = new PaperList("reviewersSel", $search);
             $plist->set_selection($this->ssel)
                 ->set_table_decor(PaperList::DECOR_HEADER);
@@ -522,7 +567,7 @@ class Autoassign_Page {
 
     function redirect_uri() {
         $nav = $this->qreq->navigation();
-        return $nav->resolve($this->conf->hoturl_raw("autoassign", $this->qreq_parameters()));
+        return $nav->resolve($this->conf->hoturl("autoassign", $this->qreq_parameters()));
     }
 
     function detach_request() {
@@ -533,31 +578,41 @@ class Autoassign_Page {
     function start_job() {
         // prepare arguments for batch autoassigner
         $qreq = $this->qreq;
-        $argv = ["-q" . $this->asel->unparse_search(), "-t" . $qreq->t];
+        $argv = ["-q=" . $this->asel->unparse_search(), "-t=" . $qreq->t];
 
         if ($qreq->pctyp === "sel") {
             $pcsel = [];
             if (isset($qreq->has_pcc)) {
-                foreach ($this->conf->pc_members() as $cid => $p) {
-                    if ($qreq["pcc{$cid}"])
-                        $pcsel[] = $cid;
+                foreach ($this->_pcids as $id) {
+                    if ($qreq["pcc{$id}"])
+                        $pcsel[] = $id;
                 }
             } else if (isset($qreq->pcs)) {
                 foreach (preg_split('/\s+/', $qreq->pcs) as $n) {
-                    if (ctype_digit($n) && $this->conf->pc_member_by_id((int) $n))
+                    if (ctype_digit($n) && in_array((int) $n, $this->_pcids, true))
                         $pcsel[] = (int) $n;
                 }
             } else {
-                $pcsel = array_keys($this->conf->pc_members());
+                $pcsel = $this->_pcids;
             }
-            $argv[] = "-u" . join(",", $pcsel);
+            $argv[] = "-u=" . join(",", $pcsel);
+        } else if ($qreq->pctyp === "listed") {
+            $pcsel = $this->_listed_pcids;
+        } else if ($qreq->pctyp === "unlisted") {
+            $pcsel = $this->_unlisted_pcids;
         } else if ($qreq->pctyp === "enabled") {
             $argv[] = "-uenabled";
+            $pcsel = null;
+        } else {
+            $pcsel = null;
+        }
+        if ($pcsel !== null) {
+            $argv[] = "-u=" . join(",", $pcsel);
         }
 
         if ($qreq->badpairs) {
             foreach ($this->qreq_badpairs() as $pair) {
-                $argv[] = "-X{$pair}";
+                $argv[] = "-X={$pair}";
             }
         }
 
@@ -682,7 +737,7 @@ class Autoassign_Page {
             sort($ipid);
             $q = PaperSearch::encode_id_search($ipid);
             $this->ms->warning_at(null, "<0>This assignment is incomplete!");
-            $this->ms->inform_at(null, $this->conf->_("<5><a href=\"{url}\">{Submissions} {pids:numlist#}</a> got fewer assignments than you requested.", new FmtArg("url", $this->conf->hoturl_raw("search", ["q" => $q]), 0), new FmtArg("pids", $ipid)));
+            $this->ms->inform_at(null, $this->conf->_("<5><a href=\"{url}\">{Submissions} {pids:numlist#}</a> got fewer assignments than you requested.", new FmtArg("url", $this->conf->hoturl("search", ["q" => $q]), 0), new FmtArg("pids", $ipid)));
             if (strpos($this->qreq->a, "review") !== false) {
                 $reasons = ["conflicts", "preexisting assignments", "previously declined assignments"];
                 if ($qreq->badpairs) {

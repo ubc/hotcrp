@@ -19,7 +19,31 @@ class Job_Token extends TokenInfo {
         if (!$user->is_root_user()) {
             $tok->set_user_from($user, false);
         }
+        if ($user->has_scope()) {
+            // a job requested through a scoped token runs with that scope,
+            // even in a separate process: see `job_user`
+            $tok->set_input("scope", TokenScope::unparse($user->scope()));
+        }
         return $tok;
+    }
+
+    /** @return Contact
+     *
+     * Return the user on whose behalf this job runs: the job’s user, with
+     * the token scope (if any) under which the job was requested, or the
+     * root user if the job has no user. A scoped job loads a fresh Contact,
+     * since installing the scope on a shared, cached user would leak it. */
+    function job_user() {
+        if ($this->contactId <= 0) {
+            return $this->conf->root_user();
+        }
+        $scope = $this->input("scope");
+        if (!is_string($scope) || $scope === "") {
+            return $this->conf->user_by_id($this->contactId) ?? Contact::make($this->conf);
+        }
+        $u = $this->conf->fresh_user_by_id($this->contactId) ?? Contact::make($this->conf);
+        $u->set_scope($scope);
+        return $u;
     }
 
     /** @param string $token
@@ -176,7 +200,7 @@ class Job_Token extends TokenInfo {
 
         try {
             $argv = [$batch_class];
-            if (($confid = $this->conf->opt("confid"))) {
+            if (($confid = $this->conf->confid) !== "") {
                 // The `-n` option is not normally needed: the batch class
                 // calls initialize_conf, which does nothing as Conf::$main
                 // is already initialized. But we should include it anyway
@@ -218,11 +242,17 @@ class Job_Token extends TokenInfo {
         $cmd = [];
         if ($batchmode === "background"
             && ($daemonize = $this->conf->opt("daemonizeCommand"))) {
-            $cmd[] = $daemonize;
+            if (is_array($daemonize)) {
+                array_push($cmd, ...$daemonize);
+            } else if (is_string($daemonize)) {
+                $cmd[] = $daemonize;
+            } else if (is_executable("/bin/bash")) {
+                $cmd[] = SiteLoader::$root . "/batch/hotcrp-daemonize";
+            }
         }
         $cmd[] = self::shell_quote_light($this->conf->opt("phpCommand") ?? "php");
         $cmd[] = self::shell_quote_light($paths[0]);
-        if (($confid = $this->conf->opt("confid"))) {
+        if (($confid = $this->conf->confid)) {
             $cmd[] = self::shell_quote_light("-n{$confid}");
         }
         foreach ($this->input("argv") as $w) {

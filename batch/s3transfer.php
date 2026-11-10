@@ -16,24 +16,36 @@ class S3Transfer_Batch {
     public $kill;
     /** @var string */
     public $match;
+    /** @var bool */
+    public $verbose;
+    /** @var ?list<int> */
+    public $pids;
+    /** @var resource */
+    public $out = STDOUT;
 
     function __construct(Conf $conf, $arg) {
         $this->conf = $conf;
         $this->active = isset($arg["active"]);
         $this->kill = isset($arg["kill"]);
         $this->match = $arg["match"] ?? "";
+        $this->verbose = isset($arg["V"]);
+        if (isset($arg["q"])) {
+            $this->pids = (new PaperSearch($conf->root_user(), ["t" => "all", "q" => $arg["q"]]))->paper_ids();
+        }
     }
 
     /** @return int */
     function run() {
+        $s3 = $this->conf->s3_client();
         $activedocs = $this->active ? DocumentInfo::active_document_map($this->conf) : null;
         $matcher = $this->match !== "" ? new DocumentHashMatcher($this->match) : null;
 
-        $result = $this->conf->qe_raw("select paperStorageId, sha1 from PaperStorage where paperStorageId>1");
+        $result = $this->conf->qe_raw("select paperId, paperStorageId, sha1 from PaperStorage where paperStorageId>1");
         $dids = [];
         while (($row = $result->fetch_row())) {
-            if (!$matcher || $matcher->test_hash(HashAnalysis::hash_as_text($row[1])))
-                $dids[] = (int) $row[0];
+            if ((!$matcher || $matcher->test_hash(HashAnalysis::hash_as_text($row[2])))
+                && ($this->pids === null || in_array((int) $row[0], $this->pids)))
+                $dids[] = (int) $row[1];
         }
         Dbl::free($result);
 
@@ -49,7 +61,7 @@ class S3Transfer_Batch {
                 from PaperStorage where paperStorageId={$did}");
             $doc = DocumentInfo::fetch($result, $this->conf);
             Dbl::free($result);
-            if (!$doc->ensure_content()) {
+            if (!$doc->content_available_locally()) {
                 continue;
             }
 
@@ -59,25 +71,28 @@ class S3Transfer_Batch {
             $chash = $doc->content_binary_hash($doc->binary_hash());
             if ($chash !== $doc->binary_hash()) {
                 $saved = $checked = false;
-                error_log("{$front}: S3 upload cancelled: data claims checksum {$doc->text_hash()}"
+                error_log("{$front}: S3 upload canceled: data claims checksum {$doc->text_hash()}"
                           . ", has checksum " . HashAnalysis::hash_as_text($chash));
             } else {
+                // explicit user data: upload now, never via the work queue
                 $saved = $checked = $doc->check_s3();
                 if (!$saved) {
-                    $saved = $doc->store_s3();
+                    $saved = $doc->store_s3($doc->s3_user_data()) > 0;
                 }
                 if (!$saved) {
                     usleep(500000);
-                    $saved = $doc->store_s3();
+                    $saved = $doc->store_s3($doc->s3_user_data()) > 0;
                 }
             }
 
             if ($checked) {
-                fwrite(STDOUT, "{$front}: {$doc->s3_key()} exists\n");
+                if ($this->verbose) {
+                    fwrite($this->out, "{$front}: " . $s3->arn($doc->s3_key()) . " exists\n");
+                }
             } else if ($saved) {
-                fwrite(STDOUT, "{$front}: {$doc->s3_key()} saved\n");
+                fwrite($this->out, "{$front}: " . $s3->arn($doc->s3_key()) . " saved\n");
             } else {
-                fwrite(STDOUT, "{$front}: SAVE FAILED\n");
+                fwrite($this->out, "{$front}: SAVE FAILED\n");
                 ++$failures;
             }
             if ($saved && $this->kill) {
@@ -101,7 +116,9 @@ class S3Transfer_Batch {
             "config: !",
             "active,a Only transfer active documents (current versions)",
             "kill,k Remove transferred documents from database",
-            "match:,m: =MATCH Transfer documents matching MATCH"
+            "match:,m: =MATCH Transfer documents matching MATCH",
+            "q:,query: =SEARCH Check papers matching SEARCH",
+            "V,verbose Be verbose"
         )->description("Transfer submissions from local HotCRP storage to S3.
 Usage: php batch/s3transfer.php [--active] [--kill] [-m MATCH]")
          ->helpopt("help")

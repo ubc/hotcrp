@@ -44,9 +44,11 @@ class Autoassign_Batch {
     public $profile = false;
     /** @var bool */
     public $no_force = false;
+    /** @var bool */
+    public $progress = false;
     /** @var ?callable */
     public $detacher;
-    /** @var ?TokenInfo */
+    /** @var ?Job_Token */
     private $_jtok;
 
     /** @return list<string> */
@@ -68,14 +70,9 @@ class Autoassign_Batch {
         $this->detacher = $detacher;
         if (isset($arg["job"])) {
             $this->_jtok = Job_Token::claim($arg["job"], $this->conf, "Autoassign");
-            $this->user = $this->_jtok->user() ?? $conf->root_user();
+            $this->user = $this->_jtok->job_user();
         } else {
             $this->user = $conf->root_user();
-        }
-        if ($this->conf->can_pc_view_some_incomplete()) {
-            $this->t = "active";
-        } else {
-            $this->t = "s";
         }
         $this->pcc = array_keys($this->conf->pc_members());
         if ($this->_jtok) {
@@ -145,6 +142,7 @@ class Autoassign_Batch {
         $this->help_param = $this->help_param || isset($arg["help-param"]);
         $this->profile = $this->profile || isset($arg["profile"]);
         $this->no_force = $this->no_force || isset($arg["no-force"]);
+        $this->progress = $this->progress || isset($arg["progress"]);
         if (isset($arg["autoassigner"])) {
             $this->aaname = $arg["autoassigner"];
         } else if (!empty($arg["_"])) {
@@ -166,8 +164,16 @@ class Autoassign_Batch {
         $this->q = $arg["q"] ?? $this->q;
         if (isset($arg["all"])) {
             $this->t = "all";
+        } else if (isset($arg["type"])) {
+            $this->t = $arg["type"];
+        } else if (isset($this->t)) {
+            // do nothing
         } else {
-            $this->t = $arg["type"] ?? "s";
+            $this->t = "alladmin";
+        }
+        if (!$this->user->privChair
+            && !in_array($this->t, ["admin", "alladmin", "actadmin"], true)) {
+            $this->report([MessageItem::error_at("t", "<0>Invalid search scope for autoassignment `{$this->t}`")], 3);
         }
         $pcc = $this->pcc;
         if (!empty($arg["u"])) {
@@ -255,7 +261,48 @@ class Autoassign_Batch {
                 ->update_use()
                 ->update();
         }
+        if ($this->progress) {
+            fwrite(STDOUT, json_encode(["progress" => $progress]) . "\n");
+            fflush(STDOUT);
+        }
         set_time_limit(240);
+    }
+
+    /** @param list<int> $pids */
+    private function check_token_scope(Autoassigner $aa, $pids) {
+        // A scoped token must grant, on every selected paper, the rights the
+        // autoassigner exercises: it reads assignments and preferences, and
+        // its proposals are reported (`--minimal-dry-run`) before
+        // AssignmentSet checks them.
+        $scope = $aa->token_scope($this->dry_run);
+        if ($this->user->scope_allows($scope)) {
+            // unscoped, or granted regardless of paper: the common case
+            return;
+        } else if (!$this->user->scope_allows_some($scope)) {
+            // no subset selector grants it either
+            $badpids = $pids;
+        } else {
+            // granted per paper by `#PID`/`#TAG`/`?q=` subset selectors,
+            // which may test any field
+            $badpids = [];
+            foreach ($this->user->paper_set(["paperId" => $pids]) as $prow) {
+                if (!$this->user->scope_allows($scope, $prow)) {
+                    $badpids[] = $prow->paperId;
+                }
+            }
+            if (empty($badpids)) {
+                return;
+            }
+        }
+        $scopestr = join(" ", TokenScope::unparse_missing_bits($scope));
+        $ml = (new FailureReason($this->conf, ["scope" => $scopestr]))->message_list();
+        $ml[] = MessageItem::inform($this->conf->_(
+            "<0>Token scope does not cover {pids:plural {submission}} {pids:numlist#}",
+            new FmtArg("pids", $badpids)
+        ));
+        $this->change_data("valid", false);
+        $this->change_data("insufficient_scope", $scopestr);
+        $this->report($ml, 1);
     }
 
     /** @return string */
@@ -265,7 +312,7 @@ class Autoassign_Batch {
         $ml = $srch->message_list();
         $pids = $srch->paper_ids();
         if (empty($pids)) {
-            $ml[] = MessageItem::warning("<0>No papers match that search");
+            $ml[] = MessageItem::warning($this->conf->_("<0>No {submissions} match that search"));
             $this->report($ml, 1);
         } else if (empty($this->pcc)) {
             $ml[] = MessageItem::error("<0>No users match those requirements");
@@ -304,6 +351,7 @@ class Autoassign_Batch {
             $this->report($aa->message_list(), 1);
         }
         $this->report($aa->message_list());
+        $this->check_token_scope($aa, $pids);
 
         // run autoassigner
         if ($this->detacher) {
@@ -444,11 +492,12 @@ class Autoassign_Batch {
             "minimal-dry-run,unsorted-dry-run,D !",
             "autoassigner:,a: =AUTOASSIGNER !",
             "q:,search: =QUERY Use papers matching QUERY [all]",
-            "type:,t: =TYPE Set search type [s]",
-            "all Include all papers (default is submitted papers)",
+            "type:,t: =SCOPE Scope of search [alladmin]",
+            "all Include all papers (like `-t all`)",
             "u[],user[] =USER Include users matching USER (`-u -USER` excludes)",
             "disjoint[],X[] =USER1,USER2 Don’t coassign users",
             "count:,c: {n} =N Set `count` parameter to N",
+            "progress Write progress information to stdout as JSONL",
             "no-force Do not override conflicts",
             "help-param Print parameters for AUTOASSIGNER",
             "profile Print profile to standard error",

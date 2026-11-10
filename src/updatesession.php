@@ -80,4 +80,40 @@ class UpdateSession {
             }
         }
     }
+
+    /** @param Qsession $qs
+     * @param int $ui
+     * @param ?string $theme */
+    static function apply_theme($qs, $ui, $theme) {
+        $themes = $qs->get("themes");
+        if (!isset($themes) || !is_array($themes)) {
+            $themes = [];
+        }
+        while (count($themes) <= $ui) {
+            $themes[] = null;
+        }
+        $themes[$ui] = $theme;
+        while (!empty($themes) && $themes[count($themes) - 1] === null) {
+            array_pop($themes);
+        }
+        if (empty($themes)) {
+            $qs->unset("themes");
+        } else {
+            $qs->set("themes", $themes);
+        }
+    }
+
+    /** Return this browser session’s persistent secret.
+     * This secret must never be sent to the user, and thus doesn’t need to be
+     * rotated on authentication changes.
+     * @param Qsession $qs
+     * @return string */
+    static function session_secret($qs) {
+        $ss = $qs->get("ssecret");
+        if (!is_string($ss) || $ss === "") {
+            $ss = base48_encode(random_bytes(18));
+            $qs->set("ssecret", $ss);
+        }
+        return $ss;
+    }
 }

@@ -3,6 +3,9 @@
 // Copyright (c) 2006-2026 Eddie Kohler; see LICENSE.
 
 class Contacts_PaperOption extends PaperOption {
+    // hard limit on contacts per submission
+    const MAX_CONTACTS = 1000;
+
     function __construct(Conf $conf, $args) {
         parent::__construct($conf, $args);
     }
@@ -20,6 +23,31 @@ class Contacts_PaperOption extends PaperOption {
                 return $i;
         }
         return false;
+    }
+    /** @param list<Author> $ca
+     * @return array<string,Author> */
+    static private function ca_map($ca) {
+        $m = [];
+        foreach ($ca as $c) {
+            $le = strtolower($c->email);
+            $m[$le] = $m[$le] ?? $c;
+        }
+        return $m;
+    }
+    /** @return string */
+    private function too_many_message() {
+        return $this->conf->_("<0>A {submission} may have at most {max} contacts", new FmtArg("max", self::MAX_CONTACTS));
+    }
+    /** @param PaperValue $ov
+     * @param int $nreq
+     * @return ?PaperValue */
+    private function check_parse_count($ov, $nreq) {
+        // reject overlong requests before any per-entry lookup; a request
+        // may list every current user, plus the maximum number of contacts
+        if ($nreq <= count(self::users_anno($ov)) + self::MAX_CONTACTS) {
+            return null;
+        }
+        return PaperValue::make_estop($ov->prow, $this, $this->too_many_message());
     }
 
     function value_force(PaperValue $ov) {
@@ -90,29 +118,52 @@ class Contacts_PaperOption extends PaperOption {
         $ps->checkpoint_conflict_values();
     }
     /** @param list<Author> $specau */
-    private function apply_parsed_users(PaperValue $ov, $specau) {
-        $curau = self::users_anno($ov);
+    private function apply_parsed_users(PaperValue $ov, $specau, Contact $user) {
+        $curau = self::ca_map(self::users_anno($ov));
         $modified = false;
+        $admin = $user->allow_admin($ov->prow);
+        $removed_bot = false;
         foreach ($specau as $sau) {
-            $j = self::ca_index($curau, $sau->email);
-            $cau = $j !== false ? $curau[$j] : null;
+            $le = strtolower($sau->email);
+            $cau = $curau[$le] ?? null;
             if (!$cau) {
-                // add new contact
-                if ($sau->conflictType !== 0) {
-                    $curau[] = $sau;
+                // new contacts must have emails validated
+                if ($sau->conflictType === 0) {
+                    continue;
+                } else if (Contact::is_plausible_author_email($sau->email, $admin)) {
+                    $curau[$le] = $sau;
                     $modified = true;
+                    continue;
                 }
             } else if ($sau->conflictType !== 0) {
                 // requested contact: copy author index, activate placeholder
                 $cau->author_index = $sau->author_index;
-                $modified = $modified || $curau[$j]->is_placeholder();
-            } else {
-                array_splice($curau, $j, 1);
+                $modified = $modified || $cau->is_placeholder();
+                continue;
+            } else if ($admin || !Contact::is_bot_email($sau->email)) {
+                unset($curau[$le]);
                 $modified = true;
+                continue;
+            }
+            // errors end up here
+            $field = "contacts" . ($sau->author_index ? ":{$sau->author_index}" : "");
+            if ($cau) {
+                if (!$sau->author_index && $removed_bot) {
+                    continue;
+                }
+                $removed_bot = $removed_bot || !$sau->author_index;
+                $ov->append_item(MessageItem::error_at($field, "<0>Only administrators can remove bot contacts"));
+            } else if ($sau->email !== "") {
+                $ov->append_item(MessageItem::error_at($field, "<0>Invalid email address ‘{$sau->email}’"));
+            } else if (!$sau->is_empty()) {
+                $ov->append_item(MessageItem::error_at($field, "<0>Email address required"));
             }
         }
         if (!$modified) {
             return;
+        }
+        if (count($curau) > self::MAX_CONTACTS) {
+            $ov->estop($this->too_many_message());
         }
         // mark changes on value
         $emails = $cids = [];
@@ -121,13 +172,13 @@ class Contacts_PaperOption extends PaperOption {
             $emails[] = $au->email;
         }
         $ov->set_value_data($cids, $emails);
-        $ov->set_anno("users", $curau);
+        $ov->set_anno("users", array_values($curau));
         $ov->set_anno("modified", true);
     }
     function parse_qreq(PaperInfo $prow, Qrequest $qreq) {
         $ov = PaperValue::make_force($prow, $this);
         // collect values
-        $specau = $reqau = [];
+        $reqau = [];
         for ($n = 1; isset($qreq["contacts:{$n}:email"]); ++$n) {
             $email = trim($qreq["contacts:{$n}:email"]);
             $name = simplify_whitespace((string) $qreq["contacts:{$n}:name"]);
@@ -138,16 +189,12 @@ class Contacts_PaperOption extends PaperOption {
             $au->conflictType = $active ? CONFLICT_CONTACTAUTHOR : 0;
             $au->author_index = $n;
             $reqau[] = $au;
-            if (validate_email($email)) {
-                $specau[] = $au;
-            } else if ($email !== "") {
-                $ov->append_item(MessageItem::error_at("contacts:{$n}", "<0>Invalid email address ‘{$email}’"));
-            } else if ($name !== "") {
-                $ov->append_item(MessageItem::error_at("contacts:{$n}", "<0>Email address required"));
-            }
+        }
+        if (($errov = $this->check_parse_count($ov, count($reqau)))) {
+            return $errov;
         }
         // apply specified values
-        $this->apply_parsed_users($ov, $specau);
+        $this->apply_parsed_users($ov, $reqau, $qreq->user());
         $ov->set_anno("req_users", $reqau);
         return $ov;
     }
@@ -183,26 +230,20 @@ class Contacts_PaperOption extends PaperOption {
         } else {
             return PaperValue::make_estop($prow, $this, "<0>Validation error");
         }
-        // check emails
-        $specau = [];
-        foreach ($reqau as $au) {
-            if (Contact::is_plausible_or_example_email($au->email)) {
-                $specau[] = $au;
-            } else if ($au->email !== "") {
-                $ov->error("<0>Invalid email address ‘{$au->email}’");
-            } else {
-                $ov->error("<0>Email address required");
-            }
+        if (($errov = $this->check_parse_count($ov, count($reqau)))) {
+            return $errov;
         }
         // in JSON save (unlike web save), any unmentioned contacts are cleared
+        $specau = $reqau;
+        $specmap = self::ca_map($specau);
         foreach (self::users_anno($ov) as $au) {
-            if (self::ca_index($specau, $au->email) === false) {
+            if (!isset($specmap[strtolower($au->email)])) {
                 $specau[] = $aux = Author::make_email($au->email);
                 $aux->conflictType = 0;
             }
         }
         // apply specified values
-        $this->apply_parsed_users($ov, $specau);
+        $this->apply_parsed_users($ov, $specau, $user);
         $ov->set_anno("req_users", $reqau);
         return $ov;
     }
@@ -225,9 +266,7 @@ class Contacts_PaperOption extends PaperOption {
             '</span>',
             Ht::entry("contacts:{$anum}:email", $email, ["size" => 30, "placeholder" => "Email", "class" => $pt->control_class("contacts:{$reqidx}:email", "want-focus js-autosubmit uii js-email-populate mr-2"), "autocomplete" => "off", "data-default-value" => ""]),
             Ht::entry("contacts:{$anum}:name", $name, ["size" => 35, "placeholder" => "Name", "class" => "js-autosubmit", "autocomplete" => "off", "data-default-value" => ""]),
-            $pt->messages_at("contacts:{$reqidx}"),
-            $pt->messages_at("contacts:{$reqidx}:name"),
-            $pt->messages_at("contacts:{$reqidx}:email"),
+            MessageSet::feedback_html($pt->message_list_for("contacts:{$reqidx}:*")),
             '</div>';
     }
     function print_web_edit(PaperTable $pt, $ov, $reqov) {

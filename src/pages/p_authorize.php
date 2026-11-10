@@ -3,98 +3,11 @@
 // Copyright (c) 2022-2026 Eddie Kohler; see LICENSE.
 
 namespace HotCRP;
-use Conf, Contact, Navigation, Ht, JsonResult, Qrequest, Redirection, PageCompletion;
-use TokenInfo, TokenScope, Signin_Page, Authorization_Token, ComponentSet, XtParams;
-use MessageItem, FmtArg;
-
-class OAuthClient {
-    /** @var string */
-    public $name;
-    /** @var ?string */
-    public $title;
-    /** @var string */
-    public $client_id;
-    /** @var string */
-    public $client_secret;
-    /** @var ?string */
-    public $client_uri;
-    /** @var ?bool */
-    public $is_cdb;
-    /** @var null|int|string */
-    public $access_token_expires_in;
-    /** @var null|int|string */
-    public $refresh_token_expires_in;
-    /** @var ?string */
-    public $scope;
-    /** @var bool */
-    public $only_openid;
-    /** @var mixed */
-    public $allow_if;
-    /** @var list<string> */
-    public $redirect_uris = [];
-
-    /** @var ?string */
-    public $requested_scope;
-    /** @var ?TokenInfo */
-    public $token;
-
-    /** @param object $x */
-    function __construct($x) {
-        $this->name = $x->name ?? null;
-        $this->title = $x->title ?? null;
-        $this->client_id = $x->client_id ?? null;
-        $this->client_secret = $x->client_secret ?? null;
-        $this->client_uri = $x->client_uri ?? null;
-        $this->is_cdb = $x->is_cdb ?? false;
-        $this->access_token_expires_in = $x->access_token_expires_in ?? null;
-        $this->refresh_token_expires_in = $x->refresh_token_expires_in ?? null;
-        $this->scope = $x->scope ?? null;
-        $this->only_openid = $this->scope === null
-            || trim($this->scope) === ""
-            || TokenScope::scope_str_all_openid($this->scope);
-        $this->allow_if = $x->allow_if ?? null;
-        $uri = $x->redirect_uris ?? $x->redirect_uri ?? [];
-        if (is_string($uri)) {
-            $this->redirect_uris[] = $uri;
-        } else if (is_list($uri)) {
-            $this->redirect_uris = $uri;
-        }
-    }
-
-    /** @param object $x
-     * @return ?OAuthClient */
-    static function make($x) {
-        $oac = new OAuthClient($x);
-        if (!is_string($oac->client_id)
-            || empty($oac->redirect_uris)) {
-            return null;
-        }
-        return $oac;
-    }
-
-    /** @param object $x
-     * @param TokenInfo $ctok
-     * @return OAuthClient */
-    static function make_dynamic($x, $ctok) {
-        $oac = new OAuthClient($x);
-        $oac->title = $ctok->data("client_name") ?? $oac->title;
-        $oac->client_id = $ctok->salt;
-        $oac->client_secret = $ctok->data("client_secret");
-        $oac->redirect_uris = $ctok->data("redirect_uris");
-        $oac->requested_scope = $ctok->data("requested_scope");
-        return $oac;
-    }
-
-    /** @return string */
-    function title_text() {
-        return $this->title ?? $this->name;
-    }
-
-    /** @return string */
-    function title_html() {
-        return htmlspecialchars($this->title_text());
-    }
-}
+use Conf, Contact, Navigation, Ht, JsonResult, Qrequest, Redirection,
+    MessageItem, MessageSet, FmtArg, UnicodeHelper, ComponentSet, XtParams,
+    PageCompletion, TokenInfo, TokenScope, Authorization_Token, SettingParser,
+    BotContact, Signin_Page, UserSecurityEvent, AuthenticationChecker,
+    UpdateSession;
 
 class Authorize_Page {
     /** @var Conf */
@@ -105,29 +18,46 @@ class Authorize_Page {
     public $qreq;
     /** @var ComponentSet */
     public $cs;
-    /** @var OAuthClient */
+    /** @var ?OAuthClient */
     public $client;
     /** @var array<string,object> */
     private $clients = [];
-    /** @var TokenInfo */
+    /** @var ?TokenInfo */
     private $token;
+    /** True once the consent form has been posted, which is the only user
+     * action that authorizes a bounce to a self-registered `redirect_uri`.
+     * @var bool */
+    private $authconfirmed = false;
+    /** @var ?list<Contact> */
+    private $_bot_choices;
+    /** @var ?AuthenticationChecker */
+    private $_reauth_checker;
+
+    /** Maximum length of a `state` or `nonce`; RFC 6749 sets no limit,
+     * but avoid DoS */
+    const MAXOPAQUE = 4096;
+
+    /** Minimum acceptable `max_age` parameter */
+    const MAX_AGE_MIN_BOUND = 300;
+    /** Sign-ins at least this recent satisfy any `max_age`, including the
+     * zero of `prompt=login`: a sign-in made to answer this very request
+     * must count. */
+    const SIGNIN_MAX_AGE_MIN_BOUND = 120;
+
 
     function __construct(Contact $viewer, Qrequest $qreq, ?ComponentSet $cs = null) {
         $this->conf = $viewer->conf;
         $this->viewer = $viewer;
         $this->qreq = $qreq;
         $this->cs = $cs;
-        $this->clients = self::oauth_clients($this->conf);
+        $this->clients = OAuthClient::list($this->conf);
     }
 
 
-    /** @return array<string,object> */
+    /** @return array<string,object>
+     * @deprecated */
     static function oauth_clients(Conf $conf) {
-        $clients = $conf->_xtbuild_resolve([], "oAuthClients");
-        if (empty($clients) || $conf->opt("oAuthDynamicClients")) {
-            return $clients;
-        }
-        return array_filter($clients, function ($cx) { return !($cx->dynamic ?? false); });
+        return OAuthClient::list($conf);
     }
 
     /** @param string $salt
@@ -136,11 +66,23 @@ class Authorize_Page {
         return TokenInfo::find_from($salt, $this->conf, $salt[2] === "T");
     }
 
-    /** @return ?OAuthClient */
+    /** Look up the client named by `$client_id`, if any.
+     * @return ?OAuthClient */
     private function find_client($client_id) {
+        if ($this->conf->opt("oAuthMetadataDocumentClients")
+            && ($ocd = OAuthClientDocument::try_make($this->conf, $client_id))) {
+            foreach ($this->clients as $cx) {
+                if (($cx->metadata_document ?? false)
+                    && $ocd->matches($cx)) {
+                    return OAuthClient::make_metadata_document($cx, $ocd);
+                }
+            }
+        }
         $dynamic = [];
         foreach ($this->clients as $cx) {
-            if ($cx->dynamic ?? false) {
+            if ($cx->metadata_document ?? false) {
+                // skip
+            } else if ($cx->dynamic ?? false) {
                 $dynamic[] = $cx;
             } else if (($cx->client_id ?? null) === $client_id) {
                 return OAuthClient::make($cx);
@@ -162,13 +104,22 @@ class Authorize_Page {
         return null;
     }
 
+    /** Apply the client ID metadata document stored in `$tok` to `$client`.
+     * @return bool */
+    private function apply_token_document(TokenInfo $tok, OAuthClient $client) {
+        if (!$client->client_document) {
+            return true;
+        } else if (!is_object(($docj = $tok->data("client_document")))) {
+            return false;
+        }
+        $client->client_document->document = $docj;
+        return $client->load_document();
+    }
+
     /** @param array<string,mixed> $param
      * @return string */
     private function extend_redirect_uri($param) {
         $uri = $this->qreq->redirect_uri;
-        if (($hash = strpos($uri, "#")) !== false) {
-            $uri = substr($uri, 0, $hash);
-        }
         if (strpos($uri, "?") === false) {
             $uri .= "?";
         } else if (!str_ends_with($uri, "&") && !str_ends_with($uri, "?")) {
@@ -193,23 +144,10 @@ class Authorize_Page {
     }
 
     private function handle_request() {
-        $scope = trim($this->qreq->scope ?? "");
-        if (!self::check_scope_syntax($scope)) {
-            $this->redirect_error("invalid_scope");
-        }
-        if ($scope === "") {
-            $scope = "openid";
-        }
-        if ($this->client->only_openid
-            && !TokenScope::scope_str_contains($scope, "openid")) {
-            $this->redirect_error("invalid_scope", "Scope `openid` required");
-        }
-
+        // check response_type, refuse unsupported
         if ($this->qreq->response_type !== "code") {
             $this->redirect_error("unsupported_response_type", "Response type `code` required");
-        }
-
-        if (($this->qreq->request ?? "") !== "") {
+        } else if (($this->qreq->request ?? "") !== "") {
             $this->redirect_error("request_not_supported");
         } else if (($this->qreq->request_uri ?? "") !== "") {
             $this->redirect_error("request_uri_not_supported");
@@ -217,17 +155,7 @@ class Authorize_Page {
             $this->redirect_error("registration_not_supported");
         }
 
-        if (($this->qreq->prompt ?? "") !== "") {
-            $prompts = [];
-            foreach (explode(" ", trim($this->qreq->prompt)) as $p) {
-                if ($p !== "")
-                    $prompts[] = $p;
-            }
-            if (in_array("none", $prompts, true)) {
-                $this->redirect_error("interaction_required");
-            }
-        }
-
+        // check code_challenge and code_challenge_method
         $code_challenge = $code_challenge_method = null;
         if (($this->qreq->code_challenge ?? "") !== "") {
             $code_challenge = $this->qreq->code_challenge;
@@ -242,46 +170,332 @@ class Authorize_Page {
                 $this->redirect_error("invalid_request", "Invalid `code_challenge_method`");
             }
         }
+        if ($this->client->public_client($this->qreq->redirect_uri)
+            && $code_challenge_method !== "S256") {
+            // public clients must use PKCE (OAuth 2.1, RFC 8252 §8.1)
+            $this->redirect_error("invalid_request", "Code challenge with method `S256` required");
+        }
 
-        // XXX max_age
-        // XXX prompt login vs. select_account vs. consent
-        // XXX record consent for future use?
+        // check scope
+        $scope = trim($this->qreq->scope ?? "");
+        if (!self::check_scope_syntax($scope)) {
+            $this->redirect_error("invalid_scope");
+        }
+        if ($scope === "") {
+            // RFC 6749 §3.3: a request that omits `scope` gets this server’s
+            // default
+            $scope = "openid email profile";
+            if (!$this->client->only_openid) {
+                [, $rest] = TokenScope::scope_str_split_openid($this->client->scope);
+                $scope .= " " . $rest;
+            }
+        }
+        $ts = TokenScope::parse($scope, null);
+        $scope = TokenScope::unparse($ts);
+        if ($this->client->only_openid
+            && (!$ts || !$ts->allows_oidc(TokenScope::OIDC_OPENID))) {
+            $this->redirect_error("invalid_scope", "Scope `openid` required");
+        }
+        if ($this->client->is_cdb
+            && $ts
+            && $ts->has_selector()) {
+            // A token for a cdb client works at every conference on the contact
+            // database, but a selector means whatever it means at the site
+            // presenting it: `#12` names a different submission at each.
+            $this->redirect_error("invalid_scope", "Submission selectors not allowed for this client");
+        }
 
+        // enumerate prompts
+        $prompts = [];
+        if (($this->qreq->prompt ?? "") !== "") {
+            foreach (explode(" ", trim($this->qreq->prompt)) as $p) {
+                if ($p !== "")
+                    $prompts[] = $p;
+            }
+            if (in_array("none", $prompts, true) && count($prompts) > 1) {
+                // `none` asks for no interaction at all, so it cannot be
+                // combined with a request for some (OpenID Connect Core §3.1.2.1)
+                $this->redirect_error("invalid_request", "Invalid `prompt`");
+            }
+        }
+
+        // `max_age` asks that the person have authenticated within that many
+        // seconds; `prompt=login` asks that they authenticate now, which is the
+        // same request with no window at all. `AuthenticationChecker` clamps
+        // whatever arrives here to a window this site is willing to honor.
+        $max_age = null;
+        if (($this->qreq->max_age ?? "") !== "") {
+            if (!ctype_digit($this->qreq->max_age)) {
+                $this->redirect_error("invalid_request", "Invalid `max_age`");
+            }
+            $max_age = intval($this->qreq->max_age);
+        }
+        if (in_array("login", $prompts, true)) {
+            $max_age = 0;
+        }
+
+        // maybe redirect to the requested user
+        if (($chosen = $this->chosen_email())
+            && strcasecmp($chosen, $this->viewer->email ?? "") !== 0
+            && ($uindex = Contact::session_index_by_email($this->qreq, $chosen)) >= 0
+            && $uindex !== $this->viewer->session_index()) {
+            // (307 keeps a POSTed request's parameters)
+            $nav = $this->qreq->navigation();
+            throw new Redirection("{$nav->base_path}u/{$uindex}/authorize{$nav->php_suffix}{$nav->query}", 307);
+        }
+
+        // XXX prompt select_account vs. consent
+
+        $token_params = [
+            "scope" => $scope,
+            "code_challenge" => $code_challenge,
+            "code_challenge_method" => $code_challenge_method,
+            "max_age" => $max_age,
+            "login_hint" => $this->login_hint()
+        ];
+        if (in_array("none", $prompts, true)) {
+            $this->handle_prompt_none($token_params);
+        } else {
+            $this->print_form($token_params);
+        }
+    }
+
+    /** The account this request asks to authenticate, or null.
+     *
+     * Read from the code once one exists: the consent post carries only the
+     * code, and a hint that could be edited between the two would not be one.
+     * @return ?string */
+    private function login_hint() {
+        $h = $this->token ? $this->token->data("login_hint") : $this->qreq->login_hint;
+        return is_string($h) && validate_email($h) ? $h : null;
+    }
+
+    /** The freshness window the request parameters ask for, or null if they
+     * ask for none: `prompt=login` asks for 0.
+     * @return ?int */
+    private function request_max_age() {
+        if (preg_match('/(?:\A|\s)login(?:\s|\z)/', $this->qreq->prompt ?? "")) {
+            return 0;
+        } else if (ctype_digit($this->qreq->max_age ?? "")) {
+            return intval($this->qreq->max_age);
+        }
+        return null;
+    }
+
+    /** The freshness window this request asks for, or null if it asks for none.
+     * @return ?int */
+    private function required_max_age() {
+        $ma = $this->token ? $this->token->data("max_age") : null;
+        return is_int($ma) ? $ma : null;
+    }
+
+    /** The confirmation a `$max_age` of `$max_age` owes for `$user`, or null
+     * if none is owed.
+     * @param Contact $user
+     * @param ?int $max_age
+     * @return ?AuthenticationChecker */
+    private function make_authentication_checker($user, $max_age) {
+        if ($max_age === null) {
+            return null;
+        }
+        return $user->authentication_checker($this->qreq, "authorize")
+            ->set_max_age(max($max_age, self::MAX_AGE_MIN_BOUND))
+            ->set_max_signin_age(max($max_age, self::SIGNIN_MAX_AGE_MIN_BOUND))
+            ->set_require_attested(true)
+            ->set_quiet(true);
+    }
+
+    /** The confirmation this request owes for `$user`, or null if it owes none.
+     * @param Contact $user
+     * @return ?AuthenticationChecker */
+    private function authentication_checker($user) {
+        return $this->make_authentication_checker($user, $this->required_max_age());
+    }
+
+    /** @return never */
+    private function handle_prompt_none($token_params) {
+        $emails = $this->authorized_emails();
+        if (empty($emails)
+            || $this->viewer->is_bearer_authorized()) {
+            // no one to authorize as (no session/no matching user)
+            $this->redirect_error("login_required");
+        } else if (count($emails) > 1
+                   || $this->viewer->is_actas_user()) {
+            // they must pick
+            $this->redirect_error("account_selection_required");
+        }
+        if ($this->sole_authorized_user() !== $this->viewer) {
+            // the session's one account is at another slot (this one is empty);
+            // 307 keeps a POSTed request's parameters (unlike the redirect to
+            // the client, this one stays on this site)
+            $nav = $this->qreq->navigation();
+            $uindex = array_key_first($emails);
+            throw new Redirection("{$nav->base_path}u/{$uindex}/authorize{$nav->php_suffix}{$nav->query}", 307);
+        }
+
+        if (($ac = $this->make_authentication_checker($this->viewer, $token_params["max_age"]))
+            && !$ac->test()) {
+            // user needs to sign in
+            $this->redirect_error("login_required");
+        }
+
+        // `handle_request` canonicalized this request’s scope, and recorded
+        // consent scopes are canonical too, so they compare directly.
+        if (!UserSecurityEvent::session_oauth_confirmation($this->qreq->qsession(),
+                $this->viewer->email,
+                $this->client->client_id,
+                $this->qreq->redirect_uri,
+                $token_params["scope"],
+                $this->client->is_cdb ? null : $this->conf->dbname)) {
+            // no current authorization for exactly this client & scope
+            $this->redirect_error("consent_required");
+        }
+
+        $token_params["consented_email"] = $this->viewer->email;
+        $this->create_token($token_params);
+        $this->qreq->code = $this->token->salt;
+        $this->qreq->authemail = $this->viewer->email;
+        $this->handle_authconfirm($this->viewer);
+        throw new PageCompletion; // unreachable; `handle_authconfirm` redirects
+    }
+
+    /** The account this page has settled on, or null while the choice is open.
+     *
+     * A `login_hint` settles it, and so does pressing an account's button:
+     * `authemail` names the account that button was for. It only narrows what
+     * this page offers; `handle_authconfirm` checks the account it acts on.
+     * @return ?string */
+    private function chosen_email() {
+        if (($hint = $this->login_hint()) !== null) {
+            return $hint;
+        }
+        if ($this->token && ($ce = $this->token->data("consented_email")) !== null) {
+            return $ce;
+        }
+        $ae = $this->qreq->authemail;
+        return is_string($ae) && $ae !== "" ? $ae : null;
+    }
+
+    /** Session accounts this request may be authorized with, by session slot.
+     * Narrowed to one once the request has settled on one.
+     * @return array<int,string> */
+    private function authorized_emails() {
+        $chosen = $this->chosen_email();
+        $emails = [];
+        foreach (Contact::session_emails($this->qreq) as $uindex => $email) {
+            if ($email !== ""
+                && ($chosen === null || strcasecmp($email, $chosen) === 0))
+                $emails[$uindex] = $email;
+        }
+        return $emails;
+    }
+
+    /** The one account this page can act for, if there is only one.
+     *
+     * A confirmation challenges a particular account, so it can only be posed
+     * once the account is settled — by a `login_hint`, or by the session
+     * holding just one. Otherwise the choice comes first.
+     * @return ?Contact */
+    private function sole_authorized_user() {
+        $emails = $this->authorized_emails();
+        if (count($emails) !== 1) {
+            return null;
+        }
+        $email = current($emails);
+        if ($this->viewer->has_email()
+            && strcasecmp($this->viewer->email, $email) === 0) {
+            return $this->viewer;
+        }
+        return $this->conf->user_by_email($email)
+            ?? $this->conf->cdb_user_by_email($email);
+    }
+
+    private function signin_url() {
+        $nav = $this->qreq->navigation();
+        if ($this->token) {
+            $param = ["code" => $this->token->salt];
+        } else {
+            $param = $this->qreq->subset_as_array("client_id", "redirect_uri",
+                "response_type", "state", "scope", "nonce", "code_challenge",
+                "code_challenge_method", "prompt", "max_age", "login_hint");
+        }
+        $sparam = [
+            "redirect" => "authorize{$nav->php_suffix}?" . http_build_query($param)
+        ];
+        if (($hint = $this->login_hint()) !== null) {
+            $sparam["email"] = $hint;
+        }
+        // a requested freshness window passes to the sign-in, which passes it
+        // to any external provider
+        $max_age = $this->token ? $this->required_max_age() : $this->request_max_age();
+        if ($max_age !== null) {
+            $sparam["max_age"] = $max_age;
+        }
+        return $this->conf->hoturl("signin", $sparam);
+    }
+
+    /** @param ?array{scope:?string,code_challenge:?string,code_challenge_method:?string,max_age:?int,login_hint:?string,consented_email?:string} $token_params */
+    private function create_token($token_params) {
         $token = (new TokenInfo($this->conf, TokenInfo::OAUTHCODE))
             ->set_token_pattern("hcoc[36]")
             ->set_invalid_in(3600)
             ->set_expires_in(86400)
             ->change_data("state", $this->qreq->state)
             ->change_data("nonce", $this->qreq->nonce)
-            ->change_data("scope", $scope)
+            ->change_data("scope", $token_params["scope"])
             ->change_data("client_id", $this->client->client_id)
-            ->change_data("redirect_uri", $this->qreq->redirect_uri);
-        if ($code_challenge !== null) {
-            $token->change_data("code_challenge", $code_challenge)
-                ->change_data("code_challenge_method", $code_challenge_method);
+            // the name the consent page is about to show, so that the name
+            // the user later revokes is the name they agreed to
+            ->change_data("client_name", $this->client->title_text())
+            ->change_data("redirect_uri", $this->qreq->redirect_uri)
+            // bind the code to this browser session
+            ->change_data("ssecret", UpdateSession::session_secret($this->qreq->qsession()));
+        if ($token_params["max_age"] !== null) {
+            $token->change_data("max_age", $token_params["max_age"]);
+        }
+        if ($token_params["login_hint"] !== null) {
+            $token->change_data("login_hint", $token_params["login_hint"]);
+        }
+        if ($token_params["code_challenge"] !== null) {
+            $token->change_data("code_challenge", $token_params["code_challenge"])
+                ->change_data("code_challenge_method", $token_params["code_challenge_method"]);
+        }
+        if ($this->client->client_document) {
+            // remember relevant subset of the client’s metadata document
+            $token->change_data("client_document", $this->client->token_document());
+        }
+        if (isset($token_params["consented_email"])) {
+            $token->change_data("consented_email", $token_params["consented_email"]);
         }
         $this->token = $token->insert();
-        $this->print_form();
     }
 
-    private function actual_emails() {
-        return array_filter(Contact::session_emails($this->qreq),
-            function ($e) { return $e !== ""; });
-    }
+    /** @param ?array{scope:?string,code_challenge:?string,code_challenge_method:?string,max_age:?int,login_hint:?string,consented_email?:string} $token_params */
+    function print_form($token_params = null) {
+        // redirect to signin if we have no available accounts
+        if (!$this->authorized_emails()) {
+            throw new Redirection($this->signin_url());
+        }
 
-    private function signin_url() {
-        $nav = $this->qreq->navigation();
-        return $this->conf->hoturl_raw("signin", ["redirect" => "authorize{$nav->php_suffix}?code=" . urlencode($this->token->salt)]);
-    }
+        // create token if desired
+        if ($token_params) {
+            $this->create_token($token_params);
+        }
 
-    function print_form() {
         if (!$this->cs) {
             JsonResult::make_minimal(200, ["code" => $this->token->salt])->complete();
         }
 
-        // redirect to signin if we have any available accounts
-        if (!count($this->actual_emails())) {
-            throw new Redirection($this->signin_url());
+        // A confirmation is asked for only once a consent has been given: the
+        // code records it, `print_reauth_exit` returns here, and once the
+        // confirmation lands `resume_consent` finishes without asking again.
+        // A request that has consented to nothing yet gets the form first.
+        if ($this->_reauth_checker === null
+            && $this->token
+            && $this->token->data("consented_email") !== null
+            && ($ac = $this->authentication_checker($this->viewer))
+            && !$ac->test()) {
+            $this->_reauth_checker = $ac;
         }
 
         $this->qreq->print_header("Sign in", "authorize", [
@@ -290,71 +504,260 @@ class Authorize_Page {
         ]);
         Signin_Page::print_form_start_for($this->qreq, "=signin");
         $this->cs->print_members("authorize/form");
-        echo '</div>';
+        echo '</form>';
+        if (($ac = $this->_reauth_checker)) {
+            // the confirmation posts on its own form, which cannot nest inside
+            // the consent form; the account being confirmed need not be the
+            // session slot this page was reached through
+            $uindex = Contact::session_index_by_email($this->qreq, $ac->user->email);
+            echo '<form id="f-reauth" class="ui-submit js-reauth"',
+                $uindex >= 0 ? " data-session-index=\"{$uindex}\"" : "",
+                ' data-no-confirm></form>';
+        }
         $this->qreq->print_footer();
+    }
+
+    function print_form_reauth() {
+        if (!($ac = $this->_reauth_checker)) {
+            return;
+        }
+        // Only print a confirmation notice if one is offered
+        ob_start();
+        $reauth_allowed = $ac->print();
+        $body = ob_get_clean();
+        if ($reauth_allowed) {
+            echo '<p class="feedback is-warning">', htmlspecialchars($this->client->title_text()),
+                ' asks you to confirm your account before continuing.</p>';
+        }
+        echo $body;
     }
 
     function print_form_title() {
         echo '<h1 id="h-title">Sign in</h1>';
         $clt = $this->client->title_html();
         if ($this->client->client_uri) {
-            $clt = Ht::link($clt, $this->client->client_uri);
+            // a client that registered itself chose this URL, and this page's
+            // own URL can carry a code, so the link carries nothing along
+            $clt = Ht::link($clt, $this->client->client_uri, ["rel" => "noopener noreferrer"]);
         }
         echo '<div class="mb-4">to continue to ', $clt, '</div>';
         $this->conf->report_saved_messages();
     }
 
+    /** Print the domains involved for a client that registered itself. Such a client is not registered with this site, and its name
+     * is whatever it chose to call itself, so show the user the domains
+     * actually involved. */
+    private function print_self_registered_identity() {
+        $ruri = $this->token->data("redirect_uri") ?? "";
+        $rhost = parse_url($ruri, PHP_URL_HOST) ?? $ruri;
+        echo '<div class="msg msg-warning mt-4">';
+        if ($this->client->client_document) {
+            echo '<p>This request comes from <strong>',
+                htmlspecialchars($this->client->client_document->host()),
+                '</strong>.</p>';
+        }
+        if ($rhost === "localhost" || $rhost === "127.0.0.1" || $rhost === "[::1]") {
+            echo '<p class="mb-0">Your authorization will be sent to a program running on your own computer (<code>',
+                htmlspecialchars($ruri), '</code>).</p>';
+        } else {
+            echo '<p class="mb-0">Your authorization will be sent to <strong>',
+                htmlspecialchars($rhost), '</strong>.</p>';
+        }
+        echo '</div>';
+    }
+
     function print_form_annotation() {
+        if ($this->_reauth_checker) {
+            return;
+        }
+        if ($this->client->self_registered) {
+            $this->print_self_registered_identity();
+        }
         $clt = $this->client->title_html();
         echo '<p class="mt-4 mb-0 hint">If you continue, HotCRP will share your name, email address, affiliation, and other profile information with ', $clt, '.</p>';
-        if (!$this->client->only_openid
-            && !TokenScope::scope_str_all_openid($this->client->requested_scope)) {
-            echo '<div class="has-fold foldc mt-3 js-fold-focus">',
-                '<p class="hint">HotCRP will also allow ', $clt, ' to act on your behalf using an API. <strong>Do not approve this request</strong> unless you trust ', $clt, '.</p>',
-                '<p class="fn hint mb-0">', Ht::button("Edit scopes (advanced)", ["class" => "link ui js-foldup"]), '</p>',
-                '<div class="f-i fx mb-0">',
-                '<label for="k-scope">Scope</label>',
-                Ht::entry("scope", $this->client->requested_scope, ["id" => "k-scope", "spellcheck" => false, "class" => "w-99 want-focus"]),
-                '<p class="mt-1 mb-0 hint">This space-separated list limits the rights available for API access. Examples: <code>read</code> (read-only access), <code>submission:admin#r1</code> (access to submissions tagged #r1)</p>',
-                '</div>';
+        if ($this->client->only_openid) {
+            return;
         }
+        [, $reqscope] = TokenScope::scope_str_split_openid($this->token->data("scope"));
+        if ($reqscope === "") {
+            $reqscope = "none";
+        }
+        $open = friendly_boolean($this->qreq->bots);
+        echo '<div class="has-fold ', $open ? "foldo" : "foldc", ' mt-3 js-fold-focus">';
+        if ($reqscope !== "none") {
+            echo '<p class="hint">HotCRP will also allow ', $clt, ' to act on your behalf using an API. <strong>Do not approve this request</strong> unless you trust ', $clt, '.</p>';
+        }
+        echo '<p class="fn hint mb-0">', Ht::button("Edit scopes (advanced)", ["class" => "link ui js-foldup"]), '</p>',
+            '<div class="f-i fx mb-0">',
+            '<label for="k-scope">Scope</label>',
+            Ht::entry("scope", $reqscope, ["id" => "k-scope", "spellcheck" => false, "class" => "w-99 want-focus"]),
+            '<p class="mt-1 mb-0 hint">This space-separated list limits the rights available for API access. Examples: <code>read</code> (read-only access), <code>submission:admin#r1</code> (access to submissions tagged #r1), <code>none</code> (no API access)</p>',
+            '</div></div>';
+    }
+
+    /** Bot accounts this request may authorize a grant for, or `[]`.
+     *
+     * A bot has no session of its own — it cannot sign in — so a grant that
+     * speaks as one is made by a chair on its behalf, from the chair’s own
+     * session slot. Two kinds of client are excluded: a cdb client, because a
+     * bot has no contact-database identity and never gets one, and an
+     * OpenID-only client, because a bot grant exists to carry API access and
+     * there is no person for an `id_token` to name.
+     * @return list<Contact> */
+    private function bot_choices() {
+        if ($this->_bot_choices !== null) {
+            return $this->_bot_choices;
+        }
+        $this->_bot_choices = [];
+        if ($this->client
+            && !$this->client->is_cdb
+            && !$this->client->only_openid
+            && $this->viewer->privChair
+            && !$this->viewer->is_actas_user()
+            && $this->viewer->session_index() >= 0
+            && !$this->viewer->is_bearer_authorized()) {
+            foreach (BotContact::users($this->conf) as $u) {
+                if (!$u->is_disabled())
+                    $this->_bot_choices[] = $u;
+            }
+        }
+        return $this->_bot_choices;
+    }
+
+    /** @param list<Contact> $bots */
+    private function print_form_bots($bots) {
+        $nav = $this->qreq->navigation();
+        $uindex = $this->viewer->session_index();
+        $buttons = [];
+        $top = "";
+        $any_disabled = false;
+        echo '<p class="mb-4">A bot account is driven by a program rather than a person, and it cannot sign in on its own. Authorizing here lets ',
+            $this->client->title_html(),
+            ' act as the account you choose; everything it does is recorded as that account, and its reviews are marked AI.</p>';
+        foreach ($bots as $bot) {
+            $enabled = (new XtParams($this->conf, $bot))->checkf($this->client);
+            $any_disabled = $any_disabled || !$enabled;
+            // `bots=1` rides along so a post that fails its checks comes back
+            // to this list rather than to the account list
+            $url = $nav->base_absolute() . "u/{$uindex}/authorize{$nav->php_suffix}?code=" . urlencode($this->token->salt)
+                . "&authconfirm=1&bots=1&authemail=" . urlencode($this->viewer->email)
+                . "&authbot=" . urlencode($bot->email);
+            $buttons[] = Ht::button("Sign in as " . htmlspecialchars($bot->email), ["type" => "submit", "formaction" => $url, "formmethod" => "post", "class" => "btn-primary{$top} w-100 flex-grow-1", "disabled" => !$enabled]);
+            $top = " mt-2";
+        }
+        $buttons[] = Ht::link("<span class=\"arrow\">←</span> Back", $this->conf->hoturl("authorize", ["code" => $this->token->salt]),
+            ["class" => "btn{$top} w-100 flex-grow-1"]);
+        if ($any_disabled) {
+            echo MessageSet::feedback_html([MessageItem::warning($this->conf->_("<0>This site limits which users can authenticate with {}", new FmtArg(0, $this->client->title_text(), 0)))]);
+        }
+        echo '<div class="mb-5">', join("", $buttons), '</div>';
     }
 
     function print_form_main() {
+        if ($this->_reauth_checker) {
+            return;
+        }
+        $bots = $this->bot_choices();
+        if (!empty($bots) && friendly_boolean($this->qreq->bots)) {
+            $this->print_form_bots($bots);
+            return;
+        }
         $buttons = [];
         $nav = $this->qreq->navigation();
         $top = "";
-        foreach ($this->actual_emails() as $i => $email) {
-            $url = $nav->base_absolute() . "u/{$i}/authorize{$nav->php_suffix}?code=" . urlencode($this->token->salt) . "&authconfirm=1";
-            $buttons[] = Ht::button("Sign in as " . htmlspecialchars($email), ["type" => "submit", "formaction" => $url, "formmethod" => "post", "class" => "btn-primary{$top} w-100 flex-grow-1"]);
+        if ($this->client) {
+            $this->conf->prefetch_users_by_email(array_values($this->authorized_emails()));
+        }
+        $any_disabled = false;
+        // `u/{$uindex}` is a session slot, and slots can be reused between this
+        // render and the post; name the account too, so the request that comes
+        // back is for the account whose button the user pressed
+        foreach ($this->authorized_emails() as $uindex => $email) {
+            if ($this->client) {
+                $user = $this->conf->user_by_email($email)
+                    ?? $this->conf->cdb_user_by_email($email);
+                $enabled = $user
+                    && (new XtParams($this->conf, $user))->checkf($this->client);
+            } else {
+                $enabled = true;
+            }
+            $any_disabled = $any_disabled || !$enabled;
+            $url = $nav->base_absolute() . "u/{$uindex}/authorize{$nav->php_suffix}?code=" . urlencode($this->token->salt) . "&authconfirm=1&authemail=" . urlencode($email);
+            $buttons[] = Ht::button("Sign in as " . htmlspecialchars($email), ["type" => "submit", "formaction" => $url, "formmethod" => "post", "class" => "btn-primary{$top} w-100 flex-grow-1", "disabled" => !$enabled]);
             $top = " mt-2";
         }
 
         $buttons[] = Ht::link("Use another account", $this->signin_url(),
             ["class" => "btn{$top} w-100 flex-grow-1"]);
+        if (!empty($bots)) {
+            $buttons[] = Ht::link("Sign in as a bot <span class=\"arrow\">→</span>",
+                $this->conf->hoturl("authorize", ["code" => $this->token->salt, "bots" => 1]),
+                ["class" => "btn btn-success mt-2 w-100 flex-grow-1"]);
+        }
+        if ($any_disabled) {
+            echo MessageSet::feedback_html([MessageItem::warning($this->conf->_("<0>This site limits which users can authenticate with {}", new FmtArg(0, $this->client->title_text(), 0)))]);
+        }
         echo '<div class="mb-5">', join("", $buttons), '</div>';
     }
 
+    /** Look up the code named by `$this->qreq->code`, setting `$this->token`
+     * and `$this->client` if it is one this request may act on.
+     *
+     * A redeemed code is retained so that a later redemption is recognized as
+     * a replay, but it is spent: this page must not offer it again.
+     * @return bool */
     private function lookup_code() {
-        return $this->qreq->code
-            && ($this->token = TokenInfo::find($this->qreq->code, $this->conf))
-            && $this->token->is_active(TokenInfo::OAUTHCODE)
-            && ($this->client = $this->find_client($this->token->data("client_id")));
+        if ($this->qreq->code
+            && ($tok = TokenInfo::find($this->qreq->code, $this->conf))
+            && $tok->is_active(TokenInfo::OAUTHCODE)
+            && $tok->useCount === 0
+            && $tok->data("ssecret") === UpdateSession::session_secret($this->qreq->qsession())
+            && ($client = $this->find_client($tok->data("client_id")))
+            && $this->apply_token_document($tok, $client)) {
+            $this->token = $tok;
+            $this->client = $client;
+            return true;
+        }
+        return false;
     }
 
-    private function handle_authconfirm() {
+    /** @return bool */
+    private function allow_different_grantee(Contact $grantee) {
+        return $this->viewer->privChair
+            && $grantee->is_bot()
+            && !$grantee->is_disabled()
+            && !$this->client->is_cdb
+            && !$this->client->only_openid;
+    }
+
+    /** @return never */
+    private function handle_authconfirm(?Contact $grantee) {
+        $this->authconfirmed = true;
         if (!$this->lookup_code()) {
             $this->print_error_exit("<0>Invalid or expired authentication request");
         }
+        // `redirect_error` requires this
+        $this->qreq->redirect_uri = $this->token->data("redirect_uri");
 
         if (!$this->viewer->has_email()
             || $this->viewer->is_actas_user()
-            || $this->viewer->is_bearer_authorized()) {
+            || $this->viewer->is_bearer_authorized()
+            || (isset($this->qreq->authemail)
+                && strcasecmp($this->qreq->authemail, $this->viewer->email) !== 0)
+            || (($hint = $this->login_hint()) !== null
+                && strcasecmp($hint, $this->viewer->email) !== 0)) {
+            $this->print_error_exit("<0>Authentication request failed");
+        }
+
+        // A grant may speak as a bot account. The bot has no session, so the
+        // viewer stays the chair who is authorizing on its behalf.
+        if ($grantee !== $this->viewer
+            && (!$grantee || !$this->allow_different_grantee($grantee))) {
             $this->print_error_exit("<0>Authentication request failed");
         }
 
         if (isset($this->client->allow_if)
-            && !(new XtParams($this->conf, $this->viewer))->checkf($this->client)) {
+            && !(new XtParams($this->conf, $grantee))->checkf($this->client)) {
             if (!$this->cs) {
                 JsonResult::make_minimal(401, [
                     "error" => "invalid_grant",
@@ -362,7 +765,7 @@ class Authorize_Page {
                 ])->complete();
             }
             $this->conf->feedback_msg(
-                MessageItem::error("<0>User {} cannot authorize access by {}", new FmtArg(0, $this->viewer->email, 0), new FmtArg(1, $this->client->title_text(), 0)),
+                MessageItem::error($grantee !== $this->viewer ? "<0>User {} cannot be authorized to access {}" : "<0>User {} cannot authorize access by {}", new FmtArg(0, $grantee->email, 0), new FmtArg(1, $this->client->title_text(), 0)),
                 MessageItem::inform("<0>This site limits which users can authenticate with {}. You may need to use another account.", new FmtArg(0, $this->client->title_text(), 0))
             );
             Navigation::http_response_code(401);
@@ -377,21 +780,81 @@ class Authorize_Page {
             $this->redirect_error("access_denied");
         }
 
-        if (!$this->token->data("email")) {
-            $this->token->change_data("email", $this->viewer->email)
-                ->change_data("iat", Conf::$now);
+        // A client that asked for a fresh sign-in gets one before the code is
+        // bound to an account.
+        $viewer_ac = $this->authentication_checker($this->viewer);
+        if (!$this->token->data("email")
+            && $viewer_ac
+            && !$viewer_ac->test()) {
+            // The user has already agreed to this; only the confirmation is
+            // missing. Keep what they agreed to, so that finishing the
+            // confirmation finishes the authorization rather than asking again.
+            $this->token->change_data("consented_email", $this->viewer->email);
             if (isset($this->qreq->scope)) {
-                $this->token->change_data("scope", $this->qreq->scope);
+                $this->token->change_data("consented_scope", trim($this->qreq->scope));
+            }
+            if ($grantee !== $this->viewer) {
+                $this->token->change_data("consented_grantee", $grantee->email);
+            }
+            $this->token->update();
+            $this->print_reauth_exit($viewer_ac);
+        }
+
+        if (!$this->token->data("email")) {
+            $this->token->change_data("email", $grantee->email)
+                ->change_data("iat", Conf::$now);
+            // When the ID token will name the person who is here, record when
+            // they last authenticated, so a client asking for a fresh sign-in
+            // can tell. A bot never signs in, so a bot grant records nothing.
+            if ($grantee === $this->viewer
+                && $viewer_ac
+                && ($at = $viewer_ac->latest()) > 0) {
+                $this->token->change_data("auth_time", $at);
+            }
+            if ($grantee !== $this->viewer) {
+                // the grant speaks as the bot, but a person made it: record who
+                $this->token->change_data("authorized_by", $this->viewer->email);
+            }
+            // Log every authorization, naming the grant
+            $this->conf->log_for($this->viewer, $grantee,
+                "OAuth authorization for " . $this->client->title_text()
+                . " [" . (Authorization_Token::grant_id($this->token) ?? "?") . "]");
+            $tokscope = $this->token->data("scope");
+            $reqscope = isset($this->qreq->scope) ? trim($this->qreq->scope) : "";
+            if ($reqscope !== "") {
+                // the consent form’s field limits what was requested, as it
+                // says it does; it is user input, so it gets the same syntax
+                // check as the authorization request
+                if (!self::check_scope_syntax($reqscope)) {
+                    $this->redirect_error("invalid_scope");
+                }
+                // store requested OIDC scopes ($tokscope) plus the intersection
+                // of requested & consented scopes
+                $this->token->change_data("scope", TokenScope::unparse(TokenScope::intersect(
+                    TokenScope::parse($tokscope, null), $reqscope
+                )));
             }
             $this->token->set_invalid_in(10 * 60)
                 ->update();
+            // Remember what this account authorized, so a later request for
+            // exactly this can be answered without asking again. A bot grant
+            // is not recorded: the person who made it is not the account it
+            // speaks as, so their agreement is not the bot's.
+            if ($grantee === $this->viewer) {
+                UserSecurityEvent::make($this->viewer->email)
+                    ->set_oauth_confirmation($this->client->client_id,
+                        $this->token->data("redirect_uri"),
+                        $this->token->data("scope"),
+                        $this->client->is_cdb ? null : $this->conf->dbname
+                    )->store($this->qreq);
+            }
         }
 
-        $this->qreq->redirect_uri = $this->token->data("redirect_uri");
         throw new Redirection($this->extend_redirect_uri([
             "code" => $this->token->salt,
-            "state" => $this->token->data("state")
-        ]));
+            "state" => $this->token->data("state"),
+            "iss" => $this->conf->oauth_issuer()
+        ]), 303 /* RFC 9700 §4.12: MUST NOT use 307 */);
     }
 
     /** @param string $error
@@ -402,44 +865,145 @@ class Authorize_Page {
         if ($error_description !== null) {
             $p["error_description"] = $error_description;
         }
-        if (isset($this->qreq->state)) {
-            $p["state"] = $this->qreq->state;
+        // The error answers the request that created the code, so it carries
+        // that request's `state` (RFC 6749 §4.1.2.1). The confirmation form
+        // posts no `state` of its own.
+        $state = $this->token ? $this->token->data("state") : $this->qreq->state;
+        if ($state !== null) {
+            $p["state"] = $state;
         }
-        throw new Redirection($this->extend_redirect_uri($p));
+        $p["iss"] = $this->conf->oauth_issuer();
+        $uri = $this->extend_redirect_uri($p);
+
+        // A client that registered itself chose its own `redirect_uri`, so an
+        // automatic bounce there makes this endpoint an open redirector for
+        // anyone willing to register (RFC 9700 §4.11.2). Redirect only when
+        // this site vouched for the destination, or when the user did, by
+        // posting the consent form now or by consenting to this client at this
+        // `redirect_uri` earlier in this session; otherwise offer the
+        // destination as a link, which shows where it goes and takes a click.
+        // A `prompt=none` request from a session that never consented gets the
+        // link rather than its error.
+        if ($this->client->self_registered
+            && !$this->authconfirmed
+            && !UserSecurityEvent::session_has_oauth_redirect($this->qreq->qsession(),
+                    $this->client->client_id, $this->qreq->redirect_uri,
+                    $this->client->is_cdb ? null : $this->conf->dbname)) {
+            $t = $error_description ?? "Authorization request failed";
+            $host = parse_url($this->qreq->redirect_uri, PHP_URL_HOST)
+                ? : $this->qreq->redirect_uri;
+            $link = Ht::link("Return to " . htmlspecialchars($host), $uri,
+                ["rel" => "noopener noreferrer"]);
+            $this->print_error_exit("<0>{$t} ({$error})", "<5>{$link}");
+        }
+        throw new Redirection($uri, 303 /* RFC 9700 §4.12: MUST NOT use 307 */);
+    }
+
+    /** Finish an authorization that a confirmation interrupted.
+     *
+     * The consent was given by a post that carried a token, and is replayed
+     * from the code rather than asked for again; the confirmation that
+     * interrupted it has now been made. The grantee is replayed from the code
+     * too, for the same reason the silent path passes one.
+     * @return void */
+    private function resume_consent() {
+        if (($ce = $this->token->data("consented_email")) === null
+            || !$this->viewer->has_email()
+            || strcasecmp($ce, $this->viewer->email) !== 0
+            || $this->token->data("email") !== null
+            || !($ac = $this->authentication_checker($this->viewer))
+            || !$ac->test()) {
+            return;
+        }
+        $this->qreq->authemail = $ce;
+        if (($cs = $this->token->data("consented_scope")) !== null) {
+            $this->qreq->scope = $cs;
+        }
+        $grantee = $this->viewer;
+        if (($gemail = $this->token->data("consented_grantee")) !== null
+            && strcasecmp($gemail, $this->viewer->email) !== 0) {
+            $grantee = $this->conf->user_by_email($gemail);
+        }
+        $this->handle_authconfirm($grantee);  // does not return
+    }
+
+    /** Ask for the confirmation this request owes, and stop.
+     *
+     * The challenge is posed on a plain view of this page, naming the account
+     * the user chose, because that is where the confirmation returns: coming
+     * back to the post that provoked it would arrive as a GET carrying no
+     * token, and be refused as a stale form.
+     * @param AuthenticationChecker $ac
+     * @return never */
+    private function print_reauth_exit($ac) {
+        if (!$this->cs) {
+            JsonResult::make_minimal(401, [
+                "error" => "login_required",
+                "error_description" => "Reauthentication required"
+            ])->complete();
+        }
+        // a provider that just vouched for the account without saying when
+        // it authenticated them won't say on a second try, and an account
+        // without a password has no other way to confirm
+        if ($ac->recently_unattested(self::SIGNIN_MAX_AGE_MIN_BOUND)
+            && !$this->viewer->can_use_password()) {
+            $this->redirect_error("login_required", "The sign-in provider could not confirm a recent sign-in");
+        }
+        $nav = $this->qreq->navigation();
+        $back = $nav->site_path . "authorize{$nav->php_suffix}"
+            . "?code=" . urlencode($this->token->salt)
+            . "&authemail=" . urlencode($this->viewer->email);
+        // A confirmation that asks the user nothing here is a redirect, not a
+        // page holding a button; it returns to `$back` either way.
+        if (($url = $ac->authenticator_url($back))) {
+            throw new Redirection($url);
+        }
+        throw new Redirection($back);
     }
 
     /** @param string $m
+     * @param ?string $inform
      * @return never */
-    private function print_error_exit($m) {
+    private function print_error_exit($m, $inform = null) {
         if (Navigation::http_response_code() === 200) {
             Navigation::http_response_code(400);
         }
         $this->qreq->print_header("Sign in", "authorize", ["action_bar" => "", "hide_header" => true, "body_class" => "body-error"]);
-        $this->conf->error_msg($m);
+        if ($inform === null) {
+            $this->conf->error_msg($m);
+        } else {
+            $this->conf->feedback_msg(MessageItem::error($m), MessageItem::inform($inform));
+        }
         $this->qreq->print_footer();
         Navigation::complete();
     }
 
-    /** @param string $uri
-     * @return bool */
-    private function check_redirect_uri($uri) {
-        if (strpos($uri, "#") !== false) {
-            return false;
-        }
-        return str_starts_with($uri, "https://")
-            // allow localhost redirect URIs for local development
-            || ((str_starts_with($uri, "http://localhost/")
-                 || str_starts_with($uri, "http://localhost:"))
-                && $this->qreq->navigation()->host === "localhost");
-    }
-
     function go() {
+        $this->conf->emit_credential_page_headers();
+
         // handle internal action
         if (friendly_boolean($this->qreq->authconfirm)) {
-            $this->handle_authconfirm();
-        } else if (isset($this->qreq->code) && $this->lookup_code()) {
-            $this->print_form();
-            return;
+            // need CSRF protection
+            if ($this->qreq->valid_post()) {
+                $grantee = $this->viewer;
+                if (isset($this->qreq->authbot)) {
+                    $grantee = $this->conf->user_by_email($this->qreq->authbot);
+                }
+                $this->handle_authconfirm($grantee);  // does not return
+            }
+            $this->conf->warning_msg($this->conf->_i($this->qreq->post_retry ? "session_failed_error" : "badpost"));
+        }
+        if (isset($this->qreq->code)) {
+            if ($this->lookup_code()) {
+                $this->resume_consent();
+                $this->print_form();
+                return;
+            } else if (!isset($this->qreq->client_id)) {
+                // A code that is spent, expired, or unknown, and no client to
+                // start over with. Usually this is a reload of a consent page
+                // whose authorization already finished.
+                $this->print_error_exit("<0>This authorization request has expired. Return to the application and sign in again.");
+            }
         }
 
         // look up client
@@ -454,19 +1018,39 @@ class Authorize_Page {
             $this->print_error_exit("<0>Authorization client not found");
         }
 
+        // a client identified by a metadata document URL describes itself
+        // in a JSON document served by that URL
+        if ($this->client->client_document) {
+            // That document is fetched from a URL the requester chose, so
+            // require a user first: otherwise anyone can make this site issue
+            // arbitrary outbound requests, holding a worker for each.
+            if (!$this->authorized_emails()) {
+                throw new Redirection($this->signin_url());
+            }
+            if (!$this->client->load_document()) {
+                $this->print_error_exit("<0>{$this->client->client_document->error}");
+            }
+        }
+
         // `redirect_uri` must be present and match a configured value
         if (!isset($this->qreq->redirect_uri)) {
             $this->print_error_exit("<0>Authorization parameter `redirect_uri` missing");
-        } else if (!in_array($this->qreq->redirect_uri, $this->client->redirect_uris, true)
-                   || !$this->check_redirect_uri($this->qreq->redirect_uri)) {
+        } else if (!$this->client->has_redirect_uri($this->qreq->redirect_uri)
+                   || !OAuthClient::check_redirect_uri($this->qreq->redirect_uri)) {
             $this->print_error_exit("<0>Invalid authorization parameter `redirect_uri`");
+        } else if (strlen($this->qreq->state ?? "") > self::MAXOPAQUE
+                   || strlen($this->qreq->nonce ?? "") > self::MAXOPAQUE) {
+            // reported here rather than at `redirect_uri`: the error response
+            // would have to echo the oversized `state`
+            $this->print_error_exit("<0>Authorization parameter `state` or `nonce` too long");
         }
 
-        // From here on, all errors should be sent to `redirect_uri`.
+        // From here on, all errors should be sent to `redirect_uri`
+        // (if it is trusted).
 
         if ($this->conf->external_login()
             || ((($lt = $this->conf->login_type()) === "none" || $lt === "oauth")
-                && !$this->conf->oauth_providers())) {
+                && !OAuthProvider::list($this->conf))) {
             $this->redirect_error("unauthorized_client", "This site does not support authorization clients");
         } else if (!isset($this->qreq->state)
                    || $this->qreq->response_type !== "code") {
@@ -483,10 +1067,10 @@ class Authorize_Page {
     static function parse_expires_in($s, $default) {
         if ($s === "never") {
             return -1;
-        } else if (is_string($s) && preg_match('/\A(\d++\.?\d*+|\.\d++)d\z/', $s, $m)) {
-            return (int) (floatval($m[1]) * 86400);
         } else if (is_int($s)) {
             return $s;
+        } else if (is_string($s) && ($v = SettingParser::parse_duration($s)) !== null) {
+            return (int) round($v);
         }
         return $default;
     }
@@ -498,42 +1082,144 @@ class Authorize_Page {
         return $jr;
     }
 
-    private function oauthtoken_error($type) {
-        return JsonResult::make_minimal(400, ["error" => $type]);
+    /** @param string $type
+     * @param ?string $description
+     * @return JsonResult */
+    private function oauthtoken_error($type, $description = null) {
+        $j = ["error" => $type];
+        if ($description !== null) {
+            // RFC 6749 §5.2 restricts this to %x20-21 / %x23-5B / %x5D-7E
+            $j["error_description"] = $description;
+        }
+        return JsonResult::make_minimal(400, $j);
     }
 
-    private function handle_oauthtoken() {
-        // look up client
+    /** Report a failed grant; private clients also get an error_description
+     * (public clients do not, as it would be an oracle).
+     * @param string $description
+     * @param string $type
+     * @return JsonResult */
+    private function grant_error($description, $type = "invalid_grant") {
+        if ($this->client->client_secret === null) {
+            return $this->oauthtoken_error("invalid_grant", "Grant not valid");
+        }
+        return $this->oauthtoken_error($type, $description);
+    }
+
+    /** RFC 6749 §5.2: a client that authenticated via the `Authorization`
+     * header gets 401 and a challenge; anything else gets 400.
+     * @param bool $via_header
+     * @return JsonResult */
+    private function invalid_client_error($via_header) {
+        return JsonResult::make_minimal($via_header ? 401 : 400, ["error" => "invalid_client"])
+            ->set_header($this->conf->www_authenticate_header("invalid_client", $this->qreq));
+    }
+
+    /** Credentials and grant material belong in the request body; in the URI
+     * they reach logs, `Referer`, and history (RFC 6749 §2.3.1, §3.2). */
+    const SECRET_PARAMS = ["client_id", "client_secret", "code", "code_verifier", "refresh_token", "token"];
+
+    /** Authenticate the client of a token-endpoint-style request.
+     *
+     * Returns the client, or a `JsonResult` naming the reason it could not be
+     * authenticated. RFC 7009 §2.1 requires revocation to authenticate exactly
+     * as the token endpoint does, so both go through here.
+     * @return OAuthClient|JsonResult */
+    private function authenticate_client() {
         $clids = $clsecrets = [];
-        $clauth = false;
+        $clbasic = false;
         if (($auth = $this->qreq->header("Authorization"))) {
             if (preg_match('/\A\s*Basic\s+(\S+)\s*\z/i', $auth, $m)
                 && ($d = base64_decode($m[1], true)) !== false
                 && ($p = strpos($d, ":")) !== false) {
-                $clauth = true;
-                $clids[] = substr($d, 0, $p);
-                $clsecrets[] = substr($d, $p + 1);
+                $clbasic = true;
+                // RFC 6749 §2.3.1 form-urlencodes each half before base64.
+                // That encoding is what lets a `client_id` contain the `:` this
+                // splits on. A client that skipped it is still accepted.
+                $rawid = substr($d, 0, $p);
+                $rawsecret = substr($d, $p + 1);
+                $clids[] = urldecode($rawid);
+                $clsecrets[] = urldecode($rawsecret);
+                if ($rawid !== $clids[0] || $rawsecret !== $clsecrets[0]) {
+                    $clids[] = $rawid;
+                    $clsecrets[] = $rawsecret;
+                }
             } else {
-                return $this->oauthtoken_error("invalid_request");
+                return $this->oauthtoken_error("invalid_request", "Unparseable Authorization header");
             }
         }
-        if (isset($this->qreq->client_id)) {
+        if ($clbasic) {
+            // A client that authenticated in the header usually repeats its
+            // `client_id` in the body anyway; RFC 6749 §4.1.3 asks for it when
+            // the client does not authenticate, and clients send it either
+            // way. The repetition is redundant, not a second authentication
+            // method, so it is accepted — but it must name the same client, or
+            // the request would authenticate as one and act as another.
+            if (isset($this->qreq->client_id)
+                && !in_array($this->qreq->client_id, $clids, true)) {
+                return $this->oauthtoken_error("invalid_request", "client_id disagrees with Authorization header");
+            }
+            // RFC 6749 §2.3 allows one authentication method per request. A
+            // repeated secret is redundant rather than ambiguous, so only a
+            // second secret that differs from the first is a conflict.
+            if (($clsecret = $this->qreq->client_secret) !== null) {
+                $found = false;
+                foreach ($clsecrets as $s) {
+                    $found = $found || hash_equals($s, $clsecret);
+                }
+                if (!$found) {
+                    return $this->oauthtoken_error("invalid_request", "client_secret disagrees with Authorization header");
+                }
+            }
+        } else if (isset($this->qreq->client_id)) {
             $clids[] = $this->qreq->client_id;
             $clsecrets[] = $this->qreq->client_secret ?? "";
-        }
-        if (count($clids) !== 1) {
-            return $this->oauthtoken_error("invalid_request");
+        } else {
+            return $this->invalid_client_error(false);
         }
 
-        if (!($client = $this->find_client($clids[0]))
-            || ($client->client_secret ?? "") !== $clsecrets[0]) {
-            $this->conf->www_authenticate_header("invalid_client", $this->qreq);
-            return $this->oauthtoken_error("invalid_client");
+        $client = null;
+        foreach ($clids as $i => $clid) {
+            if (($c = $this->find_client($clid))
+                && ($c->client_secret === null
+                    // a public client has no secret; accept none from it
+                    ? $clsecrets[$i] === ""
+                    : hash_equals($c->client_secret, $clsecrets[$i]))) {
+                $client = $c;
+                break;
+            }
+        }
+        if (!$client) {
+            return $this->invalid_client_error($clbasic);
+        }
+        return $client;
+    }
+
+    /** @return ?JsonResult */
+    private function check_secret_params() {
+        foreach (self::SECRET_PARAMS as $k) {
+            if ($this->qreq->from_query($k)) {
+                return $this->oauthtoken_error("invalid_request", "Parameter {$k} invalid in URL");
+            }
+        }
+        return null;
+    }
+
+    /** @return JsonResult */
+    private function handle_oauthtoken() {
+        // RFC 6749 §5.1 and §5.2: every response from here, error included
+        Navigation::header("Cache-Control: no-store");
+        if (($jr = $this->check_secret_params())) {
+            return $jr;
+        }
+        $client = $this->authenticate_client();
+        if ($client instanceof JsonResult) {
+            return $client;
         }
 
         $scope = trim($this->qreq->scope ?? "");
         if (!self::check_scope_syntax($scope)) {
-            return $this->oauthtoken_error("invalid_scope");
+            return $this->oauthtoken_error("invalid_scope", "Unparseable scope");
         }
 
         // handle grant request
@@ -543,10 +1229,8 @@ class Authorize_Page {
         } else if ($this->qreq->grant_type === "refresh_token") {
             $jr = $this->handle_oauthtoken_refresh($scope);
         } else {
-            return $this->oauthtoken_error("unsupported_grant_type");
-        }
-        if ($jr && $jr->status < 400) {
-            Navigation::header("Cache-Control: no-store");
+            return $this->oauthtoken_error("unsupported_grant_type",
+                "This endpoint supports grant_type authorization_code and refresh_token");
         }
         return $jr ?? $this->oauthtoken_error("invalid_grant");
     }
@@ -558,21 +1242,26 @@ class Authorize_Page {
             || !($tok = TokenInfo::find($this->qreq->code, $this->conf))
             || !$tok->is_active(TokenInfo::OAUTHCODE)
             || !$tok->data("email")
-            || $tok->data("client_id") !== $this->client->client_id) {
-            return null;
+            || $tok->data("client_id") !== $this->client->client_id
+            || !$this->apply_token_document($tok, $this->client)) {
+            return $this->grant_error("Unknown, expired, or reassigned code");
         }
 
         // check arguments
-        $redirect_uri = $this->qreq->redirect_uri ?? "";
+        $redirect_uri = $tok->data("redirect_uri");
+        $qreq_redirect_uri = $this->qreq->redirect_uri ?? "";
         $code_challenge = $tok->data("code_challenge") ?? "";
-        if ($redirect_uri === ""
-            && $code_challenge === ""
-            && !$tok->data("nonce")) {
-            return null;
+        if ($code_challenge === ""
+            && ($this->client->public_client($redirect_uri)
+                || ($qreq_redirect_uri === "" && !$tok->data("nonce")))) {
+            return $this->grant_error("Code was authorized without PKCE");
         }
         $code_verifier = $this->qreq->code_verifier ?? "";
         if (($code_verifier !== "") !== ($code_challenge !== "")) {
-            return $this->oauthtoken_error("invalid_request");
+            return $this->grant_error($code_verifier === ""
+                ? "Code was authorized with a code_challenge, so code_verifier is required"
+                : "Code was authorized without a code_challenge, so code_verifier does not apply",
+                "invalid_request");
         }
         if ($code_verifier !== "") {
             if ($tok->data("code_challenge_method") === "plain") {
@@ -581,31 +1270,49 @@ class Authorize_Page {
                 $code_check = base64url_encode(hash("sha256", $code_verifier, true));
             }
             if ($code_challenge !== $code_check) {
-                return null;
+                return $this->grant_error("code_verifier does not match code_challenge");
             }
         }
-        if ($redirect_uri !== ""
-            && $redirect_uri !== $tok->data("redirect_uri")) {
-            return null;
+        if ($qreq_redirect_uri !== ""
+            && $qreq_redirect_uri !== $redirect_uri) {
+            return $this->grant_error("redirect_uri does not match the authorization request");
         }
 
-        // check replay
-        if ($tok->data("used")) {
+        // Claim the code. A code is good once; a second redemption means it
+        // reached someone else, so the tokens it produced have to go
+        // (RFC 9700 §4.2.4). The code stays active for as long as it is
+        // retained, so a late replay is still recognized as a replay rather
+        // than dismissed as an expired code — silently rejecting it would
+        // leave the leaked tokens live.
+        $retain = $this->client->only_openid ? 600 : 86400;
+        if (!$tok->consume()) {
             $this->oauthtoken_revoke($tok, TokenInfo::BEARER);
             $this->oauthtoken_revoke($tok, TokenInfo::OAUTHREFRESH);
-            return null;
+            // The code names only the first pair it produced. Whoever redeemed
+            // it first may have rotated since, so follow the chain: revoking
+            // just the first link leaves the live tokens working, which is the
+            // outcome this revocation exists to stop.
+            if (($rsalt = $tok->data("refresh_token"))
+                && ($rtok = $this->find_token($rsalt))) {
+                $this->oauthtoken_revoke_all($rtok);
+            }
+            return $this->grant_error("Code was already redeemed; the tokens it issued have been revoked");
         }
-        $tok->change_data("used", true)
-            ->set_expires_in($this->client->only_openid ? 600 : 86400);
+        $tok->set_invalid_in($retain)
+            ->set_expires_in($retain);
 
         // check user
         $luser = $this->conf->user_by_email($tok->data("email"));
         $guser = $this->conf->cdb_user_by_email($tok->data("email"));
-        $user = $this->client->is_cdb ? $guser : $luser ?? $guser;
+        if ($this->client->is_cdb) {
+            $user = $guser;
+        } else {
+            $user = $luser ?? ($guser ? $guser->ensure_account_here() : null);
+        }
         if (!$user
             || $user->is_disabled()) {
             $tok->update();
-            return null;
+            return $this->grant_error("The authorized account is unavailable here");
         }
 
         // create id_token
@@ -631,13 +1338,18 @@ class Authorize_Page {
         return JsonResult::make_minimal(200, $a);
     }
 
+    /** @return string */
     private function make_id_token(Contact $user, TokenInfo $tok) {
         $payload = [
             "iss" => $this->conf->oauth_issuer(),
+            "sub" => $user->email,
             "aud" => $this->client->client_id,
             "exp" => Conf::$now + 86400,
             "iat" => Conf::$now
         ];
+        if (($auth_time = $tok->data("auth_time")) !== null) {
+            $payload["auth_time"] = $auth_time;
+        }
         if (($nonce = $tok->data("nonce")) !== null) {
             $payload["nonce"] = $nonce;
         }
@@ -646,20 +1358,35 @@ class Authorize_Page {
         $payload["given_name"] = $user->firstName;
         $payload["family_name"] = $user->lastName;
 
+        if ($this->client->client_secret === null) {
+            // A public client shares no secret, so there is no key with which
+            // to sign. The ID token travels directly from this endpoint to the
+            // client over TLS, so it may be unsecured (OpenID Connect Core
+            // §3.1.3.7 item 6 and the `id_token_signed_response_alg` value
+            // `none`, which applies to the authorization code flow).
+            return JWTParser::make_plaintext((object) $payload);
+        }
         return JWTParser::make_mac((object) $payload, $this->client->client_secret);
     }
 
     private function export_access_token(&$a, TokenInfo $atok, TokenInfo $rtok) {
         $a["access_token"] = $atok->salt;
         $a["token_type"] = "Bearer";
-        if ($atok->timeExpires > 0) {
-            $a["expires_in"] = $atok->timeExpires - conf::$now;
+        // `timeExpires` is when the row is dropped, `timeInvalid` when the
+        // token stops working; a client that refreshes on the former holds a
+        // dead token for the retention period
+        if (($inactive = $atok->inactive_at()) > 0) {
+            $a["expires_in"] = $inactive - Conf::$now;
         }
         $a["refresh_token"] = $rtok->salt;
         $scope = $atok->data("scope");
         $a["scope"] = Ht::add_tokens($a["scope"] ?? null, $scope ?? "all");
     }
 
+    /** @param TokenInfo $tok
+     * @param Contact $user
+     * @param ?string $scope
+     * @return TokenInfo */
     private function oauthtoken_create_access($tok, $user, $scope) {
         // compute new scope
         $ts = null;
@@ -675,21 +1402,43 @@ class Authorize_Page {
         if ($scope !== "") {
             $ts = TokenScope::intersect($ts, $scope);
         }
+        if ($this->client->is_cdb && $ts) {
+            // a selector cannot travel between conferences; `handle_request`
+            // rejects one, and this is the invariant it exists to hold
+            $ts = $ts->without_selectors();
+        }
 
         $exp = self::parse_expires_in($this->client->access_token_expires_in ?? null, 3600);
-        $atok = Authorization_Token::prepare_bearer($user, $exp);
-        $atok->change_data("client_id", $tok->data("client_id"))
-            ->change_data("scope", TokenScope::unparse($ts));
-        // XXX note
+        $atok = Authorization_Token::prepare_bearer($user, $exp, $tok);
+        $atok->change_data("client_host", $tok->data("client_host")
+                ?? $this->client->identity_host($tok))
+            ->change_data("client_id", $tok->data("client_id"))
+            ->change_data("client_name", $tok->data("client_name"))
+            ->change_data("scope", TokenScope::unparse($ts ? $ts->without_oidc() : null));
+        if (isset($this->client->allow_if)) {
+            $atok->change_data("allow_if", $this->client->allow_if);
+        }
+        $user->mark_has_app();
+        // XXX no way to specify a note
         return $atok->insert();
     }
 
+    /** @param TokenInfo $tok
+     * @param Contact $user
+     * @param TokenInfo $atok
+     * @return TokenInfo */
     private function oauthtoken_create_refresh($tok, $user, $atok) {
         $exp = self::parse_expires_in($this->client->refresh_token_expires_in ?? null, 7 * 86400);
-        $rtok = Authorization_Token::prepare_refresh($user, $exp);
-        $rtok->change_data("client_id", $tok->data("client_id"))
+        $rtok = Authorization_Token::prepare_refresh($user, $exp, $tok);
+        $rtok->change_data("client_host", $tok->data("client_host")
+                ?? $this->client->identity_host($tok))
+            ->change_data("client_id", $tok->data("client_id"))
+            ->change_data("client_name", $tok->data("client_name"))
             ->change_data("scope", $tok->data("scope"))
             ->change_data("access_token", $atok->salt);
+        if (($docj = $tok->data("client_document")) !== null) {
+            $rtok->change_data("client_document", $docj);
+        }
         return $rtok->insert();
     }
 
@@ -711,12 +1460,15 @@ class Authorize_Page {
                 && !str_starts_with($rsalt, "hcTr_"))
             || !($rtok = $this->find_token($rsalt))
             || $rtok->capabilityType !== TokenInfo::OAUTHREFRESH
-            || $rtok->data("client_id") !== $this->client->client_id) {
-            return null;
-        } else if (!$rtok->is_active()) {
-            // replay attack: revoke all refresh tokens and access tokens
+            || $rtok->data("client_id") !== $this->client->client_id
+            || !$this->apply_token_document($rtok, $this->client)) {
+            return $this->grant_error("Unknown or reassigned refresh_token");
+        } else if (!$rtok->is_active()
+                   || !$rtok->consume()) {
+            // replay attack: revoke all refresh tokens and access tokens;
+            // `consume` catches the case of two redemptions in flight at once
             $this->oauthtoken_revoke_all($rtok);
-            return null;
+            return $this->grant_error("refresh_token was already used; the grant has been revoked");
         }
         $this->oauthtoken_revoke($rtok, TokenInfo::BEARER);
         // check user
@@ -724,8 +1476,18 @@ class Authorize_Page {
             ? $this->conf->cdb_user_by_id($rtok->contactId)
             : $this->conf->user_by_id($rtok->contactId);
         if (!$user
-            || $user->is_disabled()) {
-            return null;
+            || $user->is_disabled()
+            // `allow_if` limits who may hold this client's tokens; rotation
+            // would otherwise renew a grant forever past the role that
+            // justified it. A cdb client's `$user` is a contact-database
+            // account, which has no conference roles: `allow_if` terms about
+            // conference settings work, but user-specific terms such as
+            // `admin` fail.
+            || !(new XtParams($this->conf, $user))->checkf($this->client)
+            // and a client narrowed to OpenID Connect since has no API grant
+            // left to refresh
+            || $this->client->only_openid) {
+            return $this->grant_error("The account is no longer authorized to hold this grant");
         }
         $atok1 = $this->oauthtoken_create_access($rtok, $user, $scope);
         $rtok1 = $this->oauthtoken_create_refresh($rtok, $user, $atok1);
@@ -741,14 +1503,15 @@ class Authorize_Page {
         if (!$rtok->has_data("next_refresh_token")) {
             return;
         }
-        $i = 0;
+        // Walk to the live token. The loop clears each link before following
+        // it, so it cannot visit a token twice and needs no iteration bound;
+        // a bound would silently leave the live token active on a long chain,
+        // which is the compromise this revocation exists to stop.
         while ($rtok
                && $rtok->capabilityType === TokenInfo::OAUTHREFRESH
-               && ($next = $rtok->data("next_refresh_token"))
-               && $i < 200) {
+               && ($next = $rtok->data("next_refresh_token"))) {
             $rtok->change_data("next_refresh_token", null)->update();
             $rtok = $this->find_token($next);
-            ++$i;
         }
         if ($rtok) {
             $this->oauthtoken_revoke($rtok, TokenInfo::BEARER);
@@ -756,6 +1519,71 @@ class Authorize_Page {
         }
     }
 
+
+    static function oauthrevoke_api(Contact $user, Qrequest $qreq) {
+        if (!$user->conf->opt("oAuthClients")) {
+            return JsonResult::make_error(404, "<0>Function not found");
+        }
+        return (new Authorize_Page($user, $qreq))->handle_oauthrevoke();
+    }
+
+    /** Revoke a token at its client's request (RFC 7009).
+     * @return JsonResult */
+    private function handle_oauthrevoke() {
+        Navigation::header("Cache-Control: no-store");
+        if (($jr = $this->check_secret_params())) {
+            return $jr;
+        }
+        $client = $this->authenticate_client();
+        if ($client instanceof JsonResult) {
+            return $client;
+        }
+        $this->client = $client;
+
+        $salt = $this->qreq->token;
+        if (($salt ?? "") === "") {
+            return $this->oauthtoken_error("invalid_request", "Parameter token missing");
+        }
+        $hint = $this->qreq->token_type_hint ?? null;
+        if ($hint !== null
+            && $hint !== "access_token"
+            && $hint !== "refresh_token") {
+            // the hint is advisory; a nonsensical one is still a bad request
+            return $this->oauthtoken_error("unsupported_token_type",
+                "token_type_hint must be access_token or refresh_token");
+        }
+
+        // RFC 7009 §2.2: a token this client cannot revoke is a success —
+        // unknown, malformed, the wrong type, or issued to another client.
+        // Anything else would make this endpoint an oracle for token
+        // existence.
+        if (strlen($salt) < 20
+            || $salt[0] !== "h"
+            || $salt[1] !== "c"
+            || ($salt[2] !== "t" && $salt[2] !== "T")
+            || ($salt[3] !== "_" && ($salt[3] !== "r" || $salt[4] !== "_"))
+            || !($tok = $this->find_token($salt))
+            || ($tok->capabilityType !== TokenInfo::BEARER
+                && $tok->capabilityType !== TokenInfo::OAUTHREFRESH)
+            // §2.1: the token must have been issued to the client asking
+            || $tok->data("client_id") !== $this->client->client_id) {
+            return JsonResult::make_minimal(200, []);
+        }
+
+        // Keep the rows: a revoked refresh token presented later is the replay
+        // signal, and the rotation chain is walked through them.
+        if ($tok->capabilityType === TokenInfo::OAUTHREFRESH) {
+            // §2.1: revoking a refresh token SHOULD revoke what it minted
+            $this->oauthtoken_revoke($tok, TokenInfo::BEARER);
+            $this->oauthtoken_revoke_all($tok);
+        }
+        if ($tok->is_active()) {
+            $tok->set_invalid()
+                ->set_expires_in(Authorization_Token::BEARER_RETENTION)
+                ->update();
+        }
+        return JsonResult::make_minimal(200, []);
+    }
 
     static function oauthregister_api(Contact $user, Qrequest $qreq) {
         if (!$user->conf->opt("oAuthClients")
@@ -773,7 +1601,7 @@ class Authorize_Page {
         // validate content
         if ($this->qreq->body_content_type() !== "application/json"
             || ($reqstr = $this->qreq->body()) === null
-            || !is_object(($reqj = json_decode($reqstr)))
+            || !is_object(($reqj = \Json::decode_user($reqstr, 16384)))
             || !is_array($reqj->redirect_uris ?? null)
             || empty($reqj->redirect_uris)) {
             return $this->oauthregister_error("invalid_request");
@@ -781,7 +1609,7 @@ class Authorize_Page {
         $redirect_uris = $reqj->redirect_uris;
         foreach ($redirect_uris as $uri) {
             if (!is_string($uri)
-                || !$this->check_redirect_uri($uri)) {
+                || !OAuthClient::check_redirect_uri($uri, OAuthClient::VALIDATION_DYNAMIC)) {
                 return $this->oauthregister_error("invalid_redirect_uri");
             }
         }
@@ -790,24 +1618,19 @@ class Authorize_Page {
         // find dynamic client with matching redirect uri
         $client = null;
         foreach ($this->clients as $cx) {
-            if (($cx->dynamic ?? false)
-                && (!isset($cx->redirect_uris)
-                    || array_intersect($redirect_uris, $cx->redirect_uris) === $redirect_uris)) {
-                $client = new OAuthClient($cx);
+            if (!($cx->dynamic ?? false)) {
+                continue;
+            }
+            $cxc = new OAuthClient($cx);
+            if ((!isset($cx->redirect_uris) && !isset($cx->redirect_uri))
+                || !array_diff($redirect_uris, $cxc->redirect_uris)) {
+                $client = $cxc;
                 break;
             }
         }
         if (!$client) {
             return JsonResult::make_error(404, "<0>Function not found");
         }
-        if ($client->only_openid
-            && isset($reqj->grant_types)
-            && is_array($reqj->grant_types)
-            && in_array("refresh_token", $reqj->grant_types, true)
-            && !TokenScope::scope_str_all_openid($reqj->scope ?? "")) {
-            return $this->oauthregister_error("invalid_client_metadata");
-        }
-
         // XXX rate limit
 
         // create client
@@ -822,9 +1645,14 @@ class Authorize_Page {
             $ctok->change_data("hotcrp_name", $client->name);
         }
         if (isset($reqj->client_name) && is_string($reqj->client_name)) {
-            $ctok->change_data("client_name", $reqj->client_name);
+            $ctok->change_data("client_name", UnicodeHelper::utf8_truncate(
+                simplify_whitespace($reqj->client_name), OAuthClientDocument::MAXNAME));
         }
-        if (isset($reqj->scope) && is_string($reqj->scope)) {
+        if (isset($reqj->scope)) {
+            if (!is_string($reqj->scope)
+                || !self::check_scope_syntax($reqj->scope)) {
+                return $this->oauthregister_error("invalid_client_metadata");
+            }
             $ctok->change_data("requested_scope", $reqj->scope);
         }
         $ctok->set_token_pattern($ctok->is_cdb ? "hcTk_[20]" : "hctk_[20]")
@@ -836,7 +1664,12 @@ class Authorize_Page {
             "client_id_issued_at" => $ctok->timeCreated,
             "client_secret_expires_at" => $ctok->timeInvalid,
             "redirect_uris" => $redirect_uris,
-            "grant_types" => ["authorization_code", "refresh_token"],
+            // report what this client can use, not what it asked for: an
+            // OpenID-Connect-only client is never issued a refresh token
+            // (RFC 7591 §3.2.1 allows the registered metadata to differ)
+            "grant_types" => $client->only_openid
+                ? ["authorization_code"]
+                : ["authorization_code", "refresh_token"],
             "token_endpoint_auth_method" => "client_secret_basic"
         ]);
     }

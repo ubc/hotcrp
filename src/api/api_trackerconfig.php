@@ -12,9 +12,6 @@ class TrackerConfig_API {
     /** @var Qrequest
      * @readonly */
     public $qreq;
-    /** @var bool
-     * @readonly */
-    public $translated;
     /** @var Tagger */
     private $tagger;
     /** @var list<MessageItem> */
@@ -25,75 +22,52 @@ class TrackerConfig_API {
         $this->user = $user;
         $this->qreq = $qreq;
         $this->tagger = new Tagger($user);
-        if (($this->translated = isset($qreq["tr1-id"]))) {
-            $this->translate_qreq();
-        }
-    }
-
-    private function translate_qreq() {
-        $qreq = $this->qreq;
-        for ($i = 1; isset($qreq["tr{$i}-id"]); ++$i) {
-            foreach (["id", "name", "logo", "hideconflicts", "listinfo", "p", "changed", "stop"] as $sfx) {
-                $qreq["tr/{$i}/{$sfx}"] = $qreq["tr{$i}-{$sfx}"];
-            }
-            if (isset($qreq["tr{$i}-vistype"])) {
-                $qreq["tr/{$i}/visibility_type"] = $qreq["tr{$i}-vistype"];
-            }
-            if (isset($qreq["tr{$i}-vis"])) {
-                $qreq["tr/{$i}/visibility"] = $qreq["tr{$i}-vis"];
-            }
-            if (isset($qreq["has_tr{$i}-hideconflicts"])) {
-                $qreq["has_tr/{$i}/hideconflicts"] = $qreq["has_tr{$i}-hideconflicts"];
-            }
-        }
     }
 
     /** @param int $i
      * @param string $sfx
      * @param string $msg */
     private function error_at_sfx($i, $sfx, $msg) {
-        if ($this->translated) {
-            $field = "tr{$i}-" . ($sfx === "visibility" ? "vis" : $sfx);
-        } else {
-            $field = "tr/{$i}/{$sfx}";
-        }
-        $this->ml[] = MessageItem::error_at($field, $msg);
+        $this->ml[] = MessageItem::error_at("tr/{$i}/{$sfx}", $msg);
     }
 
     /** @param int $i
      * @return ?string */
     private function visibility($i) {
         $qreq = $this->qreq;
-        $vis = $qreq["tr/{$i}/visibility"];
-        if (!isset($vis)) {
-            return null;
-        }
-        $vis = trim($vis);
-
-        $vperm = "";
-        if ($vis !== ""
-            && ($vis[0] === "+" || $vis[0] === "-")
-            && !isset($qreq["tr/{$i}/visibility_type"])) {
+        $vis = trim($qreq["tr/{$i}/visibility"] ?? "");
+        if (isset($qreq["tr/{$i}/visibility_type"])) {
+            $vistype = strtolower(trim($qreq["tr/{$i}/visibility_type"]));
+        } else if ($vis !== "" && ($vis[0] === "+" || $vis[0] === "-")) {
             $vistype = $vis[0];
             $vis = ltrim(substr($vis, 1));
         } else {
-            $vistype = trim($qreq["tr/{$i}/visibility_type"] ?? "");
+            // bare `all`, `pc`, or `none`
+            $vistype = strtolower($vis);
+            $vis = "";
         }
         if (str_starts_with($vis, "#")) {
             $vis = substr($vis, 1);
         }
-        if (strcasecmp($vistype, "none") === 0
+        if ($vistype === "" && $vis === "") {
+            // unspecified: new trackers get the default visibility
+            return null;
+        }
+
+        $vperm = "";
+        if ($vistype === "none"
             || ($vistype === "+" && strcasecmp($vis, "none") === 0)) {
             $vperm = "+none";
-        } else if ($vistype === ""
-                   || ($vistype === "+" && strcasecmp($vis, "pc")) === 0) {
+        } else if ($vistype === "all"
+                   || $vistype === "pc"
+                   || ($vistype === "+" && strcasecmp($vis, "pc") === 0)) {
             // $vperm === ""
         } else if ($vistype !== "+" && $vistype !== "-") {
-            $this->error_at_sfx($i, "visibility", "<0>Internal error on visibility type");
+            $this->error_at_sfx($i, "visibility", "<0>Invalid visibility");
         } else if ($vis === ""
                    || strcasecmp($vis, "pc") === 0) {
             $this->error_at_sfx($i, "visibility", "<0>PC tag required");
-        } else if (($vt = $this->tagger->check($vis, Tagger::NOPRIVATE | Tagger::NOVALUE))) {
+        } else if (($vt = $this->tagger->check_syntax($vis, Tagger::NOPRIVATE | Tagger::NOVALUE))) {
             if (!$this->conf->pc_tag_exists($vt)) {
                 $this->error_at_sfx($i, "visibility", "<0>Unknown PC tag");
             }
@@ -103,7 +77,7 @@ class TrackerConfig_API {
         }
         if ($vperm !== ""
             && !$this->user->privChair
-            && !$this->user->has_permission($vis)) {
+            && !$this->user->has_permission($vperm)) {
             $this->error_at_sfx($i, "visibility", "<0>You may not configure a tracker that you wouldn’t be able to see. Try “Whole PC”.");
         }
         return $vperm;
@@ -112,6 +86,9 @@ class TrackerConfig_API {
     /** @return JsonResult */
     function go() {
         $qreq = $this->qreq;
+        if (isset($qreq["tr1-id"])) {
+            return JsonResult::make_parameter_error("tr1-id", "<0>Unsupported parameter form (use tr/1/id, not tr1-id)");
+        }
         $tracker = MeetingTracker::lookup($this->conf);
         $position_at = $tracker->next_position_at();
         $changed = false;
@@ -142,7 +119,7 @@ class TrackerConfig_API {
 
             $hide_conflicts = null;
             if ($qreq["tr/{$i}/hideconflicts"] || $qreq["has_tr/{$i}/hideconflicts"]) {
-                $hide_conflicts = !!$qreq["tr/{$i}/hideconflicts"];
+                $hide_conflicts = friendly_boolean($qreq["tr/{$i}/hideconflicts"]) ?? false;
             }
 
             $xlist = $permissionizer = null;
@@ -162,7 +139,7 @@ class TrackerConfig_API {
                 $position = array_search((int) $p, $xlist->ids);
             }
 
-            $stop = $qreq->stopall || !!$qreq["tr/{$i}/stop"];
+            $stop = $qreq->stopall || (friendly_boolean($qreq["tr/{$i}/stop"]) ?? false);
 
             // Save tracker
             if ($trackerid === "new") {
@@ -185,10 +162,8 @@ class TrackerConfig_API {
 
                     $tr = MeetingTracker_Config::make($this->user, $qreq, $new_trackerid, $xlist, Conf::$now, $position, $position_at);
                     $tr->name = $name ?? "";
-                    if (!isset($vis) && $vperm === "") {
-                        $vperm = $permissionizer->default_visibility();
-                    }
-                    $tr->visibility = $vperm;
+                    $vperm = $vperm ?? $permissionizer->default_visibility();
+                    $tr->visibility = $vperm === "all" ? "" : $vperm;
                     $tr->admin_perm = $permissionizer->admin_perm();
                     $tr->logo = $logo ?? "";
                     $tr->hide_conflicts = !!($hide_conflicts ?? $this->conf->opt("trackerHideConflicts") ?? true);
@@ -249,6 +224,8 @@ class TrackerConfig_API {
     static function run(Contact $user, $qreq) {
         if (!$user->is_track_manager() || !$qreq->valid_post()) {
             return JsonResult::make_permission_error();
+        } else if (!$user->scope_allows(TokenScope::S_OTH_WRITE)) {
+            return JsonResult::make_scope_error($qreq, TokenScope::S_OTH_WRITE);
         }
         return (new TrackerConfig_API($user, $qreq))->go();
     }

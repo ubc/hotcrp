@@ -162,14 +162,6 @@
     },
     {   "name": "decision", "alias": "dec"   },
     {
-        "name": "editfinal", "deprecated": true,
-        "parse_function": "EditFinal_SearchTerm::parse", "has": "yes"
-    },
-    {
-        "name": "perm",
-        "parse_function": "Perm_SearchTerm::parse"
-    },
-    {
         "name": "tag",
         "parse_function": "Tag_SearchTerm::parse",
         "negated": false, "sorting": false, "is_hash": false, "has": "any"
@@ -292,6 +284,9 @@
         "expand_function": "Option_SearchTerm::parse_factory"
     },
 
+    {   "name": "after", "parse_function": "Time_SearchTerm::parse"   },
+    {   "name": "before", "parse_function": "Time_SearchTerm::parse", "before": true   },
+
     {
         "name": "show",
         "parse_function": "Show_SearchTerm::parse", "allow_parens": true,
@@ -299,6 +294,11 @@
     },
     {
         "name": "hide",
+        "parse_function": "Show_SearchTerm::parse", "allow_parens": true,
+        "priority": 100
+    },
+    {
+        "name": "view",
         "parse_function": "Show_SearchTerm::parse", "allow_parens": true,
         "priority": 100
     },
@@ -340,11 +340,6 @@
     {
         "name": "has",
         "parse_function": "PaperSearch::parse_has",
-        "priority": 100
-    },
-    {
-        "name": "searchcontrol",
-        "parse_function": "PaperSearch::parse_searchcontrol",
         "priority": 100
     }
 ]

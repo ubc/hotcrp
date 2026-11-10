@@ -14,6 +14,8 @@ class TagInfo {
     /** @var int */
     public $flags = 0;
     /** @var int */
+    public $setting_flags = 0;
+    /** @var int */
     public $pattern_version = 0;
     /** @var ?list<TagAnno> */
     private $_order_anno_list;
@@ -25,6 +27,8 @@ class TagInfo {
     public $autosearch_value;
     /** @var ?SearchTerm */
     private $_autosearch_term;
+    /** @var bool */
+    public $recursion = false;
     /** @var ?float */
     public $allotment;
     /** @var ?list<TagStyle> */
@@ -59,18 +63,28 @@ class TagInfo {
     const TF_IS_PATTERN = 0x200000;   // this entry is pattern
 
     const TFM_VOTES = 0x3000;
-    const TFM_DECORATION = 0xE0000;
-    const TFM_NOT_CHAIR_HIDDEN = 0x3E0;
-    const TFM_NOT_HIDDEN = 0x380;
+    const TFM_DECORATION = 0xE0000;   // STYLE, BADGE, EMOJI
+    const TFM_NOT_CHAIR_HIDDEN = 0x3E0; // bits forced off by TF_CHAIR_HIDDEN:
+                                      // OTHER_PRIVATE, PC_PUBLIC, PC,
+                                      // ADMIN_PUBLIC, HIDDEN
+    const TFM_NOT_HIDDEN = 0x380;     // bits forced off by TF_HIDDEN:
+                                      // OTHER_PRIVATE, PC_PUBLIC, PC
     const TFM_ADMIN_PUBLIC = 0x50;
     const TFM_PRIVATE = 0x204;        // permission bits for my or other private tags
     const TFM_READONLY = 0xC00;       // permission bits for readonly or chair-readonly
+    const TFM_PC_NONEDITABLE = 0x18C28; // bits that prevent editing by normal PC:
+                                      // CHAIR_HIDDEN, HIDDEN, CHAIR_READONLY,
+                                      // READONLY, AUTOMATIC, AUTOSEARCH
     const TFM_PERM = 0x3F8;           // permission bits
     const TFM_PERM_NONPRIVATE = 0x1F8; // permission bits for public tags
     const TFM_PERM_CHAIR = 0x3F8;     // permissions for sysadmins (or chairs)
     const TFM_PERM_ADMIN = 0x3E0;     // permissions for track administrators
     const TFM_PERM_NEG = 0x28;        // bits that restrict permissions relative to TF_PC
     const TFM_PERM_POS = 0x1D0;       // bits that grant permissions (not including OTHER_PRIVATE)
+    const TFM_PERM_EDIT = 0x2F8;      // permission bits that grant edit rights
+    const TFM_EDIT_RESTRICT = 0xAE00; // bits that block editing unless the editor
+                                      // holds the same bit as a capability
+                                      // (OTHER_PRIVATE, TFM_READONLY, ALLOTMENT, AUTOMATIC)
 
     /** @deprecated */
     const TF_SITEWIDE = 0x40;
@@ -78,16 +92,20 @@ class TagInfo {
     const TF_CONFLICT_FREE = 0x100;
 
     /** @param string $tag
-     * @param int $flags */
-    function __construct($tag, TagMap $tagmap, $flags = 0) {
+     * @param int $flags
+     * @param ?int $setting_flags */
+    function __construct($tag, TagMap $tagmap, $flags = 0, $setting_flags = null) {
         $this->conf = $tagmap->conf;
         $this->tag = $tag;
         $this->flags = $flags | $tagmap->all_flags;
+        $this->setting_flags = $setting_flags ?? $flags;
         if (($ks = $tagmap->known_style($tag)) !== null) {
             $this->styles[] = $ks;
+            $this->flags |= self::TF_STYLE;
         } else if (str_starts_with($tag, ":")
                    && ($e = $tagmap->check_emoji_code(strtolower($tag))) !== false) {
             $this->emoji[] = $e;
+            $this->flags |= self::TF_EMOJI;
         }
         if ($tag[0] === "~") {
             if ($tag[1] === "~") {
@@ -116,29 +134,30 @@ class TagInfo {
         }
         return $l1;
     }
-    /** @param int|TagInfo $ti */
+    /** @param TagInfo $ti */
     function merge($ti) {
         if (is_int($ti)) {
-            $this->flags |= $ti;
-        } else {
-            $this->flags |= $ti->flags & ~(self::TF_IS_PATTERN | self::TF_IS_SETTINGS);
-            if ($ti->autosearch !== null) {
-                $this->autosearch = $ti->autosearch;
-                $this->autosearch_value = $ti->autosearch_value;
-                $this->_autosearch_term = null;
-            }
-            if ($ti->allotment !== null) {
-                $this->allotment = $ti->allotment;
-            }
-            if ($ti->styles) {
-                $this->styles = self::merge_lists($this->styles, $ti->styles);
-            }
-            if ($ti->badge) {
-                $this->badge = $ti->badge;
-            }
-            if ($ti->emoji) {
-                $this->emoji = self::merge_lists($this->emoji, $ti->emoji);
-            }
+            error_log(debug_string_backtrace());
+            $ti = new TagInfo($this->tag, $this->conf->tags(), $ti);
+        }
+        $this->flags |= $ti->flags & ~(self::TF_IS_PATTERN | self::TF_IS_SETTINGS);
+        $this->setting_flags |= $ti->setting_flags;
+        if ($ti->autosearch !== null) {
+            $this->autosearch = $ti->autosearch;
+            $this->autosearch_value = $ti->autosearch_value;
+            $this->_autosearch_term = null;
+        }
+        if ($ti->allotment !== null) {
+            $this->allotment = $ti->allotment;
+        }
+        if ($ti->styles) {
+            $this->styles = self::merge_lists($this->styles, $ti->styles);
+        }
+        if ($ti->badge) {
+            $this->badge = $ti->badge;
+        }
+        if ($ti->emoji) {
+            $this->emoji = self::merge_lists($this->emoji, $ti->emoji);
         }
         if ($this->flags & self::TF_CHAIR_HIDDEN) {
             $this->flags &= ~self::TFM_NOT_CHAIR_HIDDEN;
@@ -569,7 +588,7 @@ class TagMap {
 
     function __construct(Conf $conf) {
         $this->conf = $conf;
-        $this->flags = TagInfo::TF_CHAIR_HIDDEN | TagInfo::TF_PC;
+        $this->flags = TagInfo::TF_CHAIR_HIDDEN | TagInfo::TF_PC | TagInfo::TF_STYLE | TagInfo::TF_EMOJI;
         $this->all_flags = TagInfo::TF_PC;
 
         // RGB colors taken from style.css
@@ -752,21 +771,28 @@ class TagMap {
      * @param int $flags
      * @return ?TagInfo */
     function find_having($tag, $flags) {
-        return ($this->flags & $flags) !== 0
-            && ($ti = $this->find(Tagger::tv_tag($tag)))
-            && ($ti->flags & $flags) !== 0
-            ? $ti : null;
+        if (($this->flags & $flags) !== 0
+            && ($ti = $this->find($tag))
+            && ($ti->flags & $flags) !== 0) {
+            return $ti;
+        }
+        return null;
     }
 
     /** @param string $tag
-     * @param int|TagInfo $data */
-    private function ensure_setting($tag, $data) {
+     * @param int|TagInfo $data
+     * @param ?int $setting_flags */
+    private function ensure_setting($tag, $data, $setting_flags = null) {
         if (!Tagger::basic_check($tag)) {
             return;
         }
+        if (is_int($data)) {
+            $ti = new TagInfo($tag, $this, $data, $setting_flags);
+        } else {
+            $ti = $data;
+        }
         if (strpos($tag, "*") !== false
             || ($tag[0] === "~" && $tag[1] !== "~")) {
-            $ti = is_int($data) ? new TagInfo($tag, $this, $data) : $data;
             $ti->flags |= TagInfo::TF_IS_PATTERN | TagInfo::TF_IS_SETTINGS;
             $this->setting_storage[] = $ti;
             $this->pattern_storage[] = $ti;
@@ -777,10 +803,9 @@ class TagMap {
             $ltag = strtolower($tag);
             $tix = $this->storage[$ltag] ?? null;
             if ($tix && ($tix->flags & TagInfo::TF_IS_SETTINGS) !== 0) {
-                $tix->merge($data);
+                $tix->merge($ti);
                 $ti = $tix;
             } else {
-                $ti = is_int($data) ? new TagInfo($tag, $this, $data) : $data;
                 $this->setting_storage[] = $ti;
                 if ($tix) {
                     $tix->merge($ti);
@@ -806,9 +831,10 @@ class TagMap {
         }
     }
     /** @param string $tag
-     * @param int $flags */
-    function set($tag, $flags) {
-        $this->ensure_setting($tag, $flags);
+     * @param int $flags
+     * @param ?int $setting_flags */
+    function set($tag, $flags, $setting_flags = null) {
+        $this->ensure_setting($tag, $flags, $setting_flags);
     }
     /** @param TagInfo $ti */
     function merge($ti) {
@@ -853,21 +879,24 @@ class TagMap {
     }
 
     /** @param int $flags
+     * @param bool $explicit
      * @return list<TagInfo> */
-    function settings_having($flags) {
+    function settings_having($flags, $explicit = false) {
+        $flag_key = $explicit ? "setting_flags" : "flags";
         $tis = [];
         if (($this->flags & $flags) !== 0) {
             foreach ($this->setting_storage as $ti) {
-                if (($ti->flags & $flags) !== 0)
+                if (($ti->$flag_key & $flags) !== 0)
                     $tis[] = $ti;
             }
         }
         return $tis;
     }
     /** @param int $flags
+     * @param bool $explicit
      * @return list<TagInfo> */
-    function sorted_settings_having($flags) {
-        return $this->sorted($this->settings_having($flags));
+    function sorted_settings_having($flags, $explicit = false) {
+        return $this->sorted($this->settings_having($flags, $explicit));
     }
 
     /** @param string $tag
@@ -884,15 +913,40 @@ class TagMap {
             $ti = $p & TagInfo::TF_CHAIR_PUBLIC ? $this->find($tag) : null;
             return $ti ? $ti->flags & TagInfo::TFM_PERM_NONPRIVATE : TagInfo::TF_CHAIR_HIDDEN;
         } else if ($tw === 0 || intval($tag) === $cid) {
-            return TagInfo::TF_PC | TagInfo::TF_PRIVATE;
+            return TagInfo::TF_PC | TagInfo::TF_PRIVATE | ($this->all_flags & TagInfo::TF_PC_PUBLIC);
         } else if ((($relevant_perm ?? TagInfo::TFM_PERM) & TagInfo::TF_OTHER_PRIVATE) === 0) {
             return 0;
         }
         $ti = $p & TagInfo::TF_OTHER_PRIVATE ? $this->find(substr($tag, $tw + 1)) : null;
         if ($ti && ($ti->flags & TagInfo::TF_OTHER_PRIVATE) !== 0) {
-            return TagInfo::TF_PC | TagInfo::TF_OTHER_PRIVATE;
+            return TagInfo::TF_PC | TagInfo::TF_OTHER_PRIVATE | ($this->all_flags & TagInfo::TF_PC_PUBLIC);
         }
         return TagInfo::TF_OTHER_PRIVATE;
+    }
+
+    /** @param string $tag
+     * @param int $cid
+     * @param null|int|float $index
+     * @return int */
+    function edit_flags($tag, $cid, $index = 0) {
+        $fl = $this->perm_flags($tag, $cid);
+        if (($fl & TagInfo::TFM_PRIVATE) !== 0) {
+            // private tags inherit vote restrictions from their base tags,
+            // but not automatic or readonly restrictions
+            $tw = strpos($tag, "~");
+            $ti = $this->find_having(substr($tag, $tw + 1), ~TagInfo::TFM_PERM & ~TagInfo::TF_AUTOMATIC);
+            if ($ti) {
+                $fl |= $ti->flags & ~TagInfo::TFM_PERM & ~TagInfo::TF_AUTOMATIC;
+            }
+            $fl &= ~TagInfo::TFM_READONLY;
+        } else if (($ti = $this->find_having($tag, ~TagInfo::TFM_PERM))) {
+            $fl |= $ti->flags & ~TagInfo::TFM_PERM;
+        }
+        if ($index === null || $index >= 0) {
+            // the allotment restriction only forbids negative values
+            $fl &= ~TagInfo::TF_ALLOTMENT;
+        }
+        return $fl;
     }
 
     /** @param string $tag
@@ -954,21 +1008,22 @@ class TagMap {
     function is_allotment($tag) {
         return !!$this->find_having($tag, TagInfo::TF_ALLOTMENT);
     }
+    /** Return a regex matching votish tags and their per-user forms.
+     * @return ?string */
+    function votish_tag_regex() {
+        $ltre = [];
+        foreach ($this->entries_having(TagInfo::TFM_VOTES) as $ti) {
+            $ltre[] = $ti->tag_regex();
+        }
+        if (empty($ltre)) {
+            return null;
+        }
+        return '{\A(?:\d+~|)(?:' . join("|", $ltre) . ')\z}i';
+    }
     /** @param string $tag
      * @return bool */
     function is_approval($tag) {
         return !!$this->find_having($tag, TagInfo::TF_APPROVAL);
-    }
-    /** @param string $tag
-     * @return string|false */
-    function votish_base($tag) {
-        if (($this->flags & TagInfo::TFM_VOTES) === 0
-            || ($twiddle = strpos($tag, "~")) === false) {
-            return false;
-        }
-        $tbase = substr(Tagger::tv_tag($tag), $twiddle + 1);
-        $t = $this->find($tbase);
-        return $t && ($t->flags & TagInfo::TFM_VOTES) !== 0 ? $tbase : false;
     }
     /** @param string $tag
      * @return bool */
@@ -1094,18 +1149,13 @@ class TagMap {
             return null;
         }
         $classes = [];
-        $sf = $nbg = $ndarkbg = 0;
+        $sf = $nbg = 0;
         foreach ($kss as $ks) {
             $classes[] = "tag-{$ks->style}";
             $sf |= $ks->styleflags;
             if (($ks->styleflags & TagStyle::BG) !== 0) {
                 ++$nbg;
-                if ($ks->dark())
-                    ++$ndarkbg;
             }
-        }
-        if ($nbg > 0 && $ndarkbg * 2 > $nbg) {
-            $classes[] = "dark";
         }
         if ($nbg > 0) {
             $classes[] = "tagbg"; // NB if present, tagbg must come last
@@ -1216,7 +1266,7 @@ class TagMap {
     /** @param 0|1 $ctype
      * @param ?string $tags
      * @return string */
-    function censor($ctype, $tags, Contact $user, ?PaperInfo $prow = null) {
+    function censor($ctype, $tags, ContactPermissions $user, ?PaperInfo $prow = null) {
         // empty tag optimization
         if ($tags === null || $tags === "") {
             return "";
@@ -1237,7 +1287,9 @@ class TagMap {
         $ntfl = ~$ufl & TagInfo::TFM_PERM_NEG;
         if (($ufl & TagInfo::TF_PC) === 0) {
             $ntfl |= $ufl & TagInfo::TFM_PERM_POS;
-        } else if ($ctype === self::CENSOR_SEARCH) {
+        }
+        if ($ctype === self::CENSOR_SEARCH
+            && ($ufl & (TagInfo::TF_PC | ($this->all_flags & TagInfo::TF_PC_PUBLIC))) !== 0) {
             $ntfl |= TagInfo::TF_OTHER_PRIVATE;
         }
 
@@ -1320,6 +1372,7 @@ class TagMap {
     }
 
 
+    /** @suppress PhanAccessReadOnlyProperty */
     private function merge_settings(Conf $conf) {
         assert(empty($this->storage) && empty($this->setting_storage) && empty($this->patterns));
         if ($conf->pc_can_view_conflicted_tags()) {
@@ -1328,12 +1381,12 @@ class TagMap {
             $this->setting_flags |= TagInfo::TF_PC_PUBLIC;
         }
         foreach ($conf->track_tags() as $tn) {
-            $this->set($tn, TagInfo::TF_TRACK | TagInfo::TFM_ADMIN_PUBLIC | TagInfo::TF_CHAIR_READONLY);
+            $this->set($tn, TagInfo::TF_TRACK | TagInfo::TFM_ADMIN_PUBLIC | TagInfo::TF_CHAIR_READONLY, TagInfo::TF_TRACK);
         }
         if ($conf->has_named_submission_rounds()) {
             foreach ($conf->submission_round_list() as $sr) {
                 if ($sr->tag !== "") {
-                    $this->set($sr->tag, TagInfo::TF_SCLASS | TagInfo::TF_CHAIR_READONLY);
+                    $this->set($sr->tag, TagInfo::TF_SCLASS | TagInfo::TF_PC_PUBLIC | TagInfo::TF_READONLY, TagInfo::TF_SCLASS);
                 }
             }
         }
@@ -1358,17 +1411,17 @@ class TagMap {
         $ppuf = $ppu ? 0 : TagInfo::TF_PUBLIC_PERUSER;
         $vt = $conf->setting_data("tag_vote") ?? "";
         foreach (Tagger::split_unpack($vt) as $tv) {
-            $ti = new TagInfo($tv[0], $this, TagInfo::TF_ALLOTMENT | TagInfo::TF_AUTOMATIC | $ppuf);
+            $ti = new TagInfo($tv[0], $this, TagInfo::TF_ALLOTMENT | TagInfo::TF_AUTOMATIC | $ppuf, TagInfo::TF_ALLOTMENT);
             $ti->allotment = ($tv[1] ?? 1.0);
             $this->merge($ti);
         }
         $vt = $conf->setting_data("tag_approval") ?? "";
         foreach (Tagger::split_unpack($vt) as $tv) {
-            $this->set($tv[0], TagInfo::TF_APPROVAL | TagInfo::TF_AUTOMATIC | $ppuf);
+            $this->set($tv[0], TagInfo::TF_APPROVAL | TagInfo::TF_AUTOMATIC | $ppuf, TagInfo::TF_APPROVAL);
         }
         $rt = $conf->setting_data("tag_rank") ?? "";
         foreach (Tagger::split_unpack($rt) as $tv) {
-            $this->set($tv[0], TagInfo::TF_RANK | TagInfo::TF_READONLY | $ppuf);
+            $this->set($tv[0], TagInfo::TF_RANK | TagInfo::TF_READONLY | $ppuf, TagInfo::TF_RANK);
         }
         $ct = $conf->setting_data("tag_color") ?? "";
         if ($ct !== "") {
@@ -1407,7 +1460,7 @@ class TagMap {
         $tx = $conf->setting_data("tag_autosearch") ?? "";
         if ($tx !== "") {
             foreach (json_decode($tx) ? : [] as $tag => $search) {
-                $ti = new TagInfo($tag, $this, TagInfo::TF_AUTOMATIC | TagInfo::TF_AUTOSEARCH);
+                $ti = new TagInfo($tag, $this, TagInfo::TF_AUTOMATIC | TagInfo::TF_AUTOSEARCH, TagInfo::TF_AUTOSEARCH);
                 $ti->autosearch = $search->q;
                 $ti->autosearch_value = $search->v ?? null;
                 $this->merge($ti);
@@ -1494,9 +1547,10 @@ class TagMap {
         if ($conf->setting("has_colontag")) {
             $map->flags |= TagInfo::TF_EMOJI;
         }
-        if (($t = $map->find("pc"))
-            && ($t->styles || $t->badge || $t->emoji)) {
-            $map->has_role_decoration = true;
+        foreach (["pc", "listedpc", "unlistedpc", "bot"] as $t) {
+            if ($map->find_having($t, TagInfo::TFM_DECORATION)) {
+                $map->has_role_decoration = true;
+            }
         }
         return $map;
     }
@@ -1519,8 +1573,8 @@ class Tagger {
 
     /** @var Conf */
     private $conf;
-    /** @var Contact */
-    private $contact;
+    /** @var ContactPermissions */
+    private $user;
     /** @var int */
     private $_contactId = 0;
     /** @var int */
@@ -1532,11 +1586,11 @@ class Tagger {
     private static $value_increment_map = [1, 1, 1, 1, 1, 2, 2, 2, 3, 4];
 
 
-    function __construct(Contact $contact) {
-        $this->conf = $contact->conf;
-        $this->contact = $contact;
-        if ($contact->contactId > 0) {
-            $this->_contactId = $contact->contactId;
+    function __construct(ContactPermissions $user) {
+        $this->conf = $user->conf;
+        $this->user = $user;
+        if ($user->contactId > 0) {
+            $this->_contactId = $user->contactId;
         }
     }
 
@@ -1617,21 +1671,16 @@ class Tagger {
         case self::ERANGE:
             return "<0>Tag value out of range";
         case self::ALLOWSTAR:
-            return "<0>Invalid tag{$t} (stars aren’t allowed here)";
+            return "<0>Wildcard tags aren’t allowed here";
         case self::NOCHAIR:
-            if ($this->contact->privChair) {
-                return "<0>Invalid tag{$t} (chair tags aren’t allowed here)";
-            } else {
-                return "<0>Tag{$t} reserved for chairs";
+            if ($this->user->is_chairlike()) {
+                return "<0>Chair tags aren’t allowed here";
             }
+            return "<0>You don’t have permission to access chair tag" . ($t ? : "s");
         case self::NOPRIVATE:
             return "<0>Private tags aren’t allowed here";
         case self::ALLOWCONTACTID:
-            if ($verbose && ($twiddle = strpos($this->errtag ?? "", "~"))) {
-                return "<0>Invalid tag{$t} (did you mean ‘#" . substr($this->errtag, $twiddle) . "’?)";
-            } else {
-                return "<0>Invalid private tag";
-            }
+            return "<0>You don’t have permission to access other users’ private tags";
         case self::NOVALUE:
             return "<0>Tag values aren’t allowed here";
         case self::ALLOWRESERVED:
@@ -1660,8 +1709,16 @@ class Tagger {
 
     /** @param ?string $tag
      * @param int $flags
-     * @return string|false */
+     * @return string|false
+     * @deprecated */
     function check($tag, $flags = 0) {
+        return $this->check_syntax($tag, $flags);
+    }
+
+    /** @param ?string $tag
+     * @param int $flags
+     * @return string|false */
+    function check_syntax($tag, $flags = 0) {
         if (($tag = $tag ?? "") !== "" && $tag[0] === "#") {
             $tag = substr($tag, 1);
         }
@@ -1672,11 +1729,8 @@ class Tagger {
         } else if ($tag === "") {
             return $this->set_error_code(self::EEMPTY, $tag);
         }
-        if (!$this->contact->privChair) {
-            $flags |= self::NOCHAIR;
-        }
         if (!preg_match('/\A(|~|~~|[1-9][0-9]*~)(' . TAG_REGEX_NOTWIDDLE . ')(|[#=](?:-?\d+(?:\.\d*)?|-?\.\d+|))\z/', $tag, $m)) {
-            if (preg_match('/\A([-a-zA-Z0-9!@*_:.\/\#=]+)[\s,]+\S+/', $tag, $m)
+            if (preg_match('/\A([-a-zA-Z0-9?!@*_:.\/\#=~]+)[\s,]+\S+/', $tag, $m)
                 && $this->check($m[1], $flags)) {
                 return $this->set_error_code(self::EMULTIPLE, $tag);
             }
@@ -1689,7 +1743,8 @@ class Tagger {
         if ($m[1] === "") {
             // OK
         } else if ($m[1] === "~~") {
-            if (($flags & self::NOCHAIR) !== 0) {
+            if (($flags & self::NOCHAIR) !== 0
+                || !$this->user->is_chairlike()) {
                 return $this->set_error_code(self::NOCHAIR, $tag);
             }
         } else {
@@ -1699,9 +1754,11 @@ class Tagger {
                 if ($this->_contactId) {
                     $m[1] = $this->_contactId . "~";
                 }
-            } else if ($m[1] !== $this->_contactId . "~"
-                       && ($flags & self::ALLOWCONTACTID) === 0) {
-                return $this->set_error_code(self::ALLOWCONTACTID, $tag);
+            } else if ($m[1] !== $this->_contactId . "~") {
+                if (($flags & self::ALLOWCONTACTID) === 0
+                    || stoi(substr($m[1], 0, -1)) === null) {
+                    return $this->set_error_code(self::ALLOWCONTACTID, $tag);
+                }
             }
         }
         if ($m[3] !== "" && ($flags & self::NOVALUE) !== 0) {

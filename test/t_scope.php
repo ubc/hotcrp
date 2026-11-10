@@ -25,6 +25,18 @@ class Scope_Tester {
         $this->p2 = $conf->checked_paper_by_id(2);
     }
 
+    function test_oidc_scope_grants_no_api_access() {
+        // An OIDC/identity-only scope must confer NO API access (fail closed),
+        // not collapse to null (== unrestricted, full access).
+        $u = clone $this->u_chair;
+        $u->set_scope("profile");
+        xassert(!$u->scope_allows(TokenScope::S_SUB_WRITE));
+        xassert(!$u->scope_allows(TokenScope::S_TAG_ADMIN));
+        // empty scope is still full access (intended)
+        $u->set_scope();
+        xassert($u->scope_allows(TokenScope::S_SUB_WRITE));
+    }
+
     function test_view_scopes() {
         xassert_search($this->u_chair, "1-18", "1-18");
         xassert_search($this->u_chair, "re:3", "1-18");
@@ -69,10 +81,45 @@ class Scope_Tester {
         xassert_search($this->u_floyd, "1-18", "1 3-18");
     }
 
+    function test_review_limit_requires_review_scope() {
+        $u = $this->conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        $save_rev_open = $this->conf->setting("rev_open");
+        $this->conf->save_setting("rev_open", 1);
+        $this->conf->refresh_settings();
+
+        // an unscoped reviewer selects her assignments via the review limits
+        // and sees the revtype column on those papers
+        $u->set_scope();
+        $revd = array_keys(search_json($u, ["q" => "", "t" => "r"]));
+        xassert(!empty($revd));
+        xassert_int_list_eqq(array_keys(search_json($u, ["q" => "re:me", "t" => "s"])), $revd);
+        $rv = search_json($u, ["q" => join(" ", $revd), "t" => "s"], "revtype");
+        $shown = array_values(array_filter($revd, function ($pid) use ($rv) {
+            return isset($rv[$pid]["revtype"]);
+        }));
+        xassert(!empty($shown));
+
+        // a submission:read token (no review scope) cannot learn review
+        // assignments: the review limits degrade to `none` and the revtype
+        // column is censored (HC-191)
+        $u->set_scope("submission:read");
+        xassert_search_ignore_warnings($u, ["q" => "", "t" => "r"], "");
+        xassert_search($u, ["q" => "re:me", "t" => "s"], "");
+        xassert_search_ignore_warnings($u, ["q" => "", "t" => "rout"], "");
+        $rv = search_json($u, ["q" => join(" ", $shown), "t" => "s"], "revtype");
+        foreach ($shown as $pid) {
+            xassert_eqq($rv[$pid]["revtype"] ?? null, null);
+        }
+
+        $u->set_scope();
+        $this->conf->save_setting("rev_open", $save_rev_open);
+        $this->conf->refresh_settings();
+    }
+
     function test_tag_scopes() {
         $this->u_chair->set_scope("submission:read");
         xassert(!$this->u_chair->can_view_tags());
-        xassert_search($this->u_chair, "#fart", "");
+        xassert_search_ignore_warnings($this->u_chair, "#fart", "");
         xassert(!$this->p1->has_viewable_tag("fart", $this->u_chair));
 
         $this->u_chair->set_scope("tag:read");
@@ -88,6 +135,70 @@ class Scope_Tester {
         xassert(!$this->p2->has_viewable_tag("fart", $this->u_chair));
     }
 
+    function test_tag_edit_scopes() {
+        $this->u_chair->set_scope();
+        $old_readonly = $this->conf->setting_data("tag_chair");
+        $this->conf->save_refresh_setting("tag_chair", 1, "scro");
+        $floyd_p = $this->u_floyd->contactId . "~p";
+
+        // unscoped chair has all edit powers
+        xassert($this->u_chair->can_edit_some_tag($this->p1));
+        xassert($this->u_chair->can_edit_most_tags($this->p1));
+        xassert($this->u_chair->can_edit_tag($this->p1, "fart", null, 1));
+        xassert($this->u_chair->can_edit_tag($this->p1, "~p", null, 1));
+        xassert($this->u_chair->can_edit_tag($this->p1, "scro", null, 1));
+        xassert($this->u_chair->can_edit_tag($this->p1, "~~ct", null, 1));
+        xassert($this->u_chair->can_edit_tag($this->p1, $floyd_p, null, 1));
+        xassert($this->u_chair->can_edit_tag_somewhere("scro"));
+        xassert($this->u_chair->can_edit_tag_somewhere("~~ct"));
+        xassert($this->u_chair->can_edit_tag_anno("scro"));
+
+        // tag:write allows normal editing, not admin-derived powers
+        $this->u_chair->set_scope("tag:write");
+        xassert($this->u_chair->can_edit_some_tag($this->p1));
+        xassert($this->u_chair->can_edit_most_tags($this->p1));
+        xassert($this->u_chair->can_edit_tag($this->p1, "fart", null, 1));
+        xassert($this->u_chair->can_edit_tag($this->p1, "~p", null, 1));
+        xassert(!$this->u_chair->can_edit_tag($this->p1, "scro", null, 1));
+        xassert(!$this->u_chair->can_edit_tag($this->p1, "~~ct", null, 1));
+        xassert(!$this->u_chair->can_edit_tag($this->p1, $floyd_p, null, 1));
+        xassert($this->u_chair->can_edit_tag_somewhere("fart"));
+        xassert(!$this->u_chair->can_edit_tag_somewhere("scro"));
+        xassert(!$this->u_chair->can_edit_tag_somewhere("~~ct"));
+        $why = $this->u_chair->perm_edit_tag($this->p1, "scro", null, 1);
+        xassert_eqq($why["scope"], TokenScope::S_TAG_ADMIN);
+
+        // tag:admin restores admin-derived powers
+        $this->u_chair->set_scope("tag:admin");
+        xassert($this->u_chair->can_edit_tag($this->p1, "scro", null, 1));
+        xassert($this->u_chair->can_edit_tag($this->p1, "~~ct", null, 1));
+        xassert($this->u_chair->can_edit_tag($this->p1, $floyd_p, null, 1));
+        xassert($this->u_chair->can_edit_tag_somewhere("scro"));
+        xassert($this->u_chair->can_edit_tag_anno("scro"));
+
+        // normal PC editing requires only tag:write
+        $this->u_floyd->set_scope("tag:write");
+        xassert($this->u_floyd->can_edit_tag($this->p2, "fart", null, 1));
+        xassert($this->u_floyd->can_edit_tag($this->p2, "~p", null, 1));
+        xassert(!$this->u_floyd->can_edit_tag($this->p2, "scro", null, 1));
+        xassert(!$this->u_floyd->can_edit_tag_anno("~p"));
+        xassert(!$this->u_floyd->can_edit_tag_anno("fart"));
+        xassert(!$this->u_floyd->can_edit_tag_anno("scro"));
+
+        // anno editing requires tag:admin
+        $this->u_floyd->set_scope("tag:admin");
+        xassert($this->u_floyd->can_edit_tag($this->p2, "fart", null, 1));
+        xassert($this->u_floyd->can_edit_tag($this->p2, "~p", null, 1));
+        xassert(!$this->u_floyd->can_edit_tag($this->p2, "scro", null, 1));
+        xassert($this->u_floyd->can_edit_tag_anno("~p"));
+        xassert($this->u_floyd->can_edit_tag_anno("fart"));
+        xassert(!$this->u_floyd->can_edit_tag_anno("scro"));
+
+        $this->u_chair->set_scope();
+        $this->u_floyd->set_scope();
+        $this->conf->save_refresh_setting("tag_chair", $old_readonly === null ? null : 1, $old_readonly);
+    }
+
     function test_document_scopes() {
         $this->u_chair->set_scope("submeta:read");
         $subopt = $this->conf->option_by_id(DTYPE_SUBMISSION);
@@ -98,6 +209,533 @@ class Scope_Tester {
         $subopt = $this->conf->option_by_id(DTYPE_SUBMISSION);
         xassert($this->u_chair->can_view_paper($this->p1, true));
         xassert($this->u_chair->can_view_option($this->p1, $subopt));
+    }
+
+    function test_contacts_require_write_scope() {
+        // A read-scoped token must not be able to change a submission’s
+        // contacts, even though contact edits bypass submission deadlines.
+        $this->u_chair->set_scope();
+        MailChecker::clear();
+        $u_estrin = $this->conf->checked_user_by_email("estrin@usc.edu");
+        $u_kohler = $this->conf->checked_user_by_email("kohler@seas.harvard.edu");
+        xassert($this->p1->has_author($u_estrin));
+        xassert(!$this->p1->has_author($u_kohler));
+        xassert($u_estrin->allow_edit_paper($this->p1));
+        xassert_eqq($u_estrin->perm_allow_edit_paper($this->p1), null);
+        $nstorage = $this->conf->fetch_ivalue("select count(*) from PaperStorage where paperId=1");
+
+        $u_estrin->set_scope("read");
+        $p1 = $u_estrin->checked_paper_by_id(1);
+        xassert($u_estrin->can_view_paper($p1));
+        xassert(!$u_estrin->allow_edit_paper($p1));
+        xassert(!$u_estrin->can_edit_paper($p1));
+        $whynot = $u_estrin->perm_allow_edit_paper($p1);
+        xassert_eqq($whynot["scope"] ?? null, TokenScope::S_SUB_WRITE);
+
+        $jr = call_api("=paper", $u_estrin, self::contact_json_qreq(1, $u_kohler->email));
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains(self::message_text($jr), "submeta:write");
+        $jr = call_api("=paper", $u_estrin, self::contact_form_qreq(1, $u_kohler, true));
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains(self::message_text($jr), "submeta:write");
+        $jr = call_api("=assign", $u_estrin, self::contact_assign_qreq(1, $u_kohler, true));
+        xassert_eqq($jr->ok, false);
+        xassert_eqq($jr->status_code ?? null, 403);
+        xassert_str_contains(self::message_text($jr), "submeta:write");
+        xassert(!$this->conf->checked_paper_by_id(1)->has_author($u_kohler));
+
+        // ...including on a dry run
+        $jr = call_api("=paper", $u_estrin, TestQreq::post_json(["pid" => 1, "title" => "", "contacts" => [$u_kohler->email => true]], ["p" => 1, "dry_run" => 1]));
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains(self::message_text($jr), "submeta:write");
+
+        // the request is refused before anything is stored: no placeholder
+        // account for a new contact, no document upload
+        $jr = call_api("=paper", $u_estrin, self::contact_json_qreq(1, "scoped-nobody@_.com"));
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains(self::message_text($jr), "submeta:write");
+        xassert(!$this->conf->fresh_user_by_email("scoped-nobody@_.com"));
+        $jr = call_api("=paper", $u_estrin, TestQreq::post_json(["pid" => 1, "submission" => ["content" => "%PDF-read-scoped\n", "type" => "application/pdf"]], ["p" => 1]));
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains(self::message_text($jr), "submeta:write");
+        xassert_eqq($this->conf->fetch_ivalue("select count(*) from PaperStorage where paperId=1"), $nstorage);
+
+        // same for read-scoped administrators
+        $this->u_chair->set_scope("read");
+        $p1 = $this->u_chair->checked_paper_by_id(1);
+        xassert($this->u_chair->allow_admin($p1));
+        xassert(!$this->u_chair->allow_edit_paper($p1));
+        $jr = call_api("=paper", $this->u_chair, self::contact_form_qreq(1, $u_kohler, true));
+        xassert_eqq($jr->ok, false);
+        xassert_str_contains(self::message_text($jr), "submeta:write");
+        $jr = call_api("=assign", $this->u_chair, self::contact_assign_qreq(1, $u_kohler, true));
+        xassert_eqq($jr->ok, false);
+        xassert_eqq($jr->status_code ?? null, 403);
+        xassert_str_contains(self::message_text($jr), "can’t administer");
+        xassert(!$this->conf->checked_paper_by_id(1)->has_author($u_kohler));
+        $this->u_chair->set_scope();
+        MailChecker::check0();
+
+        // write scope suffices
+        $u_estrin->set_scope("submission:write");
+        $p1 = $u_estrin->checked_paper_by_id(1);
+        xassert($u_estrin->allow_edit_paper($p1));
+        $jr = call_api("=paper", $u_estrin, self::contact_form_qreq(1, $u_kohler, true));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->change_list, ["contacts"]);
+        xassert($this->conf->checked_paper_by_id(1)->has_author($u_kohler));
+
+        $jr = call_api("=paper", $u_estrin, self::contact_form_qreq(1, $u_kohler, false));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->change_list, ["contacts"]);
+        xassert(!$this->conf->checked_paper_by_id(1)->has_author($u_kohler));
+
+        $jr = call_api("=assign", $u_estrin, self::contact_assign_qreq(1, $u_kohler, true));
+        xassert_eqq($jr->ok, true);
+        xassert($this->conf->checked_paper_by_id(1)->has_author($u_kohler));
+        $jr = call_api("=paper", $u_estrin, self::contact_form_qreq(1, $u_kohler, false));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->change_list, ["contacts"]);
+        xassert(!$this->conf->checked_paper_by_id(1)->has_author($u_kohler));
+        $u_estrin->set_scope();
+        MailChecker::clear();
+
+        // non-PC authors with `none` or `read` scope cannot add or remove
+        // contacts via api/assign either
+        $u_micke = $this->conf->checked_user_by_email("micke@cdt.luth.se");
+        $u_randy = $this->conf->checked_user_by_email("randy@cs.berkeley.edu");
+        xassert_eqq($u_micke->roles & Contact::ROLE_PCLIKE, 0);
+        xassert($this->p2->has_author($u_micke));
+        xassert(!$this->p2->has_author($u_randy));
+        // (give #2 a second contact, so that `clearcontact` refusals below
+        // are about scope, not about removing the last contact)
+        xassert_assign($this->u_chair, "action,paper,email\ncontact,2,{$u_kohler->email}\n");
+        xassert($this->conf->checked_paper_by_id(2)->has_author($u_kohler));
+        MailChecker::clear();
+        foreach (["none", "read"] as $scope) {
+            $u_micke->set_scope($scope);
+            $jr = call_api("=assign", $u_micke, self::contact_assign_qreq(2, $u_randy, true));
+            xassert_eqq($jr->ok, false);
+            xassert_eqq($jr->status_code ?? null, 403);
+            xassert_str_contains(self::message_text($jr), "submeta:write");
+            xassert(!$this->conf->checked_paper_by_id(2)->has_author($u_randy));
+            $jr = call_api("=assign", $u_micke, self::contact_assign_qreq(2, $u_kohler, false));
+            xassert_eqq($jr->ok, false);
+            xassert_eqq($jr->status_code ?? null, 403);
+            xassert_str_contains(self::message_text($jr), "submeta:write");
+            xassert($this->conf->checked_paper_by_id(2)->has_author($u_kohler));
+        }
+        MailChecker::check0();
+        $u_micke->set_scope("submission:write");
+        $jr = call_api("=assign", $u_micke, self::contact_assign_qreq(2, $u_randy, true));
+        xassert_eqq($jr->ok, true);
+        xassert($this->conf->checked_paper_by_id(2)->has_author($u_randy));
+        $jr = call_api("=assign", $u_micke, self::contact_assign_qreq(2, $u_kohler, false));
+        xassert_eqq($jr->ok, true);
+        xassert(!$this->conf->checked_paper_by_id(2)->has_author($u_kohler));
+        $u_micke->set_scope();
+
+        $jr = call_api("=paper", $this->u_chair, self::contact_form_qreq(2, $u_randy, false));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->change_list, ["contacts"]);
+        $p2 = $this->conf->checked_paper_by_id(2);
+        xassert(!$p2->has_author($u_randy));
+        xassert(!$p2->has_author($u_kohler));
+        MailChecker::clear();
+    }
+
+    function test_potential_conflicts_scope() {
+        // Previewing potential conflicts for unsaved authors runs the save
+        // machinery, so it requires write scope; reporting them for the
+        // saved authors does not.
+        $this->u_chair->set_scope();
+        $u_estrin = $this->conf->checked_user_by_email("estrin@usc.edu");
+        $preview = ["p" => 1, "has_authors" => 1, "authors:1:email" => "huitema@bellcore.com", "authors:1:name" => "Christian Huitema", "authors:1:affiliation" => "Bellcore"];
+        foreach ([$this->u_chair, $u_estrin] as $u) {
+            $u->set_scope();
+            $saved = self::potential_conflict_emails(call_api("potentialconflicts", $u, TestQreq::get(["p" => 1])));
+            xassert_in_eqq("floyd@ee.lbl.gov", $saved);
+            xassert_not_in_eqq("huitema@bellcore.com", $saved);
+            $unsaved = self::potential_conflict_emails(call_api("potentialconflicts", $u, TestQreq::get($preview)));
+            xassert_in_eqq("huitema@bellcore.com", $unsaved);
+            xassert_not_in_eqq("floyd@ee.lbl.gov", $unsaved);
+
+            $u->set_scope("read");
+            xassert_eqq(self::potential_conflict_emails(call_api("potentialconflicts", $u, TestQreq::get(["p" => 1]))), $saved);
+            $resp = call_api_result("potentialconflicts", $u, TestQreq::get($preview));
+            self::xassert_scope_error($resp, "submeta:write");
+            xassert(!isset($resp->content["potential_conflicts"]));
+
+            $u->set_scope("submission:write");
+            xassert_eqq(self::potential_conflict_emails(call_api("potentialconflicts", $u, TestQreq::get(["p" => 1]))), $saved);
+            xassert_eqq(self::potential_conflict_emails(call_api("potentialconflicts", $u, TestQreq::get($preview))), $unsaved);
+            $u->set_scope();
+        }
+    }
+
+    /** @param object $jr
+     * @return list<string> */
+    static private function potential_conflict_emails($jr) {
+        xassert_eqq($jr->ok, true);
+        $e = [];
+        foreach ($jr->potential_conflicts ?? [] as $pcj) {
+            $e[] = $pcj->email;
+        }
+        sort($e);
+        return $e;
+    }
+
+    function test_scope_error_does_not_reveal_papers() {
+        // a token without paper scope learns about a paper only if the user
+        // could see it with a wider token
+        $u = $this->conf->checked_user_by_email("puneet@catarina.usc.edu");
+        xassert(!$u->isPC);
+        $own = $this->conf->checked_paper_by_id(1);
+        xassert($own->has_author($u));
+        $other = $this->conf->checked_paper_by_id(2);
+        xassert(!$other->has_author($u));
+        xassert(!$u->can_view_paper($other));
+        xassert(!$this->conf->paper_by_id(9999));
+
+        $answer = function ($pid) use ($u) {
+            $resp = call_api_result("paper", $u, TestQreq::get(["p" => $pid]));
+            $j = $resp->content;
+            return [$resp->response_code(), str_replace("#{$pid}", "#N", json_encode($j["message_list"] ?? []))];
+        };
+        foreach (["settings:read", "submission:read#9998"] as $scope) {
+            $u->set_scope($scope);
+            xassert_eqq($answer(2), $answer(9999), $scope);
+            xassert_eqq($answer(2)[0], 404, $scope);
+            // the user's own paper reports the scope it lacks
+            $resp = call_api_result("paper", $u, TestQreq::get(["p" => 1]));
+            self::xassert_scope_error($resp, "submeta:read");
+        }
+        $u->set_scope();
+    }
+
+    function test_document_scope_error_names_missing_scope() {
+        // a document request from a token without paper scope reports the
+        // missing scope when the user could see the paper, even if not its
+        // documents
+        $u = $this->conf->checked_user_by_email("marina@poema.ru");
+        $old_ctype = $this->conf->fetch_ivalue("select conflictType from PaperConflict where paperId=1 and contactId=?", $u->contactId);
+        $root = $this->conf->root_user();
+        $as = (new AssignmentSet($root))->set_override_conflicts(true);
+        $as->parse("paper,action,user\n1,conflict,marina@poema.ru\n");
+        xassert($as->execute());
+        $old_confpdf = $this->conf->setting("pc_confpdf");
+        $this->conf->save_refresh_setting("pc_confpdf", 1);
+        Contact::update_rights();
+
+        $prow = $this->conf->checked_paper_by_id(1, $u);
+        xassert($u->can_view_paper($prow));
+        xassert(!$u->can_view_pdf($prow));
+        $u->set_scope("settings:read");
+        $fr = $u->perm_view_paper($prow, false);
+        xassert_eqq([$fr->unparse_text(), $fr->response_code()], ["Action requires scope ‘submeta:read’", 403]);
+        $fr = $u->perm_view_paper($prow, true);
+        xassert_eqq([$fr->unparse_text(), $fr->response_code()], ["Action requires scope ‘submeta:read’", 403]);
+        // with paper scope, the documents themselves are refused
+        $u->set_scope("submission:read");
+        $fr = $u->perm_view_paper($prow, true);
+        xassert_eqq($fr->response_code(), 403);
+        xassert_str_contains($fr->unparse_text(), "documents");
+        $u->set_scope();
+
+        $this->conf->save_refresh_setting("pc_confpdf", $old_confpdf);
+        if ($old_ctype === null) {
+            $this->conf->qe("delete from PaperConflict where paperId=1 and contactId=?", $u->contactId);
+        } else {
+            $this->conf->qe("update PaperConflict set conflictType=? where paperId=1 and contactId=?", $old_ctype, $u->contactId);
+        }
+        Contact::update_rights();
+    }
+
+    function test_api_scope_gate_obeys_paper_selectors() {
+        // an endpoint's declared scope may be granted for a single paper
+        $this->u_chair->set_scope("paper:admin#1");
+        $jr = call_api("=paper", $this->u_chair, TestQreq::delete(["p" => 1, "dry_run" => 1]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->change_list, ["delete"]);
+        $jr = call_api("share", $this->u_chair, TestQreq::get(["p" => 1]));
+        xassert_eqq($jr->ok, true);
+
+        // ...but not for another
+        $this->u_chair->set_scope("paper:admin#2");
+        $resp = call_api_result("=paper", $this->u_chair, TestQreq::delete(["p" => 1, "dry_run" => 1]));
+        self::xassert_scope_error($resp, "paper:admin");
+        $resp = call_api_result("share", $this->u_chair, TestQreq::get(["p" => 1]));
+        self::xassert_scope_error($resp, "submeta:admin");
+
+        // a `p` parameter doesn't stretch a paper grant to an endpoint that
+        // isn't about a paper
+        $this->u_chair->set_scope("tag:read#1");
+        $resp = call_api_result("alltags", $this->u_chair, TestQreq::get(["p" => 1]));
+        self::xassert_scope_error($resp, "tag:read");
+        $this->u_chair->set_scope();
+        xassert(!!$this->conf->paper_by_id(1));
+    }
+
+    function test_share_requires_admin_scope() {
+        // The submission’s author-view share link is a bearer credential, so
+        // obtaining, creating, rotating, or revoking it requires
+        // `submeta:admin` scope — a `write`-scoped token is not enough —
+        // through either /api/share or /api/assign.
+        $this->u_chair->set_scope();
+        $u_estrin = $this->conf->checked_user_by_email("estrin@usc.edu");
+        $p1 = $this->conf->checked_paper_by_id(1);
+        $minted = [];
+        if (!($tok0 = AuthorView_Capability::find($p1))) {
+            $tok0 = AuthorView_Capability::make($p1, AuthorView_Capability::AV_CREATE);
+            $minted[] = $tok0->salt;
+        }
+        $had_tok0 = empty($minted);
+        $salt0 = $tok0->salt;
+        xassert(is_string($salt0));
+        xassert_eqq($this->share_salt(1), $salt0);
+
+        // scopes without submeta:admin -- including write -- are refused
+        // (the error names the lowest scope tier still missing)
+        foreach (["none", "read", "submission:write"] as $scope) {
+            $u_estrin->set_scope($scope);
+            $resp = call_api_result("share", $u_estrin, TestQreq::get(["p" => 1]));
+            self::xassert_scope_error($resp, "submeta:admin");
+            xassert(!isset($resp->content["token"]));
+            xassert(!isset($resp->content["url"]));
+            $resp = call_api_result("=share", $u_estrin, TestQreq::post(["p" => 1, "share" => "new"]));
+            self::xassert_scope_error($resp, "submeta:admin");
+            xassert(!isset($resp->content["token"]));
+            $jr = call_api("=assign", $u_estrin, self::assign_qreq("action,paper,share\nshare,1,new\n"));
+            xassert_eqq($jr->ok, false);
+            xassert_eqq($jr->status_code ?? null, 403);
+            xassert_eqq($this->share_salt(1), $salt0);
+        }
+
+        // nor can a read-scoped administrator fetch it (write is the first
+        // scope tier still missing)
+        $this->u_chair->set_scope("read");
+        $resp = call_api_result("share", $this->u_chair, TestQreq::get(["p" => 1]));
+        self::xassert_scope_error($resp, "submeta:admin");
+        xassert(!isset($resp->content["token"]));
+        $this->u_chair->set_scope();
+
+        // `submeta:admin paper:read` scope can fetch, create, rotate, revoke
+        $u_estrin->set_scope("submission:admin paper:read");
+        $jr = call_api("share", $u_estrin, TestQreq::get(["p" => 1]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->token, $salt0);
+        xassert(is_string($jr->url));
+        $jr = call_api("=share", $u_estrin, TestQreq::post(["p" => 1, "share" => "new"]));
+        xassert_eqq($jr->ok, true);
+        xassert(is_string($jr->token));
+        xassert_neqq($jr->token, $salt0);
+        $minted[] = $salt1 = $jr->token;
+        xassert_eqq($this->share_salt(1), $salt1);
+
+        // write scope is still refused on the assign route
+        $u_estrin->set_scope("submission:write");
+        $jr = call_api("=assign", $u_estrin, self::assign_qreq("action,paper,share\nshare,1,no\n"));
+        xassert_eqq($jr->ok, false);
+        xassert_eqq($this->share_salt(1), $salt1);
+
+        $u_estrin->set_scope("submission:admin paper:read");
+        $jr = call_api("share", $u_estrin, TestQreq::delete(["p" => 1]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($jr->token, null);
+        xassert_eqq($this->share_salt(1), null);
+
+        $jr = call_api("=assign", $u_estrin, self::assign_qreq("action,paper,share\nshare,1,new\n"));
+        xassert_eqq($jr->ok, true);
+        $minted[] = $salt2 = $this->share_salt(1);
+        xassert(is_string($salt2));
+        xassert_neqq($salt2, $salt1);
+        $jr = call_api("=assign", $u_estrin, self::assign_qreq("action,paper,share\nshare,1,no\n"));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($this->share_salt(1), null);
+        $u_estrin->set_scope();
+
+        // restore the original link, if any, and forget the ones made here
+        $this->conf->qe("delete from Capability where salt?a", $minted);
+        if ($had_tok0) {
+            $this->conf->qe("update Capability set timeInvalid=?, timeExpires=? where salt=?", $tok0->timeInvalid, $tok0->timeExpires, $salt0);
+        }
+        xassert_eqq($this->share_salt(1), $had_tok0 ? $salt0 : null);
+    }
+
+    /** @param int $pid
+     * @return ?int */
+    private function watch($pid, Contact $u) {
+        return $this->conf->fetch_ivalue("select watch from PaperWatch where paperId=? and contactId=?", $pid, $u->contactId);
+    }
+
+    /** @param int $pid
+     * @param ?int $w */
+    private function restore_watch($pid, Contact $u, $w) {
+        if ($w === null) {
+            $this->conf->qe("delete from PaperWatch where paperId=? and contactId=?", $pid, $u->contactId);
+        } else {
+            $this->conf->qe("insert into PaperWatch set paperId=?, contactId=?, watch=? on duplicate key update watch=?", $pid, $u->contactId, $w, $w);
+        }
+    }
+
+    /** @param ?int $w
+     * @return bool */
+    static private function following($w) {
+        return (($w ?? 0) & Contact::WATCH_REVIEW) !== 0;
+    }
+
+    function test_follow_requires_write_scope() {
+        // Changing follow state is a write: `other:write` for your own, and
+        // `submeta:admin` as well for another user’s, via /api/follow or
+        // /api/assign.
+        $u_lixia = $this->conf->checked_user_by_email("lixia@cs.ucla.edu");
+        $w_floyd = $this->watch(1, $this->u_floyd);
+        $w_lixia = $this->watch(6, $u_lixia);
+        $want = !self::following($w_floyd);
+        $want_lixia = !self::following($w_lixia);
+        $yn = $want ? "yes" : "no";
+        $yn_lixia = $want_lixia ? "yes" : "no";
+
+        // read scope can’t change your own follow state
+        $this->u_floyd->set_scope("read");
+        $jr = call_api("=assign", $this->u_floyd, self::assign_qreq("action,paper,following\nfollow,1,{$yn}\n"));
+        xassert_eqq($jr->ok, false);
+        $resp = call_api_result("=follow", $this->u_floyd, TestQreq::post(["p" => 1, "following" => $want ? "1" : "0"]));
+        self::xassert_scope_error($resp, "other:write");
+        xassert_eqq($this->watch(1, $this->u_floyd), $w_floyd);
+
+        // other:write can, by either route
+        $this->u_floyd->set_scope("read other:write");
+        $jr = call_api("=follow", $this->u_floyd, TestQreq::post(["p" => 1, "following" => $want ? "1" : "0"]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(self::following($this->watch(1, $this->u_floyd)), $want);
+        $nyn = $want ? "no" : "yes";
+        $jr = call_api("=assign", $this->u_floyd, self::assign_qreq("action,paper,following\nfollow,1,{$nyn}\n"));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(self::following($this->watch(1, $this->u_floyd)), !$want);
+
+        // changing another user’s follow state also requires submeta:admin
+        foreach (["read", "read other:write"] as $scope) {
+            $this->u_chair->set_scope($scope);
+            $jr = call_api("=assign", $this->u_chair, self::assign_qreq("action,paper,email,following\nfollow,6,{$u_lixia->email},{$yn_lixia}\n"));
+            xassert_eqq($jr->ok, false);
+            $resp = call_api_result("=follow", $this->u_chair, TestQreq::post(["p" => 6, "u" => $u_lixia->email, "following" => $want_lixia ? "1" : "0"]));
+            self::xassert_scope_error($resp, $scope === "read" ? "other:write" : "submeta:admin");
+            xassert_eqq($this->watch(6, $u_lixia), $w_lixia);
+        }
+        $this->u_chair->set_scope("read other:write submission:admin");
+        $jr = call_api("=follow", $this->u_chair, TestQreq::post(["p" => 6, "u" => $u_lixia->email, "following" => $want_lixia ? "1" : "0"]));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(self::following($this->watch(6, $u_lixia)), $want_lixia);
+        $nyn_lixia = $want_lixia ? "no" : "yes";
+        $jr = call_api("=assign", $this->u_chair, self::assign_qreq("action,paper,email,following\nfollow,6,{$u_lixia->email},{$nyn_lixia}\n"));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq(self::following($this->watch(6, $u_lixia)), !$want_lixia);
+
+        $this->u_chair->set_scope();
+        $this->u_floyd->set_scope();
+        $this->restore_watch(1, $this->u_floyd, $w_floyd);
+        $this->restore_watch(6, $u_lixia, $w_lixia);
+    }
+
+    /** @param int $pid
+     * @return ?string */
+    private function share_salt($pid) {
+        $tok = AuthorView_Capability::find($this->conf->checked_paper_by_id($pid));
+        return $tok ? $tok->salt : null;
+    }
+
+    function test_withdraw_reason_requires_write_scope() {
+        // A `none`- or `read`-scoped author token must not be able to
+        // change a withdrawn submission’s withdrawal reason. (Reviving was
+        // already refused by perm_revive_paper; check it stays that way.)
+        $this->u_chair->set_scope();
+        MailChecker::clear();
+        $u_micke = $this->conf->checked_user_by_email("micke@cdt.luth.se");
+        $p2 = $this->conf->checked_paper_by_id(2);
+        xassert($p2->has_author($u_micke));
+        xassert($p2->timeWithdrawn <= 0);
+        xassert($p2->timeSubmitted > 0);
+        $reason0 = $p2->withdrawReason;
+        $tags0 = $p2->all_tags_text();
+        xassert_assign($this->u_chair, "action,paper,withdraw_reason,notify\nwithdraw,2,Chair reason,no\n");
+        $p2 = $this->conf->checked_paper_by_id(2);
+        xassert($p2->timeWithdrawn > 0);
+        xassert_eqq($p2->withdrawReason, "Chair reason");
+        MailChecker::clear();
+
+        foreach (["none", "read"] as $scope) {
+            $u_micke->set_scope($scope);
+            $jr = call_api("=assign", $u_micke, self::assign_qreq("action,paper,withdraw_reason\nwithdraw,2,Scoped {$scope}\n"));
+            xassert_eqq($jr->ok, false);
+            xassert_eqq($jr->status_code ?? null, 403);
+            xassert_str_contains(self::message_text($jr), "submeta:write");
+            $jr = call_api("=assign", $u_micke, self::assign_qreq("action,paper\nrevive,2\n"));
+            xassert_eqq($jr->ok, false);
+            xassert_str_contains(self::message_text($jr), "submeta:write");
+            $p2 = $this->conf->checked_paper_by_id(2);
+            xassert($p2->timeWithdrawn > 0);
+            xassert_eqq($p2->withdrawReason, "Chair reason");
+        }
+        MailChecker::check0();
+
+        $u_micke->set_scope("submission:write");
+        $jr = call_api("=assign", $u_micke, self::assign_qreq("action,paper,withdraw_reason\nwithdraw,2,Author reason\n"));
+        xassert_eqq($jr->ok, true);
+        xassert_eqq($this->conf->checked_paper_by_id(2)->withdrawReason, "Author reason");
+        $u_micke->set_scope();
+
+        // restore #2
+        xassert_assign($this->u_chair, "action,paper\nrevive,2\n");
+        $this->conf->qe("update Paper set withdrawReason=? where paperId=2", $reason0);
+        $p2 = $this->conf->checked_paper_by_id(2);
+        xassert($p2->timeWithdrawn <= 0);
+        xassert($p2->timeSubmitted > 0);
+        xassert_eqq($p2->withdrawReason, $reason0);
+        xassert_eqq($p2->all_tags_text(), $tags0);
+        MailChecker::clear();
+    }
+
+    /** @param int $pid
+     * @param string $email
+     * @return Qrequest */
+    static private function contact_json_qreq($pid, $email) {
+        return TestQreq::post_json(["pid" => $pid, "contacts" => [$email => true]], ["p" => $pid]);
+    }
+
+    /** @param int $pid
+     * @param bool $active
+     * @return Qrequest */
+    static private function contact_form_qreq($pid, Contact $u, $active) {
+        $args = ["p" => $pid, "status:phase" => "contacts", "has_contacts" => 1, "contacts:1:email" => $u->email, "has_contacts:1:active" => 1];
+        if ($active) {
+            $args["contacts:1:active"] = 1;
+        }
+        return TestQreq::post($args);
+    }
+
+    /** @param int $pid
+     * @param bool $active
+     * @return Qrequest */
+    static private function contact_assign_qreq($pid, Contact $u, $active) {
+        $action = $active ? "contact" : "clearcontact";
+        return self::assign_qreq("action,paper,email\n{$action},{$pid},{$u->email}\n");
+    }
+
+    /** @param string $csv
+     * @return Qrequest */
+    static private function assign_qreq($csv) {
+        return TestQreq::post(["assignments" => $csv]);
+    }
+
+    /** @param object $jr
+     * @return string */
+    static private function message_text($jr) {
+        $t = [];
+        foreach ($jr->message_list ?? [] as $mi) {
+            $t[] = $mi->message;
+        }
+        return join("\n", $t);
     }
 
     function test_token_scope_operations() {
@@ -115,7 +753,7 @@ class Scope_Tester {
         xassert_eqq(TokenScope::unparse(TokenScope::intersect($s1, $s2)), "tag:read submission:read#p tag:write#p");
 
         xassert_eqq(TokenScope::unparse_missing_bits(TokenScope::S_CMT_READ | TokenScope::S_TAG_WRITE), ["comment:read", "tag:write"]);
-        xassert_eqq(TokenScope::unparse_missing_bits(TokenScope::S_CMT_READ | TokenScope::S_TAG_READ | TokenScope::S_SUB_READ | TokenScope::S_DOC_READ | TokenScope::S_REV_READ), ["paper:read"]);
+        xassert_eqq(TokenScope::unparse_missing_bits(TokenScope::S_CMT_READ | TokenScope::S_TAG_READ | TokenScope::S_SUB_READ | TokenScope::S_DOC_READ | TokenScope::S_REV_READ | TokenScope::S_PREF_READ | TokenScope::S_REACT_READ), ["paper:read"]);
 
         xassert(TokenScope::scope_str_all_openid("openid"));
         xassert(!TokenScope::scope_str_all_openid("openid all"));
@@ -123,6 +761,150 @@ class Scope_Tester {
 
         $s = TokenScope::parse("all#r2-forced", $this->u_chair);
         xassert_eqq(TokenScope::unparse($s), "all#r2-forced");
+
+        // a scope reparsed from its unparsing (as when an api/autoassign
+        // job replays the requesting token’s scope) grants what the
+        // original did
+        foreach (["submission:read", "openid email", "read review:admin#1",
+                  "submission:read tag:write#green review:write#~~vote",
+                  "paper:admin?q=1-3+OR+%23red", "submeta:admin#2 review:read#2"] as $str) {
+            $s1 = TokenScope::parse($str, $this->u_chair);
+            $s2 = TokenScope::parse(TokenScope::unparse($s1), $this->u_chair);
+            xassert_neqq($s2, null);
+            xassert_eqq(TokenScope::unparse($s2), TokenScope::unparse($s1));
+            foreach ([TokenScope::S_SUB_READ, TokenScope::S_REV_ADMIN, TokenScope::S_TAG_WRITE,
+                      TokenScope::S_SUB_ADMIN | TokenScope::S_REV_READ] as $bits) {
+                foreach ([null, $this->p1, $this->p2] as $prow) {
+                    xassert_eqq($s2->allows($bits, $prow), $s1->allows($bits, $prow));
+                }
+            }
+        }
+    }
+
+    function test_token_scope_intersect() {
+        $u = $this->u_chair;
+        $isect = function ($a, $b) use ($u) {
+            return TokenScope::unparse(TokenScope::intersect(
+                $a === null ? null : TokenScope::parse($a, $u), $b));
+        };
+
+        // the same selector on both sides keeps the rights both grant there
+        xassert_eqq($isect("read#1", "write#1"), "read#1");
+        xassert_eqq($isect("tag:write#1", "tag:read#1 comment:read#1"), "tag:read#1");
+        // a selector on one side is bounded by the other side's general rights
+        xassert_eqq($isect("tag:write#1", "read"), "tag:read#1");
+        xassert_eqq($isect("read", "tag:write#1"), "tag:read#1");
+        xassert_eqq($isect("read write#1", "write"), "read write#1");
+        // ...and vanishes if those general rights add nothing
+        xassert_eqq($isect("read#1", "read#2"), "none");
+        xassert_eqq($isect("read write#1", "read"), "read");
+        // selectors of different kinds never match
+        xassert_eqq($isect("read#1", "read?q=1"), "none");
+        // a missing side is no limit
+        xassert_eqq($isect(null, "read#1"), "read#1");
+        xassert_eqq($isect("read#1", null), "read#1");
+        xassert_eqq($isect(null, null), "all");
+        xassert_eqq($isect("all", "tag:read#1"), "tag:read#1");
+        // general rights aren't repeated on a selector, so a scope intersected
+        // with itself is unchanged
+        foreach (["read paper:write#5", "read tag:write#red", "read paper:write#5 tag:write#6",
+                  "submission:read review:write#3"] as $s) {
+            xassert_eqq($isect($s, $s), $s);
+        }
+
+        // the intersection never grants what either side withholds, on any
+        // paper; where both sides use the same selector it grants exactly
+        // what both grant
+        $scopes = ["read", "write", "tag:read", "tag:write#1", "read#1", "write#1",
+                   "read write#2", "submission:read#1 review:write#1",
+                   "paper:admin?q=1", "read?q=1-2", "none", "all"];
+        $bits = [TokenScope::S_SUB_READ, TokenScope::S_SUB_WRITE, TokenScope::S_TAG_READ,
+                 TokenScope::S_TAG_WRITE, TokenScope::S_REV_WRITE, TokenScope::S_REV_ADMIN];
+        foreach ($scopes as $a) {
+            $ta = TokenScope::parse($a, $u);
+            foreach ($scopes as $b) {
+                $tb = TokenScope::parse($b, $u);
+                $ti = TokenScope::intersect($ta, $tb);
+                foreach ([null, $this->p1, $this->p2] as $prow) {
+                    foreach ($bits as $bit) {
+                        $aok = !$ta || $ta->allows($bit, $prow);
+                        $bok = !$tb || $tb->allows($bit, $prow);
+                        $iok = !$ti || $ti->allows($bit, $prow);
+                        xassert(!$iok || ($aok && $bok), "{$a} ∩ {$b}");
+                        if (!str_contains($a . $b, "?q=")
+                            && ($a === "read#1" || $a === "write#1")
+                            && ($b === "read#1" || $b === "write#1")) {
+                            xassert_eqq($iok, $aok && $bok, "{$a} ∩ {$b}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    function test_job_user_scope() {
+        // a job records the scope of the token that started it and runs with
+        // it, on a fresh user, so the shared cached user stays unscoped
+        $u = clone $this->u_chair;
+        $u->set_scope("submission:read#1 tag:write#1");
+        $tok = Job_Token::make($u, "Autoassign", [])->insert();
+        try {
+            $tok = Job_Token::find($tok->salt, $this->conf);
+            xassert_eqq($tok->input("scope"), "submission:read#1 tag:write#1");
+            $ju = $tok->job_user();
+            xassert_eqq($ju->contactId, $this->u_chair->contactId);
+            xassert_eqq(TokenScope::unparse($ju->scope()), "submission:read#1 tag:write#1");
+            xassert($ju->scope_allows(TokenScope::S_SUB_READ, $ju->checked_paper_by_id(1)));
+            xassert(!$ju->scope_allows(TokenScope::S_SUB_READ, $ju->checked_paper_by_id(2)));
+            xassert($ju->scope_allows(TokenScope::S_TAG_WRITE, $ju->checked_paper_by_id(1)));
+            xassert(!$ju->scope_allows(TokenScope::S_TAG_WRITE, $ju->checked_paper_by_id(2)));
+            xassert($ju !== $this->conf->user_by_id($this->u_chair->contactId));
+            xassert(!$this->conf->user_by_id($this->u_chair->contactId)->has_scope());
+        } finally {
+            $this->conf->qe("delete from Capability where salt=?", $tok->salt);
+        }
+
+        // an unscoped request records no scope, and runs unscoped
+        $tok = Job_Token::make($this->conf->user_by_id($this->u_chair->contactId), "Autoassign", [])->insert();
+        try {
+            $tok = Job_Token::find($tok->salt, $this->conf);
+            xassert_eqq($tok->input("scope"), null);
+            xassert(!$tok->job_user()->has_scope());
+        } finally {
+            $this->conf->qe("delete from Capability where salt=?", $tok->salt);
+        }
+    }
+
+    function test_job_requires_account() {
+        // a job made by the root user runs as root...
+        $tok = Job_Token::make($this->conf->root_user(), "Autoassign", []);
+        xassert($tok->job_user()->is_root_user());
+
+        // ...but a user whose account can't be created can't make one
+        try {
+            Job_Token::make(Contact::make_email($this->conf, "not-an-email"), "Autoassign", []);
+            $made = true;
+        } catch (Exception $ex) {
+            $made = false;
+        }
+        xassert(!$made);
+    }
+
+    function test_scope_str_split_openid() {
+        xassert_array_eqq(TokenScope::scope_str_split_openid(null), ["", ""]);
+        xassert_array_eqq(TokenScope::scope_str_split_openid("   "), ["", ""]);
+        xassert_array_eqq(TokenScope::scope_str_split_openid("openid email profile address phone"), ["openid email profile address phone", ""]);
+        xassert_array_eqq(TokenScope::scope_str_split_openid("read"), ["", "read"]);
+        xassert_array_eqq(TokenScope::scope_str_split_openid("openid#2 email"), ["email", "openid#2"]);
+    }
+
+    function test_malformed_openid_scope() {
+        $ts = TokenScope::parse("openid#2", $this->u_chair);
+        xassert_neqq($ts, null);
+        xassert_eqq(TokenScope::unparse($ts), "none");
+        xassert(!$ts->has_selector());
+        xassert(!TokenScope::scope_str_all_openid("openid#2"));
+        xassert(!TokenScope::scope_str_contains("openid#2", "openid"));
     }
 
     function finalize() {
@@ -136,9 +918,499 @@ class Scope_Tester {
         if (is_int($scope)) {
             $scope = join(" ", TokenScope::unparse_missing_bits($scope));
         }
-        xassert_eqq($resp->response_code(), 401);
+        xassert_eqq($resp->response_code(), 403);
         $header = $resp->header("WWW-Authenticate") ?? "";
         xassert_str_contains($header, "error=\"insufficient_scope\"");
         xassert_str_contains($header, "scope=\"{$scope}\"");
+    }
+
+    function test_actas_forwards_token_scope() {
+        // A privileged user’s scoped token may `actas` another user, but the
+        // token’s scope must bound the impersonated user too; the scope’s
+        // subset selectors stay evaluated as the token owner.
+        $p2 = $this->conf->checked_paper_by_id(2);
+        $u_micke = $this->conf->checked_user_by_email("micke@cdt.luth.se");
+        xassert($p2->has_author($u_micke));
+        xassert(!$p2->has_author($this->u_chair));
+
+        // `read`: the actas user inherits the scope -- reads, no writes
+        $u = clone $this->u_chair;
+        $u->set_scope("read");
+        $qreq = TestQreq::get();
+        $qreq->actas = "micke@cdt.luth.se";
+        $au = $u->activate($qreq, true);
+        xassert_eqq($au->email, "micke@cdt.luth.se");
+        xassert($au->is_actas_user());
+        xassert_eqq(TokenScope::unparse($au->scope()), "read");
+        xassert($au->scope_allows(TokenScope::S_SUB_READ));
+        xassert(!$au->scope_allows(TokenScope::S_SUB_WRITE));
+
+        // `write?q=au:me`: the owner (chair) authors nothing, so the subset
+        // selector -- evaluated as the owner, not the impersonated author --
+        // grants write nowhere, even acting as an author of #2
+        $u = clone $this->u_chair;
+        $u->set_scope("read write?q=au:me");
+        $qreq = TestQreq::get();
+        $qreq->actas = "micke@cdt.luth.se";
+        $au = $u->activate($qreq, true);
+        xassert_eqq($au->email, "micke@cdt.luth.se");
+        xassert_eqq(TokenScope::unparse($au->scope()), "read write?q=au%3Ame");
+        xassert(!$au->scope_allows(TokenScope::S_SUB_WRITE, $au->checked_paper_by_id(2)));
+
+        // `none`: no submission access even when acting as an author of #2
+        $u = clone $this->u_chair;
+        $u->set_scope("none");
+        $qreq = TestQreq::get();
+        $qreq->actas = "micke@cdt.luth.se";
+        $au = $u->activate($qreq, true);
+        xassert_eqq($au->email, "micke@cdt.luth.se");
+        xassert(!$au->scope_allows(TokenScope::S_SUB_READ));
+        xassert(!$au->can_view_paper($au->checked_paper_by_id(2)));
+    }
+
+    function test_pcassignments_obeys_review_scope() {
+        // get/pcassignments exports review assignments (reviewer identities,
+        // types, rounds) and, for anonymous reviews, the secret review_token
+        // credential. Token scope must bound both: `review:read` to read the
+        // assignments, `review:admin` for the review_token.
+        $conf = $this->conf;
+        $this->u_chair->set_scope();
+        // an anonymous review supplies both a reviewer-assignment row and a
+        // secret review_token in the export
+        xassert_assign($this->u_chair, "paper,action,user\n3,review,new-anonymous\n");
+        $token = $conf->fetch_ivalue("select reviewToken from PaperReview where paperId=3 and reviewToken!=0 order by reviewId desc limit 1");
+        xassert(!!$token);
+
+        // returns [#reviewer rows, review_token exported?, "not reported" warning?]
+        $run = function ($scope) {
+            $u = clone $this->u_chair;
+            $u->set_scope($scope);
+            list($header, $texts) = ListAction::pcassignments_csv_data($u, [3]);
+            $nrows = $warning = 0;
+            foreach ($texts as $t) {
+                $e = $t["email"] ?? "";
+                if ($e !== "" && $e !== "#pc") {
+                    ++$nrows;
+                }
+                if (($t["action"] ?? "") === "warning") {
+                    $warning = 1;
+                }
+            }
+            return [$nrows, in_array("review_token", $header, true), $warning];
+        };
+
+        // review:admin (and an unscoped chair) export assignments + the token
+        foreach (["review:admin", null] as $scope) {
+            list($nrows, $has_token, $warning) = $run($scope);
+            xassert_gt($nrows, 0);
+            xassert($has_token);
+            xassert(!$warning);
+        }
+
+        // review:read exports the assignments but NOT the review_token credential
+        list($nrows, $has_token, $warning) = $run("review:read");
+        xassert_gt($nrows, 0);
+        xassert(!$has_token);
+        xassert(!$warning);
+
+        // submission:read (no review scope) exports no assignment data at all
+        list($nrows, $has_token, $warning) = $run("submission:read");
+        xassert_eqq($nrows, 0);
+        xassert(!$has_token);
+        xassert($warning);
+
+        // clean up
+        $prow = $conf->checked_paper_by_id(3);
+        $prow->load_reviews();
+        $anon = $conf->user_by_id($prow->review_by_token($token)->contactId);
+        xassert_assign($this->u_chair, "paper,action,user\n3,clearreview,{$anon->email}\n");
+        $this->u_chair->set_scope();
+    }
+
+    /** @param array<string,string> $args
+     * @return JsonResult|Downloader */
+    static private function searchaction($u, $args) {
+        return call_api_result("searchaction", $u, TestQreq::get($args));
+    }
+
+    /** @return list<string> */
+    private function job_salts(Contact $u) {
+        return Dbl::fetch_first_columns($this->conf->dblink,
+            "select salt from Capability where capabilityType=? and contactId=?",
+            TokenInfo::JOB, $u->contactId);
+    }
+
+    /** @param array<string,string> $args
+     * @param list<string> &$jobs
+     * @return array{JsonResult,?string}
+     *
+     * Runs api/autoassign as `$u` -- installed as the main user, as in a
+     * live request, so that the job runs with `$u`’s token scope -- and
+     * returns its response together with the job output read back through
+     * api/job, as a client would (the in-process api/autoassign response
+     * does not carry `output`), or null if no job completed. Appends any
+     * job created to `$jobs`. */
+    private function autoassign_api(Contact $u, $args, &$jobs) {
+        $old_viewer = $this->conf->swap_viewer($u);
+        try {
+            $salts = $this->job_salts($u);
+            $resp = call_api_result("=autoassign", $u, TestQreq::post($args));
+            xassert($resp instanceof JsonResult);
+            $fresh = array_values(array_diff($this->job_salts($u), $salts));
+            xassert_le(count($fresh), 1);
+            if (empty($fresh)) {
+                return [$resp, null];
+            }
+            $jobs[] = $fresh[0];
+            $j = call_api("job", $u, ["job" => $fresh[0], "output" => "string"]);
+            xassert_eqq($j->status, "done");
+            return [$resp, $j->output ?? ""];
+        } finally {
+            $this->conf->swap_viewer($old_viewer);
+        }
+    }
+
+    function test_autoassign_requires_scope() {
+        // Autoassigners read review assignments and preferences for every
+        // selected submission, and a minimal dry run reports their
+        // proposals -- including `clear...review` rows naming existing
+        // reviewers -- before AssignmentSet checks anything: an
+        // administrator’s token must hold the scope the autoassigner
+        // exercises on each selected submission.
+        $this->u_chair->set_scope();
+        MailChecker::clear();
+        $emails = [];
+        foreach ($this->u_chair->checked_paper_by_id(1)->reviews_as_list() as $rrow) {
+            if ($rrow->reviewType === REVIEW_PRIMARY && !$rrow->reviewRound) {
+                $emails[] = $rrow->reviewer()->email;
+            }
+        }
+        xassert(!empty($emails));
+        $review_args = [
+            "autoassigner" => "review_adjust", "q" => "1", "t" => "s",
+            "param" => json_encode(["count=1", "max_load=1", "rtype=primary", "round=unnamed"])
+        ];
+        $lead_args = [
+            "autoassigner" => "lead", "q" => "1", "t" => "s",
+            "param" => json_encode(["score=random", "allow_incomplete=yes"])
+        ];
+        $jobs = [];
+
+        try {
+            // unscoped chair sees the existing assignments
+            list($resp, $output) = $this->autoassign_api($this->u_chair, $review_args + ["minimal_dry_run" => "1"], $jobs);
+            xassert_eqq($resp->content["ok"], true);
+            xassert($output !== null);
+            $ncleared = 0;
+            foreach ($emails as $e) {
+                if (strpos($output, "1,clearprimaryreview,{$e}") !== false) {
+                    ++$ncleared;
+                }
+            }
+            // count=1 keeps one primary per paper and proposes clearing the rest
+            xassert_ge($ncleared, count($emails) - 1);
+            xassert_ge($ncleared, 1);
+
+            // The review autoassigner’s output names existing reviewers and
+            // carries preference/topic_score columns, so it requires
+            // `review:admin` AND `preference:read`; `review:admin` alone no
+            // longer suffices. Scopes lacking either on #1 are refused
+            // however the autoassigner is run: the job fails before it loads
+            // anything.
+            foreach (["submission:read", "read", "submission:admin review:write", "review:admin"] as $scope) {
+                $this->u_chair->set_scope($scope);
+                xassert($this->u_chair->is_manager());
+                foreach (["minimal_dry_run", "dry_run"] as $how) {
+                    list($resp, $output) = $this->autoassign_api($this->u_chair, $review_args + [$how => "1"], $jobs);
+                    xassert_eqq($resp->content["ok"], false);
+                    xassert_eqq($resp->content["status"] ?? null, "failed");
+                    xassert_eqq($resp->response_code(), 403);
+                    xassert_str_contains($resp->header("WWW-Authenticate") ?? "", "error=\"insufficient_scope\", scope=\"preference:read review:admin\"");
+                    xassert_eqq($output, null);
+                    $text = json_encode($resp->content, JSON_UNESCAPED_UNICODE);
+                    xassert_str_contains($text, "Action requires scope ‘preference:read review:admin’");
+                    xassert_str_contains($text, "Token scope does not cover submission #1\"");
+                    xassert_not_str_contains($text, "clearprimaryreview");
+                    foreach ($emails as $e) {
+                        xassert_not_str_contains($text, $e);
+                    }
+                }
+            }
+
+            // `review:admin` plus `preference:read` on #1 suffices,
+            // including through a subset selector; so does `paper:admin`
+            foreach (["review:admin preference:read", "submission:read review:admin#1 preference:read#1", "paper:admin?q=1"] as $scope) {
+                $this->u_chair->set_scope($scope);
+                xassert($this->u_chair->can_manage_reviews($this->u_chair->checked_paper_by_id(1)));
+                list($resp, $output) = $this->autoassign_api($this->u_chair, $review_args + ["minimal_dry_run" => "1"], $jobs);
+                xassert_eqq($resp->content["ok"], true);
+                xassert($output !== null);
+                xassert_str_contains($output, "1,clearprimaryreview,");
+                // the job records the token’s scope...
+                $input = Dbl::fetch_value($this->conf->dblink, "select inputData from Capability where salt=?", $jobs[count($jobs) - 1]);
+                xassert_str_contains($input, "\"scope\":" . json_encode($scope));
+            }
+
+            // ... and a job so recorded runs with that scope even when its
+            // user carries none (as in a separate process)
+            $this->u_chair->set_scope();
+            $old_viewer = $this->conf->swap_viewer($this->u_chair);
+            try {
+                $tok = Job_Token::make($this->u_chair, "Autoassign", ["-je", "-D"])
+                    ->set_input("assign_argv", ["-q=1", "-t=s", "-a=review_adjust", "count=1", "max_load=1", "rtype=primary", "round=unnamed"])
+                    ->set_input("scope", "submission:read")
+                    ->insert();
+                $jobs[] = $tok->salt;
+                xassert_eqq($tok->run_live(), "done");
+            } finally {
+                $this->conf->swap_viewer($old_viewer);
+                $this->u_chair->set_scope();
+            }
+            $tok = Job_Token::find($tok->salt, $this->conf);
+            xassert_eqq($tok->data("exit_status"), 1);
+            xassert_eqq($tok->data("valid"), false);
+            xassert_eqq($tok->outputData, null);
+            $text = json_encode($tok->data("message_list"), JSON_UNESCAPED_UNICODE);
+            xassert_str_contains($text, "Action requires scope ‘preference:read review:admin’");
+            foreach ($emails as $e) {
+                xassert_not_str_contains($text, $e);
+            }
+
+            // the lead autoassigner picks leads among reviewers: it needs
+            // `review:read` as well as `submeta:admin`
+            $this->u_chair->set_scope("submission:admin");
+            list($resp, $output) = $this->autoassign_api($this->u_chair, $lead_args + ["dry_run" => "1"], $jobs);
+            xassert_eqq($resp->content["ok"], false);
+            xassert_eqq($output, null);
+            $text = json_encode($resp->content, JSON_UNESCAPED_UNICODE);
+            xassert_str_contains($text, "Action requires scope ‘review:read submeta:admin’");
+            foreach ($emails as $e) {
+                xassert_not_str_contains($text, $e);
+            }
+            $this->u_chair->set_scope("submeta:admin review:read");
+            list($resp, $output) = $this->autoassign_api($this->u_chair, $lead_args + ["dry_run" => "1"], $jobs);
+            xassert_eqq($resp->content["ok"], true);
+
+            // clearing reviews names the reviewers: `review:admin`, not
+            // just `submeta:admin`...
+            $clear_args = ["autoassigner" => "clear", "q" => "1", "t" => "s", "minimal_dry_run" => "1"];
+            $this->u_chair->set_scope("submeta:admin");
+            list($resp, $output) = $this->autoassign_api($this->u_chair, $clear_args + ["param" => json_encode(["type=primary"])], $jobs);
+            xassert_eqq($resp->content["ok"], false);
+            xassert_eqq($resp->response_code(), 403);
+            xassert_eqq($output, null);
+            $text = json_encode($resp->content, JSON_UNESCAPED_UNICODE);
+            xassert_str_contains($text, "Action requires scope ‘review:admin’");
+            foreach ($emails as $e) {
+                xassert_not_str_contains($text, $e);
+            }
+            $this->u_chair->set_scope("review:admin");
+            list($resp, $output) = $this->autoassign_api($this->u_chair, $clear_args + ["param" => json_encode(["type=primary"])], $jobs);
+            xassert_eqq($resp->content["ok"], true);
+            foreach ($emails as $e) {
+                xassert_str_contains($output, "1,noreview,{$e}");
+            }
+            // ... which however suffices for clearing conflicts or leads
+            $this->u_chair->set_scope("submeta:admin");
+            foreach (["conflict", "lead"] as $type) {
+                list($resp, $output) = $this->autoassign_api($this->u_chair, $clear_args + ["param" => json_encode(["type={$type}"])], $jobs);
+                xassert_eqq($resp->content["ok"], true);
+                xassert_not_str_contains(json_encode($resp->content, JSON_UNESCAPED_UNICODE), "Action requires scope");
+            }
+
+            // prefconflict reads preferences to propose conflicts naming
+            // reviewers: `review:read` and `preference:read` as well as
+            // `submeta:admin`
+            $prefconflict_args = ["autoassigner" => "prefconflict", "q" => "1", "t" => "s", "minimal_dry_run" => "1"];
+            $this->u_chair->set_scope("submeta:admin review:read");
+            list($resp, $output) = $this->autoassign_api($this->u_chair, $prefconflict_args, $jobs);
+            xassert_eqq($resp->content["ok"], false);
+            xassert_eqq($resp->response_code(), 403);
+            xassert_eqq($output, null);
+            xassert_str_contains(json_encode($resp->content, JSON_UNESCAPED_UNICODE), "Action requires scope ‘preference:read review:read submeta:admin’");
+            $this->u_chair->set_scope("submeta:admin review:read preference:read");
+            list($resp, $output) = $this->autoassign_api($this->u_chair, $prefconflict_args, $jobs);
+            xassert_eqq($resp->content["ok"], true);
+
+            // discussion_order assigns tags: `tag:write`
+            $discorder_args = ["autoassigner" => "discussion_order", "q" => "1 2 3", "t" => "s", "param" => json_encode(["tag=disco"]), "minimal_dry_run" => "1"];
+            $this->u_chair->set_scope("submission:read");
+            list($resp, $output) = $this->autoassign_api($this->u_chair, $discorder_args, $jobs);
+            xassert_eqq($resp->content["ok"], false);
+            xassert_eqq($resp->response_code(), 403);
+            xassert_eqq($output, null);
+            xassert_str_contains(json_encode($resp->content, JSON_UNESCAPED_UNICODE), "Action requires scope ‘tag:write’");
+            $this->u_chair->set_scope("tag:write");
+            list($resp, $output) = $this->autoassign_api($this->u_chair, $discorder_args, $jobs);
+            xassert_eqq($resp->content["ok"], true);
+            xassert_str_contains($output, ",tag,disco#");
+            $this->u_chair->set_scope();
+            xassert_search($this->u_chair, "#disco", "");
+        } finally {
+            if (!empty($jobs)) {
+                $this->conf->qe("delete from Capability where salt?a", $jobs);
+            }
+            $this->u_chair->set_scope();
+            MailChecker::clear();
+        }
+    }
+
+    function test_revform_requires_review_scope() {
+        // Offline review forms carry review contents: a token without
+        // review scope must not download filled-in forms, neither an
+        // administrator’s token through get/allrevform nor a reviewer’s
+        // token, for the reviewer’s own review, through get/revform.
+        $conf = $this->conf;
+        $this->u_chair->set_scope();
+        MailChecker::clear();
+        $u_mgbaker = $conf->checked_user_by_email("mgbaker@cs.stanford.edu");
+        xassert($u_mgbaker->isPC);
+        xassert(!$u_mgbaker->is_manager());
+        $u_mgbaker->set_scope();
+        $cases = [[$this->u_chair, "get/allrevform"], [$u_mgbaker, "get/revform"]];
+        $old_rev_open = $conf->setting("rev_open");
+        $conf->save_refresh_setting("rev_open", 1);
+
+        // chair creates and submits a fresh PC review for mgbaker on a
+        // submission unrelated to mgbaker and the chair (so the test
+        // disturbs no seeded review); a second such submission checks
+        // subset selectors
+        $pids = [];
+        foreach ($this->u_chair->paper_set(["paperId" => range(3, 18)]) as $prow) {
+            if ($prow->timeSubmitted > 0
+                && !$prow->review_by_user($u_mgbaker)
+                && !$prow->has_conflict($u_mgbaker)
+                && !$prow->has_conflict($this->u_chair)) {
+                $pids[] = $prow->paperId;
+            }
+        }
+        xassert_ge(count($pids), 2);
+        list($pid, $pidx) = $pids;
+        $p = (string) $pid;
+        $prow = $conf->checked_paper_by_id($pid);
+        $jr = call_api("review", $this->u_chair, TestQreq::post_json(["object" => "review", "email" => $u_mgbaker->email, "OveMer" => 2, "RevExp" => 1, "PapSum" => "Summary SKOPE1", "ComPC" => "PC comments SKOPE2", "ready" => true], ["p" => $pid, "r" => "new"]), $prow);
+        xassert_eqq($jr->ok, true);
+        MailChecker::clear();
+        $rrow = checked_fresh_review($conf->checked_paper_by_id($pid), $u_mgbaker);
+        xassert_ge($rrow->reviewStatus, ReviewInfo::RS_COMPLETED);
+        $rid = $rrow->reviewId;
+
+        // unscoped administrator and reviewer see the review contents
+        foreach ($cases as list($u, $action)) {
+            $resp = self::searchaction($u, ["action" => $action, "p" => $p]);
+            xassert($resp instanceof Downloader);
+            $t = $resp->content_string();
+            xassert_str_contains($t, "==+== Paper #{$p}\n");
+            xassert_str_contains($t, "SKOPE1");
+            xassert_str_contains($t, "SKOPE2");
+            $px = $u->checked_paper_by_id($pid);
+            xassert_eqq($u->perm_edit_some_review($px), null);
+            xassert_lt($u->view_score_bound($px, $px->checked_review_by_user($u_mgbaker)), VIEWSCORE_PC);
+        }
+
+        // scopes lacking `review:read` see nothing
+        foreach (["submission:read", "submission:admin document:read tag:admin comment:read"] as $scope) {
+            foreach ($cases as list($u, $action)) {
+                $u->set_scope($scope);
+                $px = $u->checked_paper_by_id($pid);
+                xassert($u->can_view_paper($px));
+                foreach ([["p" => $p], ["q" => "", "t" => "s"]] as $sel) {
+                    $resp = self::searchaction($u, ["action" => $action] + $sel);
+                    xassert(!($resp instanceof Downloader));
+                    xassert_eqq($resp->response_code(), 403);
+                    xassert_not_str_contains(json_encode($resp->content), "SKOPE");
+                }
+                $whynot = $u->perm_edit_some_review($px);
+                xassert($whynot && isset($whynot["scope"]));
+                $rx = $px->checked_review_by_user($u_mgbaker);
+                xassert(!$u->can_view_review($px, $rx));
+                xassert_eqq($u->view_score_bound($px, $rx), VIEWSCORE_EMPTYBOUND);
+                $u->set_scope();
+            }
+        }
+
+        // review scope suffices; a subset selector confines it to the
+        // selected submissions
+        foreach ($cases as list($u, $action)) {
+            $u->set_scope("submission:read review:write#{$pidx}");
+            $resp = self::searchaction($u, ["action" => $action, "p" => "{$pid} {$pidx}"]);
+            xassert($resp instanceof Downloader);
+            $t = $resp->content_string();
+            xassert_str_contains($t, "==+== Paper #{$pidx}\n");
+            xassert_not_str_contains($t, "==+== Paper #{$p}\n");
+            xassert_not_str_contains($t, "SKOPE");
+            $px = $u->checked_paper_by_id($pid);
+            xassert_eqq($u->view_score_bound($px, $px->checked_review_by_user($u_mgbaker)), VIEWSCORE_EMPTYBOUND);
+            $u->set_scope("submission:read review:write#{$p}");
+            $resp = self::searchaction($u, ["action" => $action, "p" => $p]);
+            xassert($resp instanceof Downloader);
+            $t = $resp->content_string();
+            xassert_str_contains($t, "SKOPE1");
+            xassert_str_contains($t, "SKOPE2");
+            $u->set_scope();
+        }
+        MailChecker::clear();
+
+        // restore
+        $jr = call_api("review", $this->u_chair, TestQreq::delete(["p" => $pid, "r" => $rid]), $conf->checked_paper_by_id($pid));
+        xassert_eqq($jr->ok, true);
+        $conf->qe("delete from PaperReviewHistory where paperId=? and reviewId=?", $pid, $rid);
+        $conf->qe("delete from Capability where salt>=? and salt<?", "hcra{$rid}@", "hcra{$rid}~");
+        xassert(!$conf->checked_paper_by_id($pid)->review_by_user($u_mgbaker));
+        $conf->save_refresh_setting("rev_open", $old_rev_open);
+        MailChecker::clear();
+    }
+
+    function test_some_review_identity_ignores_temporary_scope_override() {
+        // The cached review-identity bound is computed ignoring scope, and
+        // scope is applied on each call, so a temporary OVERRIDE_SCOPE does
+        // not leak into later checks
+        $u = $this->conf->fresh_user_by_email("lixia@cs.ucla.edu");
+        xassert(!$u->is_manager());
+        xassert($u->can_view_some_review_identity());
+
+        // computed inside the override, then checked outside it
+        $u->set_scope("submission:read");
+        $overrides = $u->add_overrides(Contact::OVERRIDE_SCOPE);
+        xassert($u->can_view_some_review_identity());
+        $u->set_overrides($overrides);
+        xassert(!$u->can_view_some_review_identity());
+
+        // computed outside the override, then checked inside it
+        $u->set_scope("submission:read");
+        xassert(!$u->can_view_some_review_identity());
+        $overrides = $u->add_overrides(Contact::OVERRIDE_SCOPE);
+        xassert($u->can_view_some_review_identity());
+        $u->set_overrides($overrides);
+        $u->set_scope();
+    }
+
+    function test_some_review_identity_follows_au_seerev_override() {
+        // OVERRIDE_AU_SEEREV lets an author view reviews, and therefore
+        // reviewer identities when reviews are not blind, regardless of the
+        // order in which the cached bound was computed
+        $conf = $this->conf;
+        $old_rev_blind = $conf->setting("rev_blind");
+        $conf->save_refresh_setting("rev_blind", Conf::BLIND_NEVER);
+        xassert($conf->_au_seerev === null);
+        $u = $conf->fresh_user_by_email("randy@cs.berkeley.edu");
+        xassert($u->is_author() && !$u->is_reviewer());
+
+        // computed without the override, then checked with it
+        Contact::update_rights();
+        xassert(!$u->can_view_some_review_identity());
+        $overrides = $u->add_overrides(Contact::OVERRIDE_AU_SEEREV);
+        xassert($u->can_view_some_review_identity());
+        $u->set_overrides($overrides);
+        xassert(!$u->can_view_some_review_identity());
+
+        // computed with the override, then checked without it
+        Contact::update_rights();
+        $overrides = $u->add_overrides(Contact::OVERRIDE_AU_SEEREV);
+        xassert($u->can_view_some_review_identity());
+        $u->set_overrides($overrides);
+        xassert(!$u->can_view_some_review_identity());
+
+        $conf->save_refresh_setting("rev_blind", $old_rev_blind);
     }
 }
